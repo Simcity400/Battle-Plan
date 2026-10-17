@@ -34,7 +34,7 @@ use viewer_world::map::scene::Scene;
 
 // Immutable artwork can be shared only when the recording and visual choices match.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct MapSourceKey {
+pub(crate) struct MapSourceKey {
     recording: SourceKey,
     texture_quality: u8,
     visual_mods: Option<Vec<installed_content::content::visual::Choice>>,
@@ -139,6 +139,8 @@ impl Drop for LoadingSource {
 
 struct SceneLoad {
     samples: u32,
+    /// The content the scene is built from ([`still_current`]).
+    content: std::sync::Weak<Content>,
     result: mpsc::Receiver<Result<(Document, Scene), String>>,
     alive: Arc<AtomicBool>,
     // Declared after the receiver, so a queued Scene is dropped first.
@@ -234,6 +236,11 @@ pub struct DashboardMaps {
     // Content::load has its own scoped asset waves. Admit only one cold source
     // at a time instead of multiplying those waves for every map body.
     loading: Option<LoadingSource>,
+    /// The one owner of every map's visual mod fallback, shared with the Campaign map
+    /// ([`crate::visual_fallback`]).
+    fallbacks: crate::visual_fallback::Shared,
+    /// This frame's reports for it, reduced together once every map has drawn.
+    visual_reports: Vec<crate::visual_fallback::Report>,
     limits: MapLimits,
     budget: Arc<SceneBudget>,
     waiting_source: Option<PathBuf>,
@@ -331,6 +338,8 @@ impl DashboardMaps {
             views: BTreeMap::new(),
             order: Vec::new(),
             loading: None,
+            fallbacks: Default::default(),
+            visual_reports: Vec::new(),
             limits,
             budget,
             waiting_source: None,
@@ -382,6 +391,15 @@ impl DashboardMaps {
         {
             return;
         }
+        // Only content its fallback key holds now: never content a map failed with, nor content
+        // built for another decision.
+        if content
+            .fallback
+            .as_ref()
+            .is_some_and(|built| !crate::visual_fallback::lock(&self.fallbacks).current(built))
+        {
+            return;
+        }
         for (key, entry) in &mut self.sources {
             if key.recording == *source.key()
                 && entry.content.is_none()
@@ -407,6 +425,122 @@ impl DashboardMaps {
                     .map(|content| (key.recording.clone(), Arc::clone(content)))
             })
             .collect()
+    }
+
+    /// Each loaded map that shows visual mods: its key, selection, the recording's mods and the
+    /// revision it mounted, for [`Self::reload_stale`].
+    pub(crate) fn visual_checks(
+        &self,
+    ) -> Vec<(
+        MapSourceKey,
+        Vec<installed_content::content::visual::Choice>,
+        Vec<installed_content::content::visual::RecordedMod>,
+        String,
+    )> {
+        self.sources
+            .iter()
+            .filter_map(|(key, source)| {
+                let content = source.content.as_ref()?;
+                let selected = content
+                    .visual_mods
+                    .clone()
+                    .filter(|mods| !mods.is_empty())?;
+                let recorded = source
+                    .source
+                    .replay()
+                    .identity
+                    .mods
+                    .iter()
+                    .map(|recorded| installed_content::content::visual::RecordedMod {
+                        id: recorded.id.clone(),
+                        name: recorded.display_name.clone(),
+                    })
+                    .collect();
+                Some((
+                    key.clone(),
+                    selected,
+                    recorded,
+                    content.visual_revision.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Whether a source's content is loading: a check of its visual mods then misses it until it
+    /// is installed.
+    pub(crate) fn loading_content(&self) -> bool {
+        self.loading.is_some()
+    }
+
+    /// Reloads the maps whose visual mods changed since they loaded, as a folder change does:
+    /// their content is dropped off the UI thread and their views load again. Each map comes with
+    /// the revision the check found changed; content loaded since carries another and is kept.
+    pub(crate) fn reload_stale(&mut self, stale: &[(MapSourceKey, String)], frame: &eframe::Frame) {
+        let stale = stale_content(&self.sources, stale, |source| {
+            source
+                .content
+                .as_ref()
+                .map(|content| content.visual_revision.as_str())
+        });
+        for key in &stale {
+            if let Some(source) = self.sources.get_mut(key) {
+                if let Some(content) = source.content.take() {
+                    self.resources.dropper.drop_later(content);
+                }
+                source.error = None;
+            }
+        }
+        for view in self.views.values_mut() {
+            if view.source.as_ref().is_some_and(|key| stale.contains(key)) {
+                view.retire(frame);
+                view.error = None;
+            }
+        }
+    }
+
+    /// Shares the Campaign map's fallback owner, so every map of a recording follows one
+    /// decision per key ([`crate::visual_fallback`]).
+    pub fn share_fallbacks(&mut self, fallbacks: crate::visual_fallback::Shared) {
+        self.fallbacks = fallbacks;
+    }
+
+    /// Reduces this frame's reports from every map at once, then drops each source's content
+    /// that is no longer what its fallback key holds, so its maps load again: without the
+    /// visual mods for a failure, or with them back.
+    fn apply_visual_fallback(&mut self, frame: &eframe::Frame) {
+        let reports = std::mem::take(&mut self.visual_reports);
+        let mut fallbacks = crate::visual_fallback::lock(&self.fallbacks);
+        if !reports.is_empty() {
+            fallbacks.reduce(reports);
+        }
+        let stale: Vec<MapSourceKey> = self
+            .sources
+            .iter()
+            .filter(|(_, source)| {
+                source
+                    .content
+                    .as_ref()
+                    .and_then(|content| content.fallback.as_ref())
+                    .is_some_and(|built| !fallbacks.current(built))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        drop(fallbacks);
+        for key in stale {
+            let Some(source) = self.sources.get_mut(&key) else {
+                continue;
+            };
+            if let Some(content) = source.content.take() {
+                self.resources.dropper.drop_later(content);
+            }
+            source.error = None;
+            for view in self.views.values_mut() {
+                if view.source.as_ref() == Some(&key) {
+                    view.retire(frame);
+                    view.error = None;
+                }
+            }
+        }
     }
 
     pub fn update_config(&mut self, config: &Config, frame: &eframe::Frame, ctx: &egui::Context) {
@@ -841,13 +975,45 @@ impl DashboardMaps {
                 });
             if let Some(result) = finished {
                 let load = view.loading.take().expect("finished scene load");
+                // A scene built from content its source has dropped meanwhile (for a probe of
+                // its visual mods) is neither installed nor taken to have failed: the view
+                // builds again from what the source holds now.
+                let current = view
+                    .source
+                    .as_ref()
+                    .and_then(|key| self.sources.get(key))
+                    .and_then(|source| source.content.as_ref());
                 match result {
+                    _ if !still_current(&load.content, current) => {}
                     Ok((document, scene)) => {
                         view.permit = Some(Arc::clone(&load.permit));
                         view.viewer
                             .install_map(document, scene, view.target.revision.clone());
                     }
-                    Err(error) => view.error = Some(error),
+                    Err(error) => {
+                        // A scene that cannot be built with the visual mods is its content's
+                        // failure, reported to the owner, which probes without them; one that
+                        // cannot be built without them either is an error.
+                        let failed = view
+                            .source
+                            .as_ref()
+                            .and_then(|key| {
+                                self.sources.get(key)?.content.as_ref()?.fallback.clone()
+                            })
+                            .filter(|built| {
+                                matches!(built.under, crate::visual_fallback::Under::Mods { .. })
+                            });
+                        match failed {
+                            Some(built) => {
+                                self.visual_reports.push(crate::visual_fallback::Report {
+                                    built,
+                                    refusals: [format!("scene: {error}")].into(),
+                                    settled: false,
+                                })
+                            }
+                            None => view.error = Some(error),
+                        }
+                    }
                 }
             }
             if view.error.is_some()
@@ -918,6 +1084,7 @@ impl DashboardMaps {
             }) {
                 view.loading = Some(SceneLoad {
                     samples: graphics.samples,
+                    content: Arc::downgrade(content),
                     result: receiver,
                     alive,
                     permit,
@@ -941,6 +1108,10 @@ impl DashboardMaps {
         };
         let visual_mods = source.visual_mods.clone();
         let texture_quality = source.texture_quality;
+        // The decisions the recording's fallback keys hold as the load starts.
+        let recording =
+            crate::visual_fallback::recording(&key.recording.source_id, &key.recording.revision);
+        let decisions = crate::visual_fallback::lock(&self.fallbacks).decisions(&recording);
         let load_visual_mods = visual_mods.clone();
         let source_handle = Arc::clone(&source.source);
         let decoder = Arc::clone(&source.decoder);
@@ -970,6 +1141,7 @@ impl DashboardMaps {
                         source_handle.replay(),
                         load_visual_mods.as_deref(),
                         texture_quality,
+                        Some((recording.as_str(), &decisions)),
                     )
                     .map_err(|error| error.to_string())?;
                     document.bind_source(Arc::clone(&source_handle), resolve.clone(), allow);
@@ -1019,6 +1191,7 @@ impl DashboardMaps {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         self.poll(ui.ctx());
+        self.apply_visual_fallback(frame);
         let scale = ui.ctx().pixels_per_point();
         // The maps drawn this frame: shown, loaded and not scrolled out.
         let drawn: std::collections::BTreeSet<&String> = self
@@ -1081,6 +1254,9 @@ impl DashboardMaps {
                 let events = view.viewer.take_view_events();
                 self.view_events
                     .extend(events.into_iter().map(|event| (id.clone(), event)));
+                if let Some(report) = view.viewer.take_visual_report() {
+                    self.visual_reports.push(report);
+                }
             } else {
                 map_ui.centered_and_justified(|ui| {
                     ui.spinner();
@@ -1168,9 +1344,73 @@ fn same_config(left: &Config, right: &Config) -> bool {
     left.game_dir == right.game_dir && left.user_dir == right.user_dir
 }
 
+/// The checked maps whose loaded content still carries the revision the check found changed;
+/// a map loading, or loaded since the check, is left alone.
+fn stale_content<S>(
+    sources: &BTreeMap<MapSourceKey, S>,
+    stale: &[(MapSourceKey, String)],
+    revision: impl Fn(&S) -> Option<&str>,
+) -> Vec<MapSourceKey> {
+    stale
+        .iter()
+        .filter(|(key, checked)| {
+            sources
+                .get(key)
+                .and_then(&revision)
+                .is_some_and(|loaded| loaded == checked)
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// Whether a scene load built from `built` completes for content its source still holds
+/// (`current`).
+fn still_current<T>(built: &std::sync::Weak<T>, current: Option<&Arc<T>>) -> bool {
+    current.is_some_and(|current| std::ptr::eq(Arc::as_ptr(current), built.as_ptr()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scene built from content its source dropped meanwhile, for a probe of its visual
+    /// mods, is never installed: only one built from the content the source holds now is.
+    #[test]
+    fn a_scene_built_from_dropped_content_is_not_installed() {
+        let built = Arc::new(1u8);
+        let probe = Arc::new(1u8);
+        let load = Arc::downgrade(&built);
+        assert!(still_current(&load, Some(&built)));
+        assert!(!still_current(&load, Some(&probe)));
+        assert!(!still_current(&load, None));
+    }
+
+    #[test]
+    fn a_late_visual_check_keeps_maps_loaded_since() {
+        let key = |id: &str| MapSourceKey {
+            recording: SourceKey {
+                source_id: id.into(),
+                revision: "r".into(),
+            },
+            texture_quality: 0,
+            visual_mods: Some(Vec::new()),
+        };
+        let sources = BTreeMap::from([
+            (key("checked"), Some("old")),
+            (key("reloaded"), Some("new")),
+            (key("loading"), None),
+        ]);
+        let stale = [
+            (key("checked"), "old".to_owned()),
+            (key("reloaded"), "old".to_owned()),
+            (key("loading"), "old".to_owned()),
+            (key("closed"), "old".to_owned()),
+        ];
+        assert_eq!(
+            stale_content(&sources, &stale, |revision| *revision),
+            [key("checked")]
+        );
+    }
 
     #[test]
     fn host_foreign_lease_binds_by_path_revision_and_keeps_owner_only_in_target() {

@@ -810,13 +810,20 @@ impl Assets {
         warnings.extend(sprite_warnings(&gui, &resident.sprites, true));
         warnings.extend(gui.uncovered_note("Combat UI"));
         let reader = Arc::clone(shared);
+        // A portrait the visual mods break is the recording's own, named.
+        let recorded = reader.without_overlays();
         let decode = interface.decode;
         let portrait_failures = Arc::new(Mutex::new(BTreeMap::new()));
         let failures = Arc::clone(&portrait_failures);
         let portraits = LazyImages::new(
             "combat portrait",
             Arc::new(move |path: &str| {
-                match resources::stack_texture(&reader, path.as_bytes(), decode) {
+                match resources::stack_texture_or_recorded(
+                    &reader,
+                    recorded.as_ref(),
+                    path.as_bytes(),
+                    decode,
+                ) {
                     Ok(Ok(texture)) => Ok(texture.image),
                     Ok(Err(why)) => {
                         let kind = if why.native_failure() {

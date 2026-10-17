@@ -147,6 +147,8 @@ enum Mirror {
     /// VSync and map scale, queued like the main viewer's.
     Display,
     SettingsSaved,
+    /// The user asked for installed mods to be read again: the pop-out's maps check theirs too.
+    RefreshVisualMods,
 }
 
 /// The display choices the main viewer receives that the pop-out's also needs; recording,
@@ -157,6 +159,7 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
         MapAction::Mute { muted } => Some(Mirror::Muted(*muted)),
         MapAction::Vsync { .. } | MapAction::UiScale { .. } => Some(Mirror::Display),
         MapAction::MapSettingsSaved => Some(Mirror::SettingsSaved),
+        MapAction::RefreshVisualMods => Some(Mirror::RefreshVisualMods),
         MapAction::Unload { .. }
         | MapAction::Configure { .. }
         | MapAction::Export { .. }
@@ -229,6 +232,7 @@ impl PopOuts {
             Mirror::Muted(muted) => host.set_muted(muted),
             Mirror::Display => host.set_display(action.clone()),
             Mirror::SettingsSaved => host.map_settings_saved(),
+            Mirror::RefreshVisualMods => host.refresh_visual_mods(),
         }
     }
 
@@ -831,6 +835,11 @@ mod tests {
         assert_eq!(
             mirrored(&MapAction::MapSettingsSaved),
             Some(Mirror::SettingsSaved)
+        );
+        // A refresh reads the mods every viewer shows, the pop-out's too.
+        assert_eq!(
+            mirrored(&MapAction::RefreshVisualMods),
+            Some(Mirror::RefreshVisualMods)
         );
         for action in [
             MapAction::Unload { path: "a".into() },

@@ -375,7 +375,10 @@ struct SharedGeometry {
 }
 
 pub(super) struct Renderer {
-    library: Library,
+    /// The mesh effects of the stack the entities were baked from, then of the recording alone:
+    /// a visual mod entity's recorded counterpart ([`super::ModelLibrary::alternatives`]) is
+    /// drawn with the recording's own shaders, as the recording draws it.
+    libraries: [Library; 2],
     cache: shader_pipeline::gpu::Cache,
     parts: BTreeMap<Key, Resident>,
     geometry: BTreeMap<GeometryKey, SharedGeometry>,
@@ -465,6 +468,43 @@ struct Key {
     part: usize,
     caster: bool,
     forced: bool,
+}
+
+/// What a part draws with, from its built pass: the compiled program of the technique the pass
+/// was built from (the recorded one when a visual mod's replacement fell back, never the
+/// technique asked for), and the retained program: that technique, its vertex layouts at the
+/// geometry's compact stride, and its state.
+fn part_program(
+    pipeline: &mesh_shader::Pass,
+    geometry: &mesh_shader::Geometry,
+) -> io::Result<(Arc<shader_pipeline::Compiled>, shader_scene::Program)> {
+    let selection = &pipeline.selection;
+    let compiled = selection
+        .effect
+        .compiled(selection.index)
+        .map_err(invalid)?;
+    let mut layouts = mesh_shader::vertex_layouts(
+        &compiled.vertex.inputs,
+        geometry.uv1,
+        !geometry.skin.is_empty(),
+    )?;
+    // Retained declarations bind the game's compact stride.
+    layouts[0].stride = geometry.stride;
+    let effect = &selection.effect.source;
+    let technique = &effect.techniques[selection.index];
+    let mut state = shader_pipeline::gpu::State::authored(effect, technique).map_err(invalid)?;
+    state
+        .samplers
+        .retain(|key, _| (0..3).any(|slot| *key == binding(slot, Stage::Pixel)));
+    state.samplers.extend(mesh_shader::map_samplers());
+    let retained = shader_scene::Program::new(
+        selection,
+        &layouts,
+        &state,
+        &effect.rasterizer(technique),
+        &effect.depth_stencil(technique),
+    );
+    Ok((compiled, retained))
 }
 
 fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Selection> {
@@ -663,12 +703,19 @@ impl ModelPass {
                 .as_ref()
                 .ok_or_else(|| invalid("mesh content stack unavailable"))?;
             *native = Some(Renderer {
-                library: Library::new(layers.clone()).with_globals(
-                    super::super::shader_sources::globals(
+                libraries: {
+                    let globals = super::super::shader_sources::globals(
                         [frame.camera.map.width, frame.camera.map.height],
                         self.decode,
-                    ),
-                ),
+                    );
+                    let recorded = layers
+                        .without_overlays()
+                        .map_or_else(|| layers.clone(), Arc::new);
+                    [
+                        Library::new(layers.clone()).with_globals(globals.clone()),
+                        Library::new(recorded).with_globals(globals),
+                    ]
+                },
                 cache: Default::default(),
                 parts: BTreeMap::new(),
                 geometry: BTreeMap::new(),
@@ -703,6 +750,7 @@ impl ModelPass {
         for (view, offset) in frame.offsets.iter().enumerate() {
             for &(group_index, index) in &self.field.native_order {
                 let group = &self.field.groups[group_index];
+                let library = self.shader_library(group.mesh);
                 if !visible(group, *offset, frame.visible) {
                     continue;
                 }
@@ -718,13 +766,15 @@ impl ModelPass {
                     let instance_world = match instance.native_transform() {
                         Ok(world) => world,
                         Err(why) => {
-                            self.refuse_actor(arena.frame(), index, usize::MAX, &mesh.name, why);
+                            // The instance's own recorded transform, whatever draws it.
+                            self.refuse_actor(arena, None, index, usize::MAX, &mesh.name, why);
                             continue;
                         }
                     };
                     let Some(rig) = self.rigs.get(group.mesh) else {
                         self.refuse_actor(
-                            arena.frame(),
+                            arena,
+                            Some(group.mesh),
                             index,
                             usize::MAX,
                             &mesh.name,
@@ -784,8 +834,9 @@ impl ModelPass {
                             if !native.queues.contains_key(&descriptor_key) {
                                 let mut admitted = [false; 2];
                                 for part in descriptor.lods.iter().flatten() {
-                                    let lit = select(&mut native.library, part, false)?;
-                                    let shadow = select(&mut native.library, part, true)?;
+                                    let lit = select(&mut native.libraries[library], part, false)?;
+                                    let shadow =
+                                        select(&mut native.libraries[library], part, true)?;
                                     let (_, alternate) = material_flags(
                                         &lit.effect
                                             .source
@@ -834,15 +885,17 @@ impl ModelPass {
                                     native.parts.entry(key)
                                 {
                                     let selection = if forced && !caster {
-                                        select_alpha(&mut native.library, source)?
+                                        select_alpha(&mut native.libraries[library], source)?
                                     } else {
-                                        select(&mut native.library, source, caster)?
+                                        select(&mut native.libraries[library], source, caster)?
                                     };
                                     let source_blend = |s: &Selection| {
                                         s.effect.source.blend(&s.effect.source.techniques[s.index])
                                     };
-                                    let lit = select(&mut native.library, source, false)?;
-                                    let shadow = select(&mut native.library, source, true)?;
+                                    let lit =
+                                        select(&mut native.libraries[library], source, false)?;
+                                    let shadow =
+                                        select(&mut native.libraries[library], source, true)?;
                                     let (caster_texture, blended) = material_flags(
                                         &source_blend(&lit),
                                         &source_blend(&shadow),
@@ -868,17 +921,8 @@ impl ModelPass {
                                             inputs.samples,
                                         )?
                                     };
-                                    let compiled = selection
-                                        .effect
-                                        .compiled(selection.index)
-                                        .map_err(invalid)?;
-                                    let mut layouts = mesh_shader::vertex_layouts(
-                                        &compiled.vertex.inputs,
-                                        source.geometry.uv1,
-                                        !source.geometry.skin.is_empty(),
-                                    )?;
-                                    // Retained declarations bind the game's compact stride.
-                                    layouts[0].stride = source.geometry.stride;
+                                    let (compiled, retained) =
+                                        part_program(&pipeline, &source.geometry)?;
                                     let geometry = match native.geometry.get(&source.geometry_key) {
                                         Some(geometry) => geometry.clone(),
                                         None => {
@@ -948,23 +992,8 @@ impl ModelPass {
                                             geometry
                                         }
                                     };
-                                    let effect = &selection.effect.source;
-                                    let technique = &effect.techniques[selection.index];
-                                    let mut state =
-                                        shader_pipeline::gpu::State::authored(effect, technique)
-                                            .map_err(invalid)?;
-                                    state.samplers.retain(|key, _| {
-                                        (0..3).any(|slot| *key == binding(slot, Stage::Pixel))
-                                    });
-                                    state.samplers.extend(mesh_shader::map_samplers());
                                     entry.insert(Resident {
-                                        retained: shader_scene::Program::new(
-                                            &selection,
-                                            &layouts,
-                                            &state,
-                                            &effect.rasterizer(technique),
-                                            &effect.depth_stencil(technique),
-                                        ),
+                                        retained,
                                         geometry,
                                         pipeline,
                                         required_constants: compiled
@@ -1116,7 +1145,14 @@ impl ModelPass {
                             } else {
                                 format!("{}/{}", mesh.name, descriptor.name)
                             };
-                            self.refuse_actor(arena.frame(), index, descriptor.node, &name, why);
+                            self.refuse_actor(
+                                arena,
+                                Some(group.mesh),
+                                index,
+                                descriptor.node,
+                                &name,
+                                why,
+                            );
                         }
                     }
                 }
@@ -1145,6 +1181,23 @@ impl ModelPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A part whose mesh pass fell back from a visual mod's replacement draws with the
+    /// recorded technique: its compiled program, vertex layouts (the recorded POSITION and
+    /// TEXCOORD0, where the replacement's COLOR0 has none), state (the recorded blend) and
+    /// retained program, never the technique it asked for.
+    #[test]
+    fn a_part_draws_with_the_technique_its_pass_fell_back_to() {
+        let (pass, asked, recorded, geometry) = crate::map::mesh_shader::tests::fallen_back_pass();
+        assert!(!Arc::ptr_eq(&asked.effect, &recorded));
+        let (compiled, retained) = part_program(&pass, &geometry).unwrap();
+        assert!(Arc::ptr_eq(&retained.selection().effect, &recorded));
+        assert_eq!(compiled.vertex.inputs[1].semantic, "TEXCOORD0");
+        let layouts = retained.layouts();
+        assert_eq!(layouts[0].attributes.len(), 2);
+        assert_eq!(layouts[0].stride, geometry.stride);
+        assert!(retained.state().blend.is_some());
+    }
 
     #[test]
     fn forced_actor_keeps_all_materials_in_alternate_and_caster() {

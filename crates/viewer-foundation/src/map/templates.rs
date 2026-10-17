@@ -285,6 +285,7 @@ impl TypeAtlas {
         let mut decoded: BTreeMap<String, Result<dds::Texture, (&'static str, String)>> =
             BTreeMap::new();
         let mut rejected: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let recorded = layers.without_overlays();
         let (declared, refused) = Self::declared(sprites);
         for sprite in &wanted {
             let SpriteKind::Plain(plain) = &sprite.facts.kind else {
@@ -304,33 +305,35 @@ impl TypeAtlas {
                     .push(sprite.name.clone());
                 continue;
             };
-            // Read the client's force_pow2_textures.
+            // Read the client's force_pow2_textures; a frame the visual mods break is the
+            // recording's own, named.
             let texture = decoded.entry(path.to_owned()).or_insert_with(|| {
-                resources::stack_texture(layers, path.as_bytes(), decode)
-                    .map_err(|why| ("texture read failed", why.to_string()))
-                    .and_then(|found| {
-                        found.map_err(|why| {
-                            let reason = match why {
-                                resources::NoTexture::Empty => "names no texture",
-                                resources::NoTexture::NoExtension(_) => "texture has no extension",
-                                resources::NoTexture::Missing(_) => "texture is missing",
-                                resources::NoTexture::TooLarge { .. } => "texture is too large",
-                                resources::NoTexture::Undecodable { .. } => {
-                                    "texture is undecodable"
-                                }
-                                resources::NoTexture::Undefined { .. } => {
-                                    "texture result is undefined"
-                                }
-                                resources::NoTexture::Device { .. } => "texture needs device state",
-                                resources::NoTexture::OverBudget { .. } => "texture exceeds budget",
-                            };
-                            (reason, why.to_string())
-                        })
+                resources::stack_texture_or_recorded(
+                    layers,
+                    recorded.as_ref(),
+                    path.as_bytes(),
+                    decode,
+                )
+                .map_err(|why| ("texture read failed", why.to_string()))
+                .and_then(|found| {
+                    found.map_err(|why| {
+                        let reason = match why {
+                            resources::NoTexture::Empty => "names no texture",
+                            resources::NoTexture::NoExtension(_) => "texture has no extension",
+                            resources::NoTexture::Missing(_) => "texture is missing",
+                            resources::NoTexture::TooLarge { .. } => "texture is too large",
+                            resources::NoTexture::Undecodable { .. } => "texture is undecodable",
+                            resources::NoTexture::Undefined { .. } => "texture result is undefined",
+                            resources::NoTexture::Device { .. } => "texture needs device state",
+                            resources::NoTexture::OverBudget { .. } => "texture exceeds budget",
+                        };
+                        (reason, why.to_string())
                     })
-                    .and_then(|found| {
-                        rgba8(&found.image)
-                            .map_err(|why| ("texture has no CPU expansion", why.to_string()))
-                    })
+                })
+                .and_then(|found| {
+                    rgba8(&found.image)
+                        .map_err(|why| ("texture has no CPU expansion", why.to_string()))
+                })
             });
             let texture = match texture {
                 Ok(texture) => texture,

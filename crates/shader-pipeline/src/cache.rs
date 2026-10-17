@@ -243,7 +243,7 @@ pub(crate) mod tests {
             })
         }
     }
-    fn source(include: &str) -> Program {
+    pub(crate) fn source(include: &str) -> Program {
         crate::tests::initialize_runtime_tables();
         installed_content::pdxshader::program::read_with(b"vanilla.shader", &|path| Some(match path {
             b"vanilla.shader" => b"Includes = { common.fxh }\nVertexShader = { MainCode V [[ float4 main() : SV_POSITION { return C; } ]] }\nPixelShader = { MainCode P [[ float4 main() : SV_TARGET { return C; } ]] }\nEffect Up { VertexShader = V PixelShader = P }\nEffect Unused { VertexShader = Missing PixelShader = Missing }\n".to_vec(),

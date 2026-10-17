@@ -88,6 +88,18 @@ impl Caster {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
     ) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            Self::build(device, effect, format, depth)
+        })
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+    ) -> io::Result<Self> {
         let selection = effect
             .select("treeshadow")
             .map_err(refuse)?

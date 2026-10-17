@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Select } from './Select';
-import { errorMessage } from '../shell/api';
+import { desktopAvailable, errorMessage, mapAction } from '../shell/api';
 import { Icon } from './Icons';
 import CountryPicker from './CountryPicker';
 import VideoControls, { useVideoSettings } from '../shell/VideoSettings';
@@ -140,7 +140,11 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   const refreshMods = async () => {
     if (!client.mapSettings) return;
     setBusy(true);
-    try { const value = await client.mapSettings(source?.id ?? '', source?.revision ?? '', null, new AbortController().signal, target); setReply(value); if (!mapDirty) setDraft(value.settings); }
+    try {
+      const value = await client.mapSettings(source?.id ?? '', source?.revision ?? '', null, new AbortController().signal, target); setReply(value); if (!mapDirty) setDraft(value.settings);
+      // Open maps whose visual mods were installed, updated or removed reload where they are.
+      if (desktopAvailable) await mapAction({ kind: 'refreshVisualMods' });
+    }
     catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   };

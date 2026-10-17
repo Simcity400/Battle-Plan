@@ -108,10 +108,29 @@ fn formation_nodes(
     let bytes = layers.read_uncovered(&entity.definition.file)?;
     let posed = mesh::read(&bytes)?;
     let tree = mesh::parse(&bytes)?;
-    let animation = entity
-        .animation
-        .and_then(|animation| layers.read_uncovered(&animation.file).ok())
-        .and_then(|bytes| mesh::read_animation(&bytes).ok());
+    // The template's animation, the recording's when the visual mods break it, named; one no
+    // stack reads leaves the template unposed, refused by name for the map's fallback.
+    let animation = entity.animation.and_then(|animation| {
+        let read = |stack: &ResolvedLayers| -> io::Result<mesh::Animation> {
+            mesh::read_animation(&stack.read_uncovered(&animation.file)?)
+        };
+        match read(layers) {
+            Ok(posed) => Some(posed),
+            Err(why) => match layers.without_overlays().map(|recorded| read(&recorded)) {
+                Some(Ok(posed)) => {
+                    layers.note_overlay_refusal(format!(
+                        "naval formation animation {} ({why})",
+                        animation.file
+                    ));
+                    Some(posed)
+                }
+                _ => {
+                    layers.note_refused(format!("model animation {}", animation.file));
+                    None
+                }
+            },
+        }
+    });
     // These are locator children of the animated root, not skeleton joints.
     let locators: Vec<_> = tree
         .child("locator")

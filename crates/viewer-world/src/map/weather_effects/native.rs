@@ -551,26 +551,28 @@ impl Renderer {
             let program = match self.programs.entry((name.clone(), trail.is_some())) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    let program = match self.effect.select(&name).map_err(io::Error::other)? {
-                        Some(selection) => {
-                            let compiled = self
-                                .effect
-                                .compiled(selection.index)
-                                .map_err(io::Error::other)?;
-                            let technique = &self.effect.source.techniques[selection.index];
-                            Some(Program {
+                    // A visual mod's replacement that cannot be drawn here falls back to the
+                    // recording.
+                    let program =
+                        shader_pipeline::library::with_recorded(&self.effect, |effect| {
+                            let Some(selection) = effect.select(&name).map_err(io::Error::other)?
+                            else {
+                                return Ok(None);
+                            };
+                            let compiled =
+                                effect.compiled(selection.index).map_err(io::Error::other)?;
+                            let technique = &effect.source.techniques[selection.index];
+                            Ok(Some(Program {
                                 layouts: particle_shader::layouts(
                                     &compiled.vertex.inputs,
                                     trail.is_some(),
                                 )?,
-                                state: gpu::State::authored(&self.effect.source, technique)
+                                state: gpu::State::authored(&effect.source, technique)
                                     .map_err(io::Error::other)?,
-                                raster: self.effect.source.rasterizer(technique),
+                                raster: effect.source.rasterizer(technique),
                                 selection,
-                            })
-                        }
-                        None => None,
-                    };
+                            }))
+                        })?;
                     entry.insert(program)
                 }
             };

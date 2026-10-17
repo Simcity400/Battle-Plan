@@ -603,3 +603,82 @@ fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// A GUI font page the visual mods break is the recording's own, named; a page of a mod's font
+/// that no stack supplies is refused by name for the map's fallback, so a text drawn blank is
+/// never silent.
+#[test]
+fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_viewer_font_pages_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    };
+    let sprites = "spriteTypes = { spriteType = { name = \"GFX_default_fallback_texture\" \
+                   texturefile = \"gfx/b.tga\" } }";
+    write(
+        "base/interface/a.gfx",
+        format!(
+            "{sprites} bitmapfonts = {{ bitmapfont = {{ name = \"g\" path = \"gfx/fonts/j\" }} }}"
+        )
+        .as_bytes(),
+    );
+    write("base/gfx/b.tga", &tga(4, 4));
+    write("base/gfx/fonts/j.fnt", &fnt(10, &[('A', 5)]));
+    write("base/gfx/fonts/j.tga", &tga(4, 4));
+    write(
+        "art/interface/a.gfx",
+        format!(
+            "{sprites} bitmapfonts = {{ bitmapfont = {{ name = \"g\" path = \"gfx/fonts/j\" }} \
+             bitmapfont = {{ name = \"f\" path = \"gfx/fonts/m\" }} }}"
+        )
+        .as_bytes(),
+    );
+    write("art/gfx/fonts/j.tga", b"broken");
+    write("art/gfx/fonts/m.fnt", &fnt(10, &[('A', 5)]));
+    let art = root.join("art").display().to_string().replace('\\', "/");
+    write(
+        "user/mod/art.mod",
+        format!("name=\"Art\"\npath=\"{art}\"\n").as_bytes(),
+    );
+    std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+    let options = installed_content::ResolveOptions {
+        game_dir: root.join("steamapps/common/Game"),
+        user_dir: root.join("user"),
+        cache_dir: root.join("cache"),
+    };
+    let base = root.join("base");
+    let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+    let selected = [installed_content::content::visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    }];
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    let presentation = layers.presentation();
+    let assets = Assets {
+        sprites: Default::default(),
+        fonts: [b"f".to_vec(), b"g".to_vec()].into(),
+        textures: Default::default(),
+    };
+    let (resources, _) = loaded(presentation, b"l_english", &assets);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(resources.font(b"g").unwrap().pages[0].is_some());
+    assert!(resources.font(b"f").unwrap().pages[0].is_none());
+    let refused = presentation.refused();
+    assert!(refused.contains("font page gfx/fonts/m.tga"), "{refused:?}");
+    assert!(
+        !refused.contains("font page gfx/fonts/j.tga"),
+        "{refused:?}"
+    );
+    let refusals = presentation.read_warnings().overlay_refusals().unwrap();
+    assert!(refusals.contains("texture gfx/fonts/j.tga ("), "{refusals}");
+}

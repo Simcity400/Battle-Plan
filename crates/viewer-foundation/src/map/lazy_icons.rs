@@ -220,6 +220,12 @@ impl LazyTextures {
         self.loaders().iter().any(|loader| loader.has_pending())
     }
 
+    /// Whether any request is queued or a background load is decoding one: a frame drawn
+    /// meanwhile may still lack what it asked for.
+    pub fn busy(&self) -> bool {
+        self.has_pending() || self.running.load(Ordering::Acquire)
+    }
+
     /// Decodes every queued request on this thread, waiting for a background
     /// load already under way. Returns whether anything was decoded here.
     pub fn settle(&self) -> bool {
@@ -749,8 +755,20 @@ pub fn flag_set(
         .collect();
     let pages = CellPages::plan(cell, page_limit(), directory)?;
     let layers = Arc::clone(layers);
+    // A flag the visual mods break is the recording's own, named.
+    let recorded = layers.without_overlays();
     let read: FlagReader = Arc::new(move |path: &str| {
-        let mut image = flags::decode(&layers.read(path).ok()?, cell)?;
+        let decoded = |stack: &ResolvedLayers| flags::decode(&stack.read(path).ok()?, cell);
+        let mut image = match decoded(&*layers) {
+            Some(image) => image,
+            None => {
+                let image = decoded(recorded.as_ref()?)?;
+                layers.note_overlay_refusal(format!(
+                    "flag {path} (not an uncompressed Targa of the flag cell's size)"
+                ));
+                image
+            }
+        };
         finish(&mut image);
         Some(image)
     });

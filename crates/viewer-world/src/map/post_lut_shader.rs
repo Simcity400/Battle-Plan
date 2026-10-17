@@ -36,6 +36,11 @@ pub(super) struct Blends {
 
 impl Blends {
     pub(super) fn new(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded(effect, |effect| Self::build(device, effect))
+    }
+
+    fn build(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
         let build = |name| -> Result<Fullscreen, String> {
             let selection = fullscreen::select(effect, name)?;
             let source = &effect.source;

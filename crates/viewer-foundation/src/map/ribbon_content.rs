@@ -720,19 +720,28 @@ pub const DRAWN_ARROW_TYPES: &[&str] = &[
 impl OrderAssets {
     /// `gfx/maparrows` is outside content coverage, so its files and textures
     /// are read unverified, like the tree meshes and rail strip.
+    ///
+    /// `defines` are the recorded defines, whose operands the plans execute with, and the
+    /// graphics defines, which the arrows' shapes and colours read, each value falling back to
+    /// the recorded one ([`ResolvedLayers::graphics_define`]). A texture page the visual mods
+    /// break is read from the recorded layers below them ([`ResolvedLayers::artwork_item`]).
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
-        defines: &Defines,
+        (defines, graphics): (&Defines, &Defines),
         warnings: &mut Vec<installed_content::Diagnostic>,
     ) -> io::Result<Self> {
         let types = ArrowTypes::parse(&layers.read_uncovered(MAPARROWS)?)?;
         let defines_source = defines;
-        let defines = OrderDefines::read(defines)?;
+        let defines =
+            layers.graphics_define("battle-plan arrows", graphics, defines, OrderDefines::read)?;
+        let below = layers.without_overlays();
         let mut pages = BTreeMap::new();
         let raid_types = installed_content::raids::RaidArrowKind::ALL.map(|kind| kind.arrow_type());
         for name in DRAWN_ARROW_TYPES.iter().chain(raid_types.iter()) {
             let Some(arrow) = types.get(name) else {
+                // Named for the map's fallback, which compares it with the recording's.
+                layers.note_refused(format!("arrowType {name}"));
                 warnings.push((installed_content::DiagnosticKind::Refused, if raid_types.contains(name) {
                     format!("{MAPARROWS} declares no arrowType {name}; raid arrows that would use it are not drawn.")
                 } else {
@@ -741,7 +750,15 @@ impl OrderAssets {
                 continue;
             };
             for choice in 0..arrow.masks.len().min(arrow.patterns.len()) {
-                match page(layers, decode, arrow, choice) {
+                let item = layers.artwork_item(
+                    &format!("arrowType {name} texture choice {choice}"),
+                    below.is_some(),
+                    |from_recording| match &below {
+                        Some(below) if from_recording => page(below, decode, arrow, choice),
+                        _ => page(layers, decode, arrow, choice),
+                    },
+                );
+                match item {
                     Ok(page) => {
                         pages.insert(((*name).to_owned(), choice), page);
                     }
@@ -756,7 +773,13 @@ impl OrderAssets {
             "Battle-plan arrows and their textures are read from gfx/maparrows, which is outside the content coverage policy and is not hash-verified."
                 .into(),
         ));
-        let raid_defines = installed_content::raids::RaidGraphicsDefines::read(defines_source)
+        let raid_defines = layers
+            .graphics_define(
+                "raid arrows",
+                graphics,
+                defines_source,
+                installed_content::raids::RaidGraphicsDefines::read,
+            )
             .map_err(|error| error.to_string());
         Ok(Self {
             types,

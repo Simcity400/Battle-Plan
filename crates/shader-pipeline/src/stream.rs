@@ -177,10 +177,24 @@ impl Stream {
             self.bind_blend(None, wgpu::ColorWrites::ALL);
             return Ok(());
         };
-        let blend = gpu::blend(
-            &selection.effect.source,
-            &selection.effect.source.techniques[selection.index],
-        );
+        let blend = |selection: &Selection| {
+            gpu::blend(
+                &selection.effect.source,
+                &selection.effect.source.techniques[selection.index],
+            )
+        };
+        // A visual mod's replacement whose blend state cannot be built binds the recorded
+        // program instead, refused by name.
+        let (selection, blend) = match blend(&selection) {
+            Ok(state) => (selection, Ok(state)),
+            Err(error) => match selection.fall_back(&error) {
+                Some(recorded) => {
+                    let state = blend(&recorded);
+                    (recorded, state)
+                }
+                None => (selection, Err(error)),
+            },
+        };
         self.program = Some((selection, Layout::Packed(declaration)));
         let (blend, mask) = blend?;
         self.bind_blend(blend, mask);
@@ -301,7 +315,7 @@ impl Stream {
             .prepare_inner(arena, bytes, stride, count, topology, format, samples)
             .map_err(|reason| format!("native draw {label:?}: {reason}"));
         if let Err(reason) = &result {
-            *self.refused.entry(reason.clone()).or_default() += 1;
+            self.refuse(arena, label, reason);
         }
         result
     }
@@ -317,20 +331,35 @@ impl Stream {
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> Result<Submission, String> {
-        let (selection, declaration) = self.program.clone().ok_or(
+        let (mut selection, declaration) = self.program.clone().ok_or(
             "null technique needs the preceding native program, which has not been supplied",
         )?;
         let Layout::Packed(declaration) = declaration else {
             return Err("native vertex buffers require prepare_pass".into());
         };
-        let pipeline = self.cache.get(
-            arena.device(),
-            &selection,
-            &self.state,
-            format,
-            samples,
-            topology,
-        )?;
+        let device = arena.device();
+        // A visual mod's replacement that cannot be drawn with the bound state draws the
+        // recorded program instead, refused by name.
+        let pipeline =
+            match self
+                .cache
+                .get(device, &selection, &self.state, format, samples, topology)
+            {
+                Ok(pipeline) => pipeline,
+                Err(error) => {
+                    let recorded = selection.fall_back(&error).ok_or(error)?;
+                    let pipeline = self.cache.get(
+                        device,
+                        &recorded,
+                        &self.state,
+                        format,
+                        samples,
+                        topology,
+                    )?;
+                    selection = recorded;
+                    pipeline
+                }
+            };
         let textures = self.resolve_textures(arena.device(), &selection)?;
         self.check_constants(&pipeline)?;
         let draw = pipeline
@@ -360,9 +389,10 @@ impl Stream {
     ) -> Result<PassSubmission, String> {
         let result = self
             .prepare_pass_inner(arena, template, None)
+            .map(|(pass, _)| pass)
             .map_err(|reason| format!("native draw {label:?}: {reason}"));
         if let Err(reason) = &result {
-            *self.refused.entry(reason.clone()).or_default() += 1;
+            self.refuse(arena, label, reason);
         }
         result
     }
@@ -380,27 +410,30 @@ impl Stream {
         count: usize,
     ) -> Result<NativeSubmission, String> {
         let result = (|| {
-            let (selection, layout) = self.program.as_ref().ok_or(
-                "null technique needs the preceding native program, which has not been supplied",
-            )?;
-            let Layout::Packed(declaration) = layout else {
-                return Err("native vertex buffers require prepare_native_pass".into());
+            let Some((_, Layout::Packed(declaration))) = &self.program else {
+                return Err(match self.program {
+                    None => "null technique needs the preceding native program, which has not been supplied",
+                    Some(_) => "native vertex buffers require prepare_native_pass",
+                }
+                .into());
             };
-            let compiled = selection.effect.compiled(selection.index)?;
+            let declaration = *declaration;
+            // Packed for the program drawn, the recorded one when the replacement fell back.
+            let (pass, drawn) = self.prepare_pass_inner(arena, template, None)?;
+            let compiled = drawn.effect.compiled(drawn.index)?;
             let packed = Vertices {
-                declaration: *declaration,
+                declaration,
                 bytes,
                 stride,
                 count,
             }
             .pack(&compiled.vertex.inputs)?;
-            let pass = self.prepare_pass_inner(arena, template, None)?;
             let vertices = vec![arena.vertices(bytemuck::cast_slice(&packed))?];
             Ok(NativeSubmission { pass, vertices })
         })()
         .map_err(|reason: String| format!("native draw {label:?}: {reason}"));
         if let Err(reason) = &result {
-            *self.refused.entry(reason.clone()).or_default() += 1;
+            self.refuse(arena, label, reason);
         }
         result
     }
@@ -425,7 +458,7 @@ impl Stream {
                 vertices,
                 instances,
             )?;
-            let pass = self.prepare_pass_inner(arena, template, Some(packed.layouts))?;
+            let (pass, _) = self.prepare_pass_inner(arena, template, Some(packed.layouts))?;
             let vertices = packed
                 .bytes
                 .iter()
@@ -435,9 +468,24 @@ impl Stream {
         })()
         .map_err(|reason: String| format!("native draw {label:?}: {reason}"));
         if let Err(reason) = &result {
-            *self.refused.entry(reason.clone()).or_default() += 1;
+            self.refuse(arena, label, reason);
         }
         result
+    }
+
+    /// Counts a refused draw and records in the frame's arena what was refused, by identity:
+    /// the draw `label` with the effect file and technique bound, never the message text,
+    /// which can differ between loads ([`gpu::Arena::refuse`]).
+    fn refuse(&mut self, arena: &gpu::Arena, label: &str, reason: &str) {
+        *self.refused.entry(reason.to_owned()).or_default() += 1;
+        arena.refuse(&match &self.program {
+            Some((selection, _)) => format!(
+                "native draw {label:?}: effect {:?} technique {:?}",
+                selection.effect.source.effect,
+                selection.effect.source.techniques[selection.index].name
+            ),
+            None => format!("native draw {label:?}: no program"),
+        });
     }
 
     fn prepare_pass_inner(
@@ -445,15 +493,15 @@ impl Stream {
         arena: &gpu::Arena,
         template: &gpu::Pass,
         vertices: Option<Vec<gpu::VertexLayout>>,
-    ) -> Result<PassSubmission, String> {
+    ) -> Result<(PassSubmission, Selection), String> {
         let (selection, layout) = self.program.as_ref().ok_or(
             "null technique needs the preceding native program, which has not been supplied",
         )?;
         let packed = matches!(layout, Layout::Packed(_));
-        let selection = selection.clone();
+        let mut selection = selection.clone();
         let (mut pass, stencil_reference, scissor_enabled) = self.pass_state(template);
-        pass.vertices = match vertices {
-            Some(vertices) => vertices,
+        let layouts = |stream: &Self, selection: &Selection| match &vertices {
+            Some(vertices) => Ok(vertices.clone()),
             None if packed => {
                 let compiled = selection.effect.compiled(selection.index)?;
                 let format = template
@@ -463,14 +511,31 @@ impl Stream {
                     .next()
                     .ok_or("packed native pass has no colour attachment")?
                     .format;
-                gpu::Pass::packed(&compiled, &self.state, format, template.multisample.count)
-                    .vertices
+                Ok(
+                    gpu::Pass::packed(&compiled, &stream.state, format, template.multisample.count)
+                        .vertices,
+                )
             }
-            None => self.vertex_layouts()?,
+            None => stream.vertex_layouts(),
         };
-        let pipeline = self
+        pass.vertices = layouts(self, &selection)?;
+        // A visual mod's replacement that cannot be drawn with the bound state draws the
+        // recorded program instead, refused by name.
+        let pipeline = match self
             .cache
-            .get_pass(arena.device(), &selection, &self.state, &pass)?;
+            .get_pass(arena.device(), &selection, &self.state, &pass)
+        {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                let recorded = selection.fall_back(&error).ok_or(error)?;
+                pass.vertices = layouts(self, &recorded)?;
+                let pipeline =
+                    self.cache
+                        .get_pass(arena.device(), &recorded, &self.state, &pass)?;
+                selection = recorded;
+                pipeline
+            }
+        };
         let compiled = selection.effect.compiled(selection.index)?;
         let kinds = || {
             compiled
@@ -494,12 +559,15 @@ impl Stream {
                 },
             )
             .map_err(|reason| format!("effect {:?}: {reason}", selection.effect.source.effect))?;
-        Ok(PassSubmission {
-            pipeline,
-            bindings,
-            stencil_reference,
-            scissor_enabled,
-        })
+        Ok((
+            PassSubmission {
+                pipeline,
+                bindings,
+                stencil_reference,
+                scissor_enabled,
+            },
+            selection,
+        ))
     }
 
     fn pass_state(&self, template: &gpu::Pass) -> (gpu::Pass, Option<u32>, Option<bool>) {
@@ -801,5 +869,200 @@ mod tests {
         stream.accumulate_alpha();
         assert_eq!(stream.state.blend, None);
         assert_eq!(stream.state.write_mask, wgpu::ColorWrites::ALL);
+    }
+
+    /// A visual mod's replacement whose blend state cannot be built binds the same technique
+    /// of the recorded program, the replacement named.
+    #[test]
+    fn a_replacement_blend_that_cannot_be_built_binds_the_recorded_program() {
+        use super::super::library::{Effect, Recorded};
+        use std::sync::Mutex;
+        crate::tests::initialize_runtime_tables();
+        let mut replacement = installed_content::pdxshader::program::read_with(b"mod.shader", &|path| {
+            Some(match path {
+                b"mod.shader" => {
+                    b"VertexShader = { MainCode V [[ float4 main() : SV_POSITION { return 1; } ]] }
+PixelShader = { MainCode P [[ float4 main() : SV_TARGET { return 1; } ]] }
+BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha }
+Effect Up { VertexShader = V PixelShader = P }
+"
+                    .to_vec()
+                }
+                _ => Vec::new(),
+            })
+        })
+        .unwrap();
+        replacement.blends[0].value.source = 99;
+        let cache = Arc::new(crate::cache::Cache::new(
+            None,
+            Arc::new(crate::cache::tests::Count::default()),
+        ));
+        let recorded = Arc::new(crate::cache::tests::source("static const float4 C = 1;"));
+        let base = Effect::with_globals(recorded, vec![], vec![], cache.clone(), None);
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let sink = notes.clone();
+        let shown = Effect::with_globals(
+            Arc::new(replacement),
+            vec![],
+            vec![],
+            cache,
+            Some(Recorded {
+                effect: base.clone(),
+                note: Arc::new(move |note| sink.lock().unwrap().push(note)),
+            }),
+        );
+        let selection = shown.select("Up").unwrap().unwrap();
+        let mut stream = Stream::default();
+        stream
+            .bind_effect(Some(selection), Declaration::Sprite)
+            .unwrap();
+        let (bound, _) = stream.program.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&bound.effect, &base));
+        assert_eq!(base.source.techniques[bound.index].name, "Up");
+        let notes = notes.lock().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("unknown native blend factor 99"),
+            "{notes:?}"
+        );
+    }
+
+    /// Every refused native draw is recorded in the frame's arena by a name that is the same
+    /// on another load: a map compares the refusals it makes with and without visual mods by
+    /// these names.
+    #[test]
+    fn refused_draws_are_recorded_by_stable_names() {
+        use super::super::library::Effect;
+        crate::tests::initialize_runtime_tables();
+        let _serial = crate::tests::GPU_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (device, _queue) = crate::tests::device();
+        // The counting compiler's shaders build no pipeline, so every draw is refused.
+        let refused = || {
+            let cache = Arc::new(crate::cache::Cache::new(
+                None,
+                Arc::new(crate::cache::tests::Count::default()),
+            ));
+            let source = Arc::new(crate::cache::tests::source("static const float4 C = 1;"));
+            let effect = Effect::with_globals(source, vec![], vec![], cache, None);
+            let arena = gpu::Arena::new(&device);
+            let mut stream = Stream::default();
+            stream
+                .bind_effect(effect.select("Up").unwrap(), Declaration::Sprite)
+                .unwrap();
+            let Err(reason) = stream.prepare_pass(&arena, "sprite", &template()) else {
+                panic!("a pipeline was built from the counting compiler's shaders");
+            };
+            assert_eq!(stream.refused.keys().collect::<Vec<_>>(), [&reason]);
+            // Recorded by what was refused, not by the message.
+            assert_eq!(
+                arena.refusals(),
+                [format!(
+                    "native draw \"sprite\": effect {:?} technique \"Up\"",
+                    effect.source.effect
+                )]
+                .into()
+            );
+            arena.refusals()
+        };
+        assert_eq!(refused(), refused());
+    }
+
+    /// A replacement no pipeline can be built from, reading POSITION alone, over a recorded
+    /// effect whose program builds and reads POSITION and TEXCOORD0; with the GPU lock held.
+    fn falling_back() -> (
+        std::sync::MutexGuard<'static, ()>,
+        gpu::Arena,
+        Arc<super::super::library::Effect>,
+    ) {
+        use super::super::library::{Effect, Recorded};
+        use crate::{Compiled, ScalarKind, Shader, VertexInput};
+        use installed_content::pdxshader::program::{Program, Technique};
+        struct Layouts([u8; 32]);
+        impl crate::cache::Compile for Layouts {
+            fn compile(
+                &self,
+                source: &Program,
+                _: &Technique,
+                _: &[String],
+            ) -> Result<Compiled, String> {
+                let input = |location, semantic: &str, components| VertexInput {
+                    kind: ScalarKind::Float,
+                    location,
+                    semantic: semantic.into(),
+                    components,
+                };
+                let shader = |wgsl: &str, inputs| Shader {
+                    wgsl: wgsl.into(),
+                    buffers: vec![],
+                    textures: vec![],
+                    samplers: vec![],
+                    sampling_pairs: vec![],
+                    inputs,
+                    clock: Default::default(),
+                };
+                if source.identity == self.0 {
+                    // No pipeline can be built from the replacement.
+                    return Ok(Compiled {
+                        vertex: shader("fixture", vec![input(0, "POSITION", 3)]),
+                        pixel: shader("fixture", vec![]),
+                    });
+                }
+                Ok(Compiled {
+                    vertex: shader(
+                        "@vertex fn main(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p.xy + uv, p.z, 1.0); }",
+                        vec![input(0, "POSITION", 3), input(1, "TEXCOORD0", 2)],
+                    ),
+                    pixel: shader(
+                        "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+                        vec![],
+                    ),
+                })
+            }
+        }
+        crate::tests::initialize_runtime_tables();
+        let serial = crate::tests::GPU_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (device, _queue) = crate::tests::device();
+        let arena = gpu::Arena::new(&device);
+        let recorded = Arc::new(crate::cache::tests::source("static const float4 C = 1;"));
+        let replacement = Arc::new(crate::cache::tests::source("static const float4 C = 2;"));
+        let cache = Arc::new(crate::cache::Cache::new(
+            None,
+            Arc::new(Layouts(replacement.identity)),
+        ));
+        let base = Effect::with_globals(recorded, vec![], vec![], cache.clone(), None);
+        let shown = Effect::with_globals(
+            replacement,
+            vec![],
+            vec![],
+            cache,
+            Some(Recorded {
+                effect: base.clone(),
+                note: Arc::new(|_| {}),
+            }),
+        );
+        (serial, arena, shown)
+    }
+
+    /// Packed geometry follows the program drawn: a replacement that reads only POSITION and
+    /// falls back to a recorded program reading POSITION and TEXCOORD0 packs both, never the
+    /// replacement's layout under the recorded pipeline.
+    #[test]
+    fn packed_geometry_follows_the_program_a_replacement_falls_back_to() {
+        let (_serial, arena, shown) = falling_back();
+        let mut stream = Stream::default();
+        stream
+            .bind_effect(shown.select("Up").unwrap(), Declaration::Sprite)
+            .unwrap();
+        // Three 20-byte sprite vertices: float3 POSITION, float2 TEXCOORD0.
+        let submission =
+            match stream.prepare_packed_pass(&arena, "text", &template(), &[0; 60], 20, 3) {
+                Ok(submission) => submission,
+                Err(reason) => panic!("{reason}"),
+            };
+        assert_eq!(submission.vertices[0].size, 3 * 5 * 4);
     }
 }

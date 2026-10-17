@@ -330,18 +330,30 @@ impl NativeHost {
     /// Tells a running viewer that map preferences were saved, once however many
     /// saves are queued. A viewer `ensure_started` starts later reads them itself.
     pub fn map_settings_saved(&self) {
-        use dashboard::protocol::MapAction;
+        self.queue_once(dashboard::protocol::MapAction::MapSettingsSaved);
+    }
+
+    /// Asks the running viewer to read its maps' visual mods again
+    /// ([`dashboard::protocol::MapAction::RefreshVisualMods`]), queued once like a settings save.
+    pub fn refresh_visual_mods(&self) {
+        self.queue_once(dashboard::protocol::MapAction::RefreshVisualMods);
+    }
+
+    /// Queues `action` for the running viewer unless one of its kind already waits; nothing when
+    /// no viewer runs or it is shutting down.
+    fn queue_once(&self, action: dashboard::protocol::MapAction) {
         let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
         if inner.process.is_none() || inner.shutting_down {
             return;
         }
+        let kind = std::mem::discriminant(&action);
         if !inner
             .pending
             .actions
             .iter()
-            .any(|action| matches!(action, MapAction::MapSettingsSaved))
+            .any(|queued| std::mem::discriminant(queued) == kind)
         {
-            inner.pending.actions.push_back(MapAction::MapSettingsSaved);
+            inner.pending.actions.push_back(action);
         }
         drop(inner);
         self.shared.1.notify_all();

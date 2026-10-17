@@ -292,7 +292,7 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audi
         &layers,
         Decode::default(),
         &map,
-        &defines,
+        (&defines, &defines),
         &BTreeMap::new(),
         &mut Vec::new(),
     )
@@ -451,6 +451,211 @@ fn a_roster_whose_every_plane_is_refused_keeps_each_reason() {
 
 /// A descriptor file that does not parse, read before the others.
 const BROKEN: &str = "gfx/entities/a_broken.asset";
+
+/// A plane the visual roster cannot decide is drawn from the recorded roster only when
+/// that roster registers it without a refused declaration; an absent or refused one stays
+/// refused by name rather than being baked from the recording.
+#[test]
+fn a_plane_the_mods_leave_undecided_uses_only_an_accepted_recorded_declaration() {
+    use crate::map::models::tests::{MESHES_GFX, PLANE_ASSET, triangle_mesh, visual_stack};
+
+    let (root, layers) = visual_stack(
+        "aircraft_undecided",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            (
+                "base/gfx/entities/refused.asset",
+                br#"entity = { name = refused_plane pdxmesh = body
+                    state = { name = idle animation_speed = 0 } }"#,
+            ),
+            (
+                "art/gfx/entities/broken.asset",
+                br#"entity = { name = plane refused_plane zeppelin } }{ = ="#,
+            ),
+        ],
+    );
+    let presentation = layers.presentation();
+    let roster = presentation.descriptor_roster().unwrap();
+    let recorded = presentation.recorded_descriptor_roster().unwrap().unwrap();
+    assert_eq!(recorded.refused_declaration("plane"), None);
+    assert_eq!(
+        recorded.refused_declaration("refused_plane").as_deref(),
+        Some("state idle has unsupported non-positive animation_speed 0")
+    );
+    let declared = ["plane", "refused_plane", "zeppelin"].map(str::to_owned);
+    for entity in &declared {
+        assert!(roster.refused_declaration(entity).is_some(), "{entity}");
+    }
+    let (library, unusable) = plane_library(
+        presentation,
+        Decode::default(),
+        &roster,
+        &declared,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let slot = library.slot("plane").unwrap();
+    assert!(!library.meshes[slot].visual);
+    assert!(!unusable.contains_key("plane"));
+    for entity in ["refused_plane", "zeppelin"] {
+        assert_eq!(library.slot(entity), None);
+        assert_eq!(
+            unusable.get(entity),
+            roster.refused_declaration(entity).as_ref()
+        );
+        assert!(
+            presentation
+                .refused()
+                .contains(&format!("model entity {entity}"))
+        );
+    }
+    assert!(!presentation.refused().contains("model entity plane"));
+    let refusals = presentation.read_warnings().overlay_refusals().unwrap();
+    assert!(refusals.contains("model plane ("), "{refusals}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The ordinary and lazy paths share the same plane library; the rest of these assets
+/// needs no content for a test that chooses its aircraft by name.
+fn aircraft_with_planes(layers: &ResolvedLayers, declared: &[String]) -> AircraftAssets {
+    let map = MapData {
+        width: 1,
+        height: 1,
+        province_ids: vec![0],
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let defines = Defines::new().unwrap();
+    let mut assets = AircraftAssets::load(
+        &ResolvedLayers::default(),
+        Decode::default(),
+        &map,
+        (&defines, &defines),
+        &BTreeMap::new(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assets.layers = layers.clone();
+    assets.roster = layers.descriptor_roster().unwrap();
+    let (library, unusable) = plane_library(
+        layers,
+        Decode::default(),
+        &assets.roster,
+        declared,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assets.library = RwLock::new(library);
+    assets.unusable = Mutex::new(unusable);
+    assets
+}
+
+#[test]
+fn fly_uses_a_recorded_plane_when_the_mods_refuse_its_declaration() {
+    use crate::map::models::tests::{MESHES_GFX, triangle_mesh, visual_stack};
+
+    let (root, layers) = visual_stack(
+        "fly_recorded_declaration",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            (
+                "base/gfx/entities/planes.asset",
+                br#"entity = { name = plane pdxmesh = body state = { name = idle } }
+                    entity = { name = lazy_plane clone = plane }"#,
+            ),
+            (
+                "art/gfx/entities/planes.asset",
+                br#"entity = { name = plane pdxmesh = body
+                        state = { name = idle animation_speed = 0 } }
+                    entity = { name = lazy_plane clone = plane }
+                    entity = { name = unrecoverable_plane clone = plane }"#,
+            ),
+        ],
+    );
+    let presentation = layers.presentation();
+    let assets = aircraft_with_planes(presentation, &["plane".to_owned()]);
+    let slot = assets.library().slot("plane").unwrap();
+    assert!(!assets.library().meshes[slot].visual);
+    assert_eq!(assets.player("plane").unwrap().slot, slot);
+    assert!(assets.library().slot("lazy_plane").is_none());
+    let lazy = assets.player("lazy_plane").unwrap();
+    assert!(!assets.library().meshes[lazy.slot].visual);
+    let refusals = presentation.read_warnings().overlay_refusals().unwrap();
+    for name in ["plane", "lazy_plane"] {
+        assert!(refusals.contains(&format!("model {name} (")), "{refusals}");
+        assert!(
+            !presentation
+                .refused()
+                .contains(&format!("model entity {name}"))
+        );
+    }
+    assert!(assets.player("unrecoverable_plane").is_err());
+    assert!(
+        presentation
+            .refused()
+            .contains("model entity unrecoverable_plane")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn recorded_mesh_retries_and_draw_counterparts_keep_the_planes_declaration_check() {
+    use crate::map::models::tests::{MESHES_GFX, triangle_mesh, visual_stack};
+
+    let (root, layers) = visual_stack(
+        "aircraft_recorded_mesh_admission",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            (
+                "base/gfx/entities/planes.asset",
+                br#"entity = { name = plane pdxmesh = body
+                        state = { name = idle animation_speed = 0 } }
+                    entity = { name = lazy_plane clone = plane }
+                    entity = { name = counterpart_plane clone = plane }"#,
+            ),
+            (
+                "art/gfx/entities/planes.asset",
+                br#"entity = { name = plane pdxmesh = broken_body state = { name = idle } }
+                    entity = { name = lazy_plane clone = plane }
+                    entity = { name = counterpart_plane pdxmesh = body
+                        state = { name = idle } }"#,
+            ),
+            (
+                "art/gfx/models/broken.gfx",
+                br#"objectTypes = { pdxmesh = { name = broken_body
+                    file = "gfx/models/broken.mesh" } }"#,
+            ),
+            ("art/gfx/models/broken.mesh", b"not a mesh"),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(2.)),
+        ],
+    );
+    let presentation = layers.presentation();
+    let assets = aircraft_with_planes(
+        presentation,
+        &["plane".to_owned(), "counterpart_plane".to_owned()],
+    );
+    assert_eq!(assets.library().slot("plane"), None);
+    assert!(assets.player("plane").is_err());
+    assert_eq!(assets.library().slot("lazy_plane"), None);
+    assert!(assets.player("lazy_plane").is_err());
+    assert_eq!(assets.library().slot("lazy_plane"), None);
+    let shown = assets.player("counterpart_plane").unwrap();
+    let library = assets.library();
+    assert!(library.meshes[shown.slot].visual);
+    assert!(!library.alternatives.contains_key(&shown.slot));
+    for name in ["plane", "lazy_plane"] {
+        assert!(
+            presentation
+                .refused()
+                .contains(&format!("model entity {name}"))
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
 
 fn why() -> String {
     format!("may be declared in {BROKEN}, which does not parse")
@@ -1986,7 +2191,7 @@ fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
         &layers,
         Decode::default(),
         &map,
-        &Defines::new().unwrap(),
+        (&Defines::new().unwrap(), &Defines::new().unwrap()),
         &BTreeMap::new(),
         &mut warnings,
     );
@@ -2070,9 +2275,9 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
 }
 
 /// A chosen aircraft bakes once from the map's own roster, an entity or a bare
-/// mesh, and a name the roster refuses is refused before any file is read,
-/// with the reason the aircraft catalogue lists; one whose mesh file does not
-/// read is refused with why, and stays refused.
+/// mesh. Declaration refusals precede file reads; a meshless actor is baked and
+/// retained, then refused for Fly. Repeated rejection keeps one named refusal.
+/// Catalogue reasons and mesh-file failures stay named and refused.
 #[test]
 fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
     engine::executable_tables::initialize_for_tests()
@@ -2133,7 +2338,7 @@ fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
         &layers,
         Decode::default(),
         &map,
-        &Defines::new().unwrap(),
+        (&Defines::new().unwrap(), &Defines::new().unwrap()),
         &BTreeMap::new(),
         &mut Vec::new(),
     )
@@ -2149,6 +2354,7 @@ fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
         assets.player("ghost_entity"),
         Err("it names no pdxmesh".into())
     );
+    let ghost_slot = assets.library().slot("ghost_entity").unwrap();
     assert_eq!(
         assets.player("no_such_entity"),
         Err("no descriptor registers it".into())
@@ -2166,5 +2372,82 @@ fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
     );
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(assets.player("absent_file_entity"), Err(absent));
-    assert_eq!(assets.library().slot("ghost_entity"), None);
+    let refusals = layers.refused();
+    assert_eq!(
+        refusals
+            .iter()
+            .filter(|key| key.as_str() == "model entity ghost_entity")
+            .count(),
+        1
+    );
+    assert_eq!(
+        assets.player("ghost_entity"),
+        Err("it names no pdxmesh".into())
+    );
+    assert_eq!(assets.library().slot("ghost_entity"), Some(ghost_slot));
+    assert_eq!(layers.refused(), refusals);
+}
+
+/// A scenario rig the visual mods break (an animation of theirs that does not read) is flown
+/// from the recorded layers, named; one neither builds is refused by its stable name for the
+/// map's fallback, with the shown stack's reason.
+#[test]
+fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
+    let layers = ResolvedLayers::default();
+    let mut attempts = Vec::new();
+    let mut warnings = Vec::new();
+    let flown = shown_or_recorded(
+        &layers,
+        "fighter_1_patrol_entity",
+        true,
+        |from_recording, notes| {
+            attempts.push(from_recording);
+            if from_recording {
+                notes.push((installed_content::DiagnosticKind::Logged, "recorded rig".into()));
+                Some("recorded")
+            } else {
+                notes.push((
+                    installed_content::DiagnosticKind::Refused,
+                    "its animation file gfx/entities/patrol.anim does not read".into(),
+                ));
+                None
+            }
+        },
+        &mut warnings,
+    );
+    assert_eq!(flown, Some("recorded"));
+    assert_eq!(attempts, [false, true]);
+    assert_eq!(
+        warnings,
+        [(installed_content::DiagnosticKind::Logged, "recorded rig".to_owned())]
+    );
+    assert!(layers.refused().is_empty());
+    // Neither stack builds it: refused by name, with the shown stack's reason.
+    let mut warnings = Vec::new();
+    let flown = shown_or_recorded(
+        &layers,
+        "fighter_1_patrol_entity",
+        true,
+        |from_recording, notes| {
+            notes.push((
+                installed_content::DiagnosticKind::Refused,
+                format!("refused from the recording: {from_recording}"),
+            ));
+            None::<&str>
+        },
+        &mut warnings,
+    );
+    assert_eq!(flown, None);
+    assert_eq!(
+        warnings,
+        [(
+            installed_content::DiagnosticKind::Refused,
+            "refused from the recording: false".to_owned()
+        )]
+    );
+    assert!(
+        layers
+            .refused()
+            .contains("aircraft scenario fighter_1_patrol_entity")
+    );
 }

@@ -260,9 +260,22 @@ pub fn load(
     // the declared family's own files.
     let family = font.family(format!("l_{language}").as_bytes());
     let failed = RefCell::new(None);
+    // A family file or page the visual mods break or hide is the recording's own, named; one no
+    // stack gives is named for the map's fallback.
+    let recorded = layers.without_overlays();
     let glyphs = fonts::load_glyphs(family, &|path| match layers.read_uncovered_path(path) {
         Ok(bytes) => Some(bytes),
         Err(error) => {
+            if let Some(bytes) = recorded
+                .as_ref()
+                .and_then(|recorded| recorded.read_uncovered_path(path).ok())
+            {
+                layers.note_overlay_refusal(format!(
+                    "font file {} ({error})",
+                    String::from_utf8_lossy(path)
+                ));
+                return Some(bytes);
+            }
             if error.kind() != io::ErrorKind::NotFound {
                 failed.borrow_mut().get_or_insert(error);
             }
@@ -285,6 +298,7 @@ pub fn load(
     for (file, texture) in family.files.iter().zip(&glyphs.pages) {
         let fnt = String::from_utf8_lossy(&[file.as_slice(), b".fnt"].concat()).into_owned();
         if glyphs.missing.contains(&fnt) {
+            layers.note_refused(format!("font file {fnt}"));
             logged.push(format!(
                 "bitmapfont {name:?}: missing font file {fnt}, whose glyphs it does not have"
             ));
@@ -292,7 +306,12 @@ pub fn load(
             continue;
         }
         // Register the page texture and use its decoded extent.
-        match resources::stack_texture(layers, texture, interface.decode)? {
+        match resources::stack_texture_or_recorded(
+            layers,
+            recorded.as_ref(),
+            texture,
+            interface.decode,
+        )? {
             Ok(page) => {
                 pages.push(Some((
                     images.len(),
@@ -301,6 +320,7 @@ pub fn load(
                 images.push(page.image);
             }
             Err(failure) if failure.native_failure() => {
+                layers.note_refused(format!("font page {}", String::from_utf8_lossy(texture)));
                 logged.push(format!(
                     "bitmapfont {name:?} page {failure}; its glyphs advance and draw nothing"
                 ));
@@ -372,6 +392,26 @@ impl Fonts {
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let DeclaredFonts { counter, arrow } = *declared;
+        // With visual mods mounted, a font that does not load is a refusal of the mods' fonts:
+        // the error lets the loader draw the recorded ones instead (`ResolvedLayers::artwork`),
+        // where the recording alone would draw no text.
+        let refuse = |what: &str, error: &io::Error| -> io::Result<()> {
+            if layers.shows_visual_mods() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{what} font: {error}"),
+                ));
+            }
+            Ok(())
+        };
+        // No bitmapfont registered at all: with visual mods mounted, their fonts hid the
+        // recorded declarations, so it is a refusal too.
+        let undeclared = |what: &str| -> io::Result<()> {
+            refuse(
+                what,
+                &io::Error::new(io::ErrorKind::NotFound, "no bitmapfont is declared"),
+            )
+        };
         // Use the declared font name, empty when undeclared, otherwise the fallback.
         let resolve = |name: Option<&str>| {
             interface
@@ -385,10 +425,12 @@ impl Fonts {
         {
             Some(Ok(font)) => Some(font),
             Some(Err(error)) => {
+                refuse("unit counter", &error)?;
                 warnings.push(format!("Unit counter counts are not drawn: {error}."));
                 None
             }
             None => {
+                undeclared("unit counter")?;
                 warnings
                     .push("Unit counter counts are not drawn: no bitmapfont is declared.".into());
                 None
@@ -412,6 +454,7 @@ impl Fonts {
                 match loaded {
                     Ok(font) => font,
                     Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                        refuse("map-name", &error)?;
                         images.truncate(before);
                         warnings.push(format!(
                             "1 map-name font refusal: {name}: {error}; country and state names are not drawn."
@@ -422,6 +465,7 @@ impl Fonts {
                 }
             }
             None => {
+                undeclared("map-name")?;
                 warnings.push(format!(
                     "1 map-name font refusal: no bitmapfont is declared for {MAP_FONT}; country and state names are not drawn."
                 ));
@@ -445,11 +489,13 @@ impl Fonts {
             Some(name) => match load(layers, interface, &name, language, images) {
                 Ok(font) => (Some(font), Some(name)),
                 Err(error) => {
+                    refuse("battle-plan", &error)?;
                     warnings.push(format!("Battle-plan labels are not drawn: {error}."));
                     (None, None)
                 }
             },
             None => {
+                undeclared("battle-plan")?;
                 warnings
                     .push("Battle-plan labels are not drawn: no bitmapfont is declared.".into());
                 (None, None)
@@ -880,6 +926,81 @@ mod tests {
             }
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    /// A visual mod whose fonts declare no bitmapfont is a refusal of its fonts, so the
+    /// loader draws the recorded ones; the recording alone draws no text and loads.
+    #[test]
+    fn visual_mods_that_hide_every_bitmapfont_refuse_their_fonts() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_text_hidden_fonts_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |relative: &str, bytes: &[u8]| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        write(
+            "base/interface/fonts.gfx",
+            b"bitmapfonts = { bitmapfont = { name = f fontfiles = { gfx/fonts/f } } }",
+        );
+        write("art/interface/fonts.gfx", b"bitmapfonts = { }");
+        let art = root.join("art").display().to_string().replace('\\', "/");
+        write(
+            "user/mod/art.mod",
+            format!(
+                "name=\"Art\"
+path=\"{art}\"
+"
+            )
+            .as_bytes(),
+        );
+        std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+        let options = installed_content::ResolveOptions {
+            game_dir: root.join("steamapps/common/Game"),
+            user_dir: root.join("user"),
+            cache_dir: root.join("cache"),
+        };
+        let base = root.join("base");
+        let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+        let selected = [installed_content::content::visual::Choice {
+            id: "mod/art.mod".into(),
+            name: "Art".into(),
+        }];
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+        let presentation = layers.presentation().clone();
+        assert!(presentation.shows_visual_mods());
+        let registry = installed_content::gui::native::resources::Registry::load(&presentation).unwrap();
+        assert!(registry.fonts.get_or_fallback(b"").is_none());
+        let interface = super::super::sprites::Interface {
+            sprites: installed_content::gfx::SpriteSet::new(&registry.files),
+            registry,
+            decode: installed_content::image::native::Decode::default(),
+        };
+        let load = |layers: &ResolvedLayers| {
+            Fonts::load(
+                layers,
+                &interface,
+                "english",
+                &DeclaredFonts::default(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+        };
+        let error = load(&presentation)
+            .err()
+            .expect("the mods' fonts are refused");
+        assert!(
+            error.to_string().contains("no bitmapfont is declared"),
+            "{error}"
+        );
+        assert!(!layers.shows_visual_mods() && load(&layers).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

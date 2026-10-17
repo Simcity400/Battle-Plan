@@ -60,6 +60,20 @@ impl River {
         depth: wgpu::TextureFormat,
         high: bool,
     ) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            Self::build(device, effect, samples, format, depth, high)
+        })
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        high: bool,
+    ) -> io::Result<Self> {
         // Select river quality from map-rendering options.
         let technique = if high { "river" } else { "river_low_gfx" };
         let selection = effect

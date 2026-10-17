@@ -48,11 +48,13 @@ pub struct LoadedIcons {
 
 impl MapIcons {
     /// Reads fonts and map-icon sprites through the resolved content stack, using the client's
-    /// texture decode state for their pages.
+    /// texture decode state for their pages. `defines` are the recorded defines and the
+    /// graphics defines (the recorded defines with the visual mods' graphics sections), which
+    /// the counters, combat window, raids and floating map text read.
     #[allow(clippy::too_many_arguments)] // The content stack plus the client's settings.
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &installed_content::defines::Defines,
+        (defines, graphics): (&installed_content::defines::Defines, &installed_content::defines::Defines),
         map: &installed_content::map::MapData,
         regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
         language: &str,
@@ -105,7 +107,7 @@ impl MapIcons {
         let mut counters = CounterAssets::load(
             &shared,
             (layouts, windows),
-            defines,
+            graphics,
             (sprites, &interface.registry),
             (language, map_size, decode),
             &mut images,
@@ -140,7 +142,7 @@ impl MapIcons {
         let combat = combat::Assets::load(
             &shared,
             regions,
-            defines,
+            graphics,
             &interface,
             &counters.large_flags,
             (language, map_size, &counters.windows),
@@ -148,7 +150,7 @@ impl MapIcons {
             &lazy,
         )?;
         let mut raids =
-            viewer_raids::map::raids::RaidAssets::load(layers, defines, map, &interface.registry)?;
+            viewer_raids::map::raids::RaidAssets::load(layers, graphics, map, &interface.registry)?;
         raids.trigger_content.triggers = Arc::new(combat.tactics.trigger_names());
         raids.trigger_content.character_traits = combat.tactics.trait_databases();
         raids.transport_sub_units = combat.sub_units().cloned().map_err(str::to_owned);
@@ -158,7 +160,7 @@ impl MapIcons {
         // The floating map text's fonts load into the counters' GUI resources.
         let animated_text = viewer_world::map::animated_map_text::Assets::load(
             layers,
-            defines,
+            (defines, graphics),
             map_size,
             decode,
             &interface.registry.files,

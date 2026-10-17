@@ -9,6 +9,10 @@ license.workspace = true
 [lib]
 doctest = false
 
+[features]
+# Constructors other crates' tests build effects with.
+test-support = []
+
 [dependencies]
 installed-content.workspace = true
 wgpu = "30.0.0"

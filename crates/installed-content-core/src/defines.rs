@@ -330,6 +330,213 @@ fn lua_error(error: mlua::Error) -> io::Error {
     invalid(error.to_string())
 }
 
+/// The `NDefines` sections presentation reads: graphics, aircraft graphics, interface, front
+/// end, map modes and map icons. Every other section is a simulation operand the recording
+/// was played with.
+pub const GRAPHICS_SECTIONS: [&str; 6] = [
+    "NGraphics",
+    "NAirGfx",
+    "NInterface",
+    "NFrontend",
+    "NMapMode",
+    "NMapIcons",
+];
+
+impl Defines {
+    /// These (recorded) defines with the [`GRAPHICS_SECTIONS`] of `shown`, the defines the
+    /// visual mods' scripts were merged into: every simulation section stays recorded, and every
+    /// graphics value the mods set is theirs. A graphics value the mods give in another type
+    /// than the recording's (a cutoff set to a string) keeps the recorded value and is returned
+    /// named with why, so no consumer silently reads one it cannot use.
+    pub fn with_graphics_of(&self, shown: &Defines) -> io::Result<(Defines, Vec<String>)> {
+        let mut graphics = Defines::new()?;
+        let lua = &graphics.lua;
+        let root = |defines: &Defines| -> io::Result<Option<Table>> {
+            match defines
+                .lua
+                .globals()
+                .raw_get::<Value>("NDefines")
+                .map_err(lua_error)?
+            {
+                Value::Table(table) => Ok(Some(table)),
+                _ => Ok(None),
+            }
+        };
+        let section = |table: &Option<Table>, name: &str| -> io::Result<Option<Table>> {
+            match table {
+                Some(table) => match table.raw_get::<Value>(name).map_err(lua_error)? {
+                    Value::Table(section) => Ok(Some(section)),
+                    _ => Ok(None),
+                },
+                None => Ok(None),
+            }
+        };
+        let field = |table: &Option<Table>, name: &str| -> io::Result<Value> {
+            match table {
+                Some(table) => table.raw_get::<Value>(name).map_err(lua_error),
+                None => Ok(Value::Nil),
+            }
+        };
+        let (recorded, mods) = (root(self)?, root(shown)?);
+        let into = lua.create_table().map_err(lua_error)?;
+        // One copier per source state, so each state's shared tables stay shared and its cycles
+        // stay cycles ([`Copier`]).
+        let mut from_recording = Copier::new(lua);
+        let mut from_mods = Copier::new(lua);
+        // Keys of one source state made in the other's, to look a value up there.
+        let mut in_recording = Copier::new(&self.lua);
+        let mut in_mods = Copier::new(&shown.lua);
+        if let Some(recorded) = &recorded {
+            for pair in recorded.pairs::<Value, Value>() {
+                let (key, value) = pair.map_err(lua_error)?;
+                into.raw_set(from_recording.copy(key)?, from_recording.copy(value)?)
+                    .map_err(lua_error)?;
+            }
+        }
+        let mut kept = Vec::new();
+        for name in GRAPHICS_SECTIONS {
+            let ours = section(&recorded, name)?;
+            let theirs = match field(&mods, name)? {
+                Value::Table(theirs) => theirs,
+                Value::Nil if ours.is_none() => continue,
+                // A section the mods retype or delete keeps the recorded one, named.
+                other => {
+                    kept.push(format!(
+                        "NDefines.{name} ({})",
+                        change(&other, &field(&recorded, name)?)
+                    ));
+                    continue;
+                }
+            };
+            let target = match into.raw_get::<Value>(name).map_err(lua_error)? {
+                Value::Table(table) => table,
+                _ => {
+                    let table = lua.create_table().map_err(lua_error)?;
+                    into.raw_set(name, table.clone()).map_err(lua_error)?;
+                    table
+                }
+            };
+            for pair in theirs.pairs::<Value, Value>() {
+                let (key, value) = pair.map_err(lua_error)?;
+                let recorded_value = match &ours {
+                    Some(ours) => ours
+                        .raw_get::<Value>(in_recording.copy(key.clone())?)
+                        .map_err(lua_error)?,
+                    None => Value::Nil,
+                };
+                if !recorded_value.is_nil() && kind(&recorded_value) != kind(&value) {
+                    kept.push(format!(
+                        "NDefines.{name}.{} ({})",
+                        key_text(&key),
+                        change(&value, &recorded_value)
+                    ));
+                    continue;
+                }
+                target
+                    .raw_set(from_mods.copy(key)?, from_mods.copy(value)?)
+                    .map_err(lua_error)?;
+            }
+            // A recorded value the mods delete keeps the recorded one, named.
+            if let Some(ours) = &ours {
+                for pair in ours.pairs::<Value, Value>() {
+                    let (key, value) = pair.map_err(lua_error)?;
+                    let theirs_value = theirs
+                        .raw_get::<Value>(in_mods.copy(key.clone())?)
+                        .map_err(lua_error)?;
+                    if theirs_value.is_nil() {
+                        kept.push(format!(
+                            "NDefines.{name}.{} ({})",
+                            key_text(&key),
+                            change(&Value::Nil, &value)
+                        ));
+                    }
+                }
+            }
+        }
+        lua.globals().raw_set("NDefines", into).map_err(lua_error)?;
+        graphics.sealed = true;
+        kept.sort();
+        Ok((graphics, kept))
+    }
+}
+
+/// A define value's kind for [`Defines::with_graphics_of`]: a Lua number is one kind however
+/// it is stored.
+fn kind(value: &Value) -> &'static str {
+    match value {
+        Value::Integer(_) | Value::Number(_) => "number",
+        other => other.type_name(),
+    }
+}
+
+fn key_text(key: &Value) -> String {
+    match key {
+        Value::String(text) => String::from_utf8_lossy(&text.as_bytes()).into_owned(),
+        Value::Integer(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        other => other.type_name().to_owned(),
+    }
+}
+
+/// How the mods' `theirs` differs from the recording's `ours`, for a value kept recorded.
+fn change(theirs: &Value, ours: &Value) -> String {
+    if theirs.is_nil() {
+        format!("deleted where the recording has {}", kind(ours))
+    } else {
+        format!("{} where the recording has {}", kind(theirs), kind(ours))
+    }
+}
+
+/// Copies values of one define state into `into`: numbers, booleans, strings and tables of
+/// them. Each table is copied once, so tables its state shares stay shared, and a table that
+/// holds itself (`NDefines.NGraphics.extra = NDefines.NGraphics`, a cycle the game's own state
+/// keeps and no reader follows, since every define is read by section and name) is copied as
+/// the same cycle rather than followed without end.
+struct Copier<'a> {
+    into: &'a Lua,
+    copied: std::collections::HashMap<*const std::ffi::c_void, Table>,
+}
+
+impl<'a> Copier<'a> {
+    fn new(into: &'a Lua) -> Self {
+        Self {
+            into,
+            copied: std::collections::HashMap::new(),
+        }
+    }
+
+    fn copy(&mut self, value: Value) -> io::Result<Value> {
+        Ok(match value {
+            Value::Nil | Value::Boolean(_) | Value::Integer(_) | Value::Number(_) => value,
+            Value::String(text) => Value::String(
+                self.into
+                    .create_string(&*text.as_bytes())
+                    .map_err(lua_error)?,
+            ),
+            Value::Table(table) => {
+                let id = table.to_pointer();
+                if let Some(copied) = self.copied.get(&id) {
+                    return Ok(Value::Table(copied.clone()));
+                }
+                let copied = self.into.create_table().map_err(lua_error)?;
+                self.copied.insert(id, copied.clone());
+                for pair in table.pairs::<Value, Value>() {
+                    let (key, item) = pair.map_err(lua_error)?;
+                    let (key, item) = (self.copy(key)?, self.copy(item)?);
+                    copied.raw_set(key, item).map_err(lua_error)?;
+                }
+                Value::Table(copied)
+            }
+            other => {
+                return Err(invalid(format!(
+                    "unsupported NDefines {}",
+                    other.type_name()
+                )));
+            }
+        })
+    }
+}
+
 /// Numeric define conversion narrows the Lua number to f32 before separate
 /// multiply, add, subtract and truncating conversion steps. Rounding in
 /// f64 or with `round()` differs at half steps and large values.
@@ -346,6 +553,115 @@ pub fn fixed5(value: f64) -> io::Result<i64> {
 
 #[cfg(test)]
 mod tests {
+    /// The graphics defines take every graphics value the mods set, keep every simulation
+    /// section recorded, and keep (and name) a graphics value the mods give in another type.
+    #[test]
+    fn graphics_defines_take_the_mods_presentation_values_only() {
+        let recorded = super::Defines::new().unwrap();
+        recorded
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { UNITS_ICONS_DISTANCE_CUTOFF = 1200, \
+                  FRIEND_COLOR = { 0, 1, 0 } }, NMilitary = { BASE_SPEED = 4 } }",
+            )
+            .unwrap();
+        let shown = super::Defines::new().unwrap();
+        shown
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { UNITS_ICONS_DISTANCE_CUTOFF = 600, \
+                  FRIEND_COLOR = \"green\", MOD_ONLY = 3 }, NMilitary = { BASE_SPEED = 9 }, \
+                  NMapIcons = { TOP_MAP_ICON = 7 } }",
+            )
+            .unwrap();
+        let (graphics, kept) = recorded.with_graphics_of(&shown).unwrap();
+        assert_eq!(
+            graphics
+                .number("NGraphics", "UNITS_ICONS_DISTANCE_CUTOFF")
+                .unwrap(),
+            600.0
+        );
+        assert_eq!(graphics.number("NGraphics", "MOD_ONLY").unwrap(), 3.0);
+        assert_eq!(graphics.number("NMapIcons", "TOP_MAP_ICON").unwrap(), 7.0);
+        assert_eq!(graphics.number("NMilitary", "BASE_SPEED").unwrap(), 4.0);
+        assert_eq!(
+            graphics.numbers("NGraphics", "FRIEND_COLOR").unwrap(),
+            [0.0, 1.0, 0.0]
+        );
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(
+            kept[0].starts_with(
+                "NDefines.NGraphics.FRIEND_COLOR (string where the recording has table"
+            ),
+            "{kept:?}"
+        );
+        assert!(graphics.load("test", b"NDefines.NGraphics.X = 1").is_err());
+    }
+
+    /// A graphics section the mods retype or delete, and a recorded graphics value they delete,
+    /// keep the recorded values, each named.
+    #[test]
+    fn retyped_and_deleted_graphics_defines_keep_the_recorded_values_by_name() {
+        let recorded = super::Defines::new().unwrap();
+        recorded
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { A = 1, B = 2 }, NMapIcons = { C = 3 }, \
+                  NFrontend = { D = 4 } }",
+            )
+            .unwrap();
+        let shown = super::Defines::new().unwrap();
+        shown
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { A = 1, B = 2 }, NMapIcons = { C = 3 }, \
+                  NFrontend = { D = 4 } } \
+                  NDefines.NGraphics.A = 5 NDefines.NGraphics.B = nil \
+                  NDefines.NMapIcons = 6 NDefines.NFrontend = nil",
+            )
+            .unwrap();
+        let (graphics, kept) = recorded.with_graphics_of(&shown).unwrap();
+        assert_eq!(graphics.number("NGraphics", "A").unwrap(), 5.0);
+        assert_eq!(graphics.number("NGraphics", "B").unwrap(), 2.0);
+        assert_eq!(graphics.number("NMapIcons", "C").unwrap(), 3.0);
+        assert_eq!(graphics.number("NFrontend", "D").unwrap(), 4.0);
+        assert_eq!(
+            kept,
+            [
+                "NDefines.NFrontend (deleted where the recording has table)",
+                "NDefines.NGraphics.B (deleted where the recording has number)",
+                "NDefines.NMapIcons (number where the recording has table)",
+            ]
+        );
+    }
+
+    /// A table that holds itself, which the game's define state keeps and no reader follows, is
+    /// copied as the same cycle in either state, never followed without end.
+    #[test]
+    fn a_define_table_that_holds_itself_is_copied_as_a_cycle() {
+        let recorded = super::Defines::new().unwrap();
+        recorded
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { A = 1 }, NMilitary = { SPEED = 4 } } \
+                  NDefines.NMilitary.again = NDefines.NMilitary",
+            )
+            .unwrap();
+        let shown = super::Defines::new().unwrap();
+        shown
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { A = 2 } } \
+                  NDefines.NGraphics.extra = NDefines.NGraphics",
+            )
+            .unwrap();
+        let (graphics, kept) = recorded.with_graphics_of(&shown).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(graphics.number("NGraphics", "A").unwrap(), 2.0);
+        assert_eq!(graphics.number("NMilitary", "SPEED").unwrap(), 4.0);
+        assert!(graphics.number("NGraphics", "extra").is_err());
+    }
+
     #[test]
     fn resolved_defines_execute_once_and_share_an_immutable_state() {
         let root = std::env::temp_dir().join(format!("shared-defines-{}", std::process::id()));

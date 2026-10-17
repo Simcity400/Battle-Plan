@@ -221,7 +221,7 @@ fn launch_assets() -> (AircraftAssets, std::path::PathBuf) {
         &layers,
         Decode::default(),
         &map,
-        &defines,
+        (&defines, &defines),
         &regions,
         &mut warnings,
     )

@@ -57,6 +57,8 @@ pub struct Choice {
 pub struct Plan {
     pub order: Vec<Choice>,
     pub warnings: Vec<String>,
+    /// What the selection held when it was mounted ([`revision`]); empty for an empty selection.
+    pub revision: String,
 }
 
 struct Candidate {
@@ -508,6 +510,102 @@ pub fn plan(
     Ok(plan)
 }
 
+/// A digest of what a selection mounts now: its mods in mount order with their sources, each
+/// descriptor's stamp, and the size and modification time of every file a visual mod shows
+/// (an archive by its own stamp), plus what cannot be shown. A mod installed, updated or
+/// removed since a map loaded changes it, so the map reloads; equal digests need no reload.
+/// It reads metadata only, never file contents.
+pub fn revision(
+    options: &ResolveOptions,
+    selected: &[Choice],
+    recorded: &[RecordedMod],
+    cancel: &AtomicBool,
+) -> io::Result<String> {
+    if selected.is_empty() {
+        return Ok(String::new());
+    }
+    let mut warnings = Vec::new();
+    let mounted = ordered(
+        discover(options, cancel)?,
+        selected,
+        recorded,
+        &mut warnings,
+    );
+    let mut digest = Sha256::new();
+    let mut field = |bytes: &[u8]| {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    };
+    for warning in &warnings {
+        field(warning.as_bytes());
+    }
+    let stamp = |path: &Path| match Stamp::read(path) {
+        Ok(stamp) => format!(
+            "{} {} {}",
+            stamp.size, stamp.modified_seconds, stamp.modified_nanos
+        ),
+        Err(error) => format!("unreadable: {error}"),
+    };
+    for candidate in mounted {
+        cancelled(cancel)?;
+        field(candidate.item.id.as_bytes());
+        field(candidate.item.source.as_bytes());
+        field(stamp(&candidate.descriptor).as_bytes());
+        match &candidate.source {
+            Some(LayerSource::Archive(path)) => field(stamp(path).as_bytes()),
+            Some(LayerSource::Folder(root)) => {
+                let mut pending = vec![root.clone()];
+                while let Some(directory) = pending.pop() {
+                    cancelled(cancel)?;
+                    let entries = match directory_entries(&directory) {
+                        Ok(entries) => entries,
+                        Err(error) => {
+                            field(
+                                format!("unreadable {}: {error}", directory.display()).as_bytes(),
+                            );
+                            continue;
+                        }
+                    };
+                    for entry in entries {
+                        let path = entry.path();
+                        let Ok(relative) = path.strip_prefix(root) else {
+                            continue;
+                        };
+                        let lower = relative
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                            .to_ascii_lowercase();
+                        let kind = entry.file_type();
+                        if kind.as_ref().is_ok_and(|kind| kind.is_dir()) {
+                            // Only the folders a visual mod shows anything from.
+                            let shown = |root: &str| {
+                                below(lower.as_bytes(), root.as_bytes())
+                                    || below(root.as_bytes(), lower.as_bytes())
+                            };
+                            if PRESENTATION_ROOTS.iter().any(|root| shown(root))
+                                || shown(DEFINES_ROOT)
+                            {
+                                pending.push(path);
+                            }
+                        } else if kind.as_ref().is_ok_and(|kind| kind.is_file())
+                            && overlay_sees(true, lower.as_bytes())
+                        {
+                            field(lower.as_bytes());
+                            field(stamp(&path).as_bytes());
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 /// Mounts the selected mods above the verified recorded stack as its
 /// [`ResolvedLayers::presentation`]. The recorded layers are not changed. A recorded mod
 /// selected again mounts above the others it was recorded below and still verifies its recorded
@@ -519,11 +617,49 @@ pub fn apply(
     recorded: &[RecordedMod],
     cancel: &AtomicBool,
 ) -> io::Result<Plan> {
-    layers.presentation = None;
-    let mut plan = Plan::default();
+    apply_with(layers, options, selected, recorded, cancel, || {
+        revision(options, selected, recorded, cancel)
+    })
+}
+
+/// [`apply`] with each revision taken by `revision`, the mount loop's seam for tests.
+fn apply_with(
+    layers: &mut ResolvedLayers,
+    options: &ResolveOptions,
+    selected: &[Choice],
+    recorded: &[RecordedMod],
+    cancel: &AtomicBool,
+    mut revision: impl FnMut() -> io::Result<String>,
+) -> io::Result<Plan> {
     if selected.is_empty() {
-        return Ok(plan);
+        layers.presentation = None;
+        layers.presentation_defines = None;
+        return Ok(Plan::default());
     }
+    // The revision names what was mounted: a mod that changes while it mounts is mounted
+    // again, so a later check of the same selection ([`revision`]) agrees exactly until a mod
+    // changes after the mount, including when none of it can be shown.
+    loop {
+        let before = revision()?;
+        let mut plan = mount(layers, options, selected, recorded, cancel)?;
+        if revision()? == before {
+            plan.revision = before;
+            return Ok(plan);
+        }
+    }
+}
+
+/// [`apply`]'s mount of a non-empty selection, without its revision.
+fn mount(
+    layers: &mut ResolvedLayers,
+    options: &ResolveOptions,
+    selected: &[Choice],
+    recorded: &[RecordedMod],
+    cancel: &AtomicBool,
+) -> io::Result<Plan> {
+    layers.presentation = None;
+    layers.presentation_defines = None;
+    let mut plan = Plan::default();
     let mut overlays = Vec::new();
     for candidate in ordered(
         discover(options, cancel)?,
@@ -592,6 +728,10 @@ pub fn apply(
             "Visual mod {name} is not shown: it cannot be mounted with the others ({error})."
         ));
     }
+    layers.presentation_defines = presentation
+        .as_ref()
+        .and_then(|presentation| presentation.with_defines().ok())
+        .map(std::sync::Arc::new);
     layers.presentation = presentation.map(std::sync::Arc::new);
     Ok(plan)
 }

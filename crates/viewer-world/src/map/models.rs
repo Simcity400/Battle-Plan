@@ -196,6 +196,10 @@ pub struct ModelMesh {
     pub radius: f32,
     /// Height of LOD 0's bounds above its own origin, after `scale`.
     pub height: f32,
+    /// Whether a visual mod supplied any file this entity is drawn from (a mesh, animation,
+    /// texture or descriptor, its attachments' included): such an entity keeps a recorded
+    /// counterpart to draw when its own draw is refused ([`ModelLibrary::alternatives`]).
+    pub visual: bool,
     /// The same radius over the entity's **own** geometry only. An attachment
     /// rig's is a fraction of a world unit while its composed one is metres.
     pub own_radius: f32,
@@ -235,6 +239,9 @@ pub struct ModelLibrary {
     /// `.anim` path to its decoded rest pose; `None` for a file that does not
     /// read, so it is tried once. Every rifleman entity shares one idle file.
     animations: BTreeMap<String, Option<Arc<mesh::Animation>>>,
+    /// Each `.anim` a descriptor names that neither stack reads, and why: its entity stands in
+    /// its bind pose, reported, never taken for an entity without an animation.
+    pub animation_refusals: BTreeMap<String, String>,
     rigs: Vec<Arc<Rig>>,
     /// The game imports each mesh type once; the game instantiates actors
     /// against it. Geometry is local to the mesh and shared by all its users.
@@ -242,6 +249,14 @@ pub struct ModelLibrary {
     attachment_refusals: BTreeMap<String, usize>,
     /// Each requested name that did not bake, and why.
     pub failed: BTreeMap<String, String>,
+    /// Whether the entity under composition uses a file a visual mod supplies.
+    composing_visual: bool,
+    /// A visual mod's entity slot to its recorded counterpart's, drawn when the mod's draw is
+    /// refused ([`ModelPass`]); the counterparts are in no name's slot.
+    pub alternatives: BTreeMap<usize, usize>,
+    /// Whether this library's entities stand in for the same names' entities they are merged
+    /// with ([`Self::isolated`]).
+    alternative: bool,
 }
 debug_fields!(ModelLibrary(this) {
     decode, palette, meshes, materials, textures, spaces, index, paths, animations, rigs, attachment_refusals, failed
@@ -366,6 +381,19 @@ impl ModelLibrary {
         names: &[String],
         warnings: &mut Vec<installed_content::Diagnostic>,
     ) -> io::Result<Self> {
+        Self::load_with(layers, decode, descriptors, names, warnings, |_, _| None)
+    }
+
+    /// Loads admitted names, applying their owner's declaration check to recorded retries
+    /// and draw counterparts too. Other model owners keep their own admission rules.
+    pub fn load_with(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        descriptors: &Descriptors,
+        names: &[String],
+        warnings: &mut Vec<installed_content::Diagnostic>,
+        refused: fn(&mesh::Roster, &str) -> Option<String>,
+    ) -> io::Result<Self> {
         // Stable de-duplication first: the serial loop skipped later
         // duplicates via the index, so keeping each name's first occurrence
         // bakes exactly the serial set in the serial order.
@@ -409,10 +437,74 @@ impl ModelLibrary {
         let mut missing = Vec::new();
         for (shard, shard_missing) in baked {
             for (name, error) in shard_missing {
-                missing.push(format!("{name} ({error})"));
-                library.failed.insert(name, error);
+                library.failed.insert(name.clone(), error.clone());
+                missing.push((name, error));
             }
             library.merge(shard);
+        }
+        // With visual mods mounted, an entity that does not bake is baked from the recording
+        // instead, by the recording's own descriptors apart from the mod's files, and named;
+        // and each entity a visual mod supplies keeps its recorded counterpart, baked the same
+        // way, so a refused draw of the mod's entity draws the recorded one instead. The
+        // recorded stack bakes no counterparts.
+        if let Some(recorded) = layers.without_overlays()
+            && let Some(roster) = layers.recorded_descriptor_roster()?
+        {
+            if !missing.is_empty() {
+                let names: Vec<String> = missing
+                    .iter()
+                    .filter(|(name, _)| refused(&roster, name).is_none())
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                let baked = Self::load(
+                    &recorded,
+                    decode,
+                    &roster.descriptors,
+                    &names,
+                    &mut Vec::new(),
+                )?;
+                library.merge(baked.isolated(false));
+                missing.retain(|(name, error)| {
+                    let drawn = library.slot(name).is_some();
+                    if drawn {
+                        // Drawn from the recording: no longer a failure of this library.
+                        library.failed.remove(name);
+                        layers.note_overlay_refusal(format!("model {name} ({error})"));
+                    }
+                    !drawn
+                });
+            }
+            let visual: Vec<String> = library
+                .meshes
+                .iter()
+                .filter(|mesh| mesh.visual && refused(&roster, &mesh.name).is_none())
+                .map(|mesh| mesh.name.clone())
+                .collect();
+            if !visual.is_empty() {
+                let counterparts = Self::load(
+                    &recorded,
+                    decode,
+                    &roster.descriptors,
+                    &visual,
+                    &mut Vec::new(),
+                )?;
+                library.merge(counterparts.isolated(true));
+            }
+        }
+        if !library.animation_refusals.is_empty() {
+            warnings.push((
+                installed_content::DiagnosticKind::Refused,
+                format!(
+                    "Model animations that do not read, so their entities stand in their bind \
+                     pose: {}.",
+                    library
+                        .animation_refusals
+                        .iter()
+                        .map(|(path, why)| format!("{path} ({why})"))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            ));
         }
         if !library.attachment_refusals.is_empty() {
             warnings.push((
@@ -429,6 +521,10 @@ impl ModelLibrary {
             ));
         }
         if !missing.is_empty() {
+            let mut missing: Vec<String> = missing
+                .into_iter()
+                .map(|(name, error)| format!("{name} ({error})"))
+                .collect();
             missing.sort();
             warnings.push((
                 installed_content::DiagnosticKind::Refused,
@@ -479,6 +575,35 @@ impl ModelLibrary {
         Ok(library)
     }
 
+    /// `names` the visual mods' descriptors leave refused, though the recording's own descriptors
+    /// do not (a mod's descriptor file that does not parse may declare them), baked from the
+    /// recording instead, apart from the mod's files, each named; an empty library without
+    /// visual mods.
+    pub fn load_recorded(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        names: &[String],
+        why: impl Fn(&str) -> String,
+    ) -> io::Result<Self> {
+        let (Some(recorded), Some(roster)) = (
+            layers.without_overlays(),
+            layers.recorded_descriptor_roster()?,
+        ) else {
+            return Ok(Self::empty(decode));
+        };
+        let baked = Self::load(
+            &recorded,
+            decode,
+            &roster.descriptors,
+            names,
+            &mut Vec::new(),
+        )?;
+        for name in names.iter().filter(|name| baked.slot(name).is_some()) {
+            layers.note_overlay_refusal(format!("model {name} ({})", why(name)));
+        }
+        Ok(baked.isolated(false))
+    }
+
     /// Whether a name resolved.
     /// Whether the entity in `slot` declares `state` on its root node
     /// (the game finds it), as the animation player looks it up.
@@ -491,6 +616,14 @@ impl ModelLibrary {
 
     pub fn slot(&self, name: &str) -> Option<usize> {
         self.index.get(name).copied()
+    }
+
+    /// Whether the baked entity draws geometry, including its attached actors.
+    pub fn has_geometry(&self, slot: usize) -> bool {
+        self.meshes[slot]
+            .native
+            .iter()
+            .any(|descriptor| descriptor.lods.iter().any(|lod| !lod.is_empty()))
     }
 
     /// Merges a shard baked on another thread. Shards hold contiguous name
@@ -540,14 +673,24 @@ impl ModelLibrary {
         for (path, animation) in shard.animations {
             self.animations.entry(path).or_insert(animation);
         }
+        for (path, why) in shard.animation_refusals {
+            self.animation_refusals.entry(path).or_insert(why);
+        }
         for (reason, count) in shard.attachment_refusals {
             *self.attachment_refusals.entry(reason).or_default() += count;
         }
         self.failed.extend(shard.failed);
         let palette_base = self.palette.len();
         self.palette.extend(shard.palette);
+        let mesh_base = self.meshes.len();
+        for (from, to) in &shard.alternatives {
+            self.alternatives.insert(mesh_base + from, mesh_base + to);
+        }
+        let counterparts: BTreeSet<usize> = shard.alternatives.values().copied().collect();
         assert_eq!(shard.meshes.len(), shard.rigs.len(), "one rig per mesh");
-        for (mut mesh, mut rig) in shard.meshes.into_iter().zip(shard.rigs) {
+        for (shard_slot, (mut mesh, mut rig)) in
+            shard.meshes.into_iter().zip(shard.rigs).enumerate()
+        {
             {
                 let rig = Arc::get_mut(&mut rig).expect("shard-local rig");
                 rig.start += palette_base;
@@ -573,10 +716,48 @@ impl ModelLibrary {
                 }
             }
             let slot = self.meshes.len();
-            self.index.insert(mesh.name.clone(), slot);
+            if shard.alternative {
+                if let Some(&original) = self.index.get(&mesh.name) {
+                    self.alternatives.insert(original, slot);
+                }
+            } else if !counterparts.contains(&shard_slot) {
+                self.index.insert(mesh.name.clone(), slot);
+            }
             self.meshes.push(mesh);
             self.rigs.push(rig);
         }
+    }
+
+    /// This library with its file caches renamed apart, so merging it shares no texture,
+    /// animation or geometry with entities baked from another stack's files of the same path;
+    /// `alternative` makes its entities the merged library's counterparts of the same names
+    /// rather than their slots.
+    pub fn isolated(mut self, alternative: bool) -> Self {
+        let apart = |path: &str| format!("recorded:{path}");
+        self.paths = std::mem::take(&mut self.paths)
+            .into_iter()
+            .map(|((path, space), slot)| ((apart(&path), space), slot))
+            .collect();
+        self.animations = std::mem::take(&mut self.animations)
+            .into_iter()
+            .map(|(path, animation)| (apart(&path), animation))
+            .collect();
+        self.geometry_cache = std::mem::take(&mut self.geometry_cache)
+            .into_iter()
+            .map(|(mut key, geometry)| {
+                key.0 = apart(&key.0);
+                (key, geometry)
+            })
+            .collect();
+        for mesh in &mut self.meshes {
+            for descriptor in &mut mesh.native {
+                for part in descriptor.lods.iter_mut().flatten() {
+                    part.geometry_key.0 = apart(&part.geometry_key.0);
+                }
+            }
+        }
+        self.alternative = alternative;
+        self
     }
 
     /// Adds one entity, or on failure removes everything its composition
@@ -611,6 +792,7 @@ impl ModelLibrary {
         if self.layers.is_none() {
             self.layers = Some(Arc::new(layers.clone()));
         }
+        self.composing_visual = false;
         let mut out = Composition::default();
         out.rig.start = self.palette.len();
         let (path, scale, lod_distances) = self.compose(
@@ -648,6 +830,7 @@ impl ModelLibrary {
             native,
             radius,
             height,
+            visual: self.composing_visual,
             own_radius: reach.own_radius,
             bound: reach.bound,
             attachments: reach.attachments,
@@ -689,6 +872,11 @@ impl ModelLibrary {
             )));
         }
         let inherited = descriptors.inherit(name);
+        if let Some(inherited) = &inherited {
+            for source in &inherited.sources {
+                self.composing_visual |= layers.supplied_by_visual_mod(source);
+            }
+        }
         let entity = descriptors.resolve_entity(name);
         if entity.is_none() && inherited.is_none() {
             return Err(invalid("no pdxmesh or entity declares it"));
@@ -711,6 +899,7 @@ impl ModelLibrary {
                 ))
             };
             let bytes = layers.read_uncovered(&path).map_err(cannot_load)?;
+            self.composing_visual |= layers.supplied_by_visual_mod(&path);
             let tree = mesh::parse(&bytes).map_err(cannot_load)?;
             let skeleton =
                 mesh::native_skeleton(&tree, entity.definition.scale).map_err(cannot_load)?;
@@ -1050,12 +1239,32 @@ impl ModelLibrary {
 
     /// One `.anim`'s rest pose, read once per file.
     fn animation(&mut self, layers: &ResolvedLayers, path: &str) -> Option<&Arc<mesh::Animation>> {
+        self.composing_visual |= layers.supplied_by_visual_mod(path);
         if !self.animations.contains_key(path) {
-            let decoded = layers
-                .read_uncovered(path)
-                .ok()
-                .and_then(|bytes| mesh::read_animation(&bytes).ok())
-                .map(Arc::new);
+            let read = |stack: &ResolvedLayers| -> Result<mesh::Animation, String> {
+                let bytes = stack
+                    .read_uncovered(path)
+                    .map_err(|error| error.to_string())?;
+                mesh::read_animation(&bytes).map_err(|error| error.to_string())
+            };
+            let decoded = match read(layers) {
+                Ok(animation) => Some(Arc::new(animation)),
+                Err(why) => {
+                    // An animation the visual mods break is the recording's own, named; one
+                    // neither stack reads is refused by name.
+                    match layers.without_overlays().map(|recorded| read(&recorded)) {
+                        Some(Ok(animation)) => {
+                            layers.note_overlay_refusal(format!("animation {path} ({why})"));
+                            Some(Arc::new(animation))
+                        }
+                        _ => {
+                            layers.note_refused(format!("model animation {path}"));
+                            self.animation_refusals.insert(path.to_owned(), why);
+                            None
+                        }
+                    }
+                }
+            };
             self.animations.insert(path.to_owned(), decoded);
         }
         self.animations.get(path)?.as_ref()
@@ -1097,6 +1306,7 @@ impl ModelLibrary {
             return Ok(self.blank(space));
         }
         let path = layers.texture_index()?.resolve(directory, file);
+        self.composing_visual |= layers.supplied_by_visual_mod(&path);
         let key = (path, space);
         if let Some(slot) = self.paths.get(&key) {
             return Ok(*slot);
@@ -1287,15 +1497,10 @@ impl ModelField {
             }
             let radius = meshes.get(mesh).map_or(0.0, |entry| entry.radius);
             let instances_start = field.instances.len() as u32;
-            let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            let bounds = reach_bounds(radius, keyed[start..cursor].iter().map(|entry| &entry.1));
             let mut sum = [0.0f64; 3];
             for ((_, _, _), instance, ordinal) in &keyed[start..cursor] {
                 field.native_order[*ordinal] = (field.groups.len(), field.instances.len());
-                let reach = radius * instance.scale;
-                bounds[0] = bounds[0].min(instance.position[0] - reach);
-                bounds[1] = bounds[1].min(instance.position[2] - reach);
-                bounds[2] = bounds[2].max(instance.position[0] + reach);
-                bounds[3] = bounds[3].max(instance.position[2] + reach);
                 for (axis, total) in sum.iter_mut().enumerate() {
                     *total += f64::from(instance.position[axis]);
                 }
@@ -1314,6 +1519,20 @@ impl ModelField {
             });
         }
     }
+}
+
+/// The world bounds, `[x0, z0, x1, z1]`, of `instances` of an entity reaching `radius` around
+/// its origin at their scale.
+fn reach_bounds<'a>(radius: f32, instances: impl Iterator<Item = &'a ModelInstance>) -> [f32; 4] {
+    let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for instance in instances {
+        let reach = radius * instance.scale;
+        bounds[0] = bounds[0].min(instance.position[0] - reach);
+        bounds[1] = bounds[1].min(instance.position[2] - reach);
+        bounds[2] = bounds[2].max(instance.position[0] + reach);
+        bounds[3] = bounds[3].max(instance.position[2] + reach);
+    }
+    bounds
 }
 
 /// A deterministic hash of an index to `[0, 1)`, for the rotations and mesh
@@ -1386,6 +1605,16 @@ pub struct ModelPass {
     event_namespace: u64,
     /// Placed actors, by animation key, that keep animating but draw and cast nothing.
     hidden: BTreeSet<(usize, u32, u32)>,
+    /// The library's visual mod entities and their recorded counterparts
+    /// ([`ModelLibrary::alternatives`]).
+    alternatives: BTreeMap<usize, usize>,
+    /// Mod entities drawn from their recorded counterparts since a draw was refused.
+    redirects: BTreeMap<usize, usize>,
+    /// Mod entities refused this frame that have a counterpart, with why; redirected before
+    /// the next frame animates ([`Self::fall_back`]).
+    falling_back: RefCell<BTreeMap<usize, String>>,
+    /// Each redirected entity's name and why, for its warning line.
+    from_recording: BTreeMap<String, String>,
 }
 
 fn event_namespace() -> u64 {
@@ -1402,7 +1631,20 @@ impl ModelPass {
         instance: &ModelInstance,
     ) -> Option<&entity_animation::Player> {
         let (seed, identity) = instance.animation_key();
-        self.players.get(&(mesh, seed, identity))
+        self.players.get(&(self.drawn_slot(mesh), seed, identity))
+    }
+
+    /// Which of the renderer's shader libraries the entity in `mesh` draws with: 1, the
+    /// recording's own, for a visual mod entity's recorded counterpart, so it draws as the
+    /// recording draws it; 0, the stack it was baked from, for every other.
+    fn shader_library(&self, mesh: usize) -> usize {
+        usize::from(self.alternatives.values().any(|&slot| slot == mesh))
+    }
+
+    /// The slot an entity placed in `mesh` draws from: its recorded counterpart once the mod's
+    /// draw was refused ([`Self::fall_back`]).
+    fn drawn_slot(&self, mesh: usize) -> usize {
+        self.redirects.get(&mesh).copied().unwrap_or(mesh)
     }
 
     /// The root play position of the player keyed `(mesh, seed, identity)`
@@ -1411,6 +1653,7 @@ impl ModelPass {
     /// which never gets a player; `None` before an animated entity's player
     /// exists.
     pub fn root_play_position(&self, key: (usize, u32, u32)) -> Option<Option<(f32, f32)>> {
+        let key = (self.drawn_slot(key.0), key.1, key.2);
         let rig = self.rigs.get(key.0)?;
         if rig.nodes.iter().all(|node| node.clips.is_empty()) {
             return Some(None);
@@ -1421,10 +1664,12 @@ impl ModelPass {
     /// Installs producer-owned state requests on the shared entity player.
     pub fn set_clocks(&mut self, clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>) {
         self.field.clocks = clocks;
+        self.redirect_field();
     }
 
     /// Samples visible entity palettes; meshes and material buffers are immutable.
     pub fn animate(&mut self, time: f32, rectangle: Option<[f32; 4]>, offsets: &[f32]) {
+        self.fall_back();
         static PROFILE: OnceLock<bool> = OnceLock::new();
         let profile = *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some());
         let started = profile.then(Instant::now);
@@ -1559,6 +1804,10 @@ impl ModelPass {
 
     /// Replaces placements while preserving the players of surviving actors.
     pub fn update_placed(&mut self, placed: Vec<(usize, ModelInstance)>, tile: f32) {
+        let placed: Vec<_> = placed
+            .into_iter()
+            .map(|(mesh, instance)| (self.drawn_slot(mesh), instance))
+            .collect();
         let alive: BTreeSet<_> = placed
             .iter()
             .map(|(mesh, instance)| {
@@ -1584,6 +1833,7 @@ impl ModelPass {
     pub fn replace_field(&mut self, library: &ModelLibrary, field: &mut ModelField) {
         self.sync(library);
         std::mem::swap(&mut self.field, field);
+        self.redirect_field();
     }
 
     /// Uploads what the installed field's meshes need to draw.
@@ -1615,6 +1865,10 @@ impl ModelPass {
             refusals: Default::default(),
             poses: Default::default(),
             label,
+            alternatives: library.alternatives.clone(),
+            redirects: BTreeMap::new(),
+            falling_back: RefCell::default(),
+            from_recording: BTreeMap::new(),
             rigs: library.rigs.clone(),
             default_palette: library.palette.clone(),
             players: BTreeMap::new(),
@@ -1652,11 +1906,13 @@ impl ModelPass {
     /// events but neither draw nor cast shadows until shown again.
     pub fn set_hidden(&mut self, hidden: BTreeSet<(usize, u32, u32)>) {
         self.hidden = hidden;
+        self.redirect_field();
     }
 
     /// Whether an actor is placed but hidden ([`ModelPass::set_hidden`]).
     pub fn hides(&self, key: (usize, u32, u32)) -> bool {
-        self.hidden.contains(&key)
+        self.hidden
+            .contains(&(self.drawn_slot(key.0), key.1, key.2))
     }
 
     /// Follows a library that grew since the pass last saw it (the unit
@@ -1670,6 +1926,9 @@ impl ModelPass {
                 .extend_from_slice(&library.meshes[self.meshes.len()..]);
             self.rigs
                 .extend_from_slice(&library.rigs[self.rigs.len()..]);
+        }
+        if self.alternatives.len() != library.alternatives.len() {
+            self.alternatives = library.alternatives.clone();
         }
         self.textures.resize_with(library.textures.len(), || None);
         if self.materials.len() < library.materials.len() {
@@ -1697,6 +1956,11 @@ impl ModelPass {
         library: &ModelLibrary,
         mesh: usize,
     ) -> io::Result<()> {
+        // A mod entity's recorded counterpart is resident with it, to draw the moment the mod's
+        // draw is refused.
+        if let Some(&counterpart) = self.alternatives.get(&mesh) {
+            self.make_resident(device, queue, library, counterpart)?;
+        }
         let materials: BTreeSet<usize> = library.meshes[mesh]
             .native
             .iter()
@@ -1777,6 +2041,7 @@ impl ModelPass {
             self.make_resident(device, queue, library, group.mesh)?;
         }
         self.field = field;
+        self.redirect_field();
         Ok(())
     }
 
@@ -1785,21 +2050,91 @@ impl ModelPass {
         self.drawn.get()
     }
 
+    /// Counts a refused actor draw of the entity in slot `mesh` (`None` for a refusal of the
+    /// instance itself). A visual mod's entity ([`ModelMesh::visual`]) is drawn from its
+    /// recorded counterpart from the next frame on, named; any other refusal is recorded in the
+    /// frame's arena by name ([`shader_pipeline::gpu::Arena::refuse`]).
     fn refuse_actor(
         &self,
-        frame: u64,
+        arena: &shader_pipeline::gpu::Arena,
+        mesh: Option<usize>,
         instance: usize,
         node: usize,
         name: &str,
         why: impl std::fmt::Display,
     ) {
-        let mut refusals = self.refusals.borrow_mut();
-        if refusals.0 != frame {
-            *refusals = (frame, BTreeSet::new());
+        let why = format!("refused actor {name}: {why}");
+        match mesh.filter(|&mesh| {
+            self.meshes.get(mesh).is_some_and(|mesh| mesh.visual)
+                && self.alternatives.contains_key(&mesh)
+        }) {
+            Some(mesh) => {
+                self.falling_back
+                    .borrow_mut()
+                    .entry(mesh)
+                    .or_insert_with(|| why.clone());
+            }
+            // By what was refused, not why: the message can differ between loads.
+            None => arena.refuse(&format!("Map shader {}: refused actor {name}", self.label)),
         }
-        refusals
-            .1
-            .insert((instance, node, format!("refused actor {name}: {why}")));
+        let mut refusals = self.refusals.borrow_mut();
+        if refusals.0 != arena.frame() {
+            *refusals = (arena.frame(), BTreeSet::new());
+        }
+        refusals.1.insert((instance, node, why));
+    }
+
+    /// Draws each mod entity refused since the last frame from its recorded counterpart, named.
+    fn fall_back(&mut self) {
+        let refused = std::mem::take(self.falling_back.get_mut());
+        for (mesh, why) in refused {
+            let Some(&counterpart) = self.alternatives.get(&mesh) else {
+                continue;
+            };
+            if self.redirects.insert(mesh, counterpart).is_none() {
+                let name = self.meshes[mesh].name.clone();
+                if let Some(layers) = &self.layers {
+                    layers.note_overlay_refusal(format!("model {name} ({why})"));
+                }
+                self.from_recording.insert(name, why);
+            }
+        }
+        self.redirect_field();
+    }
+
+    /// Points every placed group of a redirected entity at its recorded counterpart.
+    fn redirect_field(&mut self) {
+        if self.redirects.is_empty() {
+            return;
+        }
+        let field = &mut self.field;
+        for group in &mut field.groups {
+            if let Some(&to) = self.redirects.get(&group.mesh) {
+                group.mesh = to;
+                // Culled by the counterpart's own reach, not the refused entity's.
+                let radius = self.meshes.get(to).map_or(0.0, |mesh| mesh.radius);
+                let instances =
+                    &field.instances[group.range.start as usize..group.range.end as usize];
+                group.bounds = reach_bounds(radius, instances.iter());
+            }
+        }
+        self.field.clocks = std::mem::take(&mut self.field.clocks)
+            .into_iter()
+            .map(|((mesh, seed, identity), clock)| {
+                let mesh = self.redirects.get(&mesh).copied().unwrap_or(mesh);
+                ((mesh, seed, identity), clock)
+            })
+            .collect();
+        self.hidden = std::mem::take(&mut self.hidden)
+            .into_iter()
+            .map(|(mesh, seed, identity)| {
+                (
+                    self.redirects.get(&mesh).copied().unwrap_or(mesh),
+                    seed,
+                    identity,
+                )
+            })
+            .collect();
     }
 
     pub fn refusal_lines(&self, frame: u64) -> Vec<String> {
@@ -1818,6 +2153,12 @@ impl ModelPass {
         counts
             .into_iter()
             .map(|(why, count)| format!("Map shader {}: {count} {why}", self.label))
+            .chain(self.from_recording.iter().map(|(name, why)| {
+                format!(
+                    "Map shader {}: visual mod entity {name} is drawn from the recording ({why})",
+                    self.label
+                )
+            }))
             .collect()
     }
 
@@ -2012,4 +2353,4 @@ fn drawn_variants(rig: &entity_animation::Rig) -> Option<(usize, String, usize)>
 #[cfg(test)]
 mod naval_composition_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

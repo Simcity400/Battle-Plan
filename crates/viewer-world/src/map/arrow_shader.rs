@@ -77,6 +77,21 @@ impl Arrow {
         depth: wgpu::TextureFormat,
         mode: Mode,
     ) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            Self::build(device, effect, technique, samples, format, depth, mode)
+        })
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        technique: &str,
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        mode: Mode,
+    ) -> io::Result<Self> {
         let selection = effect.select(technique).map_err(refuse)?.ok_or_else(|| {
             refuse(format!(
                 "{technique:?} absent; retained program unavailable"

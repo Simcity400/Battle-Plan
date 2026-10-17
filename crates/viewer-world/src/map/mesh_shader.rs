@@ -107,6 +107,9 @@ impl Geometry {
 
 pub struct Pass {
     pub pipeline: Arc<gpu::Pipeline>,
+    /// The technique the pipeline was built from: the recorded effect's when a visual mod's
+    /// replacement fell back, so its vertex inputs are the ones drawn.
+    pub selection: shader_pipeline::library::Selection,
     reference: u32,
 }
 
@@ -151,6 +154,25 @@ impl Pass {
         samples: u32,
         caster: bool,
     ) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded_selection(selection, |selection| {
+            Self::build(
+                cache, device, selection, geometry, format, depth, samples, caster,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        cache: &mut gpu::Cache,
+        device: &wgpu::Device,
+        selection: &shader_pipeline::library::Selection,
+        geometry: &Geometry,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        samples: u32,
+        caster: bool,
+    ) -> io::Result<Self> {
         let source = &selection.effect.source;
         let technique = &source.techniques[selection.index];
         let compiled = selection
@@ -182,6 +204,7 @@ impl Pass {
         super::shader_constants::scene(&pipeline).map_err(io::Error::other)?;
         Ok(Self {
             pipeline,
+            selection: selection.clone(),
             reference,
         })
     }
@@ -313,7 +336,7 @@ pub fn map_samplers() -> BTreeMap<u32, Sampler> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn triangle() -> installed_content::mesh::SubMesh {
@@ -431,5 +454,113 @@ mod tests {
             assert_eq!(sampler.u, Address::Clamp);
         }
         assert!(!samplers.contains_key(&binding(4, Stage::Vertex)));
+    }
+
+    /// A mesh pass asked for a visual mod's replacement that cannot be laid out (it reads
+    /// COLOR0, which the native mesh declaration cannot supply), built: with the replacement's
+    /// selection, the recorded effect (whose technique blends, unlike the replacement's) and
+    /// the geometry.
+    pub(crate) fn fallen_back_pass() -> (
+        Pass,
+        shader_pipeline::library::Selection,
+        Arc<shader_pipeline::library::Effect>,
+        Geometry,
+    ) {
+        use shader_pipeline::{Compiled, Shader, library::Effect};
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let input = |location, semantic: &str, components| VertexInput {
+            kind: ScalarKind::Float,
+            location,
+            semantic: semantic.into(),
+            components,
+        };
+        let shader = |wgsl: &str, inputs| Shader {
+            wgsl: wgsl.into(),
+            buffers: vec![],
+            textures: vec![],
+            samplers: vec![],
+            sampling_pairs: vec![],
+            inputs,
+            clock: Default::default(),
+        };
+        let pixel = shader(
+            "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+            vec![],
+        );
+        let program = |name: &'static [u8], text: &'static [u8]| {
+            Arc::new(
+                installed_content::pdxshader::program::read_with(name, &|path| {
+                    Some(if path == name {
+                        text.to_vec()
+                    } else {
+                        Vec::new()
+                    })
+                })
+                .unwrap(),
+            )
+        };
+        let recorded = Effect::from_compiled(
+            program(
+                b"recorded.shader",
+                b"BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha } Effect Up { }",
+            ),
+            Vec::new(),
+            vec![Ok(Arc::new(Compiled {
+                vertex: shader(
+                    "@vertex fn main(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p.xy + uv, p.z, 1.0); }",
+                    vec![input(0, "POSITION", 3), input(1, "TEXCOORD0", 2)],
+                ),
+                pixel: pixel.clone(),
+            }))],
+        );
+        let replacement = Effect::replacing(
+            program(b"mod.shader", b"Effect Up { }"),
+            vec![Ok(Arc::new(Compiled {
+                vertex: shader(
+                    "@vertex fn main(@location(0) p: vec3<f32>, @location(1) c: vec4<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 1.0) * c; }",
+                    vec![input(0, "POSITION", 3), input(1, "COLOR0", 4)],
+                ),
+                pixel,
+            }))],
+            recorded.clone(),
+        );
+        let selection = replacement.select("Up").unwrap().unwrap();
+        let geometry = Geometry::from_mesh(&triangle(), 1.0).unwrap();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let pass = Pass::new(
+            &mut gpu::Cache::default(),
+            &device,
+            &selection,
+            &geometry,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Depth24PlusStencil8,
+            1,
+        )
+        .unwrap();
+        (pass, selection, recorded, geometry)
+    }
+
+    /// A mesh pass whose visual mod replacement cannot be laid out is built from the recorded
+    /// technique, and keeps it, so what the part draws with is the recorded one's.
+    #[test]
+    fn a_mesh_pass_keeps_the_recorded_technique_it_fell_back_to() {
+        let (pass, asked, recorded, _) = fallen_back_pass();
+        let inputs = |selection: &shader_pipeline::library::Selection| {
+            selection
+                .effect
+                .compiled(selection.index)
+                .unwrap()
+                .vertex
+                .inputs
+                .clone()
+        };
+        assert!(vertex_layouts(&inputs(&asked), false, false).is_err());
+        assert!(Arc::ptr_eq(&pass.selection.effect, &recorded));
+        let layouts = vertex_layouts(&inputs(&pass.selection), false, false).unwrap();
+        assert_eq!(layouts[0].attributes.len(), 2);
     }
 }

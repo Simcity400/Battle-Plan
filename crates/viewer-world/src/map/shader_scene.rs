@@ -20,6 +20,24 @@ pub struct Program {
 }
 
 impl Program {
+    /// The technique it draws with.
+    #[cfg(test)]
+    pub fn selection(&self) -> &shader_pipeline::library::Selection {
+        &self.selection
+    }
+
+    /// The vertex layouts it draws with.
+    #[cfg(test)]
+    pub fn layouts(&self) -> &[gpu::VertexLayout] {
+        &self.layouts
+    }
+
+    /// The state it draws with.
+    #[cfg(test)]
+    pub fn state(&self) -> &gpu::State {
+        &self.state
+    }
+
     pub fn new(
         selection: &shader_pipeline::library::Selection,
         layouts: &[gpu::VertexLayout],

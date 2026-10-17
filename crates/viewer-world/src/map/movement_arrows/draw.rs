@@ -142,14 +142,21 @@ impl Arrow {
 
     fn compiled(&self) -> &Result<Option<Compiled>, String> {
         self.compiled.get_or_init(|| {
-            let Some(selection) = self.effect.select("ArrowEffect")? else {
-                return Ok(None);
-            };
-            let compiled = self.effect.compiled(selection.index)?;
-            Ok(Some(Compiled {
-                layouts: layouts(&compiled.vertex.inputs)?,
-                selection,
-            }))
+            // A visual mod's replacement that cannot be drawn here falls back to the recording.
+            shader_pipeline::library::with_recorded(&self.effect, |effect| {
+                let build = || -> Result<_, String> {
+                    let Some(selection) = effect.select("ArrowEffect")? else {
+                        return Ok(None);
+                    };
+                    let compiled = effect.compiled(selection.index)?;
+                    Ok(Some(Compiled {
+                        layouts: layouts(&compiled.vertex.inputs)?,
+                        selection,
+                    }))
+                };
+                build().map_err(std::io::Error::other)
+            })
+            .map_err(|error| error.to_string())
         })
     }
 

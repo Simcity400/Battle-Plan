@@ -148,6 +148,10 @@ pub struct EntityDefinition {
     pub get_state_from_parent: Option<bool>,
     pub locators: Vec<(String, Locator)>,
     pub game_data: Option<Result<EntityGameData, String>>,
+    /// The descriptor files it was declared from, its own first and then each clone parent's
+    /// copied into it, so its origin (the recording or a visual mod) is known; empty for a
+    /// definition parsed from bytes alone.
+    pub sources: Vec<String>,
 }
 
 /// Allocated on the first entity-level `game_data` field.
@@ -526,6 +530,9 @@ pub struct InheritedEntity<'a> {
     pub get_state_from_parent: Option<bool>,
     pub locators: BTreeMap<&'a str, &'a Locator>,
     pub game_data: Option<&'a Result<EntityGameData, String>>,
+    /// The descriptor files of every link of the chain, nearest first
+    /// ([`EntityDefinition::sources`]).
+    pub sources: Vec<&'a str>,
 }
 
 impl Descriptors {
@@ -552,6 +559,8 @@ impl Descriptors {
         let mut chain = Vec::new();
         for _ in 0..=self.entities.len() {
             chain.push(current);
+            out.sources
+                .extend(current.sources.iter().map(String::as_str));
             out.mesh = out.mesh.or(current.mesh.as_deref());
             out.unbound_mesh = out.unbound_mesh.or(current.unbound_mesh.as_deref());
             out.scale = out.scale.or(current.scale);
@@ -936,14 +945,35 @@ impl Roster {
         }) {
             return Ok(None);
         }
-        match parser::parse(&bytes)
-            .or_else(|_| parser::parse(&balanced_blocks(&bytes)))
-            .and_then(|document| {
-                settled_state_carriers(&document, path)?;
-                Ok(document)
-            }) {
+        let read = |bytes: &[u8]| {
+            parser::parse(bytes)
+                .or_else(|_| parser::parse(&balanced_blocks(bytes)))
+                .and_then(|document| {
+                    settled_state_carriers(&document, path)?;
+                    Ok(document)
+                })
+        };
+        match read(&bytes) {
             Ok(document) => Ok(Some(document)),
             Err(error) => {
+                // A visual mod's file that does not parse is read as the recording's own file
+                // of that path, named; the names only the mod's file holds stay undecided.
+                if layers.supplied_by_visual_mod(path)
+                    && let Some(recorded) = layers.without_overlays()
+                    && let Ok(recorded_bytes) = recorded.read_uncovered(path)
+                    && let Ok(document) = read(&recorded_bytes)
+                {
+                    layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
+                    let declared = lexical_names(&recorded_bytes);
+                    for name in lexical_names(&bytes) {
+                        if !declared.contains(&name) {
+                            self.unreadable_names
+                                .entry(name)
+                                .or_insert_with(|| path.to_owned());
+                        }
+                    }
+                    return Ok(Some(document));
+                }
                 for name in lexical_names(&bytes) {
                     self.unreadable_names
                         .entry(name)
@@ -1161,6 +1191,7 @@ impl Entities {
                 })
             }));
         definition.name = name.clone();
+        definition.sources.insert(0, path.to_owned());
         definition.clone = None;
         // A named object binds only when it is a `pdxmesh`; otherwise the
         // failed lookup is logged and the held binding stays. That binding
@@ -1231,6 +1262,7 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
         get_state_from_parent: child.get_state_from_parent.or(parent.get_state_from_parent),
         locators,
         game_data: child.game_data.or(parent.game_data),
+        sources: child.sources.into_iter().chain(parent.sources).collect(),
     }
 }
 
@@ -1503,6 +1535,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
     Some(EntityDefinition {
         name,
         game_data: entity_game_data(items),
+        sources: Vec::new(),
         mesh: text(items, b"pdxmesh").map(unquote),
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),

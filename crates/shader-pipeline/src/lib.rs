@@ -256,8 +256,8 @@ impl Compiler {
         if !result.status.success() {
             return Err(format!(
                 "{stage:?} DXC: {}{}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
+                scrubbed(&result.stdout, &scratch.0),
+                scrubbed(&result.stderr, &scratch.0)
             ));
         }
         let bytes = std::fs::read(output).map_err(|e| format!("DXC output: {e}"))?;
@@ -518,6 +518,17 @@ fn reflect_input(
         }
     }
     Ok(())
+}
+
+/// Compiler output with the scratch folder it ran in, which differs every run, named as
+/// `.`: the same refusal reads the same on every load, so a map compares it across loads.
+fn scrubbed(text: &[u8], scratch: &std::path::Path) -> String {
+    let shown = scratch.display().to_string();
+    let mut text = String::from_utf8_lossy(text).into_owned();
+    for form in [shown.clone(), shown.replace('\\', "/")] {
+        text = text.replace(&form, ".");
+    }
+    text
 }
 
 #[cfg(test)]

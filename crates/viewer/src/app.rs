@@ -491,6 +491,16 @@ struct Capture {
     index: u32,
 }
 
+/// The open maps whose visual mods changed since they loaded, each with the revision it loaded
+/// with: the campaign map, and dashboard maps by their source key.
+pub(crate) struct VisualStale {
+    campaign: Option<String>,
+    maps: Vec<(crate::dashboard_maps::MapSourceKey, String)>,
+    /// How many open maps showing visual mods were checked, and what could not be read.
+    checked: usize,
+    failures: Vec<String>,
+}
+
 struct LoadedReplay {
     document: Document,
     scene: Scene,
@@ -850,6 +860,24 @@ pub struct Viewer {
     /// The monitor size and display scale the window last saw; a change asks
     /// for the monitors to be read again.
     monitor_seen: Option<(Option<egui::Vec2>, Option<f32>)>,
+    /// A running check of the visual mods the open maps show (`check_visual_mods`).
+    visual_check: Option<std::sync::mpsc::Receiver<VisualStale>>,
+    /// The last check's outcome, reported with the map details.
+    visual_check_note: Option<String>,
+    /// A check asked for while a map loaded, run again once every load is installed.
+    visual_check_after_load: embedded::DeferredCheck,
+    /// The visual mod revision the next open must not reuse loaded content of.
+    stale_visual_revision: Option<String>,
+    /// The owner of the Campaign map's visual mod fallback, shared with the dashboard's maps
+    /// ([`crate::visual_fallback`]).
+    pub(crate) visual_fallbacks: crate::visual_fallback::Shared,
+    /// The last frame's report for the host's fallback owner ([`Self::take_visual_report`]).
+    visual_report: Option<crate::visual_fallback::Report>,
+    /// Whether the last `map` call drew the map ([`crate::visual_fallback::settled`]).
+    drew_frame: bool,
+    /// The revision a check found the Campaign map's visual mods changed from, reloaded once no
+    /// load runs.
+    visual_stale_campaign: Option<String>,
     map_preferences_seen: Option<(
         String,
         Option<Vec<installed_content::content::visual::Choice>>,
@@ -1249,6 +1277,14 @@ impl Viewer {
             match_game: None,
             monitor_seen: None,
             map_preferences_seen: None,
+            visual_check: None,
+            visual_check_after_load: Default::default(),
+            visual_check_note: None,
+            stale_visual_revision: None,
+            visual_fallbacks: Default::default(),
+            visual_report: None,
+            drew_frame: false,
+            visual_stale_campaign: None,
             config,
             options,
             document: None,
@@ -1348,6 +1384,50 @@ impl Viewer {
         self.map_error = None;
         self.rendered = None;
         self.uploaded = Uploaded::default();
+    }
+
+    /// After each frame of a map whose content falls back from visual mods, its report for the
+    /// host's fallback owner ([`crate::visual_fallback::Fallbacks::reduce`]): every refusal the
+    /// scene made, by stable name, the frame's own failure, and whether it drew settled, by the
+    /// viewer's render result. The owner decides; nothing is decided here.
+    fn after_frame_with_visual_mods(&mut self, document: &Document, error: Option<&String>) {
+        let Some(built) = document.content.fallback.clone() else {
+            return;
+        };
+        let mut refusals = self
+            .scene
+            .as_ref()
+            .map(|scene| scene.draw_refusals())
+            .unwrap_or_default();
+        if let Some(error) = error {
+            refusals.insert(format!("frame: {error}"));
+        }
+        // What the content's loaders refused to draw (a model entity no descriptor decides).
+        refusals.extend(document.content.uncovered_reads.refused());
+        let requested = self.playhead.map_or(
+            (document.playback.branch(), document.playback.hour()),
+            |head| (head.branch, head.hour),
+        );
+        let settled = crate::visual_fallback::settled(
+            self.drew_frame && error.is_none(),
+            requested,
+            self.rendered.as_ref().map(|head| (head.branch, head.hour)),
+            self.shown
+                .as_ref()
+                .filter(|shown| shown.epoch == self.epoch)
+                .map(|shown| (shown.branch, shown.hour, shown.error.is_some())),
+            document.icons.lazy.busy(),
+        );
+        self.visual_report = Some(crate::visual_fallback::Report {
+            built,
+            refusals,
+            settled,
+        });
+    }
+
+    /// The last frame's report ([`Self::after_frame_with_visual_mods`]).
+    pub(crate) fn take_visual_report(&mut self) -> Option<crate::visual_fallback::Report> {
+        self.visual_report.take()
     }
 
     pub(crate) fn has_map(&self) -> bool {
@@ -1530,7 +1610,9 @@ impl Viewer {
             return;
         }
         if let Some(mut document) = self.document.take() {
-            if let Err(error) = self.map(ui, frame, &mut document) {
+            let result = self.map(ui, frame, &mut document);
+            self.after_frame_with_visual_mods(&document, result.as_ref().err());
+            if let Err(error) = result {
                 self.error = Some(error);
                 self.rendered = None;
             }
@@ -1766,6 +1848,12 @@ impl Viewer {
         {
             content.push((source.key().clone(), Arc::clone(&document.content)));
         }
+        // Content loaded before its visual mods changed on disk is never reused.
+        if let Some(stale) = self.stale_visual_revision.take() {
+            content.retain(|(_, content)| content.visual_revision != stale);
+        }
+        // Each load reads the fallback its recording's keys hold when its source is open.
+        let fallbacks = Arc::clone(&self.visual_fallbacks);
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -1800,67 +1888,109 @@ impl Viewer {
                             .map(|service| service.map_settings(&source.replay()))
                     })
                     .unwrap_or_default();
-                let mut document = match &source {
-                    Some(source) => match content.iter().find(|(key, content)| {
-                        key == source.key()
-                            && content.visual_mods == preferences.visual_mods
-                            && content.texture_quality == preferences.graphics.texture_quality
-                    }) {
-                        Some((_, content)) => Document::from_shared_content(
-                            Arc::clone(content),
-                            source.replay(),
-                            &initial,
-                        ),
-                        None => Document::load_shared(
+                let recording = source.as_ref().map(|source| {
+                    crate::visual_fallback::recording(
+                        &source.key().source_id,
+                        &source.key().revision,
+                    )
+                });
+                // A scene that cannot be built with the visual mods is built again without them,
+                // named, so a broken mod never leaves the recording unviewable.
+                let (document, decoder, scene) = loop {
+                    let decisions = recording.as_ref().map(|recording| {
+                        crate::visual_fallback::lock(&fallbacks).decisions(recording)
+                    });
+                    let mut document = match &source {
+                        Some(source) => match content.iter().find(|(key, content)| {
+                            key == source.key()
+                                // Only content its fallback key holds now.
+                                && content.fallback.as_ref().is_none_or(|built| {
+                                    crate::visual_fallback::lock(&fallbacks).current(built)
+                                })
+                                && content.visual_mods == preferences.visual_mods
+                                && content.texture_quality == preferences.graphics.texture_quality
+                        }) {
+                            Some((_, content)) => Document::from_shared_content(
+                                Arc::clone(content),
+                                source.replay(),
+                                &initial,
+                            ),
+                            None => Document::load_shared(
+                                &path,
+                                &resolve,
+                                options.allow_unverified,
+                                &initial,
+                                source.replay(),
+                                preferences.visual_mods.as_deref(),
+                                preferences.graphics.texture_quality,
+                                recording.as_deref().zip(decisions.as_ref()),
+                            ),
+                        },
+                        None => Document::load(
                             &path,
                             &resolve,
                             options.allow_unverified,
                             &initial,
-                            source.replay(),
-                            preferences.visual_mods.as_deref(),
-                            preferences.graphics.texture_quality,
+                            None,
+                            0,
                         ),
-                    },
-                    None => {
-                        Document::load(&path, &resolve, options.allow_unverified, &initial, None, 0)
                     }
-                }
-                .map_err(|error| error.to_string())?;
-                if let Some(source) = &source {
-                    document.bind_source(
-                        Arc::clone(source),
-                        resolve.clone(),
-                        options.allow_unverified,
-                    );
-                }
-                let decoder = resources
-                    .as_ref()
-                    .map(|resources| {
-                        let replay = document.playback.replay_handle();
-                        let decoder = resources
-                            .decoder(Arc::clone(&replay))
-                            .map_err(|error| error.to_string())?;
-                        let mut presented = crate::playback::Playback::unloaded(replay)
-                            .map_err(|error| error.to_string())?;
-                        if let Some(source) = document.playback.checkpoint_source() {
-                            presented.bind_checkpoint_source(source);
-                        }
-                        presented.present(
-                            document.playback.branch(),
-                            document.playback.hour(),
-                            document.playback.current().clone(),
-                        );
-                        decoder
-                            .seed(std::mem::replace(&mut document.playback, presented))
-                            .map_err(|error| error.to_string())?;
-                        Ok::<_, String>(decoder)
-                    })
-                    .transpose()?;
-                // The builders need seconds for the first hour and the UI
-                // thread idles on the spinner meanwhile; the whole
-                // hour-independent scene is cheaper here than on any frame.
-                let scene = load_scene(&device, &queue, &document, preferences.graphics)
                     .map_err(|error| error.to_string())?;
+                    if let Some(source) = &source {
+                        document.bind_source(
+                            Arc::clone(source),
+                            resolve.clone(),
+                            options.allow_unverified,
+                        );
+                    }
+                    let decoder = resources
+                        .as_ref()
+                        .map(|resources| {
+                            let replay = document.playback.replay_handle();
+                            let decoder = resources
+                                .decoder(Arc::clone(&replay))
+                                .map_err(|error| error.to_string())?;
+                            let mut presented = crate::playback::Playback::unloaded(replay)
+                                .map_err(|error| error.to_string())?;
+                            if let Some(source) = document.playback.checkpoint_source() {
+                                presented.bind_checkpoint_source(source);
+                            }
+                            presented.present(
+                                document.playback.branch(),
+                                document.playback.hour(),
+                                document.playback.current().clone(),
+                            );
+                            decoder
+                                .seed(std::mem::replace(&mut document.playback, presented))
+                                .map_err(|error| error.to_string())?;
+                            Ok::<_, String>(decoder)
+                        })
+                        .transpose()?;
+                    // The builders need seconds for the first hour and the UI
+                    // thread idles on the spinner meanwhile; the whole
+                    // hour-independent scene is cheaper here than on any frame.
+                    match load_scene(&device, &queue, &document, preferences.graphics) {
+                        Ok(scene) => break (document, decoder, scene),
+                        // Whatever failed, content with the visual mods probes without them, as its
+                        // frames then decide; only a scene that cannot be built without them
+                        // either is an error.
+                        Err(error) => match &document.content.fallback {
+                            Some(crate::visual_fallback::Built {
+                                key,
+                                under: crate::visual_fallback::Under::Mods { excused },
+                            }) => crate::visual_fallback::lock(&fallbacks).adopt(
+                                key.clone(),
+                                crate::visual_fallback::Decision::Probing {
+                                    failures: [format!("scene: {error}")].into(),
+                                    excused: excused.clone(),
+                                    frames_needed: 0,
+                                    frames_seen: 0,
+                                },
+                            ),
+                            _ => return Err(error.to_string()),
+                        },
+                    }
+                };
                 Ok(LoadedReplay {
                     document,
                     scene,
@@ -2613,6 +2743,7 @@ impl Viewer {
         document: &mut Document,
     ) -> Result<(), String> {
         let map_timer = Instant::now();
+        self.drew_frame = false;
         let mut laps = self
             .laps
             .take()
@@ -3904,6 +4035,7 @@ impl Viewer {
         }
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
+        self.drew_frame = true;
         self.rendered = Some(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
@@ -4237,7 +4369,9 @@ impl eframe::App for Viewer {
             }
             self.lap("profile_sweep");
             central_panel.show(ui, |ui| {
-                if let Err(error) = self.map(ui, frame, &mut document) {
+                let result = self.map(ui, frame, &mut document);
+                self.after_frame_with_visual_mods(&document, result.as_ref().err());
+                if let Err(error) = result {
                     self.error = Some(error);
                 }
             });

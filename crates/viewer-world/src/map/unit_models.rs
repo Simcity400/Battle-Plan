@@ -537,20 +537,105 @@ pub struct PrepareInputs<'a> {
     pub localisation: &'a Localisation,
 }
 
+/// The stack an attempt to load the unit model layer reads ([`UnitModelAssets::load_with`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadStack {
+    /// The stack the layer was handed: the presentation stack while visual mods show.
+    Shown,
+    /// The recorded layers below its visual mods.
+    Recorded,
+}
+
+/// The stable name the map's fallback compares when the unit model layer is off
+/// ([`ResolvedLayers::note_refused`]).
+pub const LAYER_OFF: &str = "model layer: unit models";
+
 impl UnitModelAssets {
     /// Loads every entity any recorded country, template or variant could
     /// reach. A failure turns off this layer alone, with a warning; the map
     /// never refuses to open for it.
+    ///
+    /// `defines` are the graphics defines merged with the visual mods' scripts when `recorded`
+    /// holds the recorded ones: a layer those cannot load (a unit distance cutoff a mod sets to
+    /// a string) loads with the recorded defines instead, `refused` told why, as every graphics
+    /// define falls back. A layer the visual mods' content breaks (their naval combat
+    /// formations, a formation mesh) loads from the recorded layers below them, named the same
+    /// way. A layer that still cannot load is off, and reported by [`LAYER_OFF`] for the map's
+    /// fallback.
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
         defines: &Defines,
+        recorded: Option<&Defines>,
         map: &MapData,
         default_map: &DefaultMap,
         warnings: &mut Vec<String>,
+        refused: impl FnMut(String),
+    ) -> Self {
+        let below = layers.without_overlays();
+        Self::load_with(
+            layers,
+            defines,
+            recorded,
+            below.is_some(),
+            warnings,
+            refused,
+            |stack, defines, notes| {
+                let layers = match (stack, &below) {
+                    (LoadStack::Recorded, Some(below)) => below,
+                    _ => layers,
+                };
+                Self::try_load(layers, decode, defines, map, default_map, notes)
+            },
+        )
+    }
+
+    /// [`Self::load`] with its content read by `try_load` from the stack it names; `below`
+    /// whether recorded layers lie below visual mods on the shown stack. `layers` hears the
+    /// layer's refusal when it is off.
+    #[allow(clippy::too_many_arguments)]
+    fn load_with(
+        layers: &ResolvedLayers,
+        defines: &Defines,
+        recorded: Option<&Defines>,
+        below: bool,
+        warnings: &mut Vec<String>,
+        mut refused: impl FnMut(String),
+        mut try_load: impl FnMut(
+            LoadStack,
+            &Defines,
+            &mut Vec<installed_content::Diagnostic>,
+        ) -> io::Result<Self>,
     ) -> Self {
         let mut notes = Vec::new();
-        let loaded = Self::try_load(layers, decode, defines, map, default_map, &mut notes);
+        let mut loaded = try_load(LoadStack::Shown, defines, &mut notes);
+        if let (Err(error), Some(recorded)) = (&loaded, recorded) {
+            let why = format!("graphics defines for the unit models ({error})");
+            let mut recorded_notes = Vec::new();
+            if let Ok(assets) = try_load(LoadStack::Shown, recorded, &mut recorded_notes) {
+                refused(why);
+                loaded = Ok(assets);
+                notes = recorded_notes;
+            }
+        }
+        // Content the visual mods supply that the layer cannot load: the recording's own.
+        if let (Err(error), true) = (&loaded, below) {
+            let why = format!("unit models ({error})");
+            let mut recorded_notes = Vec::new();
+            if let Ok(assets) = try_load(
+                LoadStack::Recorded,
+                recorded.unwrap_or(defines),
+                &mut recorded_notes,
+            ) {
+                refused(why);
+                loaded = Ok(assets);
+                notes = recorded_notes;
+            }
+        }
+        if loaded.is_err() {
+            layers.note_refused(LAYER_OFF.into());
+        }
         warnings.extend(notes.into_iter().map(|(_, message)| message));
         Self::scoped(loaded, warnings)
     }
@@ -733,13 +818,17 @@ impl UnitModelAssets {
     /// [`Self::infantry_entity`], baked into [`Self::library`].
     pub fn infantry_figure(&self, frame: &DecodedFrame, ours: u32) -> Result<Figure, String> {
         let (level, entity) = self.infantry_entity(frame, ours)?;
-        if let Some(reason) = entity_refusal(&self.roster, &entity) {
+        if let Some(reason) = self.refusal(&entity) {
             return Err(reason);
         }
         let mesh = self
             .bake_slot(&entity)
             .ok_or_else(|| format!("registered entity {entity} did not bake"))?;
-        let height = self.library().meshes.get(mesh).map_or(0.0, |mesh| mesh.height);
+        let height = self
+            .library()
+            .meshes
+            .get(mesh)
+            .map_or(0.0, |mesh| mesh.height);
         Ok(Figure {
             entity,
             level,
@@ -990,7 +1079,7 @@ impl UnitModelAssets {
                 .filter(|name| {
                     library.slot(name).is_none()
                         && self.registered(name)
-                        && entity_refusal(&self.roster, name).is_none()
+                        && self.refusal(name).is_none()
                         && !failed.contains(name.as_str())
                 })
                 .cloned()
@@ -1003,11 +1092,17 @@ impl UnitModelAssets {
         }
         let mut warnings = Vec::new();
         let decode = self.library().decode();
+        // An entity the visual mods' descriptors leave undecided, though the recording's own do
+        // not, is baked from the recording ([`Self::refusal`]).
+        let (recorded, own): (Vec<String>, Vec<String>) = missing
+            .iter()
+            .cloned()
+            .partition(|name| entity_refusal(&self.roster, name).is_some());
         if let Ok(shard) = ModelLibrary::load(
             &self.layers,
             decode,
             &self.roster.descriptors,
-            &missing,
+            &own,
             &mut warnings,
         ) {
             self.library
@@ -1015,6 +1110,19 @@ impl UnitModelAssets {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .merge(shard);
         }
+        if !recorded.is_empty()
+            && let Ok(shard) =
+                ModelLibrary::load_recorded(&self.layers, decode, &recorded, |name| {
+                    entity_refusal(&self.roster, name).unwrap_or_default()
+                })
+        {
+            self.library
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .merge(shard);
+        }
+        // An entity a visual mod supplies that does not bake was baked from the recording
+        // instead, named, by the library load itself (`ModelLibrary::load`).
         let library = self.library();
         failed.extend(
             missing
@@ -1023,9 +1131,26 @@ impl UnitModelAssets {
         );
     }
 
+    /// Why `name` is refused ([`entity_refusal`]), `None` when it is drawn: an entity the
+    /// visual mods' descriptors leave undecided, though the recording's own declare it
+    /// readably, is drawn from the recording ([`ModelLibrary::load_recorded`]). A refusal is
+    /// recorded by name for the map's fallback ([`ResolvedLayers::note_refused`]).
+    fn refusal(&self, name: &str) -> Option<String> {
+        let reason = entity_refusal(&self.roster, name)?;
+        let recorded = self.layers.recorded_descriptor_roster().ok().flatten();
+        if recorded.is_some_and(|recorded| {
+            entity_refusal(&recorded, name).is_none()
+                && recorded.descriptors.entities.contains_key(name)
+        }) {
+            return None;
+        }
+        self.layers.note_refused(format!("model entity {name}"));
+        Some(reason)
+    }
+
     /// A registered entity's slot, baking it first.
     fn bake_slot(&self, name: &str) -> Option<usize> {
-        if !self.registered(name) || entity_refusal(&self.roster, name).is_some() {
+        if !self.registered(name) || self.refusal(name).is_some() {
             return None;
         }
         if let Some(slot) = self.library().slot(name) {
@@ -1221,7 +1346,7 @@ impl UnitModelAssets {
         let library = self.library();
         let mut placed = Vec::new();
         for (province, owner, stack, level, name, base, key, transport) in chosen {
-            if let Some(reason) = entity_refusal(&self.roster, &name) {
+            if let Some(reason) = self.refusal(&name) {
                 report.error(reason);
                 continue;
             }

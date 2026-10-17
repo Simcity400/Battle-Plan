@@ -659,10 +659,24 @@ pub fn read_object_layers(layers: &ResolvedLayers) -> io::Result<Vec<(String, Sp
 
 fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(String, Sprites)>> {
     let dynamic = DynamicTokens::read(layers)?;
+    let recorded = layers.without_overlays();
     let mut files = Vec::new();
     for bytes in order {
         let mut file = read_sprites_with(&layers.read_path(&bytes)?, &dynamic);
         let path = String::from_utf8_lossy(&bytes).into_owned();
+        // A visual mod's file whose declarations are refused is read as the recording's own
+        // file of that path when that reads whole, named.
+        if let Some(refusal) = refusals_of(&file)
+            && layers.supplied_by_visual_mod(&path)
+            && let Some(recorded) = &recorded
+            && let Ok(recorded_bytes) = recorded.read_path(&bytes)
+        {
+            let recorded_file = read_sprites_with(&recorded_bytes, &dynamic);
+            if refusals_of(&recorded_file).is_none() {
+                layers.note_overlay_refusal(format!("interface file {path} ({refusal})"));
+                file = recorded_file;
+            }
+        }
         for refusal in file
             .refusals
             .iter_mut()
@@ -686,6 +700,16 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
         files.push((path, file));
     }
     Ok(files)
+}
+
+/// The first refusal anywhere in `file`: of the file itself, a sprite or an object.
+fn refusals_of(file: &Sprites) -> Option<String> {
+    file.refusals
+        .iter()
+        .chain(file.sprites.iter().flat_map(|sprite| &sprite.refusals))
+        .chain(file.objects.iter().flat_map(|object| &object.refusals))
+        .next()
+        .map(ToString::to_string)
 }
 
 /// One sprite while its keys are read.

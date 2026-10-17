@@ -135,6 +135,11 @@ pub struct GuiResources {
     globals: Vec<String>,
     /// Every font or texture path read that the content coverage policy does not verify.
     uncovered: BTreeSet<Vec<u8>>,
+    /// The recorded layers below the visual mods of the stack a texture failed on, taken once,
+    /// which a texture the mods break is read from.
+    recorded: Option<ResolvedLayers>,
+    /// Each `.fnt` a loaded font names that no stack gives, and why: its glyphs draw nothing.
+    missing_fonts: BTreeMap<String, String>,
 }
 
 /// Resources and viewport for one presentation; None refreshes without advancing a frame.
@@ -163,6 +168,8 @@ impl GuiResources {
             compiler: None,
             globals: super::native_shader::library::globals(map_size, decode),
             uncovered: BTreeSet::new(),
+            recorded: None,
+            missing_fonts: BTreeMap::new(),
         }
     }
 
@@ -295,32 +302,42 @@ impl GuiResources {
         if let Some(loaded) = self.textures.get(name) {
             return Ok(loaded.clone());
         }
-        let loaded = match resources::stack_texture(layers, name, self.decode)? {
-            Ok(texture) => {
-                if !layers.covered_path(name) {
-                    self.uncovered.insert(name.to_vec());
-                }
-                images.push(texture.image);
-                Loaded {
-                    texture: images.len() - 1,
-                    size: [texture.width, texture.height],
-                    missing: None,
-                    refused: None,
-                }
-            }
-            Err(why) => Loaded {
-                texture: NO_TEXTURE,
-                size: [0; 2],
-                missing: Some(why.to_string()),
-                refused: match &why {
-                    _ if why.native_failure() => None,
-                    NoTexture::Device { .. } | NoTexture::OverBudget { .. } => {
-                        Some((RefusalKind::MissingInput, why.to_string()))
+        // A texture the visual mods break (or hide) is the recording's own, named; one the
+        // recording cannot give either fails as it would without them.
+        if self.recorded.is_none() && layers.shows_visual_mods() {
+            self.recorded = layers.without_overlays();
+        }
+        let recorded = self
+            .recorded
+            .as_ref()
+            .filter(|_| layers.shows_visual_mods());
+        let loaded =
+            match resources::stack_texture_or_recorded(layers, recorded, name, self.decode)? {
+                Ok(texture) => {
+                    if !layers.covered_path(name) {
+                        self.uncovered.insert(name.to_vec());
                     }
-                    _ => Some((RefusalKind::UndefinedRead, why.to_string())),
+                    images.push(texture.image);
+                    Loaded {
+                        texture: images.len() - 1,
+                        size: [texture.width, texture.height],
+                        missing: None,
+                        refused: None,
+                    }
+                }
+                Err(why) => Loaded {
+                    texture: NO_TEXTURE,
+                    size: [0; 2],
+                    missing: Some(why.to_string()),
+                    refused: match &why {
+                        _ if why.native_failure() => None,
+                        NoTexture::Device { .. } | NoTexture::OverBudget { .. } => {
+                            Some((RefusalKind::MissingInput, why.to_string()))
+                        }
+                        _ => Some((RefusalKind::UndefinedRead, why.to_string())),
+                    },
                 },
-            },
-        };
+            };
         self.textures.insert(name.to_vec(), loaded.clone());
         Ok(loaded)
     }
@@ -688,7 +705,42 @@ impl GuiResources {
         }
         let family = found.family(&self.language).clone();
         let facts = found.facts.clone();
-        let glyphs = fonts::load_glyphs(&family, &|path| layers.read_uncovered_path(path).ok());
+        // A `.fnt` the visual mods break or hide is the recording's own, named. One no stack
+        // gives is named for the map's fallback and reported; one that fails to read, rather
+        // than being absent, also refuses the font's texts.
+        if self.recorded.is_none() && layers.shows_visual_mods() {
+            self.recorded = layers.without_overlays();
+        }
+        let recorded = self
+            .recorded
+            .as_ref()
+            .filter(|_| layers.shows_visual_mods());
+        let unreadable = std::cell::RefCell::new(Vec::new());
+        let glyphs = fonts::load_glyphs(&family, &|path| match layers.read_uncovered_path(path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                if let Some(bytes) =
+                    recorded.and_then(|recorded| recorded.read_uncovered_path(path).ok())
+                {
+                    layers.note_overlay_refusal(format!("font file {} ({error})", lossy(path)));
+                    return Some(bytes);
+                }
+                if error.kind() != io::ErrorKind::NotFound {
+                    unreadable
+                        .borrow_mut()
+                        .push(format!("{}: {error}", lossy(path)));
+                }
+                None
+            }
+        });
+        let unreadable = unreadable.into_inner();
+        for file in &glyphs.missing {
+            layers.note_refused(format!("font file {file}"));
+            self.missing_fonts.insert(
+                file.clone(),
+                "no font file of that path reads; its glyphs draw nothing".into(),
+            );
+        }
         self.uncovered.extend(
             family
                 .files
@@ -706,11 +758,21 @@ impl GuiResources {
             .refusals
             .iter()
             .map(|refusal| (RefusalKind::Reader, refusal.to_string()))
+            .chain(
+                unreadable
+                    .into_iter()
+                    .map(|why| (RefusalKind::MissingResource, why)),
+            )
             .collect();
         let mut pages = Vec::with_capacity(glyphs.pages.len());
         self.touched.clear();
         for page in &glyphs.pages {
+            // A page the visual mods break is the recording's ([`Self::texture`]); one no stack
+            // supplies leaves its glyphs blank, named for the map's fallback.
             let loaded = self.texture(layers, page, images)?;
+            if loaded.missing.is_some() {
+                layers.note_refused(format!("font page {}", lossy(page)));
+            }
             pages.push(loaded.missing.is_none().then_some(Page {
                 texture: loaded.texture,
                 size: loaded.size.map(|value| value as i32),
@@ -789,6 +851,11 @@ impl GuiResources {
         self.textures
             .iter()
             .filter_map(|(name, loaded)| Some((lossy(name), loaded.missing.clone()?)))
+            .chain(
+                self.missing_fonts
+                    .iter()
+                    .map(|(file, why)| (file.clone(), why.clone())),
+            )
             .collect()
     }
 }

@@ -168,6 +168,31 @@ struct OverlayDiagnostics {
     /// Artwork a consumer could not load from the presentation stack and drew from the
     /// recording instead ([`ResolvedLayers::artwork`]), with why.
     refusals: BTreeSet<String>,
+    /// What consumers refused to draw, by stable name, whichever stack they read
+    /// ([`ResolvedLayers::note_refused`]).
+    refused: BTreeSet<String>,
+}
+
+/// The folders and files a visual mod's files show under ([`ResolvedLayers::overlay_sees`]): the
+/// artwork folders, and the world normal map in each form the game reads it.
+const PRESENTATION_ROOTS: [&str; 7] = [
+    "gfx",
+    "interface",
+    "localisation",
+    "map/terrain",
+    "map/world_normal.dds",
+    "map/world_normal.tga",
+    "map/world_normal.bmp",
+];
+/// The defines scripts a presentation defines stack also shows.
+const DEFINES_ROOT: &str = "common/defines";
+
+/// [`ResolvedLayers::overlay_sees`] for a stack that does or does not show mods' defines.
+fn overlay_sees(defines_visible: bool, lower: &[u8]) -> bool {
+    PRESENTATION_ROOTS
+        .iter()
+        .any(|root| below(lower, root.as_bytes()))
+        || (defines_visible && below(lower, DEFINES_ROOT.as_bytes()))
 }
 
 /// The start of the lines [`UncoveredReads::append_to`] keeps current for visual mod reads.
@@ -207,6 +232,16 @@ impl UncoveredReads {
                     .join(", ")
             )
         })
+    }
+
+    /// Everything consumers of this content refused to draw, by stable name
+    /// ([`ResolvedLayers::note_refused`]).
+    pub fn refused(&self) -> BTreeSet<String> {
+        self.overlays
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .refused
+            .clone()
     }
 
     /// The artwork that could not be loaded from visual mods, which the recording's replaced.
@@ -305,6 +340,11 @@ pub struct ResolvedLayers {
     /// The same recorded layers with the selected visual mods mounted above them, or `None`
     /// when no visual mod is selected ([`Self::presentation`]).
     presentation: Option<std::sync::Arc<ResolvedLayers>>,
+    /// The presentation stack whose visual mods also show their defines scripts
+    /// ([`Self::presentation_defines`]).
+    presentation_defines: Option<std::sync::Arc<ResolvedLayers>>,
+    /// Whether a visual mod's `common/defines` shows through ([`Self::overlay_sees`]).
+    defines_visible: bool,
     overlay_reads: OverlayReads,
     effective: BTreeMap<LayerPath, EffectiveFile>,
     /// Where uncovered paths resolved, so repeats skip the folder layers' failed filesystem
@@ -323,6 +363,9 @@ pub struct ResolvedLayers {
     /// built once per layer roster and shared by every model library.
     texture_index: Memo<crate::mesh::TextureIndex>,
     descriptor_roster: Memo<crate::mesh::Roster>,
+    /// The recorded stack's roster below this presentation stack's visual mods, built once
+    /// per roster ([`Self::recorded_descriptor_roster`]).
+    recorded_descriptor_roster: Memo<crate::mesh::Roster>,
     /// The content names every trigger body is read against, built once per
     /// layer roster and shared by every content reader.
     key_names: Memo<crate::key_names::KeyNames>,
@@ -1216,14 +1259,18 @@ impl ResolvedLayers {
             if layer.coverage != self.coverage {
                 return Err(invalid("content layers use different coverage policies"));
             }
+            let defines_visible = self.defines_visible;
+            let sees = |lower: &[u8]| overlay_sees(defines_visible, lower);
+            let mut effective = std::mem::take(&mut self.effective);
             apply_overlay(
-                &mut self.effective,
+                &mut effective,
                 index,
                 matches!(layer.source, LayerSource::Archive(_)),
                 layer.files.keys(),
                 &layer.replace_paths,
-                layer.overlay.is_some(),
+                layer.overlay.is_some().then_some(&sees as Sees<'_>),
             )?;
+            self.effective = effective;
         }
         Ok(())
     }
@@ -1385,11 +1432,18 @@ impl ResolvedLayers {
     pub fn listed_layer_paths(&self, prefix: &[u8]) -> BTreeSet<LayerPath> {
         let prefix = prefix.to_ascii_lowercase();
         let mut listed = BTreeSet::new();
-        let mut hidden: Vec<LayerPath> = Vec::new();
+        // Each replaced root, and whether a visual mod replaced it (that hides only what the
+        // mod shows, `Self::overlay_sees`).
+        let mut hidden: Vec<(LayerPath, bool)> = Vec::new();
         for layer in self.layers.iter().rev() {
             for path in layer.files.keys() {
                 let lower = path.to_ascii_lowercase();
-                if lower.starts_with(&prefix) && !hidden.iter().any(|root| below(&lower, root)) {
+                if lower.starts_with(&prefix)
+                    && !self.hides(layer, &lower)
+                    && !hidden.iter().any(|(root, overlay)| {
+                        below(&lower, root) && (!overlay || self.overlay_sees(&lower))
+                    })
+                {
                     listed.insert(path.clone());
                 }
             }
@@ -1397,7 +1451,7 @@ impl ResolvedLayers {
                 layer
                     .replace_paths
                     .iter()
-                    .map(|path| path.to_ascii_lowercase()),
+                    .map(|path| (path.to_ascii_lowercase(), layer.overlay.is_some())),
             );
         }
         listed
@@ -1432,13 +1486,14 @@ impl ResolvedLayers {
         let mut listings = Vec::with_capacity(self.layers.len());
         for (index, layer) in self.layers.iter().enumerate() {
             let listing = listed_files(index, layer, &prefix, &extensions)?;
+            let sees = |lower: &[u8]| self.overlay_sees(lower);
             apply_overlay(
                 &mut effective,
                 index,
                 matches!(layer.source, LayerSource::Archive(_)),
                 listing.keys(),
                 &layer.replace_paths,
-                layer.overlay.is_some(),
+                layer.overlay.is_some().then_some(&sees as Sees<'_>),
             )?;
             listings.push(listing);
         }
@@ -1482,6 +1537,20 @@ impl ResolvedLayers {
     /// Every descriptor below `gfx`, as [`crate::mesh::Roster`] reads it.
     pub fn descriptor_roster(&self) -> io::Result<std::sync::Arc<crate::mesh::Roster>> {
         self.memoized(&self.descriptor_roster, crate::mesh::Roster::read)
+    }
+
+    /// The descriptor roster of the recorded stack below this stack's visual mods, built once
+    /// per roster and shared by every model library; `None` without visual mods.
+    pub fn recorded_descriptor_roster(
+        &self,
+    ) -> io::Result<Option<std::sync::Arc<crate::mesh::Roster>>> {
+        let Some(recorded) = self.without_overlays() else {
+            return Ok(None);
+        };
+        self.memoized(&self.recorded_descriptor_roster, |_| {
+            crate::mesh::Roster::read(&recorded)
+        })
+        .map(Some)
     }
 
     /// The content names trigger bodies are read against
@@ -1720,29 +1789,148 @@ impl ResolvedLayers {
         }
     }
 
+    /// Records that a consumer refused to draw `key`, a stable name of what (a model entity, a
+    /// city building), whichever stack it read: a map compares what it refuses with and without
+    /// visual mods by these names.
+    pub fn note_refused(&self, key: String) {
+        self.overlay_reads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .refused
+            .insert(key);
+    }
+
+    /// Everything consumers of this content refused to draw ([`Self::note_refused`]).
+    pub fn refused(&self) -> BTreeSet<String> {
+        self.overlay_reads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .refused
+            .clone()
+    }
+
+    /// Names artwork a visual mod supplies that is drawn from the recording instead, with why
+    /// ([`UncoveredReads::overlay_refusals`]).
+    pub fn note_overlay_refusal(&self, refusal: String) {
+        self.overlay_reads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .refusals
+            .insert(refusal);
+    }
+
     /// Artwork as `load` reads it from the [presentation stack](Self::presentation). When a
     /// visual mod is mounted and the artwork cannot be loaded from it (a format the reader
     /// refuses, or a lower file its `replace_path` hides), the recorded artwork is loaded instead
     /// and `name` is reported with why ([`UncoveredReads::overlay_refusals`]); an error loading the
     /// recorded artwork is returned as it would be without visual mods.
+    ///
+    /// Called on a presentation stack itself, it falls back to the recorded layers below its
+    /// visual mods; on the recorded stack, to that stack without its presentation. Either way
+    /// the fallback reads nothing a visual mod supplies.
     pub fn artwork<T>(
         &self,
         name: &str,
-        load: impl Fn(&ResolvedLayers) -> io::Result<T>,
+        mut load: impl FnMut(&ResolvedLayers) -> io::Result<T>,
     ) -> io::Result<T> {
         let presentation = self.presentation();
-        if std::ptr::eq(presentation, self) {
+        if !presentation.shows_visual_mods() {
             return load(self);
         }
         load(presentation).or_else(|error| {
-            let recorded = load(self)?;
-            self.overlay_reads
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .refusals
-                .insert(format!("{name} ({error})"));
-            Ok(recorded)
+            let recorded = if std::ptr::eq(presentation, self) {
+                self.without_overlays()
+                    .ok_or_else(|| invalid("visual mods without recorded layers"))?
+            } else {
+                self.recorded_only()
+            };
+            let loaded = load(&recorded)?;
+            self.note_overlay_refusal(format!("{name} ({error})"));
+            Ok(loaded)
         })
+    }
+
+    /// A value an artwork loader reads from the graphics defines (the visual mods' scripts
+    /// merged with the recorded ones), or, when they cannot give it, from the `recorded`
+    /// defines, named with why like [`Self::artwork`]. Without visual mods' defines both are
+    /// the recorded defines and it is read once. Simulation operands never come from here.
+    pub fn graphics_define<T, E: std::fmt::Display>(
+        &self,
+        name: &str,
+        graphics: &crate::defines::Defines,
+        recorded: &crate::defines::Defines,
+        read: impl Fn(&crate::defines::Defines) -> Result<T, E>,
+    ) -> Result<T, E> {
+        if std::ptr::eq(graphics, recorded) {
+            return read(recorded);
+        }
+        read(graphics).or_else(|error| {
+            let value = read(recorded)?;
+            self.note_overlay_refusal(format!("graphics defines for the {name} ({error})"));
+            Ok(value)
+        })
+    }
+
+    /// One item of artwork a loader reads apart from the rest (a tree kind, an arrow texture, an
+    /// aircraft rig), as `load` reads it from the stack it names: `false` the stack the loader
+    /// was handed, `true` the recorded layers below its visual mods, which the caller holds
+    /// when `below`. An item the shown stack cannot give is read from the recorded layers,
+    /// named with why like [`Self::artwork`]; one neither gives is refused by its stable `key`
+    /// for the map's fallback ([`Self::note_refused`]) and its shown error returned.
+    pub fn artwork_item<T, E: std::fmt::Display>(
+        &self,
+        key: &str,
+        below: bool,
+        mut load: impl FnMut(bool) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let error = match load(false) {
+            Ok(item) => return Ok(item),
+            Err(error) => error,
+        };
+        if below && let Ok(item) = load(true) {
+            self.note_overlay_refusal(format!("{key} ({error})"));
+            return Ok(item);
+        }
+        self.note_refused(key.to_owned());
+        Err(error)
+    }
+
+    /// Whether the file at `relative` comes from a visual mod: the layer a read answers it
+    /// from is one of the mods mounted above the recording. Consumers tag what they draw with
+    /// it, so only failures of a visual mod's own content count against the mods.
+    pub fn supplied_by_visual_mod(&self, relative: &str) -> bool {
+        if !self.shows_visual_mods() {
+            return false;
+        }
+        let Some(relative) = sanitize(relative.as_bytes()) else {
+            return false;
+        };
+        let layer = if self.covered_path(&relative) {
+            self.lookup_path(&relative)
+                .ok()
+                .flatten()
+                .map(|hit| hit.layer)
+        } else {
+            self.uncovered_answer(&relative)
+                .ok()
+                .map(|(_, layer)| layer)
+        };
+        layer.is_some_and(|layer| self.layers[layer].overlay.is_some())
+    }
+
+    /// Whether this stack mounts visual mods (a presentation stack).
+    pub fn shows_visual_mods(&self) -> bool {
+        self.layers.iter().any(|layer| layer.overlay.is_some())
+    }
+
+    /// This recorded stack without its presentation: what is drawn when no visual mod is.
+    /// Its caches are shared with this stack.
+    pub fn recorded_only(&self) -> ResolvedLayers {
+        ResolvedLayers {
+            presentation: None,
+            presentation_defines: None,
+            ..self.clone()
+        }
     }
 
     /// The stack artwork is read from: these recorded layers with the selected visual mods
@@ -1752,6 +1940,53 @@ impl ResolvedLayers {
     /// the presentation stack, whose own derived caches start fresh.
     pub fn presentation(&self) -> &ResolvedLayers {
         self.presentation.as_deref().unwrap_or(self)
+    }
+
+    /// The presentation stack graphics defines are evaluated over: the visual mods'
+    /// `common/defines` scripts are merged natively with the recorded ones, in the game's own
+    /// file order. `None` without visual mods. Simulation consumers keep the recorded defines.
+    pub fn presentation_defines(&self) -> Option<&ResolvedLayers> {
+        self.presentation_defines.as_deref()
+    }
+
+    /// The recorded stack below a presentation stack's visual mods, sharing their inventories,
+    /// or `None` when no visual mod is mounted here. Artwork readers fall back to it.
+    pub fn without_overlays(&self) -> Option<ResolvedLayers> {
+        if self.layers.iter().all(|layer| layer.overlay.is_none()) {
+            return None;
+        }
+        let mut recorded = ResolvedLayers {
+            coverage: self.coverage,
+            layers: self
+                .layers
+                .iter()
+                .filter(|layer| layer.overlay.is_none())
+                .cloned()
+                .collect(),
+            above_mods: self.above_mods,
+            overlay_reads: self.overlay_reads.clone(),
+            uncovered_reads: self.uncovered_reads.clone(),
+            shader_warnings: self.shader_warnings.clone(),
+            ..ResolvedLayers::default()
+        };
+        recorded.finish().ok()?;
+        Some(recorded)
+    }
+
+    /// Whether a visual mod's file at `lower` (an ASCII-lowercase path) is part of the
+    /// presentation. Visual mods supply artwork, interface, fonts and text: `gfx`, `interface`,
+    /// `localisation` and the terrain textures below `map/terrain`. Every other path (scripts,
+    /// history, map geometry and the rest of `map`) resolves from the recorded layers alone, with
+    /// a mod's files and `replace_path` there out of sight, so a reader handed a presentation
+    /// stack still reads recorded simulation content. A mod's defines show only in
+    /// [`Self::presentation_defines`].
+    fn overlay_sees(&self, lower: &[u8]) -> bool {
+        overlay_sees(self.defines_visible, lower)
+    }
+
+    /// Whether `layer` stays out of a lookup of the lowercase `lower`.
+    fn hides(&self, layer: &ResolvedLayer, lower: &[u8]) -> bool {
+        layer.overlay.is_some() && !self.overlay_sees(lower)
     }
 
     /// The presentation stack: `overlays` (in mount order, lowest first) inserted above the
@@ -1782,6 +2017,23 @@ impl ResolvedLayers {
         (presentation, refused)
     }
 
+    /// This presentation stack with its visual mods' defines scripts showing too, for
+    /// [`Self::presentation_defines`]; its memos and derived caches are its own.
+    fn with_defines(&self) -> io::Result<ResolvedLayers> {
+        let mut stack = ResolvedLayers {
+            coverage: self.coverage,
+            layers: self.layers.clone(),
+            above_mods: self.above_mods,
+            defines_visible: true,
+            overlay_reads: self.overlay_reads.clone(),
+            uncovered_reads: self.uncovered_reads.clone(),
+            shader_warnings: self.shader_warnings.clone(),
+            ..ResolvedLayers::default()
+        };
+        stack.finish()?;
+        Ok(stack)
+    }
+
     fn mounted(&self, overlays: Vec<ResolvedLayer>) -> io::Result<ResolvedLayers> {
         let mut layers = self.layers.clone();
         let at = layers.len().saturating_sub(self.above_mods);
@@ -1791,6 +2043,8 @@ impl ResolvedLayers {
             layers,
             above_mods: self.above_mods,
             presentation: None,
+            presentation_defines: None,
+            defines_visible: false,
             overlay_reads: self.overlay_reads.clone(),
             uncovered_reads: self.uncovered_reads.clone(),
             shader_warnings: self.shader_warnings.clone(),
@@ -1827,6 +2081,9 @@ impl ResolvedLayers {
         // A case-missing archive, directory or failed open passes to the next layer
         // under PhysFS lookup rules; `replace_path` stops the scan below its layer.
         for (index, layer) in self.layers.iter().enumerate().rev() {
+            if self.hides(layer, &lower) {
+                continue;
+            }
             let hit = match &layer.source {
                 LayerSource::Folder(_) => {
                     layer
@@ -1964,6 +2221,9 @@ impl ResolvedLayers {
     ) -> io::Result<Option<(usize, UncoveredHit, Vec<u8>)>> {
         let lower = relative.to_ascii_lowercase();
         for (index, layer) in self.layers.iter().enumerate().rev() {
+            if self.hides(layer, &lower) {
+                continue;
+            }
             match &layer.source {
                 // A path that is not UTF-8 opens no folder file (see `read_path`).
                 LayerSource::Folder(_) => {
@@ -2044,6 +2304,9 @@ impl ResolvedLayers {
         for (index, layer) in self.layers.iter().enumerate().rev() {
             if Some(index) == answered {
                 break;
+            }
+            if self.hides(layer, &lower) {
+                continue;
             }
             layer.verify_miss(relative)?;
             if layer
@@ -2263,18 +2526,29 @@ fn listed_files(
     Ok(paths)
 }
 
+/// What a visual mod shows ([`ResolvedLayers::overlay_sees`]), for [`apply_overlay`].
+type Sees<'a> = &'a dyn Fn(&[u8]) -> bool;
+
 fn apply_overlay<'a>(
     effective: &mut BTreeMap<LayerPath, EffectiveFile>,
     index: usize,
     archive: bool,
     paths: impl Iterator<Item = &'a LayerPath>,
     replace_paths: &[LayerPath],
-    overlay: bool,
+    // A visual mod's visibility (`ResolvedLayers::overlay_sees`): its files and `replace_path`
+    // count only where it shows. `None` for a recorded layer.
+    sees: Option<Sees<'_>>,
 ) -> io::Result<()> {
+    let overlay = sees.is_some();
+    let shows = |lower: &[u8]| sees.is_none_or(|sees| sees(lower));
     for replaced in replace_paths {
-        effective.retain(|path, _| !below(path, &replaced.to_ascii_lowercase()));
+        let replaced = replaced.to_ascii_lowercase();
+        effective.retain(|path, _| !(below(path, &replaced) && shows(path)));
     }
     for path in paths {
+        if !shows(&path.to_ascii_lowercase()) {
+            continue;
+        }
         // Lookups resolve each layer natively; this index only lists. A recorded stack refuses
         // what verification cannot order, while a visual mod's spelling replaces the entry.
         if !overlay
@@ -2877,11 +3151,14 @@ fn gather_selected(
             shader_warnings: Default::default(),
             texture_index: Default::default(),
             descriptor_roster: Default::default(),
+            recorded_descriptor_roster: Default::default(),
             key_names: Default::default(),
             faction_templates: Default::default(),
             derived: Default::default(),
             above_mods: 0,
             presentation: None,
+            presentation_defines: None,
+            defines_visible: false,
             overlay_reads: Default::default(),
         };
         let mut order_notes = Vec::new();

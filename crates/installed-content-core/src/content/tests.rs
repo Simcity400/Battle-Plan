@@ -961,7 +961,7 @@ fn layer_hash_uses_paths_content_and_an_unambiguous_sorted_list() {
 fn overlay_replacement_removes_subdirectories_without_prefix_collisions() {
     let mut effective = BTreeMap::new();
     let base = ["map/a", "map/sub/b", "maps/c", "common/a"].map(|path| path.as_bytes().to_vec());
-    apply_overlay(&mut effective, 0, false, base.iter(), &[], false).unwrap();
+    apply_overlay(&mut effective, 0, false, base.iter(), &[], None).unwrap();
     let additions = [b"map/new".to_vec(), b"common/a".to_vec()];
     apply_overlay(
         &mut effective,
@@ -969,7 +969,7 @@ fn overlay_replacement_removes_subdirectories_without_prefix_collisions() {
         false,
         additions.iter(),
         &[b"MAP".to_vec()],
-        false,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -994,7 +994,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         false,
         [b"map/file.txt".to_vec()].iter(),
         &[],
-        false,
+        None,
     )
     .unwrap();
     apply_overlay(
@@ -1003,7 +1003,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         false,
         [b"map/FILE.txt".to_vec()].iter(),
         &[],
-        false,
+        None,
     )
     .unwrap();
     assert_eq!(effective.len(), 1);
@@ -1016,7 +1016,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
             true,
             [b"map/file.txt".to_vec()].iter(),
             &[],
-            false,
+            None,
         )
         .is_err()
     );
@@ -1027,7 +1027,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         true,
         [b"map/file.txt".to_vec()].iter(),
         &[],
-        true,
+        Some(&|_: &[u8]| true),
     )
     .unwrap();
     assert_eq!(effective[b"map/file.txt".as_slice()].layer, 2);
@@ -1219,11 +1219,14 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         shader_warnings: Default::default(),
         texture_index: Default::default(),
         descriptor_roster: Default::default(),
+        recorded_descriptor_roster: Default::default(),
         key_names: Default::default(),
         faction_templates: Default::default(),
         derived: Default::default(),
         above_mods: 0,
         presentation: None,
+        presentation_defines: None,
+        defines_visible: false,
         overlay_reads: Default::default(),
     };
     assert_eq!(layers.read_uncovered("gfx/world/hoi.fnt").unwrap(), b"over");
@@ -1245,11 +1248,14 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         shader_warnings: Default::default(),
         texture_index: Default::default(),
         descriptor_roster: Default::default(),
+        recorded_descriptor_roster: Default::default(),
         key_names: Default::default(),
         faction_templates: Default::default(),
         derived: Default::default(),
         above_mods: 0,
         presentation: None,
+        presentation_defines: None,
+        defines_visible: false,
         overlay_reads: Default::default(),
     };
     assert_eq!(

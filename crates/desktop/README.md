@@ -97,7 +97,7 @@ The viewer has no interface of its own: the host owns every control, setting and
 
 The status the host publishes as `viewer-state` carries the full map's `flyAircraft`: the aircraft Fly mode was told to fly and whether it is loading, ready or refused, as the viewer last reported it with `NativeEvent::FlyAircraft`. A viewer that starts or exits clears it; the frontend sends its choice again when the map is ready.
 
-The host saves map appearance preferences; after each save request, even one whose reply failed, it sends the running viewer `MapSettingsSaved`, once however many are queued, and the viewer reads them again and reloads any map they change. Export carries an optional map-view ID through the native action. Widget exports target that view; Campaign map exports omit the ID. Global map-settings requests need no source; campaign/widget targets retain source/revision validation. Appearance inheritance and content reload rules belong in the [viewer guide](../viewer/README.md#campaign-appearance).
+The host saves map appearance preferences; after each save request, even one whose reply failed, it sends the running viewer `MapSettingsSaved`, once however many are queued, and the viewer reads them again and reloads any map they change. Refresh in the visual mod picker sends `RefreshVisualMods`; both reload the maps whose visual mods changed on disk. Export carries an optional map-view ID through the native action. Widget exports target that view; Campaign map exports omit the ID. Global map-settings requests need no source; campaign/widget targets retain source/revision validation. Appearance inheritance and content reload rules belong in the [viewer guide](../viewer/README.md#campaign-appearance).
 
 ## Pop-out map
 

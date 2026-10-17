@@ -162,6 +162,7 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
             }],
             radius: 1.,
             height: 1.,
+            visual: false,
             own_radius: 1.,
             bound: 1.,
             attachments: 0,

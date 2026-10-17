@@ -299,6 +299,31 @@ fn texture_within(
 /// (uncovered textures unverified, as `ResolvedLayers::read_uncovered` states). A cube map is
 /// refused: texture creation makes it a cube texture, which a GUI draw samples through
 /// a two-dimensional binding.
+/// [`stack_texture`], or, when it does not load or read from `layers` and `recorded` holds the
+/// layers below their visual mods, the recording's texture, named like
+/// [`ResolvedLayers::artwork`]; one the recording cannot give either fails as from `layers`.
+pub fn stack_texture_or_recorded(
+    layers: &ResolvedLayers,
+    recorded: Option<&ResolvedLayers>,
+    name: &[u8],
+    decode: native::Decode,
+) -> io::Result<Result<Texture, NoTexture>> {
+    let shown = stack_texture(layers, name, decode);
+    let why = match &shown {
+        Ok(Ok(_)) => None,
+        Ok(Err(why)) => Some(why.to_string()),
+        Err(error) => Some(error.to_string()),
+    };
+    if let Some(why) = why
+        && let Some(recorded) = recorded
+        && let Ok(Ok(texture)) = stack_texture(recorded, name, decode)
+    {
+        layers.note_overlay_refusal(format!("texture {} ({why})", String::from_utf8_lossy(name)));
+        return Ok(Ok(texture));
+    }
+    shown
+}
+
 pub fn stack_texture(
     layers: &ResolvedLayers,
     name: &[u8],

@@ -37,6 +37,20 @@ impl Lit {
         samples: u32,
         high: bool,
     ) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            Self::build(device, effect, format, depth, samples, high)
+        })
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        samples: u32,
+        high: bool,
+    ) -> io::Result<Self> {
         let name = technique(high);
         let selection = effect
             .select(name)

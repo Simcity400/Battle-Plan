@@ -127,8 +127,10 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let decode = installed_content::image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
+    // The offline scene renders the recorded content alone, so both define sets are recorded.
     let assets = crate::map_assets::load(
         layers,
+        &defines,
         &defines,
         map,
         &definitions,
@@ -152,7 +154,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         lazy,
     } = MapIcons::load(
         layers,
-        &defines,
+        (&defines, &defines),
         &map_data,
         &regions,
         &input.language,

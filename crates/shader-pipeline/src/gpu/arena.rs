@@ -24,6 +24,8 @@ struct Inner {
     recent: Vec<Recent>,
     /// Writes to caller-owned buffers, kept until a flush, even across an unsubmitted frame.
     writes: Vec<(wgpu::Buffer, u64, Vec<u8>)>,
+    /// Every draw refused through this arena ([`Arena::refuse`]).
+    refusals: std::collections::BTreeSet<String>,
 }
 
 struct Chunk {
@@ -55,6 +57,20 @@ impl Slice {
 }
 
 impl Arena {
+    /// Records that a draw was refused for `reason`, a stable name of what was refused and
+    /// why: a map compares the refusals it makes with and without visual mods by these names.
+    pub fn refuse(&self, reason: &str) {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.refusals.contains(reason) {
+            inner.refusals.insert(reason.to_owned());
+        }
+    }
+
+    /// Every draw refused through this arena, by name ([`Self::refuse`]).
+    pub fn refusals(&self) -> std::collections::BTreeSet<String> {
+        self.inner.borrow().refusals.clone()
+    }
+
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             device: device.clone(),

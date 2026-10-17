@@ -1413,7 +1413,7 @@ fn viewer_map_assets(
         viewer_foundation::map::ribbon_content::OrderAssets::load(
             layers,
             decode,
-            defines,
+            (defines, defines),
             &mut warnings,
         )
     }) && let Err(why) = &orders.raid_defines
@@ -1436,7 +1436,7 @@ fn viewer_map_assets(
                     layers,
                     decode,
                     data,
-                    defines,
+                    (defines, defines),
                     regions,
                     &mut warnings,
                 )
@@ -1473,7 +1473,7 @@ fn viewer_map_assets(
     if let Some(refusals) = log.read("viewer.map_text", || {
         Ok(viewer_world::map::animated_map_text::Assets::load(
             layers,
-            defines,
+            (defines, defines),
             [data.width, data.height],
             decode,
             &registry.files,

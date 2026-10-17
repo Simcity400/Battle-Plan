@@ -561,6 +561,107 @@ fn a_content_failure_turns_off_only_the_model_layer_and_says_so() {
     assert!(report.disabled.unwrap().contains("acclimatation.txt"));
 }
 
+/// A unit distance cutoff a visual mod's scripts set to a string loads the layer with the
+/// recorded defines, named; it never turns the recorded unit models off.
+#[test]
+fn unit_graphics_defines_a_mod_breaks_load_with_the_recorded_ones() {
+    let defines = |cutoff: &str| {
+        let defines = installed_content::defines::Defines::new().unwrap();
+        defines
+            .load(
+                "common/defines/00_defines.lua",
+                format!(
+                    "NDefines = {{ NGraphics = {{ UNITS_DISTANCE_CUTOFF = {cutoff},                      SHIPS_DISTANCE_CUTOFF = 1, UNIT_ARROW_DISTANCE_CUTOFF = 1,                      SHIP_IN_PORT_SCALE = 1, MESH_POPUP_SCALE_UP_SPEED = 1,                      MESH_POPUP_SCALE_DOWN_SPEED = 1, SHIP_POPUP_SCALE_DOWN_SPEED = 1,                      NAVAL_UNIT_MOVEMENT_SPEED = 1, LAND_UNIT_MOVEMENT_SPEED = 1 }} }}"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        defines
+    };
+    let (shown, recorded) = (defines("\"far\""), defines("200"));
+    let load = |_: LoadStack,
+                defines: &installed_content::defines::Defines,
+                _: &mut Vec<installed_content::Diagnostic>| {
+        Ok(UnitModelAssets {
+            gates: Gates::read(defines)?,
+            disabled: None,
+            ..UnitModelAssets::off(String::new())
+        })
+    };
+    let mut warnings = Vec::new();
+    let mut refusal = None;
+    let layers = ResolvedLayers::default();
+    let assets = UnitModelAssets::load_with(
+        &layers,
+        &shown,
+        Some(&recorded),
+        false,
+        &mut warnings,
+        |why| refusal = Some(why),
+        load,
+    );
+    assert!(assets.disabled.is_none(), "{warnings:?}");
+    assert!(assets.gates.units(150.0) && !assets.gates.units(250.0));
+    let refusal = refusal.unwrap();
+    assert!(
+        refusal.starts_with("graphics defines for the unit models (")
+            && refusal.contains("UNITS_DISTANCE_CUTOFF"),
+        "{refusal}"
+    );
+    // Without visual mods' defines the layer is off, as before, and named for the map's
+    // fallback.
+    let assets =
+        UnitModelAssets::load_with(&layers, &shown, None, false, &mut warnings, |_| {}, load);
+    assert!(assets.disabled.is_some());
+    assert!(layers.refused().contains(LAYER_OFF));
+}
+
+/// Content of the visual mods that the unit model layer cannot load (their naval combat
+/// formations, a formation mesh) loads the layer from the recorded layers below them, named;
+/// the recorded unit models are drawn and nothing reaches the map's fallback.
+#[test]
+fn a_unit_model_layer_the_mods_break_loads_from_the_recording() {
+    let defines = installed_content::defines::Defines::new().unwrap();
+    let mut stacks = Vec::new();
+    let load =
+        |stack: LoadStack, _: &installed_content::defines::Defines, _: &mut Vec<installed_content::Diagnostic>| {
+            stacks.push(stack);
+            match stack {
+                LoadStack::Shown => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "gfx/naval_combat.txt: no formation",
+                )),
+                LoadStack::Recorded => Ok(UnitModelAssets {
+                    disabled: None,
+                    ..UnitModelAssets::off(String::new())
+                }),
+            }
+        };
+    let layers = ResolvedLayers::default();
+    let mut warnings = Vec::new();
+    let mut refusal = None;
+    let assets = UnitModelAssets::load_with(
+        &layers,
+        &defines,
+        Some(&defines),
+        true,
+        &mut warnings,
+        |why| refusal = Some(why),
+        load,
+    );
+    assert!(assets.disabled.is_none(), "{warnings:?}");
+    assert_eq!(
+        stacks,
+        [LoadStack::Shown, LoadStack::Shown, LoadStack::Recorded]
+    );
+    let refusal = refusal.unwrap();
+    assert!(
+        refusal.starts_with("unit models (") && refusal.contains("naval_combat.txt"),
+        "{refusal}"
+    );
+    assert!(layers.refused().is_empty());
+}
+
 #[test]
 fn an_unreadable_template_leaves_its_stacks_unmodelled_and_counted() {
     use replay::rows::{DivisionTemplateIconRow, TableId, TableRows};
@@ -909,4 +1010,40 @@ fn the_walker_s_sprite_key_follows_its_own() {
             "western_european_gfx_rifleman_entity".to_owned()
         ))
     );
+}
+
+/// An entity a visual mod's unreadable descriptor leaves undecided, though the recording's own
+/// descriptors declare it readably, is drawn from the recording, named; one only the mod's
+/// unreadable descriptor may declare is refused and recorded by name for the map's fallback.
+#[test]
+fn an_entity_a_mods_unreadable_descriptor_leaves_undecided_is_drawn_from_the_recording() {
+    use crate::map::models::tests::{MESHES_GFX, PLANE_ASSET, triangle_mesh, visual_stack};
+    let (root, layers) = visual_stack(
+        "undecided",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            (
+                "art/gfx/entities/broken.asset",
+                // Does not parse even when its blocks are closed.
+                br#"entity = { name = "plane" zeppelin } }{ = ="#,
+            ),
+        ],
+    );
+    let presentation = layers.presentation().clone();
+    let mut assets = UnitModelAssets::off(String::new());
+    assets.roster = presentation.descriptor_roster().unwrap();
+    assets.layers = presentation.clone();
+    assets.registered.insert("plane".into());
+    assert!(entity_refusal(&assets.roster, "plane").is_some());
+    assert_eq!(assets.refusal("plane"), None);
+    let slot = assets.bake_slot("plane").unwrap();
+    assert!(!assets.library().meshes[slot].visual);
+    let refusals = presentation.read_warnings().overlay_refusals().unwrap();
+    assert!(refusals.contains("model plane ("), "{refusals}");
+    assert!(assets.refusal("zeppelin").is_some());
+    assert!(presentation.refused().contains("model entity zeppelin"));
+    assert!(!presentation.refused().contains("model entity plane"));
+    let _ = std::fs::remove_dir_all(&root);
 }

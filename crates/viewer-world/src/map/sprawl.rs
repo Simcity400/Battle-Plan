@@ -651,10 +651,13 @@ pub struct SprawlSummary {
 
 impl Sprawl {
     /// Resolves the plan's entities and groups its buildings for drawing.
+    /// `defines` give the city damage thresholds: the graphics defines while the visual mods
+    /// show.
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
         plan: &SprawlPlan,
+        defines: &installed_content::defines::Defines,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         // The entities and meshes of every descriptor the engine registers
@@ -683,13 +686,39 @@ impl Sprawl {
         }
         let entities: Vec<String> = entities.into_iter().cloned().collect();
         let mut model_warnings = Vec::new();
-        let library = ModelLibrary::load(
+        let mut library = ModelLibrary::load(
             layers,
             decode,
             &roster.descriptors,
             &entities,
             &mut model_warnings,
         )?;
+        // An entity only a visual mod's unreadable descriptor may declare is drawn from the
+        // recording, whose own descriptors declare it readably; every other is recorded by name
+        // for the map's fallback.
+        let recorded = layers.recorded_descriptor_roster()?;
+        let (from_recording, refused): (Vec<String>, Vec<String>) =
+            refused.into_iter().cloned().partition(|entity| {
+                recorded.as_ref().is_some_and(|recorded| {
+                    !recorded.unreadable_names.contains_key(entity)
+                        && recorded.descriptors.entities.contains_key(entity)
+                })
+            });
+        if !from_recording.is_empty() {
+            library.merge(ModelLibrary::load_recorded(
+                layers,
+                decode,
+                &from_recording,
+                |entity| format!("a descriptor that does not parse may declare {entity}"),
+            )?);
+        }
+        for entity in refused.iter().chain(
+            entities
+                .iter()
+                .filter(|entity| library.slot(entity).is_none()),
+        ) {
+            layers.note_refused(format!("model entity {entity}"));
+        }
         warnings.extend(model_warnings.into_iter().map(|(_, message)| message));
         let mut placed = Vec::with_capacity(plan.buildings.len());
         let mut cities = Vec::with_capacity(plan.buildings.len());
@@ -729,7 +758,6 @@ impl Sprawl {
             entities: plan.entities.len(),
             meshes: library.meshes.len(),
         };
-        let defines = installed_content::defines::read(layers)?;
         Ok(Self {
             field: ModelField::build(&library, placed, SPRAWL_TILE),
             library,

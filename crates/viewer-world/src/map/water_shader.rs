@@ -65,6 +65,21 @@ impl Water {
         depth: wgpu::TextureFormat,
         technique: &str,
     ) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            Self::build(device, effect, map, samples, format, depth, technique)
+        })
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        map: [u32; 2],
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        technique: &str,
+    ) -> io::Result<Self> {
         let selection = effect
             .select(technique)
             .map_err(refuse)?

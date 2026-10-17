@@ -39,6 +39,7 @@ mod raid_lane;
 mod render;
 #[cfg(test)]
 mod unit_scale_tests;
+mod visual_fallback;
 
 use dashboard::Config;
 

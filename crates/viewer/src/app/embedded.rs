@@ -1,4 +1,4 @@
-use super::{Capture, Playhead, Viewer, seek_open_target};
+use super::{Capture, Playhead, Viewer, VisualStale, seek_open_target};
 use eframe::{egui, wgpu};
 use replay::{frame::TableView, rows::TableId};
 use std::collections::HashSet;
@@ -46,6 +46,8 @@ impl Viewer {
                         dashboard.set_diagnostics(self.diagnostics);
                         // New maps start with the current mute choice.
                         dashboard.set_muted(self.muted);
+                        // Every map of a recording follows one fallback decision per key.
+                        dashboard.share_fallbacks(Arc::clone(&self.visual_fallbacks));
                         self.embedded_open = None;
                         self.embedded_seek = None;
                         self.dashboard = Some(Box::new(dashboard));
@@ -87,24 +89,77 @@ impl Viewer {
                     .as_ref()
                     .is_some_and(|scene| scene.samples() != preferences.graphics.samples)
                 {
-                    if let Some(document) = &self.document {
-                        self.options.branch = Some(document.playback.branch());
-                        self.options.hour = Some(document.playback.hour());
-                    }
-                    self.options.camera = self.camera;
-                    self.playing = false;
-                    self.open(
-                        source.path().to_path_buf(),
-                        ctx,
-                        Some(source.key().revision.clone()),
-                    );
-                    self.source = Some(source);
+                    self.reload_campaign_map(source, ctx);
                 }
             }
         }
         if let Some(message) = pending.gamepad {
             self.input.gamepad(message);
             ctx.request_repaint();
+        }
+        // A finished check of the visual mods the open maps show reloads the changed ones.
+        if let Some(stale) = self
+            .visual_check
+            .as_ref()
+            .and_then(|check| check.try_recv().ok())
+        {
+            self.visual_check = None;
+            let changed = stale.maps.len() + usize::from(stale.campaign.is_some());
+            let mut note = format!(
+                "Visual mods checked: {changed} of {} open map(s) changed since they loaded",
+                stale.checked
+            );
+            // Stale dashboard content goes first: the Campaign map's reload would reuse it.
+            if let Some(dashboard) = &mut self.dashboard {
+                dashboard.reload_stale(&stale.maps, frame);
+            }
+            if stale.campaign.is_some() {
+                note.push_str("; the Campaign map reloads");
+            }
+            self.visual_stale_campaign = stale.campaign.or(self.visual_stale_campaign.take());
+            if !stale.failures.is_empty() {
+                note.push_str(&format!("; not read: {}", stale.failures.join("; ")));
+            }
+            self.visual_check_note = Some(format!("{note}."));
+        }
+        // A check asked for while a map loaded runs again once every load is installed: the
+        // load may have mounted the mods before they changed, after its own last look.
+        if self
+            .visual_check_after_load
+            .due(self.loading_any_map(), self.visual_check.is_some())
+        {
+            self.check_visual_mods(false, ctx);
+        }
+        // The Campaign map's visual mod fallback: its frame's report goes to the one owner
+        // ([`crate::visual_fallback`]), and content that is no longer what its key holds loads
+        // again, without the mods or with them back, as the owner decided.
+        if let Some(report) = self.take_visual_report() {
+            crate::visual_fallback::lock(&self.visual_fallbacks).reduce(vec![report]);
+        }
+        if self.loading.is_none()
+            && let Some(source) = self.source.clone()
+            && self
+                .document
+                .as_ref()
+                .and_then(|document| document.content.fallback.as_ref())
+                .is_some_and(|built| {
+                    !crate::visual_fallback::lock(&self.visual_fallbacks).current(built)
+                })
+        {
+            self.reload_campaign_map(source, ctx);
+        }
+        // A changed Campaign map reloads once no load runs: a load already running may reuse the
+        // stale content, and one that mounted the current files carries another revision.
+        if self.loading.is_none()
+            && let Some(revision) = self.visual_stale_campaign.take()
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|document| document.visual_revision == revision)
+            && let Some(source) = self.source.clone()
+        {
+            self.stale_visual_revision = Some(revision);
+            self.reload_campaign_map(source, ctx);
         }
         let actions = pending.actions;
         // The web shell owns these controls and changes the map's own state.
@@ -336,23 +391,11 @@ impl Viewer {
                 }
                 self.report_map_details();
             }
-            MapAction::MapSettingsSaved => {
-                // Read off the UI thread; the per-frame preference check then reloads any map
-                // they change.
-                if let Some(embedded) = &self.embedded {
-                    let service = embedded.service();
-                    let repaint = ctx.clone();
-                    let spawned = std::thread::Builder::new()
-                        .name("map preferences".into())
-                        .spawn(move || {
-                            service.reload_map_settings();
-                            repaint.request_repaint();
-                        });
-                    if let Err(error) = spawned {
-                        self.error = Some(format!("Map preferences: {error}"));
-                    }
-                }
-            }
+            // Saved preferences reload any map whose selection, quality or anti-aliasing they
+            // change (the per-frame preference check); both actions then reload each map whose
+            // visual mods changed on disk since it loaded.
+            MapAction::MapSettingsSaved => self.check_visual_mods(true, ctx),
+            MapAction::RefreshVisualMods => self.check_visual_mods(false, ctx),
             MapAction::Inspect => self.report_map_details(),
             MapAction::CameraMode { mode, overlays } => self.set_camera_mode(mode, overlays, ctx),
             MapAction::FlyAircraft { aircraft } => self.fly_aircraft.choose(aircraft),
@@ -372,6 +415,129 @@ impl Viewer {
         {
             embedded.report_fly_aircraft(status);
         }
+    }
+
+    /// Reopens the campaign map at the hour, branch and camera it shows. The host's playback
+    /// clock keeps playing it after the load.
+    fn reload_campaign_map(
+        &mut self,
+        source: std::sync::Arc<dashboard::Source>,
+        ctx: &egui::Context,
+    ) {
+        if let Some(document) = &self.document {
+            self.options.branch = Some(document.playback.branch());
+            self.options.hour = Some(document.playback.hour());
+        }
+        self.options.camera = self.camera;
+        self.playing = false;
+        self.open(
+            source.path().to_path_buf(),
+            ctx,
+            Some(source.key().revision.clone()),
+        );
+        self.source = Some(source);
+    }
+
+    /// Off the UI thread: reads saved preferences again when asked, then the revision of the
+    /// visual mods each open map shows ([`installed_content::content::visual::revision`]). The maps
+    /// whose mods changed since they loaded come back through `visual_check`.
+    fn check_visual_mods(&mut self, reload_settings: bool, ctx: &egui::Context) {
+        let Some(embedded) = &self.embedded else {
+            return;
+        };
+        // A map still loading has no content to check yet.
+        let loading = self.loading_any_map();
+        self.visual_check_after_load.asked(loading);
+        let service = embedded.service();
+        let options = self.config.resolve_options().ok();
+        let recorded_mods = |replay: &replay::container::Replay| {
+            replay
+                .identity
+                .mods
+                .iter()
+                .map(|recorded| installed_content::content::visual::RecordedMod {
+                    id: recorded.id.clone(),
+                    name: recorded.display_name.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let campaign = self.document.as_ref().and_then(|document| {
+            let selected = document
+                .visual_mods
+                .clone()
+                .filter(|mods| !mods.is_empty())?;
+            Some((
+                selected,
+                recorded_mods(&document.playback.replay_handle()),
+                document.visual_revision.clone(),
+            ))
+        });
+        let maps = self
+            .dashboard
+            .as_ref()
+            .map(|dashboard| dashboard.visual_checks())
+            .unwrap_or_default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("visual mod check".into())
+            .spawn(move || {
+                if reload_settings {
+                    service.reload_map_settings();
+                }
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                let failures = std::cell::RefCell::new(Vec::new());
+                let changed = |selected: &[installed_content::content::visual::Choice],
+                               recorded: &[installed_content::content::visual::RecordedMod],
+                               revision: &str| {
+                    let Some(options) = &options else {
+                        failures
+                            .borrow_mut()
+                            .push("the content folders are not set".to_owned());
+                        return false;
+                    };
+                    match installed_content::content::visual::revision(options, selected, recorded, &cancel)
+                    {
+                        Ok(now) => now != revision,
+                        Err(error) => {
+                            failures.borrow_mut().push(error.to_string());
+                            false
+                        }
+                    }
+                };
+                let checked = maps.len() + usize::from(campaign.is_some());
+                let campaign = campaign
+                    .filter(|(selected, recorded, revision)| changed(selected, recorded, revision))
+                    .map(|(_, _, revision)| revision);
+                let maps = maps
+                    .into_iter()
+                    .filter(|(_, selected, recorded, revision)| {
+                        changed(selected, recorded, revision)
+                    })
+                    .map(|(key, _, _, revision)| (key, revision))
+                    .collect();
+                let stale = VisualStale {
+                    campaign,
+                    maps,
+                    checked,
+                    failures: failures.into_inner(),
+                };
+                let _ = sender.send(stale);
+                repaint.request_repaint();
+            });
+        match spawned {
+            Ok(_) => self.visual_check = Some(receiver),
+            Err(error) => self.error = Some(format!("Visual mods: {error}")),
+        }
+    }
+
+    /// Whether the Campaign map or a dashboard source's content is loading.
+    fn loading_any_map(&self) -> bool {
+        self.loading.is_some()
+            || self
+                .dashboard
+                .as_ref()
+                .is_some_and(|dashboard| dashboard.loading_content())
     }
 
     fn report_map_details(&self) {
@@ -418,6 +584,11 @@ impl Viewer {
                 shown.political_build.as_secs_f64() * 1000.0
             ));
         }
+        messages.extend(self.visual_check_note.iter().cloned());
+        // Visual mod lines lead, so the report's size budget never drops what was not shown.
+        messages.sort_by_key(|message| {
+            !(message.starts_with("Visual mod") || message.starts_with("Artwork from visual mods"))
+        });
         let mut seen = HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
         embedded.report_details(dashboard::protocol::MapDetails {
@@ -456,5 +627,49 @@ impl Viewer {
             self.error.as_deref().or(self.map_error.as_deref()),
             ctx,
         );
+    }
+}
+
+/// A check of the visual mods asked for while a map loads. The load may have mounted the mods
+/// before they changed, and its content is not there to check, so the maps are checked again
+/// once no map loads and no check runs.
+#[derive(Debug, Default)]
+pub(crate) struct DeferredCheck(bool);
+
+impl DeferredCheck {
+    /// A check was asked for while a map did (`loading`) or did not load.
+    pub(crate) fn asked(&mut self, loading: bool) {
+        self.0 |= loading;
+    }
+
+    /// Whether to check again now, once: no map loads (`loading`) and no check runs (`checking`).
+    pub(crate) fn due(&mut self, loading: bool, checking: bool) -> bool {
+        let due = self.0 && !loading && !checking;
+        if due {
+            self.0 = false;
+        }
+        due
+    }
+}
+
+#[cfg(test)]
+mod deferred_check_tests {
+    use super::DeferredCheck;
+
+    /// A Refresh that arrives while a map seeds its decoder or builds its scene, after the load
+    /// last read the mods, checks the installed map again, once; one that arrives with nothing
+    /// loading needs no second check.
+    #[test]
+    fn a_refresh_during_a_load_checks_the_installed_map_again() {
+        let mut deferred = DeferredCheck::default();
+        deferred.asked(true);
+        // Still loading, or the first check still running: not yet.
+        assert!(!deferred.due(true, false));
+        assert!(!deferred.due(false, true));
+        // Installed, nothing checking: once.
+        assert!(deferred.due(false, false));
+        assert!(!deferred.due(false, false));
+        deferred.asked(false);
+        assert!(!deferred.due(false, false));
     }
 }

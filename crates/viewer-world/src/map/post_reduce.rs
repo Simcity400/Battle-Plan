@@ -23,6 +23,20 @@ pub(super) struct Assets {
     alpha: Arc<Effect>,
 }
 
+impl Assets {
+    /// The recorded effects for those a visual mod replaces, each refused for `why`; `None`
+    /// when no visual mod replaces any.
+    fn recorded(&self, why: &str) -> Option<Self> {
+        let [seed, normal, alpha] =
+            [&self.seed, &self.normal, &self.alpha].map(|effect| effect.fall_back(why));
+        (seed.is_some() || normal.is_some() || alpha.is_some()).then(|| Self {
+            seed: seed.unwrap_or_else(|| self.seed.clone()),
+            normal: normal.unwrap_or_else(|| self.normal.clone()),
+            alpha: alpha.unwrap_or_else(|| self.alpha.clone()),
+        })
+    }
+}
+
 pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Assets> {
     let (mut library, mut defines) = fullscreen::library(layers, map, decode);
     // Register both reductions; their blend is retained from seed.
@@ -47,6 +61,14 @@ pub(super) struct Reductions([Fullscreen; 2]);
 
 impl Reductions {
     pub(super) fn new(device: &wgpu::Device, assets: &Assets) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        Self::build(device, assets).or_else(|error| match assets.recorded(&error.to_string()) {
+            Some(recorded) => Self::build(device, &recorded),
+            None => Err(error),
+        })
+    }
+
+    fn build(device: &wgpu::Device, assets: &Assets) -> io::Result<Self> {
         let seed = fullscreen::select(&assets.seed, "downsample").map_err(refuse)?;
         let mut state = gpu::State::authored(
             &assets.seed.source,

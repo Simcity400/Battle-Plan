@@ -181,6 +181,9 @@ pub enum MapAction {
     /// The host saved map preferences; the viewer reads them again and reloads
     /// any map whose artwork, quality or anti-aliasing they change.
     MapSettingsSaved,
+    /// The user asked for installed mods to be read again; the viewer reloads each map whose
+    /// visual mods changed since it loaded.
+    RefreshVisualMods,
     /// How the full map's camera moves: the game's map camera, flying or walking, and whether
     /// flying and walking draw the map's interface.
     CameraMode {
@@ -396,6 +399,7 @@ impl MapAction {
             }
             Self::Inspect
             | Self::MapSettingsSaved
+            | Self::RefreshVisualMods
             | Self::Vsync { .. }
             | Self::Diagnostics { .. }
             | Self::CameraMode { .. }

@@ -16,6 +16,26 @@ pub struct Selection {
     pub index: usize,
 }
 
+impl Selection {
+    /// The same technique of the recorded effect a visual mod's replacement stands in for, the
+    /// replacement refused for `why`; `None` for an effect no visual mod replaces.
+    pub fn fall_back(&self, why: &str) -> Option<Selection> {
+        let name = &self.effect.source.techniques[self.index].name;
+        self.effect.fall_back(why)?.select(name).ok().flatten()
+    }
+}
+
+/// [`with_recorded`] for a pass built from a selected technique.
+pub fn with_recorded_selection<T, E: std::fmt::Display>(
+    selection: &Selection,
+    mut build: impl FnMut(&Selection) -> Result<T, E>,
+) -> Result<T, E> {
+    build(selection).or_else(|error| match selection.fall_back(&error.to_string()) {
+        Some(recorded) => build(&recorded),
+        None => Err(error),
+    })
+}
+
 pub struct Effect {
     pub(crate) id: uuid::Uuid,
     pub source: Arc<Program>,
@@ -26,6 +46,53 @@ pub struct Effect {
     compiled: Vec<OnceLock<Result<Arc<Compiled>, String>>>,
     cache: Arc<cache::Cache>,
     variants: Mutex<BTreeMap<Vec<String>, Arc<Effect>>>,
+    /// The recorded effect a visual mod's replacement stands in for, with the same defines.
+    recorded: Option<Recorded>,
+}
+
+/// A replacement effect's recorded counterpart and where a refusal of the replacement is named.
+#[derive(Clone)]
+pub struct Recorded {
+    pub(crate) effect: Arc<Effect>,
+    pub(crate) note: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+/// Why a mod's replacement cannot stand in for the recorded effect under the same defines: a
+/// technique the recorded effect compiles that the replacement lacks or cannot compile.
+fn refusal(shown: &Effect, base: &Effect) -> Option<String> {
+    for (index, technique) in base.source.techniques.iter().enumerate() {
+        if base.compiled(index).is_err() {
+            continue;
+        }
+        let Some(own) = shown
+            .source
+            .techniques
+            .iter()
+            .position(|candidate| candidate.name.eq_ignore_ascii_case(&technique.name))
+        else {
+            return Some(format!("its technique {} is missing", technique.name));
+        };
+        if let Err(why) = shown.compiled(own) {
+            return Some(format!(
+                "its technique {} does not compile: {why}",
+                technique.name
+            ));
+        }
+    }
+    None
+}
+
+/// `build` with `effect`, or, when that fails and `effect` replaces a recorded effect, with the
+/// recorded effect, the replacement refused by name. Passes whose pipelines the content shapes
+/// (vertex inputs, states) use it, so a replacement that compiles but cannot be drawn falls back.
+pub fn with_recorded<T>(
+    effect: &Arc<Effect>,
+    mut build: impl FnMut(&Arc<Effect>) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    build(effect).or_else(|error| match effect.fall_back(&error.to_string()) {
+        Some(recorded) => build(&recorded),
+        None => Err(error),
+    })
 }
 impl std::fmt::Debug for Effect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,13 +109,14 @@ impl PartialEq for Effect {
 }
 impl Effect {
     pub fn new(source: Arc<Program>, defines: Vec<String>, cache: Arc<cache::Cache>) -> Arc<Self> {
-        Self::with_globals(source, Vec::new(), defines, cache)
+        Self::with_globals(source, Vec::new(), defines, cache, None)
     }
-    fn with_globals(
+    pub(crate) fn with_globals(
         source: Arc<Program>,
         globals: Vec<String>,
         caller: Vec<String>,
         cache: Arc<cache::Cache>,
+        recorded: Option<Recorded>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id: uuid::Uuid::new_v4(),
@@ -58,7 +126,16 @@ impl Effect {
             defines: globals.into_iter().chain(caller).collect(),
             cache,
             variants: Mutex::new(BTreeMap::new()),
+            recorded,
         })
+    }
+
+    /// The recorded effect this replacement stands in for, with the replacement refused by name
+    /// for `why`; `None` for an effect no visual mod replaces.
+    pub fn fall_back(&self, why: &str) -> Option<Arc<Effect>> {
+        let recorded = self.recorded.as_ref()?;
+        (recorded.note)(format!("shader {} ({why})", self.source.effect));
+        Some(recorded.effect.clone())
     }
     /// Offline oracle/precompiled caller path; normal runtime uses `Library::load`.
     pub fn from_compiled(
@@ -74,15 +151,42 @@ impl Effect {
             compiled: programs.into_iter().map(OnceLock::from).collect(),
             cache: Arc::new(cache::Cache::default()),
             variants: Mutex::new(BTreeMap::new()),
+            recorded: None,
         })
     }
+    /// A visual mod's replacement standing in for `recorded`, as [`Library::load`] makes one,
+    /// from programs already compiled: for other crates' tests of the fallbacks.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replacing(
+        source: Arc<Program>,
+        programs: Vec<Result<Arc<Compiled>, String>>,
+        recorded: Arc<Effect>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id: uuid::Uuid::new_v4(),
+            source,
+            defines: Vec::new(),
+            globals: 0,
+            compiled: programs.into_iter().map(OnceLock::from).collect(),
+            cache: Arc::new(cache::Cache::default()),
+            variants: Mutex::new(BTreeMap::new()),
+            recorded: Some(Recorded {
+                effect: recorded,
+                note: Arc::new(|_| {}),
+            }),
+        })
+    }
+
     /// The caller's defines, after the library's globals.
     pub fn caller(&self) -> &[String] {
         &self.defines[self.globals..]
     }
 
     /// Same resolved source, globals and persistent cache, with another caller define set.
-    /// Variant handles remain stable so device pipelines are reused across frames.
+    /// Variant handles remain stable so device pipelines are reused across frames. A
+    /// replacement's variant is held to the same rule as the replacement itself
+    /// ([`Library::load`]): when the recorded effect's variant compiles a technique the
+    /// replacement's does not, the recorded variant is used and the replacement refused by name.
     pub fn variant(self: &Arc<Self>, caller: Vec<String>) -> Arc<Self> {
         if caller == self.caller() {
             return self.clone();
@@ -93,7 +197,37 @@ impl Effect {
             .entry(caller.clone())
             .or_insert_with(|| {
                 let globals = self.defines[..self.globals].to_vec();
-                Self::with_globals(self.source.clone(), globals, caller, self.cache.clone())
+                let Some(recorded) = &self.recorded else {
+                    return Self::with_globals(
+                        self.source.clone(),
+                        globals,
+                        caller,
+                        self.cache.clone(),
+                        None,
+                    );
+                };
+                let base = recorded.effect.variant(caller.clone());
+                let shown = Self::with_globals(
+                    self.source.clone(),
+                    globals,
+                    caller,
+                    self.cache.clone(),
+                    Some(Recorded {
+                        effect: base.clone(),
+                        note: recorded.note.clone(),
+                    }),
+                );
+                match refusal(&shown, &base) {
+                    None => shown,
+                    Some(why) => {
+                        (recorded.note)(format!(
+                            "shader {} with {:?} ({why})",
+                            self.source.effect,
+                            shown.caller()
+                        ));
+                        base
+                    }
+                }
             })
             .clone()
     }
@@ -209,6 +343,10 @@ pub struct Library {
     effects: BTreeMap<Variant, Result<Arc<Effect>, String>>,
     pub refused: BTreeMap<String, u64>,
     pub warnings: BTreeSet<String>,
+    /// The recorded stack below a presentation stack's visual mods, read once when an effect
+    /// is first loaded: `None` inside when no visual mod is mounted.
+    recorded: Option<Option<Arc<ResolvedLayers>>>,
+    recorded_sources: BTreeMap<Vec<u8>, Result<Arc<Program>, String>>,
 }
 impl Library {
     pub fn new(layers: Arc<ResolvedLayers>) -> Self {
@@ -223,6 +361,8 @@ impl Library {
             effects: BTreeMap::new(),
             refused: BTreeMap::new(),
             warnings: BTreeSet::new(),
+            recorded: None,
+            recorded_sources: BTreeMap::new(),
         }
     }
     /// Every effect this library loads gets `globals` (see [`globals`]) before its caller
@@ -234,30 +374,91 @@ impl Library {
 
     /// The effect a sprite names, `file` being the name's bytes (opened by them,
     /// [`program::read`]).
+    ///
+    /// Over a presentation stack, an effect a visual mod replaces is used when every technique
+    /// the recorded effect compiles also compiles from the mod's sources; otherwise the
+    /// recorded effect is used and the reason is named with the overlay refusals. Effects the
+    /// mods leave alone resolve to the same sources and are not compiled twice.
     pub fn load(&mut self, file: &[u8], defines: &[String]) -> Result<Arc<Effect>, String> {
         let key = (file.to_owned(), defines.to_vec());
-        let result = self
-            .effects
-            .entry(key)
-            .or_insert_with(|| {
-                let source = self
-                    .sources
-                    .entry(file.to_owned())
-                    .or_insert_with(|| program::read(&self.layers, file).map(Arc::new))
-                    .clone()?;
-                for warning in &source.warnings {
-                    if self.warnings.insert(warning.clone()) {
-                        eprintln!("{warning}");
-                    }
-                }
-                Ok(Effect::with_globals(
-                    source,
-                    self.globals.clone(),
-                    defines.to_vec(),
-                    self.cache.clone(),
-                ))
-            })
+        if let Some(effect) = self.effects.get(&key) {
+            let result = effect.clone();
+            if let Err(reason) = &result {
+                *self.refused.entry(reason.clone()).or_default() += 1;
+            }
+            return result;
+        }
+        let shown = self
+            .sources
+            .entry(file.to_owned())
+            .or_insert_with(|| program::read(&self.layers, file).map(Arc::new))
             .clone();
+        let recorded = self
+            .recorded
+            .get_or_insert_with(|| self.layers.without_overlays().map(Arc::new))
+            .clone();
+        let effect = |source: Arc<Program>, recorded: Option<Recorded>| {
+            Effect::with_globals(
+                source,
+                self.globals.clone(),
+                defines.to_vec(),
+                self.cache.clone(),
+                recorded,
+            )
+        };
+        let layers = self.layers.clone();
+        let note: Arc<dyn Fn(String) + Send + Sync> =
+            Arc::new(move |refusal| layers.note_overlay_refusal(refusal));
+        let refused = |why: &dyn std::fmt::Display| {
+            note(format!("shader {} ({why})", String::from_utf8_lossy(file)));
+        };
+        let result = match recorded {
+            None => shown.map(|shown| effect(shown, None)),
+            Some(recorded) => {
+                let base = self
+                    .recorded_sources
+                    .entry(file.to_owned())
+                    .or_insert_with(|| program::read(&recorded, file).map(Arc::new))
+                    .clone();
+                match (shown, base) {
+                    (Ok(shown), Ok(base)) if shown.identity == base.identity => {
+                        Ok(effect(shown, None))
+                    }
+                    (Ok(shown), Ok(base)) => {
+                        // The replacement keeps its recorded counterpart, so its variants and
+                        // the passes that build pipelines from it can still fall back.
+                        let base = effect(base, None);
+                        let shown = effect(
+                            shown,
+                            Some(Recorded {
+                                effect: base.clone(),
+                                note: note.clone(),
+                            }),
+                        );
+                        match refusal(&shown, &base) {
+                            None => Ok(shown),
+                            Some(why) => {
+                                refused(&why);
+                                Ok(base)
+                            }
+                        }
+                    }
+                    (Err(why), Ok(base)) => {
+                        refused(&why);
+                        Ok(effect(base, None))
+                    }
+                    (shown, Err(_)) => shown.map(|shown| effect(shown, None)),
+                }
+            }
+        };
+        if let Ok(effect) = &result {
+            for warning in &effect.source.warnings {
+                if self.warnings.insert(warning.clone()) {
+                    eprintln!("{warning}");
+                }
+            }
+        }
+        self.effects.insert(key, result.clone());
         if let Err(reason) = &result {
             *self.refused.entry(reason.clone()).or_default() += 1;
         }
@@ -269,6 +470,82 @@ impl Library {
 mod tests {
     use super::*;
 
+    /// A replacement accepted under its loaded defines is held to the same rule for each
+    /// variant (here ANIMATED, which it cannot compile): the recorded variant is drawn and the
+    /// replacement named. A pass that cannot build a pipeline from an accepted replacement
+    /// builds it from the recorded effect.
+    #[test]
+    fn replacement_variants_and_pipelines_fall_back_to_the_recorded_effect() {
+        struct Picky(cache::tests::Count, [u8; 32]);
+        impl cache::Compile for Picky {
+            fn compile(
+                &self,
+                source: &Program,
+                technique: &installed_content::pdxshader::program::Technique,
+                defines: &[String],
+            ) -> Result<super::super::Compiled, String> {
+                if source.identity == self.1 && defines.iter().any(|define| define == "ANIMATED") {
+                    return Err("the replacement does not compile when animated".into());
+                }
+                self.0.compile(source, technique, defines)
+            }
+        }
+        let recorded = Arc::new(cache::tests::source("static const float4 C = 1;"));
+        let replacement = Arc::new(cache::tests::source("static const float4 C = 2;"));
+        assert_ne!(recorded.identity, replacement.identity);
+        let cache = Arc::new(cache::Cache::new(
+            None,
+            Arc::new(Picky(Default::default(), replacement.identity)),
+        ));
+        let notes = Arc::new(Mutex::new(Vec::new()));
+        let sink = notes.clone();
+        let base = Effect::with_globals(recorded, vec![], vec![], cache.clone(), None);
+        let shown = Effect::with_globals(
+            replacement,
+            vec![],
+            vec![],
+            cache,
+            Some(Recorded {
+                effect: base.clone(),
+                note: Arc::new(move |note| sink.lock().unwrap().push(note)),
+            }),
+        );
+        assert!(refusal(&shown, &base).is_none());
+        let animated = shown.variant(vec!["ANIMATED".into()]);
+        assert!(Arc::ptr_eq(
+            &animated,
+            &base.variant(vec!["ANIMATED".into()])
+        ));
+        assert_eq!(notes.lock().unwrap().len(), 1);
+        assert!(notes.lock().unwrap()[0].contains("does not compile when animated"));
+        let built = with_recorded(&shown, |effect| {
+            if Arc::ptr_eq(effect, &shown) {
+                Err(std::io::Error::other(
+                    "native streams cannot supply its vertex input",
+                ))
+            } else {
+                Ok(effect.clone())
+            }
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&built, &base));
+        assert!(notes.lock().unwrap()[1].contains("vertex input"));
+        // A pass built from a selected technique falls back to the same technique.
+        let selection = shown.select("Up").unwrap().unwrap();
+        let built = with_recorded_selection(&selection, |selection| {
+            if Arc::ptr_eq(&selection.effect, &shown) {
+                Err("its blend state cannot be built")
+            } else {
+                Ok((selection.effect.clone(), selection.index))
+            }
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&built.0, &base));
+        assert_eq!(base.source.techniques[built.1].name, "Up");
+        // An effect no visual mod replaces has nothing to fall back to.
+        assert!(with_recorded(&base, |_| Err::<(), _>(std::io::Error::other("no"))).is_err());
+    }
+
     /// A variant keeps the library's globals: deriving a caller set equals loading it.
     #[test]
     fn variants_keep_the_globals() {
@@ -278,8 +555,15 @@ mod tests {
             Arc::new(cache::tests::Count::default()),
         ));
         let globals = globals([4, 2], Decode::default());
-        let base = Effect::with_globals(source.clone(), globals.clone(), vec![], cache.clone());
-        let loaded = Effect::with_globals(source, globals.clone(), vec!["ANIMATED".into()], cache);
+        let base =
+            Effect::with_globals(source.clone(), globals.clone(), vec![], cache.clone(), None);
+        let loaded = Effect::with_globals(
+            source,
+            globals.clone(),
+            vec!["ANIMATED".into()],
+            cache,
+            None,
+        );
         let derived = base.variant(vec!["ANIMATED".into()]);
         assert_eq!(derived.defines, loaded.defines);
         assert_eq!(derived.caller(), ["ANIMATED"]);

@@ -3160,6 +3160,21 @@ impl Scene {
         warnings
     }
 
+    /// Every refusal this scene has made, by a name stable across loads: world passes that
+    /// refused, and every refused native, model and GUI shader draw not already drawn another
+    /// way (a visual mod entity drawn from its recorded counterpart). A map showing visual mods
+    /// compares these with the refusals it makes without them.
+    pub fn draw_refusals(&self) -> std::collections::BTreeSet<String> {
+        let mut refusals = self.arena.refusals();
+        // By the pass refused, not its message, which can differ between loads.
+        refusals.extend(
+            self.pass_diagnostics
+                .keys()
+                .map(|pass| format!("Map shader {}: refused", pass.name())),
+        );
+        refusals
+    }
+
     /// Named/counting failures of the most recently submitted GUI shader draws.
     pub fn shader_refusals(&self) -> &BTreeMap<String, u64> {
         &self.sprite_pass.native_refusals

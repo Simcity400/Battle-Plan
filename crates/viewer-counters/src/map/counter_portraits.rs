@@ -314,11 +314,18 @@ pub fn load(
         })
         .collect();
     let reader = Arc::clone(shared);
+    // A portrait the visual mods break is the recording's own, named.
+    let recorded = reader.without_overlays();
     let images = LazyImages::new(
         "HQ portrait",
         Arc::new(move |path: &str| {
-            let texture = resources::stack_texture(&reader, path.as_bytes(), decode)?
-                .map_err(|why| io::Error::new(io::ErrorKind::InvalidData, why.to_string()))?;
+            let texture = resources::stack_texture_or_recorded(
+                &reader,
+                recorded.as_ref(),
+                path.as_bytes(),
+                decode,
+            )?
+            .map_err(|why| io::Error::new(io::ErrorKind::InvalidData, why.to_string()))?;
             Ok(texture.image)
         }),
         PORTRAIT_CAPACITY,

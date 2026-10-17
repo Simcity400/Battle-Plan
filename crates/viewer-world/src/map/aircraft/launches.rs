@@ -79,10 +79,12 @@ pub(super) struct Content {
 }
 
 impl Content {
+    /// `defines` are the recorded defines, whose states place the sites, and the graphics
+    /// defines, which the launch delay reads, falling back to the recorded one.
     pub(super) fn load(
         layers: &ResolvedLayers,
         map: &MapData,
-        defines: &Defines,
+        (defines, graphics): (&Defines, &Defines),
         roster: &mesh::Roster,
         warnings: &mut Vec<installed_content::Diagnostic>,
     ) -> Self {
@@ -111,7 +113,7 @@ impl Content {
         }
         Self {
             sites,
-            max_delay: max_delay(defines),
+            max_delay: layers.graphics_define("missile launches", graphics, defines, max_delay),
         }
     }
 

@@ -22,6 +22,18 @@ pub(super) struct Assets {
     luminance: Arc<Effect>,
 }
 
+impl Assets {
+    /// The recorded effects for those a visual mod replaces, each refused for `why`; `None`
+    /// when no visual mod replaces either.
+    fn recorded(&self, why: &str) -> Option<Self> {
+        let (seed, luminance) = (self.seed.fall_back(why), self.luminance.fall_back(why));
+        (seed.is_some() || luminance.is_some()).then(|| Self {
+            seed: seed.unwrap_or_else(|| self.seed.clone()),
+            luminance: luminance.unwrap_or_else(|| self.luminance.clone()),
+        })
+    }
+}
+
 pub(super) fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Result<Assets> {
     let (mut library, defines) = fullscreen::library(layers, map, decode);
     Ok(Assets {
@@ -38,6 +50,14 @@ pub(super) struct Gather(Fullscreen);
 
 impl Gather {
     pub(super) fn new(device: &wgpu::Device, assets: &Assets) -> io::Result<Self> {
+        // A visual mod's replacement that cannot be drawn here falls back to the recording.
+        Self::build(device, assets).or_else(|error| match assets.recorded(&error.to_string()) {
+            Some(recorded) => Self::build(device, &recorded),
+            None => Err(error),
+        })
+    }
+
+    fn build(device: &wgpu::Device, assets: &Assets) -> io::Result<Self> {
         let seed = fullscreen::select(&assets.seed, "downsample").map_err(refuse)?;
         let mut state = gpu::State::authored(
             &assets.seed.source,

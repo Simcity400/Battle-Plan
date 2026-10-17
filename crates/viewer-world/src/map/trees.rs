@@ -423,11 +423,31 @@ impl TreeAssets {
             ));
         }
         let mut meshes = Vec::new();
-        let mut materials =
-            super::mesh_effect::Materials::new(layers, [rivers.width, rivers.height], decode);
+        let size = [rivers.width, rivers.height];
+        let mut materials = super::mesh_effect::Materials::new(layers, size, decode);
+        // A tree kind the visual mods break is drawn from the recorded layers below them, its
+        // mesh, textures and admitted materials theirs, named; one neither gives is refused by
+        // name for the map's fallback.
+        let below = layers.without_overlays();
+        let below_roster = layers.recorded_descriptor_roster()?;
+        let recorded = below.as_ref().zip(below_roster.as_deref());
+        let mut recorded_materials = None;
         let mut missing = Vec::new();
         for &palette in palettes {
-            match load_mesh(layers, decode, &roster.descriptors, palette, &mut materials) {
+            let kind = layers.artwork_item(
+                &format!("tree kind {palette}"),
+                recorded.is_some(),
+                |from_recording| match recorded {
+                    Some((stack, roster)) if from_recording => {
+                        let materials = recorded_materials.get_or_insert_with(|| {
+                            super::mesh_effect::Materials::new(stack, size, decode)
+                        });
+                        load_mesh(stack, decode, &roster.descriptors, palette, materials)
+                    }
+                    _ => load_mesh(layers, decode, &roster.descriptors, palette, &mut materials),
+                },
+            );
+            match kind {
                 Ok(assets) => meshes.push((palette, assets)),
                 Err(error) => missing.push(format!("index {palette} ({error})")),
             }

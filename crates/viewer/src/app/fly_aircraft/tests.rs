@@ -53,7 +53,10 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
         &layers,
         installed_content::image::native::Decode::default(),
         &map,
-        &installed_content::defines::Defines::new().unwrap(),
+        (
+            &installed_content::defines::Defines::new().unwrap(),
+            &installed_content::defines::Defines::new().unwrap(),
+        ),
         &BTreeMap::new(),
         &mut Vec::new(),
     )

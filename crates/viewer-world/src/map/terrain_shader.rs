@@ -338,10 +338,19 @@ impl Terrain {
     }
     fn pipeline(&mut self, device: &wgpu::Device, mode: Mode) -> io::Result<Arc<gpu::Pipeline>> {
         if !self.pipelines.contains_key(&mode) {
-            let compiled = self
-                .build_pipeline(device, mode)
-                .map_err(|error| error.to_string());
-            self.pipelines.insert(mode, compiled);
+            let mut built = self.build_pipeline(device, mode);
+            // A visual mod's replacement that compiles but cannot be drawn here falls back to
+            // the recorded effect for every mode, the replacement refused by name.
+            if let Err(error) = &built
+                && let Some(recorded) = self.effect.fall_back(&error.to_string())
+            {
+                self.effect = recorded;
+                self.pipelines.clear();
+                self.programs.clear();
+                built = self.build_pipeline(device, mode);
+            }
+            self.pipelines
+                .insert(mode, built.map_err(|error| error.to_string()));
         }
         self.pipelines[&mode]
             .as_ref()

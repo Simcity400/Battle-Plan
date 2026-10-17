@@ -75,6 +75,15 @@ pub struct Interface {
     pub decode: Decode,
 }
 
+/// What a refused GUI shader draw drew, by identity: its quad's path, effect file and
+/// technique ([`shader_pipeline::gpu::Arena::refuse`]).
+pub fn gui_refusal(draw: &super::native_shader::draw::Quad) -> String {
+    format!(
+        "GUI shader {:?}: effect {:?} technique {:?}",
+        draw.path, draw.effect.asset.source.effect, draw.effect.technique
+    )
+}
+
 /// Loads one declared sprite and appends its texture to `images`.
 pub fn load_sheet(
     layers: &ResolvedLayers,
@@ -107,8 +116,11 @@ pub fn decode_sheet(
         .texture
         .as_deref()
         .ok_or_else(|| invalid(format!("sprite {name} names no texturefile")))?;
-    let texture = resources::stack_texture(layers, path.as_bytes(), decode)?
-        .map_err(|why| invalid(format!("sprite {name}: {why}")))?;
+    // A sheet the visual mods break is the recording's own, named.
+    let recorded = layers.without_overlays();
+    let texture =
+        resources::stack_texture_or_recorded(layers, recorded.as_ref(), path.as_bytes(), decode)?
+            .map_err(|why| invalid(format!("sprite {name}: {why}")))?;
     let texture = texture.image;
     if sprite.frames == 0 || texture.width < sprite.frames {
         return Err(invalid(format!(
@@ -1271,6 +1283,7 @@ impl SpritePass {
                     .native_refusals
                     .entry("GUI quad has no compiled effect payload".into())
                     .or_default() += 1;
+                arena.refuse("GUI shader: a quad without a compiled effect");
                 return;
             };
             let clip = (!placement.is_identity()).then(|| placement.clip());
@@ -1331,6 +1344,9 @@ impl SpritePass {
                         eprintln!("{reason}");
                     }
                     *self.native_refusals.entry(reason).or_default() += 1;
+                    // By what was refused, whatever refused it (program selection, textures,
+                    // bakes or the draw): a map compares these across loads.
+                    arena.refuse(&gui_refusal(native));
                 }
             }
             return;
@@ -2129,6 +2145,63 @@ pub fn dump_sprites<'a>(batch: &Batch, extra: &Batch, sprites: &'a mut Batch) ->
 mod tests {
     use super::oracle::{render_presented, render_presented_at};
     use super::*;
+
+    /// A GUI draw refused before it reaches the shader stream (here a quad without a compiled
+    /// effect) is recorded in the frame's arena by what was refused, as every other refusal
+    /// is, so a map comparing its refusals with and without visual mods sees it.
+    #[test]
+    fn a_gui_draw_refused_before_the_stream_is_recorded() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        let page = dds::Texture::from_rgba8(installed_content::image::Rgba8Image {
+            width: 1,
+            height: 1,
+            pixels: vec![255; 4],
+        });
+        let images = IconTextures::new(&device, &queue, &[page]).unwrap();
+        let mut pass = SpritePass::new(
+            &device,
+            &queue,
+            1,
+            &images,
+            &LazyTextures::new(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .unwrap();
+        let mut batch = Batch::default();
+        batch.quads.push(Quad {
+            texture: 0,
+            rect: [0.0, 0.0, 4.0, 4.0],
+            uv: [0.0, 0.0, 1.0, 1.0],
+            color: [1.0; 4],
+            rotation: 0.0,
+            layer: 0,
+            shade: 0.0,
+            present: None,
+            exact: Some(Exact {
+                native: None,
+                corners: [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+                uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                scissor: None,
+                technique: 0,
+                blend: super::super::native_effects::Blend::Off,
+                samplers: 0,
+                lod_bias: [0.0; 3],
+                second: None,
+                masking: None,
+                offsets: [0.0; 4],
+                inputs: [0.0; 4],
+                second_color: [0.0; 4],
+            }),
+        });
+        let arena = shader_pipeline::gpu::Arena::new(&device);
+        arena.reset();
+        pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.0);
+        assert_eq!(pass.native_refusals.len(), 1);
+        assert_eq!(
+            arena.refusals(),
+            ["GUI shader: a quad without a compiled effect".to_owned()].into()
+        );
+    }
 
     #[test]
     fn counter_sheet_uses_the_native_texture_decoder_and_client_setting() {

@@ -674,9 +674,9 @@ fn declared_planes<'a>(roster: &'a mesh::Roster, keys: &BTreeSet<&str>) -> BTree
 
 /// Bakes the declared plane entities whose declarations, and the
 /// declarations they use, the engine's choice for is verified
-/// ([`plane_refusal`]). A refused entity still exists for the engine's name
-/// lookup, so it is kept with its reason to stop resolution rather than
-/// being skipped, and so is one whose mesh does not load. When every
+/// ([`mesh::Roster::refused_declaration`]). A refused entity still exists for
+/// the engine's name lookup, so its reason stops resolution rather than
+/// skipping it; an entity whose mesh does not load is kept too. When every
 /// candidate is refused the library is empty and every reason is kept.
 fn plane_library<'a>(
     layers: &ResolvedLayers,
@@ -705,7 +705,39 @@ fn plane_library<'a>(
                 .join("; ")
         )));
     }
-    let library = ModelLibrary::load(layers, decode, &roster.descriptors, &names, warnings)?;
+    let mut library = ModelLibrary::load_with(
+        layers,
+        decode,
+        &roster.descriptors,
+        &names,
+        warnings,
+        mesh::Roster::refused_declaration,
+    )?;
+    // An entity the visual mods' descriptors leave refused, though the recording's own do not,
+    // is drawn from the recording; every other refusal is recorded by name for the map's
+    // fallback.
+    let recorded = layers.recorded_descriptor_roster()?;
+    let from_recording: Vec<String> = unusable
+        .keys()
+        .filter(|entity| {
+            recorded.as_ref().is_some_and(|recorded| {
+                recorded.descriptors.entities.contains_key(*entity)
+                    && recorded.refused_declaration(entity).is_none()
+            })
+        })
+        .cloned()
+        .collect();
+    if !from_recording.is_empty() {
+        let baked = ModelLibrary::load_recorded(layers, decode, &from_recording, |entity| {
+            unusable.get(entity).cloned().unwrap_or_default()
+        })?;
+        library.merge(baked);
+        for entity in &from_recording {
+            if library.slot(entity).is_some() {
+                unusable.remove(entity);
+            }
+        }
+    }
     for name in names {
         if library.slot(&name).is_none() {
             let reason = match library.failed.get(&name) {
@@ -714,6 +746,9 @@ fn plane_library<'a>(
             };
             unusable.insert(name, reason);
         }
+    }
+    for entity in unusable.keys() {
+        layers.note_refused(format!("model entity {entity}"));
     }
     Ok((library, unusable))
 }
@@ -1096,6 +1131,110 @@ fn scenario_tracks(
     Ok((tracks, bindings.iter().map(Option::is_none).collect()))
 }
 
+/// The rig of scenario `entity` read from `layers` with its `roster`, or `None` with why in
+/// `warnings`.
+fn scenario_flown(
+    layers: &ResolvedLayers,
+    roster: &mesh::Roster,
+    entity: &str,
+    (kind, outcome): (u8, u8),
+    bones: &[(u8, String)],
+    defines: (&Result<f32, &'static str>, &Result<Band, &'static str>),
+    warnings: &mut Vec<installed_content::Diagnostic>,
+) -> Option<Rig> {
+    let mut refuse = |reason: String| {
+        warnings.push((
+            installed_content::DiagnosticKind::Refused,
+            format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
+        ));
+    };
+    let descriptors = &roster.descriptors;
+    let state = scenario_state(descriptors, entity, outcome);
+    // The engine's choice between duplicate or out-of-order
+    // declarations is unverified, so a scenario using one is refused.
+    if let Some(reason) = scenario_refusal(roster, entity, state) {
+        refuse(reason);
+        return None;
+    }
+    let (definition, animation, speed) = match scenario(descriptors, entity, state) {
+        Ok(scenario) => scenario,
+        Err(reason) => {
+            refuse(reason);
+            return None;
+        }
+    };
+    // A mesh or animation the content names but that does not read
+    // refuses this rig alone, as the plane library refuses an entity
+    // it cannot bake: the map opens and the scenario is not flown.
+    let loaded = scenario_source(layers, descriptors, entity, definition).and_then(|source| {
+        let anim = layers
+            .read_uncovered(&animation.file)
+            .and_then(|bytes| mesh::read_animation(&bytes))
+            .map_err(|error| {
+                format!(
+                    "its animation file {} does not read: {error}",
+                    animation.file
+                )
+            })?;
+        Ok((source, anim))
+    });
+    let (source, anim) = match loaded {
+        Ok(loaded) => loaded,
+        Err(reason) => {
+            refuse(reason);
+            return None;
+        }
+    };
+    let events = descriptors.inherit(entity).unwrap().states[state][0]
+        .events
+        .clone();
+    scenario_rig(
+        entity,
+        (kind, outcome),
+        bones,
+        (&source, &anim),
+        speed,
+        events,
+        defines,
+        warnings,
+    )
+}
+
+/// What `fly` builds for scenario `entity` from the stack it names (`true` for the recorded
+/// layers below the visual mods): from the shown stack, or, when that refuses it and
+/// `below` holds recorded layers, from those, named in `layers`' visual mod refusals. One
+/// neither builds is refused by a stable name for the map's fallback
+/// ([`ResolvedLayers::note_refused`]). `warnings` takes the notes of the attempt that is kept.
+fn shown_or_recorded<T>(
+    layers: &ResolvedLayers,
+    entity: &str,
+    below: bool,
+    mut fly: impl FnMut(bool, &mut Vec<installed_content::Diagnostic>) -> Option<T>,
+    warnings: &mut Vec<installed_content::Diagnostic>,
+) -> Option<T> {
+    let mut notes = Vec::new();
+    if let Some(flown) = fly(false, &mut notes) {
+        warnings.extend(notes);
+        return Some(flown);
+    }
+    if below {
+        let mut recorded = Vec::new();
+        if let Some(flown) = fly(true, &mut recorded) {
+            let why = notes
+                .iter()
+                .rev()
+                .find(|(kind, _)| *kind == installed_content::DiagnosticKind::Refused)
+                .map_or("not flown", |(_, why)| why.as_str());
+            layers.note_overlay_refusal(format!("aircraft scenario {entity} ({why})"));
+            warnings.extend(recorded);
+            return Some(flown);
+        }
+    }
+    layers.note_refused(format!("aircraft scenario {entity}"));
+    warnings.extend(notes);
+    None
+}
+
 /// A scenario's rig from its entity's attachment tracks, or why it is not
 /// flown. An actor slot without its node rides the scenario entity's root
 /// at the slot's default speed: `NAirGfx.ROCKET_SPEED` for the rocket, which
@@ -1223,11 +1362,14 @@ impl AircraftAssets {
         refusals
     }
 
+    /// `defines` are the recorded defines, whose operands the sorties count with, and the
+    /// graphics defines, which the flights, bands, rockets and launches read, each value falling
+    /// back to the recorded one ([`ResolvedLayers::graphics_define`]).
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
         map: &MapData,
-        defines: &Defines,
+        (defines, graphics): (&Defines, &Defines),
         regions: &BTreeMap<u32, StrategicRegion>,
         warnings: &mut Vec<installed_content::Diagnostic>,
     ) -> io::Result<Self> {
@@ -1253,7 +1395,6 @@ impl AircraftAssets {
             equipment.insert(name, Equipment { archetype, sprite });
         }
         let roster = layers.descriptor_roster()?;
-        let descriptors = &roster.descriptors;
         let mut rigs = BTreeMap::new();
         // Scenario and outcome catalogs provide authored
         // independent and paired rigs, including both callback sides.
@@ -1274,71 +1415,43 @@ impl AircraftAssets {
                 ));
             }
         }
-        let rocket_speed = defines
-            .number("NAirGfx", "ROCKET_SPEED")
-            .map(|speed| speed as f32)
-            .map_err(|_| "NDefines.NAirGfx.ROCKET_SPEED is unreadable");
-        let band = Band::load(defines);
+        let rocket_speed =
+            layers.graphics_define("aircraft rockets", graphics, defines, |defines| {
+                defines
+                    .number("NAirGfx", "ROCKET_SPEED")
+                    .map(|speed| speed as f32)
+                    .map_err(|_| "NDefines.NAirGfx.ROCKET_SPEED is unreadable")
+            });
+        let band = layers.graphics_define("aircraft bands", graphics, defines, Band::load);
+        // A rig the visual mods break (an animation or mesh of theirs that does not read) is
+        // flown from the recorded layers below them, as the plane library bakes an entity.
+        let below = layers.without_overlays();
+        let below_roster = layers.recorded_descriptor_roster()?;
+        let recorded = below.as_ref().zip(below_roster.as_deref());
         for (key, bones, outcome, kind) in scenarios {
             let entity = format!("{key}_entity");
-            let state = scenario_state(descriptors, &entity, outcome);
-            // The engine's choice between duplicate or out-of-order
-            // declarations is unverified, so a scenario using one is refused.
-            if let Some(reason) = scenario_refusal(&roster, &entity, state) {
-                warnings.push((
-                    installed_content::DiagnosticKind::Refused,
-                    format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
-                ));
-                continue;
-            }
-            let (definition, animation, speed) = match scenario(descriptors, &entity, state) {
-                Ok(scenario) => scenario,
-                Err(reason) => {
-                    warnings.push((
-                        installed_content::DiagnosticKind::Refused,
-                        format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
-                    ));
-                    continue;
-                }
-            };
-            // A mesh or animation the content names but that does not read
-            // refuses this rig alone, as the plane library refuses an entity
-            // it cannot bake: the map opens and the scenario is not flown.
-            let (source, anim) = match scenario_source(layers, descriptors, &entity, definition)
-                .and_then(|source| {
-                    let anim = layers
-                        .read_uncovered(&animation.file)
-                        .and_then(|bytes| mesh::read_animation(&bytes))
-                        .map_err(|error| {
-                            format!(
-                                "its animation file {} does not read: {error}",
-                                animation.file
-                            )
-                        })?;
-                    Ok((source, anim))
-                }) {
-                Ok(loaded) => loaded,
-                Err(reason) => {
-                    warnings.push((
-                        installed_content::DiagnosticKind::Refused,
-                        format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
-                    ));
-                    continue;
-                }
-            };
-            let events = descriptors.inherit(&entity).unwrap().states[state][0]
-                .events
-                .clone();
-            if let Some(rig) = scenario_rig(
+            let flown = shown_or_recorded(
+                layers,
                 &entity,
-                (kind, outcome),
-                &bones,
-                (&source, &anim),
-                speed,
-                events,
-                (&rocket_speed, &band),
+                recorded.is_some(),
+                |from_recording, notes| {
+                    let (stack, roster) = match recorded {
+                        Some(recorded) if from_recording => recorded,
+                        _ => (layers, &*roster),
+                    };
+                    scenario_flown(
+                        stack,
+                        roster,
+                        &entity,
+                        (kind, outcome),
+                        &bones,
+                        (&rocket_speed, &band),
+                        notes,
+                    )
+                },
                 warnings,
-            ) {
+            );
+            if let Some(rig) = flown {
                 rigs.insert(rig_key(&key, outcome), rig);
             }
         }
@@ -1380,9 +1493,17 @@ impl AircraftAssets {
             region_fractions,
             province_kinds,
             sortie_defines: SortieDefines::load(defines).map_err(|error| error.to_string()),
-            flight_defines: FlightDefines::load(defines).map_err(|error| error.to_string()),
+            flight_defines: layers
+                .graphics_define("aircraft flights", graphics, defines, FlightDefines::load)
+                .map_err(|error| error.to_string()),
             band: band.ok(),
-            launch_content: launches::Content::load(layers, map, defines, &roster, warnings),
+            launch_content: launches::Content::load(
+                layers,
+                map,
+                (defines, graphics),
+                &roster,
+                warnings,
+            ),
             ground: band.map(GroundContact::from).map_err(str::to_owned),
         })
     }
@@ -1467,21 +1588,24 @@ pub struct PlayerAircraft {
 impl AircraftAssets {
     /// Bakes a chosen entity or bare mesh on first use, through the same
     /// roster and checks a recorded flight's entity meets, and returns its
-    /// library slot, or why it cannot be flown. What the roster alone refuses
-    /// ([`aircraft_catalogue::refusal`]) is refused before any file is read, as
-    /// the aircraft catalogue lists it; files that do not load refuse it then,
-    /// and stay refused. It reads files: call it off the UI thread.
+    /// library slot, or why it cannot be flown. The plane resolver admits declarations,
+    /// including recorded fallbacks, before files are read. Fly also needs geometry in
+    /// that admitted bake; other flights can keep meshless actors' events. A refused name
+    /// keeps the catalogue's reason where it has one, or the file load error, and stays
+    /// refused. It reads files: call it off the UI thread.
     pub fn player(&self, name: &str) -> Result<PlayerAircraft, String> {
-        if let Some(refusal) = aircraft_catalogue::refusal(&self.roster, name) {
-            return Err(refusal.reason);
-        }
+        let why = || aircraft_catalogue::refusal(&self.roster, name).map(|refusal| refusal.reason);
         match self.resolve(name) {
-            Ok(slot) => Ok(PlayerAircraft {
+            Ok(slot) if self.library().has_geometry(slot) => Ok(PlayerAircraft {
                 name: name.to_owned(),
                 slot,
             }),
-            Err(Unresolved::Refused { reason, .. }) => Err(reason),
-            Err(Unresolved::Missing(_)) => Err(NOT_LOADED.to_owned()),
+            Ok(_) => {
+                self.layers.note_refused(format!("model entity {name}"));
+                Err(why().unwrap_or_else(|| "it has no drawable geometry".into()))
+            }
+            Err(Unresolved::Refused { reason, .. }) => Err(why().unwrap_or(reason)),
+            Err(Unresolved::Missing(_)) => Err(why().unwrap_or_else(|| NOT_LOADED.to_owned())),
             Err(Unresolved::Identity | Unresolved::Token(_)) => {
                 unreachable!("a chosen name has no wing identity or equipment token")
             }

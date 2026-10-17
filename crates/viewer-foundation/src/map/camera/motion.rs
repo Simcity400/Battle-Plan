@@ -88,7 +88,8 @@ pub struct Speeds {
 }
 
 impl CameraLaw {
-    /// Reads the defines from the recorded content and the speeds from the user's settings.
+    /// Reads the defines it is given (the graphics defines while visual mods show) and the
+    /// speeds from the user's settings.
     pub fn load(
         defines: &installed_content::defines::Defines,
         settings: &installed_content::settings::SettingsKeys,

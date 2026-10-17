@@ -786,10 +786,21 @@ impl CounterAssets {
         let medium_cell = FlagSet::Medium.cell(defines)?;
         // `flag atlas loading` logs an unreadable overlay and
         // builds the medium atlas without it.
-        let overlay = layers
-            .read(MEDIUM_FLAG_OVERLAY)
-            .ok()
-            .and_then(|bytes| flags::decode(&bytes, medium_cell));
+        let overlay_of = |stack: &ResolvedLayers| {
+            stack
+                .read(MEDIUM_FLAG_OVERLAY)
+                .ok()
+                .and_then(|bytes| flags::decode(&bytes, medium_cell))
+        };
+        // An overlay the visual mods break is the recording's own, named.
+        let overlay = overlay_of(layers).or_else(|| {
+            let overlay = overlay_of(&layers.without_overlays()?)?;
+            layers.note_overlay_refusal(format!(
+                "{MEDIUM_FLAG_OVERLAY} (not a {} x {} Targa)",
+                medium_cell[0], medium_cell[1]
+            ));
+            Some(overlay)
+        });
         let overlay_missing = overlay.is_none().then(|| {
             format!(
                 "{MEDIUM_FLAG_OVERLAY} is missing or not a {} x {} Targa; medium counter flags are drawn without it.",
@@ -1213,9 +1224,12 @@ pub struct CounterContent {
 }
 
 impl CounterContent {
-    /// Reads `map/unitstacks.txt` and `map/buildings.txt`.
+    /// Reads `map/unitstacks.txt` and `map/buildings.txt` from the recorded `layers`. The
+    /// building slots admit by the entities `artwork` registers, the stack the building layer
+    /// draws from, so both agree on which slots stand.
     pub fn load(
         layers: &ResolvedLayers,
+        artwork: &ResolvedLayers,
         map: &MapData,
         defines: &installed_content::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
@@ -1238,7 +1252,7 @@ impl CounterContent {
         // The icons anchor only at slots the loader admits, by the building layer's own rules;
         // document.rs reports the state id conflicts once.
         let (states, _) = installed_content::states::read(layers, defines, &map.definitions)?;
-        let roster = layers.descriptor_roster()?;
+        let roster = artwork.descriptor_roster()?;
         let admit = |spawn: &installed_content::buildings::SpawnPoint,
                      slot: &installed_content::positions::BuildingPosition,
                      province: Option<u32>| {

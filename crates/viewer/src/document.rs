@@ -145,6 +145,96 @@ impl std::ops::Deref for Document {
     }
 }
 
+/// The load's view of the visual mod fallback ([`crate::visual_fallback`]): the recording's
+/// identity and the decisions its keys hold.
+pub type VisualFallback<'a> = (
+    &'a str,
+    &'a BTreeMap<crate::visual_fallback::FallbackKey, crate::visual_fallback::Decision>,
+);
+
+/// The decision `fallback` holds for the visual mods `selected` as they are now, when it shows
+/// no visual mods: `None` once a mod changes (another revision, another key), for another
+/// recording, or when the mods are shown.
+fn decided(
+    fallback: Option<VisualFallback<'_>>,
+    options: &ResolveOptions,
+    selected: &[installed_content::content::visual::Choice],
+    recorded: &[installed_content::content::visual::RecordedMod],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<(
+    crate::visual_fallback::FallbackKey,
+    crate::visual_fallback::Decision,
+)> {
+    let (recording, decisions) = fallback?;
+    let key = crate::visual_fallback::FallbackKey {
+        recording: recording.to_owned(),
+        revision: installed_content::content::visual::revision(options, selected, recorded, cancel).ok()?,
+    };
+    let decision = decisions.get(&key)?;
+    decision.reason().is_some().then(|| (key, decision.clone()))
+}
+
+/// What the selected visual mods hold now ([`installed_content::content::visual::revision`]), with the
+/// recording's own mods as the selection mounts them; `None` when it cannot be read.
+fn visual_revision_now(
+    options: &ResolveOptions,
+    replay: &Replay,
+    visual_mods: Option<&[installed_content::content::visual::Choice]>,
+) -> Option<String> {
+    let selected = visual_mods.filter(|selected| !selected.is_empty())?;
+    let recorded: Vec<_> = replay
+        .identity
+        .mods
+        .iter()
+        .map(|recorded| installed_content::content::visual::RecordedMod {
+            id: recorded.id.clone(),
+            name: recorded.display_name.clone(),
+        })
+        .collect();
+    installed_content::content::visual::revision(
+        options,
+        selected,
+        &recorded,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .ok()
+}
+
+/// What `load` loads, loaded again until the revision of visual mods it loaded with is still the
+/// one `now` reads as it returns: a mod that changed during a load is never installed stale.
+/// Content that shows no revision (no selection, or one that could not be read) returns at once.
+fn until_current<T>(
+    mut load: impl FnMut() -> io::Result<(T, String)>,
+    mut now: impl FnMut() -> Option<String>,
+) -> io::Result<T> {
+    loop {
+        let (loaded, revision) = load()?;
+        if revision.is_empty() || now().is_none_or(|now| now == revision) {
+            return Ok(loaded);
+        }
+    }
+}
+
+/// The city sprawl of `plan`: placed as the recording places it, its buildings' artwork
+/// loaded through the visual mods' artwork fallback ([`installed_content::ResolvedLayers::artwork`]),
+/// with the graphics defines of `defines` (recorded, graphics) while the mods show.
+fn load_sprawl(
+    layers: &installed_content::ResolvedLayers,
+    decode: installed_content::image::native::Decode,
+    plan: &sprawl::SprawlPlan,
+    (defines, graphics): (&installed_content::defines::Defines, &installed_content::defines::Defines),
+) -> io::Result<(Sprawl, Vec<String>)> {
+    layers.artwork("city sprawl", |stack| {
+        let mut warnings = Vec::new();
+        let defines = if stack.shows_visual_mods() {
+            graphics
+        } else {
+            defines
+        };
+        Sprawl::load(stack, decode, plan, defines, &mut warnings).map(|sprawl| (sprawl, warnings))
+    })
+}
+
 /// The verified local game content a replay is drawn with: everything that
 /// does not change with the recorded hour.
 pub struct Content {
@@ -156,6 +246,14 @@ pub struct Content {
     pub political_gpu: viewer_world::map::political_gpu::Cache,
     pub texture_quality: u8,
     pub visual_mods: Option<Vec<installed_content::content::visual::Choice>>,
+    /// What the mounted visual mods held when this content loaded
+    /// ([`installed_content::content::visual::revision`]); empty when none is mounted.
+    pub visual_revision: String,
+    /// Whether any visual mod's files are shown over the recording.
+    visual_shown: bool,
+    /// The fallback key it was built for and what it was built under
+    /// ([`crate::visual_fallback`]); `None` without a visual mod selection to fall back from.
+    pub fallback: Option<crate::visual_fallback::Built>,
     pub map: Arc<MapData>,
     /// The content's camera and frame defines with the user's camera tilt.
     pub map_defines: MapDefines,
@@ -291,6 +389,13 @@ pub struct Content {
     pub province_geometry: Arc<ProvinceGeometry>,
     /// How long that one pass over `map/provinces.bmp` took, for reporting.
     pub province_geometry_build: Duration,
+}
+
+impl Content {
+    /// Whether any visual mod's files are shown over the recording.
+    pub fn shows_visual_mods(&self) -> bool {
+        self.visual_shown
+    }
 }
 
 /// What one hour's [`perspective::Vision`] reads besides its tables: the hour
@@ -966,6 +1071,7 @@ impl Document {
             replay,
             visual_mods,
             texture_quality,
+            None,
         )?;
         document.bind_source(source, options.clone(), allow_unverified);
         Ok(document)
@@ -991,6 +1097,7 @@ impl Document {
 
     /// Load verified presentation assets using the same immutable recording
     /// handle as the native analytics service. Call only on a loading thread.
+    #[allow(clippy::too_many_arguments)]
     pub fn load_shared(
         path: &Path,
         options: &ResolveOptions,
@@ -999,6 +1106,40 @@ impl Document {
         replay: Arc<Replay>,
         visual_mods: Option<&[installed_content::content::visual::Choice]>,
         texture_quality: u8,
+        visual_fallback: Option<VisualFallback<'_>>,
+    ) -> io::Result<Self> {
+        // A visual mod that changed while the content loaded, when a refresh would find nothing
+        // loaded to check, loads it again: what installs is what the mods hold as it installs.
+        until_current(
+            || {
+                let document = Self::load_shared_once(
+                    path,
+                    options,
+                    allow_unverified,
+                    initial,
+                    Arc::clone(&replay),
+                    visual_mods,
+                    texture_quality,
+                    visual_fallback,
+                )?;
+                let revision = document.content.visual_revision.clone();
+                Ok((document, revision))
+            },
+            || visual_revision_now(options, &replay, visual_mods),
+        )
+    }
+
+    /// [`Self::load_shared`], once.
+    #[allow(clippy::too_many_arguments)]
+    fn load_shared_once(
+        path: &Path,
+        options: &ResolveOptions,
+        allow_unverified: bool,
+        initial: &InitialHour,
+        replay: Arc<Replay>,
+        visual_mods: Option<&[installed_content::content::visual::Choice]>,
+        texture_quality: u8,
+        visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
         let mut warnings = replay.compatibility_gaps();
         warnings.extend(replay.warnings.iter().cloned());
@@ -1026,6 +1167,9 @@ impl Document {
         // The recorded layer ids and hashes, rather than launcher state, select it.
         let mut content = installed_content::resolve(&replay.identity, options)?;
         let uncovered_reads = content.layers.report_uncovered_reads();
+        let mut visual_revision = String::new();
+        let mut visual_shown = false;
+        let mut fallback = None;
         // Visual mods mount above the recorded stack for artwork only; geometry and every
         // recorded fact keep reading the recorded layers. A selection that cannot be shown is
         // named and the recording still opens.
@@ -1039,27 +1183,60 @@ impl Document {
                     name: recorded.display_name.clone(),
                 })
                 .collect();
-            match installed_content::content::visual::apply(
-                &mut content.layers,
-                options,
-                selected,
-                &recorded,
-                &std::sync::atomic::AtomicBool::new(false),
-            ) {
-                Ok(plan) => {
-                    if !plan.order.is_empty() {
-                        warnings.push(format!(
-                            "Visual mods shown over the recorded artwork, lowest precedence first: {}. Map geometry and every recorded fact come from the recording.",
-                            plan.order
-                                .iter()
-                                .map(|choice| choice.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            // A map that failed with these visual mods, as they are now, shows what its fallback
+            // decided ([`crate::visual_fallback`]).
+            match decided(visual_fallback, options, selected, &recorded, &cancel) {
+                Some((key, decision)) => {
+                    visual_revision = key.revision.clone();
+                    if let Some(reason) = decision.reason() {
+                        warnings.push(format!("Visual mods are not shown: {reason}."));
                     }
-                    warnings.extend(plan.warnings);
+                    fallback = Some(crate::visual_fallback::Built {
+                        key,
+                        under: decision.under(),
+                    });
                 }
-                Err(error) => warnings.push(format!("Visual mods are not shown: {error}.")),
+                None => match installed_content::content::visual::apply(
+                    &mut content.layers,
+                    options,
+                    selected,
+                    &recorded,
+                    &cancel,
+                ) {
+                    Ok(plan) => {
+                        visual_shown = !plan.order.is_empty();
+                        if let Some((recording, decisions)) = visual_fallback {
+                            let key = crate::visual_fallback::FallbackKey {
+                                recording: recording.to_owned(),
+                                revision: plan.revision.clone(),
+                            };
+                            let excused = match decisions.get(&key) {
+                                Some(crate::visual_fallback::Decision::Restored { excused }) => {
+                                    excused.clone()
+                                }
+                                _ => BTreeSet::new(),
+                            };
+                            fallback = Some(crate::visual_fallback::Built {
+                                key,
+                                under: crate::visual_fallback::Under::Mods { excused },
+                            });
+                        }
+                        visual_revision = plan.revision;
+                        if !plan.order.is_empty() {
+                            warnings.push(format!(
+                                "Visual mods shown over the recorded artwork, lowest precedence first: {}. Map geometry and every recorded fact come from the recording.",
+                                plan.order
+                                    .iter()
+                                    .map(|choice| choice.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                        warnings.extend(plan.warnings);
+                    }
+                    Err(error) => warnings.push(format!("Visual mods are not shown: {error}.")),
+                },
             }
         }
         let content = Arc::new(content);
@@ -1077,6 +1254,41 @@ impl Document {
         }
         let defines = installed_content::defines::read(&content.layers)?;
         let audio = audio_source(&content.layers, &defines, &options.user_dir, &mut warnings);
+        // Graphics consumers read the recorded defines with the graphics sections of the defines
+        // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
+        // simulation section stays recorded, for every consumer. A graphics value of another
+        // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
+        // keep the recorded defines, each named.
+        let art_defines = match content.layers.presentation_defines() {
+            None => defines.clone(),
+            Some(stack) => match installed_content::defines::read(stack)
+                .and_then(|shown| defines.with_graphics_of(&shown))
+            {
+                Ok((graphics, kept)) => {
+                    for why in kept {
+                        content
+                            .layers
+                            .note_overlay_refusal(format!("graphics define {why}"));
+                    }
+                    graphics
+                }
+                Err(error) => {
+                    content
+                        .layers
+                        .note_overlay_refusal(format!("graphics defines ({error})"));
+                    defines.clone()
+                }
+            },
+        };
+        // The defines an artwork loader reads with the stack it was handed: graphics defines
+        // with the visual mods, recorded defines when it falls back to the recording.
+        let defines_for = |stack: &installed_content::ResolvedLayers| {
+            if stack.shows_visual_mods() {
+                &art_defines
+            } else {
+                &defines
+            }
+        };
         // Every key as the game reads it (`installed_content::settings::SettingsKeys`).
         let settings = installed_content::settings::read_keys(&options.user_dir)?;
         let camera_tilt = viewer_foundation::map::camera::stored_tilt(
@@ -1091,8 +1303,20 @@ impl Document {
             .unwrap_or(true);
         let game_audio = dashboard::map_settings::game_audio(&settings);
         let game_dev_master = dashboard::map_settings::game_dev_master(&settings);
-        let map_defines = MapDefines::load(&defines, camera_tilt)?;
-        let camera_law = CameraLaw::load(&defines, &settings)?;
+        let map_defines = crate::map_assets::graphics_define(
+            &content.layers,
+            "camera and map",
+            &art_defines,
+            &defines,
+            |defines| MapDefines::load(defines, camera_tilt),
+        )?;
+        let camera_law = crate::map_assets::graphics_define(
+            &content.layers,
+            "camera motion",
+            &art_defines,
+            &defines,
+            |defines| CameraLaw::load(defines, &settings),
+        )?;
         // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
         // pads every texture file the passes load and sets their global defines.
         let decode = settings.texture_decode();
@@ -1157,6 +1381,7 @@ impl Document {
                 let assets = crate::map_assets::load(
                     layers,
                     &defines,
+                    &art_defines,
                     MapSize::of(&map),
                     &terrain,
                     &default_map,
@@ -1166,19 +1391,27 @@ impl Document {
                 );
                 (assets, warnings)
             });
+            // Artwork, interface, fonts, models and text load from the presentation stack, whose
+            // visual mods show only under artwork roots, and fall back to the recording by name.
             let h_icons = scope.spawn(|| {
-                MapIcons::load(
-                    layers,
-                    &defines,
-                    &map,
-                    &regions,
-                    &language,
-                    [map.width, map.height],
-                    asset_viewport,
-                    decode,
-                )
+                layers.artwork("map icons and interface", |stack| {
+                    MapIcons::load(
+                        stack,
+                        (&defines, defines_for(stack)),
+                        &map,
+                        &regions,
+                        &language,
+                        [map.width, map.height],
+                        asset_viewport,
+                        decode,
+                    )
+                })
             });
-            let h_names = scope.spawn(|| NameContent::load(layers, &map, &language));
+            let h_names = scope.spawn(|| {
+                layers.artwork("map names", |stack| {
+                    NameContent::load(stack, &map, &language)
+                })
+            });
             // Naval source labels in another language recover through the recording
             // language's localisation, indexed here so drawing reads no content.
             let h_labels = scope.spawn(|| {
@@ -1188,15 +1421,27 @@ impl Document {
                     layers,
                 )
             });
-            let h_counters = scope.spawn(|| CounterContent::load(layers, &map, &defines, &regions));
-            let h_borders_in = scope.spawn(|| -> io::Result<_> {
-                let border_assets = BorderAssets::load(
+            let h_counters = scope.spawn(|| {
+                crate::map_assets::graphics_define(
                     layers,
+                    "counters",
+                    &art_defines,
                     &defines,
-                    [map.width, map.height],
-                    texture_quality,
-                    decode,
-                )?;
+                    |defines| {
+                        CounterContent::load(layers, layers.presentation(), &map, defines, &regions)
+                    },
+                )
+            });
+            let h_borders_in = scope.spawn(|| -> io::Result<_> {
+                let border_assets = layers.artwork("borders", |stack| {
+                    BorderAssets::load(
+                        stack,
+                        defines_for(stack),
+                        [map.width, map.height],
+                        texture_quality,
+                        decode,
+                    )
+                })?;
                 let states = installed_content::states::read(layers, &defines, &map.definitions)?;
                 let adjacencies = installed_content::adjacencies::read(layers)?;
                 Ok((border_assets, states, adjacencies))
@@ -1205,7 +1450,13 @@ impl Document {
                 let (cities, city_styles) = installed_content::cities::read(layers)?;
                 let buildings_read = installed_content::positions::read_buildings(layers)?;
                 let building_types = installed_content::buildings::read(layers)?;
-                let rail_defines = rail_layer::RailDefines::load(&defines)?;
+                let rail_defines = crate::map_assets::graphics_define(
+                    layers,
+                    "railways",
+                    &art_defines,
+                    &defines,
+                    rail_layer::RailDefines::load,
+                )?;
                 Ok((
                     cities,
                     city_styles,
@@ -1224,63 +1475,83 @@ impl Document {
                 Ok((locations, technologies))
             });
             let h_trains = scope.spawn(|| -> io::Result<_> {
-                let mut warnings = Vec::new();
-                let trains = Arc::new(viewer_world::map::trains::TrainAssets::load(
-                    layers,
-                    decode,
-                    &defines,
-                    &mut warnings,
-                )?);
-                Ok((trains, warnings))
+                let (trains, warnings) = layers.artwork("supply trains", |stack| {
+                    let mut warnings = Vec::new();
+                    viewer_world::map::trains::TrainAssets::load(
+                        stack,
+                        decode,
+                        defines_for(stack),
+                        &mut warnings,
+                    )
+                    .map(|trains| (trains, warnings))
+                })?;
+                Ok((Arc::new(trains), warnings))
             });
             let h_aircraft = scope.spawn(|| -> io::Result<_> {
-                let mut warnings = Vec::new();
-                let aircraft = Arc::new(viewer_world::map::aircraft::AircraftAssets::load(
-                    layers,
-                    decode,
-                    &map,
-                    &defines,
-                    &regions,
-                    &mut warnings,
-                )?);
-                Ok((aircraft, warnings))
+                let (aircraft, warnings) = layers.artwork("aircraft", |stack| {
+                    let mut warnings = Vec::new();
+                    viewer_world::map::aircraft::AircraftAssets::load(
+                        stack,
+                        decode,
+                        &map,
+                        (&defines, defines_for(stack)),
+                        &regions,
+                        &mut warnings,
+                    )
+                    .map(|aircraft| (aircraft, warnings))
+                })?;
+                Ok((Arc::new(aircraft), warnings))
             });
             let h_bridges = scope.spawn(|| -> io::Result<_> {
-                let mut warnings = Vec::new();
-                let bridges = Bridges::load(layers, decode, &defines, &mut warnings)?;
-                Ok((bridges, warnings))
+                layers.artwork("railway bridges", |stack| {
+                    let mut warnings = Vec::new();
+                    Bridges::load(stack, decode, defines_for(stack), &mut warnings)
+                        .map(|bridges| (bridges, warnings))
+                })
             });
             let h_units = scope.spawn(|| -> io::Result<_> {
+                // Its refusals are its own warnings; it never fails as a whole.
+                let stack = layers.presentation();
                 let mut warnings = Vec::new();
+                // Defines the visual mods' scripts break fall back to the recorded ones.
+                let recorded = (stack.shows_visual_mods()
+                    && layers.presentation_defines().is_some())
+                .then_some(&defines);
                 let unit_models = UnitModelAssets::load(
-                    layers,
+                    stack,
                     decode,
-                    &defines,
+                    defines_for(stack),
+                    recorded,
                     &map,
                     &default_map,
                     &mut warnings,
+                    |refusal| layers.note_overlay_refusal(refusal),
                 );
                 Ok((unit_models, warnings))
             });
             let h_orders = scope.spawn(|| -> io::Result<_> {
-                let mut warnings = Vec::new();
-                let order_assets = OrderAssets::load(layers, decode, &defines, &mut warnings)?;
-                Ok((order_assets, warnings))
+                layers.artwork("orders and arrows", |stack| {
+                    let mut warnings = Vec::new();
+                    OrderAssets::load(stack, decode, (&defines, defines_for(stack)), &mut warnings)
+                        .map(|order_assets| (order_assets, warnings))
+                })
             });
             let h_weather = scope.spawn(|| -> io::Result<_> {
-                let assets = viewer_world::map::weather_effects::Assets::load(
-                    layers,
-                    &defines,
-                    [map.width, map.height],
-                    decode,
-                )?;
-                Ok(assets)
+                layers.artwork("weather effects", |stack| {
+                    viewer_world::map::weather_effects::Assets::load(
+                        stack,
+                        defines_for(stack),
+                        [map.width, map.height],
+                        decode,
+                    )
+                })
             });
             let h_mapbuildings = scope.spawn(|| -> io::Result<_> {
-                let mut warnings = Vec::new();
-                let map_buildings =
-                    MapBuildingAssets::load(layers, decode, &map, &defines, &mut warnings)?;
-                Ok((map_buildings, warnings))
+                layers.artwork("map buildings", |stack| {
+                    let mut warnings = Vec::new();
+                    MapBuildingAssets::load(stack, decode, &map, defines_for(stack), &mut warnings)
+                        .map(|map_buildings| (map_buildings, warnings))
+                })
             });
             let h_geometry = scope.spawn(|| {
                 let started = Instant::now();
@@ -1288,10 +1559,15 @@ impl Document {
                 (geometry, started.elapsed())
             });
             let h_river_assets = scope.spawn(|| {
-                RiverAssets::load(layers, [map.width, map.height], texture_quality, decode)
+                layers.artwork("rivers", |stack| {
+                    RiverAssets::load(stack, [map.width, map.height], texture_quality, decode)
+                })
             });
-            let h_rail_assets =
-                scope.spawn(|| RailAssets::load(layers, [map.width, map.height], decode));
+            let h_rail_assets = scope.spawn(|| {
+                layers.artwork("railways", |stack| {
+                    RailAssets::load(stack, [map.width, map.height], decode)
+                })
+            });
             // The ideology groups supply the tactic triggers' ideology names.
             // Loading trigger keys registers those content names.
             let h_ideologies = scope.spawn(|| installed_content::ideologies::read(layers));
@@ -1331,13 +1607,15 @@ impl Document {
             let recorded_labels = Arc::new(h_labels.join().expect("label index loader panicked"));
             // The map-icon windows' resources need the localisation their texts are shown
             // through, which the names pass reads.
-            joined_warnings.extend(MapIcons::load_gui(
-                &mut combat_assets,
-                &mut counter_assets,
-                &mut icon_images,
-                layers,
-                &names.localisation,
-            )?);
+            joined_warnings.extend(layers.artwork("map icon windows", |stack| {
+                MapIcons::load_gui(
+                    &mut combat_assets,
+                    &mut counter_assets,
+                    &mut icon_images,
+                    stack,
+                    &names.localisation,
+                )
+            })?);
             let mut counters = h_counters.join().expect("counters loader panicked")?;
             if let Err(error) = counters.fog.as_ref() {
                 joined_warnings.push(format!(
@@ -1354,12 +1632,17 @@ impl Document {
             let river_assets = h_river_assets
                 .join()
                 .expect("river assets loader panicked")?;
-            let frame_assets = FrameAssets::load(
-                layers,
-                decode,
-                raid_assets.trigger_content.facts(),
-                &mut joined_warnings,
-            )?;
+            let (frame_assets, frame_warnings) = layers.artwork("map frame", |stack| {
+                let mut warnings = Vec::new();
+                FrameAssets::load(
+                    stack,
+                    decode,
+                    raid_assets.trigger_content.facts(),
+                    &mut warnings,
+                )
+                .map(|frame| (frame, warnings))
+            })?;
+            joined_warnings.extend(frame_warnings);
             let (cities, city_styles, buildings_read, building_types, rail_defines) =
                 h_rail_reads.join().expect("rail reads loader panicked")?;
             let infrastructure_reads = h_infrastructure_reads
@@ -1561,7 +1844,15 @@ impl Document {
                 );
                 Ok(movement)
             });
-            let h_labels = scope.spawn(|| LabelContent::load(&defines));
+            let h_labels = scope.spawn(|| {
+                crate::map_assets::graphics_define(
+                    layers,
+                    "map labels",
+                    &art_defines,
+                    &defines,
+                    LabelContent::load,
+                )
+            });
             let h_borders = scope.spawn(|| -> io::Result<_> {
                 let topology = Topology::new(&map, states.definitions(), &regions, &adjacencies)?;
                 let straits =
@@ -1602,14 +1893,17 @@ impl Document {
                     },
                     &heights,
                 )?;
-                let mut warnings = Vec::new();
-                let tree_assets = TreeAssets::load(
-                    layers,
-                    decode,
-                    &tree_field.palettes,
-                    &assets.rivers,
-                    &mut warnings,
-                )?;
+                let (tree_assets, warnings) = layers.artwork("trees", |stack| {
+                    let mut warnings = Vec::new();
+                    TreeAssets::load(
+                        stack,
+                        decode,
+                        &tree_field.palettes,
+                        &assets.rivers,
+                        &mut warnings,
+                    )
+                    .map(|trees| (trees, warnings))
+                })?;
                 let tree_geometry = trees::geometry(&tree_assets)?;
                 Ok((
                     tree_field,
@@ -1629,8 +1923,8 @@ impl Document {
                     &map.province_ids,
                     &assets.rivers,
                 )?;
-                let mut warnings = Vec::new();
-                let sprawl = Sprawl::load(layers, decode, &sprawl_plan, &mut warnings)?;
+                let (sprawl, warnings) =
+                    load_sprawl(layers, decode, &sprawl_plan, (&defines, &art_defines))?;
                 Ok((sprawl, started.elapsed(), warnings))
             });
             let h_railgeom = scope.spawn(|| -> io::Result<_> {
@@ -1724,29 +2018,39 @@ impl Document {
                     .as_ref()
                     .and_then(|movement| movement.map.terrain(province))
             };
-            let terrain = match (&terrain_categories, &movement) {
-                (Err(why), _) => Err(format!("the terrain database did not read: {why}")),
-                (_, None) => Err(
-                    "the provinces' terrain records did not read (unit movement is unavailable)"
-                        .to_owned(),
-                ),
-                (Ok(categories), Some(_)) => Ok(viewer_world::map::map_mode::terrain::Sources {
-                    categories,
-                    provinces: &provinces,
-                    terrain: &province_terrain,
-                    region_of: &counters.region_of,
-                    regions: &regions,
-                }),
-            };
-            Arc::new(viewer_world::map::map_mode::Content::new(
+            // The map modes' colours and ranges are graphics defines: the mods' where they read.
+            let ideologies = Arc::new(counters.ideologies.clone());
+            Arc::new(crate::map_assets::graphics_define(
+                &content.layers,
+                "map modes",
+                &art_defines,
                 &defines,
-                Arc::new(counters.ideologies.clone()),
-                &categories,
-                scripted_modes,
-                content.layers.faction_templates(),
-                recorded_language.clone(),
-                terrain,
-                infrastructure,
+                |defines| {
+                    let terrain = match (&terrain_categories, &movement) {
+                        (Err(why), _) => Err(format!("the terrain database did not read: {why}")),
+                        (_, None) => Err(
+                            "the provinces' terrain records did not read (unit movement is unavailable)"
+                                .to_owned(),
+                        ),
+                        (Ok(categories), Some(_)) => Ok(viewer_world::map::map_mode::terrain::Sources {
+                            categories,
+                            provinces: &provinces,
+                            terrain: &province_terrain,
+                            region_of: &counters.region_of,
+                            regions: &regions,
+                        }),
+                    };
+                    viewer_world::map::map_mode::Content::new(
+                        defines,
+                        Arc::clone(&ideologies),
+                        &categories,
+                        scripted_modes.clone(),
+                        content.layers.faction_templates(),
+                        recorded_language.clone(),
+                        terrain,
+                        infrastructure.clone(),
+                    )
+                },
             )?)
         };
         let icons = MapIcons {
@@ -1930,6 +2234,9 @@ impl Document {
             counter_content,
             combat,
             visual_mods: visual_mods.map(<[installed_content::content::visual::Choice]>::to_vec),
+            visual_revision,
+            visual_shown,
+            fallback,
             texture_quality,
             weather_effects,
             map,
@@ -3582,6 +3889,188 @@ fn audio_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// City sprawl keeps the recording's placement but draws its buildings' artwork from the
+    /// visual mods, through the artwork fallback: a mod that replaces only a city house's mesh
+    /// is drawn.
+    #[test]
+    fn city_sprawl_draws_the_visual_mods_artwork() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_sprawl_artwork_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |relative: &str, bytes: &[u8]| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        let mesh = |reach: f32| {
+            let mut bytes = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
+            for (name, values) in [
+                ("p", [0_f32, 0., 0., 1., 0., 0., 0., 0., reach]),
+                ("n", [0., 1., 0., 0., 1., 0., 0., 1., 0.]),
+            ] {
+                bytes.extend([b'!', name.len() as u8]);
+                bytes.extend(name.as_bytes());
+                bytes.push(b'f');
+                bytes.extend((values.len() as u32).to_le_bytes());
+                bytes.extend(values.into_iter().flat_map(f32::to_le_bytes));
+            }
+            bytes.extend(b"!\x03trii\x03\0\0\0\0\0\0\0\x01\0\0\0\x02\0\0\0");
+            bytes.extend(b"[[[[material\0!\x06shaders\x01\0\0\0\x0e\0\0\0AuthoredShader");
+            bytes
+        };
+        write(
+            "base/gfx/models/city.gfx",
+            br#"objectTypes = { pdxmesh = { name = house_mesh file = "gfx/models/house.mesh" scale = 1 } }"#,
+        );
+        write(
+            "base/gfx/entities/house.asset",
+            br#"entity = { name = house pdxmesh = house_mesh scale = 1 state = { name = idle } }"#,
+        );
+        write("base/gfx/models/house.mesh", &mesh(1.0));
+        // The city damage thresholds the sprawl reads.
+        write(
+            "base/common/defines/00_graphics.lua",
+            b"NDefines = { NGraphics = { CITY_DAMAGED_THRESHOLD = 0.8, CITY_DESTROYED_THRESHOLD = 0.3 } }",
+        );
+        write("art/gfx/models/house.mesh", &mesh(2.0));
+        let art = root.join("art").display().to_string().replace('\\', "/");
+        write(
+            "user/mod/art.mod",
+            format!("name=\"Art\"\npath=\"{art}\"\n").as_bytes(),
+        );
+        std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+        let options = ResolveOptions {
+            game_dir: root.join("steamapps/common/Game"),
+            user_dir: root.join("user"),
+            cache_dir: root.join("cache"),
+        };
+        let base = root.join("base");
+        let mut layers =
+            installed_content::ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+        let selected = [installed_content::content::visual::Choice {
+            id: "mod/art.mod".into(),
+            name: "Art".into(),
+        }];
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+        let plan = viewer_world::map::sprawl::SprawlPlan {
+            buildings: vec![viewer_world::map::sprawl::SprawlBuilding {
+                entity: "house".into(),
+                position: [0.0; 3],
+                rotation: 0.0,
+                province: 1,
+                owner: 1,
+            }],
+            urban_pixels: 1,
+            samples: 1,
+            entities: vec!["house".into()],
+            bounds: Default::default(),
+        };
+        let defines = installed_content::defines::read(&layers).unwrap();
+        let (sprawl, _) =
+            load_sprawl(&layers, Default::default(), &plan, (&defines, &defines)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let slot = sprawl.library.slot("house").unwrap();
+        assert!(sprawl.library.meshes[slot].visual);
+    }
+
+    /// Content whose visual mods changed while it loaded is loaded again, so the content that
+    /// installs is what the mods hold as it installs; content without a revision is not checked.
+    #[test]
+    fn a_mod_changed_during_a_load_loads_it_again() {
+        let mut disk = vec!["r2", "r2"].into_iter();
+        let mut loads = 0;
+        let mut mounted = "r1";
+        let loaded = until_current(
+            || {
+                loads += 1;
+                let revision = mounted.to_owned();
+                mounted = "r2";
+                Ok((loads, revision))
+            },
+            || disk.next().map(str::to_owned),
+        )
+        .unwrap();
+        // The first load mounted r1; a mod changed to r2 before it returned, so it loaded again.
+        assert_eq!(loaded, 2);
+        let unchecked = until_current(|| Ok(((), String::new())), || Some("r9".into()));
+        assert!(unchecked.is_ok());
+    }
+
+    /// A load shows no visual mods only for the decision its own key holds: this recording's,
+    /// at the revision the mods hold now. A mod changed since, or another recording, shows them.
+    #[test]
+    fn a_load_follows_only_its_own_keys_decision() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_visual_mods_off_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |relative: &str, bytes: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        write("art/interface/maparrows.txt", "arrowText = Broken");
+        let art = root.join("art").display().to_string().replace('\\', "/");
+        write(
+            "user/mod/art.mod",
+            &format!("name=\"Art\"\npath=\"{art}\"\n"),
+        );
+        std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+        let options = ResolveOptions {
+            game_dir: root.join("steamapps/common/Game"),
+            user_dir: root.join("user"),
+            cache_dir: root.join("cache"),
+        };
+        let selected = [installed_content::content::visual::Choice {
+            id: "mod/art.mod".into(),
+            name: "Art".into(),
+        }];
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let revision =
+            installed_content::content::visual::revision(&options, &selected, &[], &cancel).unwrap();
+        let key = crate::visual_fallback::FallbackKey {
+            recording: "A".into(),
+            revision,
+        };
+        let probing = crate::visual_fallback::Decision::Probing {
+            failures: ["scene: missing Broken technique".to_owned()].into(),
+            excused: BTreeSet::new(),
+            frames_needed: 0,
+            frames_seen: 0,
+        };
+        let decisions = BTreeMap::from([(key.clone(), probing.clone())]);
+        let decided = |recording| {
+            decided(
+                Some((recording, &decisions)),
+                &options,
+                &selected,
+                &[],
+                &cancel,
+            )
+        };
+        assert_eq!(decided("A"), Some((key.clone(), probing)));
+        assert_eq!(decided("B"), None);
+        let restored = BTreeMap::from([(
+            key.clone(),
+            crate::visual_fallback::Decision::Restored {
+                excused: BTreeSet::new(),
+            },
+        )]);
+        assert_eq!(
+            super::decided(Some(("A", &restored)), &options, &selected, &[], &cancel),
+            None
+        );
+        write("art/interface/maparrows.txt", "arrowText = Repaired");
+        assert_eq!(decided("A"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use replay::identity::Roster;
 
     /// The recorded battles keep their recorded order, centres and radii
@@ -3951,6 +4440,7 @@ mod tests {
                 replay,
                 None,
                 0,
+                None,
             )
             .unwrap();
             let mut warnings = document.warnings.clone();

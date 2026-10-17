@@ -369,7 +369,13 @@ impl Renderer {
         if !mesh.has_text {
             return Ok(prepared);
         }
-        let selected = self.compiled.get_or_init(|| self.effect.select("Text3D"));
+        let selected = self.compiled.get_or_init(|| {
+            // A visual mod's replacement that cannot be compiled falls back to the recording.
+            shader_pipeline::library::with_recorded(&self.effect, |effect| {
+                effect.select("Text3D").map_err(std::io::Error::other)
+            })
+            .map_err(|error| error.to_string())
+        });
         let mut first_refusal = None;
         match selected {
             Ok(selection) => {
@@ -407,13 +413,18 @@ impl Renderer {
             })),
             0,
         );
-        let sampler = self.effect.source.technique("Text3D").and_then(|_| {
-            self.effect
+        // The sampler of the effect drawn, the recording's when the replacement fell back.
+        let effect = match selected {
+            Ok(Some(selection)) => &selection.effect,
+            _ => &self.effect,
+        };
+        let sampler = effect.source.technique("Text3D").and_then(|_| {
+            effect
                 .source
                 .common
                 .samplers
                 .iter()
-                .chain(&self.effect.source.pixel.samplers)
+                .chain(&effect.source.pixel.samplers)
                 .rfind(|sampler| sampler.index == 0)
         });
         let native_layout = retained.stream.vertex_layouts().is_ok();

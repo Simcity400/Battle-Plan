@@ -144,6 +144,39 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
         BTreeSet::from(["common/countries/a.txt".to_owned()])
     );
     assert_eq!(layers.layers.len(), 1);
+    // A reader handed the presentation stack still reads recorded scripts and geometry: the
+    // mod shows only under the presentation roots, its `replace_path` there too.
+    let presentation = layers.presentation();
+    assert_eq!(
+        presentation.listed_paths("common/countries"),
+        BTreeSet::from(["common/countries/a.txt".to_owned()])
+    );
+    assert_eq!(
+        text(presentation, "common/countries/a.txt"),
+        "recorded country"
+    );
+    assert_eq!(
+        presentation
+            .read("common/countries/b.txt")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        text(presentation, "map/provinces.bmp"),
+        "recorded provinces"
+    );
+    assert_eq!(
+        presentation
+            .read_uncovered("events/a.txt")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        presentation.read_uncovered("interface/topbar.gui").unwrap(),
+        b"mod gui"
+    );
     // An uncovered file the mod supplies is its own too, never an uncovered recorded read.
     assert_eq!(
         layers
@@ -158,7 +191,7 @@ fn a_mixed_overhaul_shows_its_artwork_over_the_recorded_geometry() {
     assert_eq!(
         warnings,
         [
-            "Artwork from visual mods: 2 file(s) shown from mods that are not part of the recording, not its recorded artwork: Overhaul (2)."
+            "Artwork from visual mods: 3 file(s) shown from mods that are not part of the recording, not its recorded artwork: Overhaul (3)."
         ]
     );
 }
@@ -272,6 +305,161 @@ replace_path=\"map/terrain\"",
     );
 }
 
+/// An item a loader reads apart from the rest falls back to the recording alone, named; one
+/// neither stack gives is refused by its stable name for the map's fallback.
+#[test]
+fn an_artwork_item_a_mod_breaks_is_read_from_the_recording_by_name() {
+    let layers = ResolvedLayers::default();
+    let reads = layers.read_warnings();
+    let mut asked = Vec::new();
+    let item = layers.artwork_item("tree kind 3", true, |recorded| {
+        asked.push(recorded);
+        if recorded {
+            Ok("recorded")
+        } else {
+            Err("not a mesh")
+        }
+    });
+    assert_eq!(item, Ok("recorded"));
+    assert_eq!(asked, [false, true]);
+    let refusals = reads.overlay_refusals().unwrap();
+    assert!(refusals.contains("tree kind 3 (not a mesh)"), "{refusals}");
+    assert!(reads.refused().is_empty());
+    // Without recorded layers below, or when they refuse it too: refused by name.
+    let item = layers.artwork_item("tree kind 4", false, |_| Err::<&str, _>("not a mesh"));
+    assert_eq!(item, Err("not a mesh"));
+    let item = layers.artwork_item("tree kind 5", true, |_| Err::<&str, _>("not a mesh"));
+    assert_eq!(item, Err("not a mesh"));
+    assert_eq!(
+        reads.refused(),
+        BTreeSet::from(["tree kind 4".to_owned(), "tree kind 5".to_owned()])
+    );
+}
+
+/// The world normal map is artwork: a mod's shows over the recording's in each form the game
+/// reads, and updating it moves the selection's revision; the map's other bitmaps stay recorded.
+#[test]
+fn a_mods_world_normal_map_shows_and_moves_the_revision() {
+    let machine = Machine::new("world-normal");
+    machine.write("base/map/world_normal.bmp", b"recorded normal");
+    machine.write("base/map/heightmap.bmp", b"recorded heights");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write("art/map/world_normal.dds", b"mod normal");
+    machine.write("art/map/heightmap.bmp", b"mod heights");
+    let selected = [pick("mod/art.mod", "Art")];
+    let mut layers = machine.recorded(&["base"]);
+    apply(&mut layers, &machine.options, &selected, &[], &never()).unwrap();
+    let presentation = layers.presentation();
+    assert_eq!(
+        presentation.read_uncovered("map/world_normal.dds").unwrap(),
+        b"mod normal"
+    );
+    assert_eq!(text(presentation, "map/heightmap.bmp"), "recorded heights");
+    let revision = || revision(&machine.options, &selected, &[], &never()).unwrap();
+    let first = revision();
+    machine.write("art/map/heightmap.bmp", b"mod heights, changed");
+    assert_eq!(first, revision());
+    for form in ["bmp", "dds", "tga"] {
+        let before = revision();
+        machine.write(
+            &format!("art/map/world_normal.{form}"),
+            format!("normal {form}, updated").as_bytes(),
+        );
+        assert_ne!(before, revision(), "{form}");
+    }
+}
+
+/// A visual mod's descriptor file that does not parse is read as the recording's file of that
+/// path, named; a name only the mod's file holds stays undecided.
+#[test]
+fn a_mods_descriptor_that_does_not_parse_reads_the_recordings_file() {
+    let machine = Machine::new("descriptor-fallback");
+    machine.write(
+        "base/gfx/entities/a.asset",
+        br#"entity = { name = "plane" pdxmesh = "plane_mesh" }"#,
+    );
+    machine.local("art.mod", "name=\"Art\"", "art");
+    // Does not parse even when its blocks are closed.
+    machine.write(
+        "art/gfx/entities/a.asset",
+        br#"entity = { name = "plane" zeppelin } }{ = ="#,
+    );
+    let mut layers = machine.recorded(&["base"]);
+    let reads = layers.report_uncovered_reads();
+    apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    let roster = layers.presentation().descriptor_roster().unwrap();
+    assert!(roster.descriptors.entities.contains_key("plane"));
+    assert!(roster.unreadable.is_empty(), "{:?}", roster.unreadable);
+    assert!(roster.unreadable_names.contains_key("zeppelin"));
+    assert!(!roster.unreadable_names.contains_key("plane"));
+    let refusals = reads.overlay_refusals().unwrap();
+    assert!(
+        refusals.contains("descriptor gfx/entities/a.asset ("),
+        "{refusals}"
+    );
+}
+
+/// A visual mod's interface file whose declarations are refused is read as the recording's file
+/// of that path, named; the mod's other files are its own.
+#[test]
+fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let machine = Machine::new("interface-fallback");
+    machine.write(
+        "base/interface/a.gfx",
+        br#"spriteTypes = { spriteType = { name = "GFX_a" texturefile = "gfx/a.dds" } }"#,
+    );
+    machine.local("art.mod", "name=\"Art\"", "art");
+    // Past the texture id the anchor reaches the animation records: refused.
+    let zeros = vec!["0"; 12].join(" ");
+    machine.write(
+        "art/interface/a.gfx",
+        format!(
+            "spriteTypes = {{ spriteType = {{ name = \"GFX_a\" texturefile = \"gfx/b.dds\" \
+             anchor = {{ {zeros} 5 }} }} }}"
+        )
+        .as_bytes(),
+    );
+    machine.write(
+        "art/interface/b.gfx",
+        br#"spriteTypes = { spriteType = { name = "GFX_b" texturefile = "gfx/b.dds" } }"#,
+    );
+    let mut layers = machine.recorded(&["base"]);
+    let reads = layers.report_uncovered_reads();
+    apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    let files = crate::gui::native::sprites::read_layers(layers.presentation()).unwrap();
+    let file = |name: &str| {
+        &files
+            .iter()
+            .find(|(path, _)| path == name)
+            .unwrap_or_else(|| panic!("{name} is read"))
+            .1
+    };
+    let a = file("interface/a.gfx").get(b"GFX_a").unwrap();
+    assert!(a.refusals.is_empty(), "{:?}", a.refusals);
+    assert!(file("interface/b.gfx").get(b"GFX_b").is_some());
+    let refusals = reads.overlay_refusals().unwrap();
+    assert!(
+        refusals.contains("interface file interface/a.gfx ("),
+        "{refusals}"
+    );
+}
+
 /// Workshop items are found in the game's own Steam library without a user descriptor; a user
 /// descriptor of an item and an alias of one source are that one mod; a descriptor that cannot
 /// be mounted is still listed, by name, with its problem.
@@ -367,7 +555,11 @@ fn selections_mount_in_the_engines_order_and_name_what_cannot_mount() {
     assert!(planned.warnings[1].starts_with("Visual mod Broken is not shown"));
     let mut layers = machine.recorded(&["base"]);
     let applied = apply(&mut layers, &machine.options, &selected, &[], &never()).unwrap();
-    assert_eq!(applied, planned);
+    assert_eq!(
+        (&applied.order, &applied.warnings),
+        (&planned.order, &planned.warnings)
+    );
+    assert!(planned.revision.is_empty() && !applied.revision.is_empty());
     assert_eq!(
         text(layers.presentation(), "map/terrain/atlas0.dds"),
         "Mike"
@@ -773,4 +965,145 @@ fn one_mod_of_a_display_name_is_shown() {
     assert_eq!(planned.warnings.len(), 2, "{:?}", planned.warnings);
     assert!(planned.warnings[0].contains("recording's mod of that name"));
     assert!(planned.warnings[1].contains("(mod/b.mod)"));
+}
+
+/// Graphics consumers read defines merged natively with the mods' scripts; the recorded and the
+/// presentation stacks themselves keep the recorded defines for every other consumer.
+#[test]
+fn presentation_defines_merge_the_mods_scripts_natively() {
+    let machine = Machine::new("defines");
+    machine.write(
+        "base/common/defines/00_defines.lua",
+        b"NDefines={NGraphics={TREES=1},NMilitary={WIDTH=2}}",
+    );
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write(
+        "art/common/defines/00_defines.lua",
+        b"NDefines={NGraphics={TREES=5},NMilitary={WIDTH=9}}",
+    );
+    machine.write(
+        "art/common/defines/01_art.lua",
+        b"NDefines.NGraphics.TREES = NDefines.NGraphics.TREES * 2",
+    );
+    let mut layers = machine.recorded(&["base"]);
+    assert!(layers.presentation_defines().is_none());
+    apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    let recorded = crate::defines::read(&layers).unwrap();
+    let shown = crate::defines::read(layers.presentation()).unwrap();
+    let art = crate::defines::read(layers.presentation_defines().unwrap()).unwrap();
+    assert_eq!(recorded.number("NGraphics", "TREES").unwrap(), 1.0);
+    assert_eq!(shown.number("NGraphics", "TREES").unwrap(), 1.0);
+    assert_eq!(art.number("NGraphics", "TREES").unwrap(), 10.0);
+    assert_eq!(art.number("NMilitary", "WIDTH").unwrap(), 9.0);
+    assert_eq!(recorded.number("NMilitary", "WIDTH").unwrap(), 2.0);
+}
+
+/// The recorded stack below a presentation stack's mods is the recorded roster again.
+#[test]
+fn the_stack_without_overlays_is_the_recorded_roster() {
+    let machine = Machine::new("without");
+    machine.write("base/map/terrain/atlas0.dds", b"recorded atlas");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write("art/map/terrain/atlas0.dds", b"mod atlas");
+    let mut layers = machine.recorded(&["base"]);
+    assert!(layers.without_overlays().is_none());
+    apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    let recorded = layers.presentation().without_overlays().unwrap();
+    assert_eq!(text(&recorded, "map/terrain/atlas0.dds"), "recorded atlas");
+    assert_eq!(recorded.layers.len(), 1);
+}
+
+/// A selection's revision changes when a mod it shows is updated or a missing one is installed,
+/// and not for a file the mod does not show.
+#[test]
+fn revisions_follow_what_the_mods_show() {
+    let machine = Machine::new("revision");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write("art/map/terrain/atlas0.dds", b"one");
+    let selected = [pick("mod/art.mod", "Art"), pick("mod/later.mod", "Later")];
+    let revision = || revision(&machine.options, &selected, &[], &never()).unwrap();
+    let first = revision();
+    assert_eq!(first, revision());
+    assert_eq!(
+        super::revision(&machine.options, &[], &[], &never()).unwrap(),
+        ""
+    );
+    machine.write("art/common/countries/a.txt", b"not shown");
+    assert_eq!(first, revision());
+    machine.write("art/map/terrain/atlas0.dds", b"two, longer");
+    let updated = revision();
+    assert_ne!(first, updated);
+    machine.local("later.mod", "name=\"Later\"", "later");
+    assert_ne!(updated, revision());
+    // Mounting records the revision it mounted.
+    let mut layers = machine.recorded(&["base"]);
+    let plan = apply(&mut layers, &machine.options, &selected, &[], &never()).unwrap();
+    assert_eq!(plan.revision, revision());
+}
+
+/// A mod that changes while it mounts is mounted again, so the plan's revision and the mounted
+/// files are the updated ones, never a revision taken before the update over older files.
+#[test]
+fn a_mod_updated_while_it_mounts_is_mounted_again() {
+    let machine = Machine::new("revision-race");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write("art/map/terrain/atlas0.dds", b"one");
+    let selected = [pick("mod/art.mod", "Art")];
+    let mut layers = machine.recorded(&["base"]);
+    let mut taken = 0;
+    let plan = apply_with(
+        &mut layers,
+        &machine.options,
+        &selected,
+        &[],
+        &never(),
+        || {
+            taken += 1;
+            // The update lands during the first mount, before its second revision is taken.
+            if taken == 2 {
+                machine.write("art/map/terrain/atlas1.dds", b"added by the update");
+            }
+            revision(&machine.options, &selected, &[], &never())
+        },
+    )
+    .unwrap();
+    assert_eq!(taken, 4, "the first mount is followed by a second");
+    assert_eq!(
+        plan.revision,
+        revision(&machine.options, &selected, &[], &never()).unwrap()
+    );
+    assert_eq!(
+        text(layers.presentation(), "map/terrain/atlas1.dds"),
+        "added by the update"
+    );
+}
+
+/// A selection none of whose mods can be shown records the same revision a later check takes,
+/// so its map is not reloaded again and again.
+#[test]
+fn a_selection_that_shows_nothing_records_its_revision() {
+    let machine = Machine::new("revision-missing");
+    let selected = [pick("mod/gone.mod", "Gone")];
+    let mut layers = machine.recorded(&["base"]);
+    let plan = apply(&mut layers, &machine.options, &selected, &[], &never()).unwrap();
+    assert!(layers.presentation_defines().is_none());
+    assert!(plan.order.is_empty() && !plan.revision.is_empty());
+    assert_eq!(
+        plan.revision,
+        revision(&machine.options, &selected, &[], &never()).unwrap()
+    );
 }

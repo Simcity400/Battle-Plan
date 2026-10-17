@@ -7,7 +7,26 @@ pub(crate) fn initialize_runtime_tables() {
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
 }
 
-static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Compiler output names its scratch folder, which differs every run, as `.`: the same
+/// refusal reads the same on every load.
+#[test]
+fn compiler_output_reads_the_same_on_every_run() {
+    let message = |scratch: &str| {
+        let text = format!(
+            r"{scratch}\effect.hlsl:3:1: error: unknown type; {}/effect.hlsl",
+            scratch.replace('\\', "/")
+        );
+        scrubbed(text.as_bytes(), Path::new(scratch))
+    };
+    let first = message(r"C:\Temp\hoi4-shader-1b2f");
+    assert_eq!(first, message(r"C:\Temp\hoi4-shader-9c4e"));
+    assert_eq!(
+        first,
+        r".\effect.hlsl:3:1: error: unknown type; ./effect.hlsl"
+    );
+}
 
 mod arena;
 mod dimensions;

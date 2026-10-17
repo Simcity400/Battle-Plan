@@ -44,9 +44,11 @@ pub struct Assets {
 }
 
 impl Assets {
+    /// `defines` are the recorded and the graphics defines; the cutoff reads the graphics
+    /// defines, falling back to the recorded one ([`ResolvedLayers::graphics_define`]).
     pub fn load(
         layers: &ResolvedLayers,
-        defines: &Defines,
+        (defines, graphics): (&Defines, &Defines),
         map: [u32; 2],
         decode: Decode,
         files: &[(String, sprites::Sprites)],
@@ -124,8 +126,10 @@ impl Assets {
             .load(b"gfx/FX/text.lua", &shader_defines)
             .map_err(|error| format!("gfx/FX/text.lua: {error}"));
         // The fixed5 define is converted to f32 before dividing.
-        let cutoff = defines
-            .fixed5("NGraphics", "PROVINCE_ANIM_TEXT_DISTANCE_CUTOFF")
+        let cutoff = layers
+            .graphics_define("floating map text", graphics, defines, |defines| {
+                defines.fixed5("NGraphics", "PROVINCE_ANIM_TEXT_DISTANCE_CUTOFF")
+            })
             .map(|value| value as f32 / 100_000.0)
             .map_err(|error| format!("NGraphics.PROVINCE_ANIM_TEXT_DISTANCE_CUTOFF: {error}"));
         Self {

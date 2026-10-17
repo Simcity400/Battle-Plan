@@ -76,7 +76,8 @@ impl Assets {
             .collect();
         let (mut library, shader_defines) =
             crate::map::shader_sources::library(layers, map, decode);
-        let read = |path: &[u8]| layers.read_path(path);
+        // A texture the visual mods break is the recording's own, named ([`arrow_texture`]).
+        let recorded = layers.without_overlays();
         let mut styles = BTreeMap::new();
         let mut orders = BTreeMap::new();
         for name in STYLES {
@@ -136,7 +137,7 @@ impl Assets {
                     &definition.overlay,
                 ] {
                     images.push(
-                        resources::texture(path, &read, decode)
+                        arrow_texture(layers, recorded.as_ref(), path, decode)
                             .map_err(|error| error.to_string())
                             .and_then(|texture| match texture {
                                 Ok(texture) => Ok(Some(texture.image)),
@@ -635,6 +636,34 @@ impl Bounds {
             .flatten()
             .filter(move |offset| admits_box([self.min, self.max], *offset, planes))
     }
+}
+
+/// The arrow texture `path` names, read from `layers`, or, when it does not load or read from
+/// them and `recorded` holds the layers below their visual mods, from those, named.
+fn arrow_texture(
+    layers: &ResolvedLayers,
+    recorded: Option<&ResolvedLayers>,
+    path: &[u8],
+    decode: Decode,
+) -> io::Result<Result<resources::Texture, resources::NoTexture>> {
+    let shown = resources::texture(path, &|path: &[u8]| layers.read_path(path), decode);
+    let why = match &shown {
+        Ok(Ok(_)) => None,
+        Ok(Err(why)) => Some(why.to_string()),
+        Err(error) => Some(error.to_string()),
+    };
+    if let Some(why) = why
+        && let Some(recorded) = recorded
+        && let Ok(Ok(found)) =
+            resources::texture(path, &|path: &[u8]| recorded.read_path(path), decode)
+    {
+        layers.note_overlay_refusal(format!(
+            "movement arrow texture {} ({why})",
+            String::from_utf8_lossy(path)
+        ));
+        return Ok(Ok(found));
+    }
+    shown
 }
 
 #[cfg(test)]

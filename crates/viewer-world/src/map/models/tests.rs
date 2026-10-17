@@ -175,6 +175,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
         native: Vec::new(),
         radius: 0.0,
         height: 0.0,
+        visual: false,
         own_radius: 0.0,
         bound: 0.0,
         attachments: 0,
@@ -372,6 +373,7 @@ fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             native: Vec::new(),
             radius,
             height: 1.0,
+            visual: false,
             own_radius: radius,
             bound: radius.hypot(1.0),
             attachments: 0,
@@ -1051,7 +1053,11 @@ fn an_entity_s_bound_encloses_every_point_around_its_origin() {
     reach.widen_point([100.0, 100.0, 0.0], true);
     reach.widen_point([0.0, -120.0, 30.0], true);
     assert_eq!((reach.radius, reach.height), (100.0, 100.0));
-    assert!((reach.bound - 100.0 * 2f32.sqrt()).abs() < 1e-3, "{}", reach.bound);
+    assert!(
+        (reach.bound - 100.0 * 2f32.sqrt()).abs() < 1e-3,
+        "{}",
+        reach.bound
+    );
     reach.widen_point([0.0, -150.0, 0.0], true);
     assert_eq!(reach.bound, 150.0);
 }
@@ -1103,4 +1109,299 @@ fn drawn_variants_are_found_on_attached_entities_and_later_states() {
         clip("burn", None),
     ])]);
     assert_eq!(super::drawn_variants(&later), Some((0, "burn".into(), 2)));
+}
+
+/// A one-triangle mesh reaching `reach` along z, so two stacks' meshes differ in extent.
+pub(crate) fn triangle_mesh(reach: f32) -> Vec<u8> {
+    let mut bytes = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
+    for (name, values) in [
+        ("p", [0_f32, 0., 0., 1., 0., 0., 0., 0., reach]),
+        ("n", [0., 1., 0., 0., 1., 0., 0., 1., 0.]),
+    ] {
+        bytes.extend([b'!', name.len() as u8]);
+        bytes.extend(name.as_bytes());
+        bytes.push(b'f');
+        bytes.extend((values.len() as u32).to_le_bytes());
+        bytes.extend(values.into_iter().flat_map(f32::to_le_bytes));
+    }
+    bytes.extend(b"!\x03trii\x03\0\0\0\0\0\0\0\x01\0\0\0\x02\0\0\0");
+    bytes.extend(b"[[[[material\0!\x06shaders\x01\0\0\0\x0e\0\0\0AuthoredShader");
+    bytes
+}
+
+/// A recorded folder `base` and a visual mod `art`, each with `files`, the mod mounted over
+/// the recording.
+pub(crate) fn visual_stack(
+    name: &str,
+    files: &[(&str, &[u8])],
+) -> (std::path::PathBuf, ResolvedLayers) {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_model_{name}_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    for (relative, bytes) in files {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let art = root.join("art").display().to_string().replace('\\', "/");
+    std::fs::create_dir_all(root.join("user/mod")).unwrap();
+    std::fs::write(
+        root.join("user/mod/art.mod"),
+        format!("name=\"Art\"\npath=\"{art}\"\n"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+    let options = installed_content::ResolveOptions {
+        game_dir: root.join("steamapps/common/Game"),
+        user_dir: root.join("user"),
+        cache_dir: root.join("cache"),
+    };
+    let base = root.join("base");
+    let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+    let selected = [installed_content::content::visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    }];
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    installed_content::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    (root, layers)
+}
+
+pub(crate) const MESHES_GFX: &[u8] = br#"objectTypes = {
+    pdxmesh = { name = body file = "gfx/models/plane.mesh" scale = 1 }
+    pdxmesh = { name = hull file = "gfx/models/tank.mesh" scale = 1 }
+}"#;
+pub(crate) const PLANE_ASSET: &[u8] =
+    br#"entity = { name = plane pdxmesh = body scale = 1 state = { name = idle } }"#;
+
+/// The library `name` bakes to from `layers`, by their own descriptors.
+fn baked(layers: &ResolvedLayers, name: &str) -> ModelLibrary {
+    let roster = layers.descriptor_roster().unwrap();
+    let mut warnings = Vec::new();
+    let library = ModelLibrary::load(
+        layers,
+        Decode::default(),
+        &roster.descriptors,
+        &[name.to_owned()],
+        &mut warnings,
+    )
+    .unwrap();
+    assert!(
+        library.slot(name).is_some(),
+        "{name} does not bake: {warnings:?}; {:?} {:?}",
+        roster.logged,
+        roster.descriptors.entities.keys().collect::<Vec<_>>()
+    );
+    library
+}
+
+/// An entity drawn from a mesh or descriptor a visual mod supplies is the mod's, so its draw
+/// refusals count against the mods; the same entity baked from the recording is not.
+#[test]
+fn an_entity_drawn_from_a_visual_mods_files_is_the_mods() {
+    let tank = br#"entity = { name = tank pdxmesh = hull scale = 2 state = { name = idle } }"#;
+    let (root, layers) = visual_stack(
+        "origin",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            // The mod changes only the tank's descriptor.
+            ("base/gfx/entities/tank.asset", tank),
+            ("art/gfx/entities/tank.asset", tank),
+            ("base/gfx/models/tank.mesh", &triangle_mesh(1.)),
+        ],
+    );
+    let presentation = layers.presentation().clone();
+    let visual = |layers: &ResolvedLayers, name: &str| {
+        let library = baked(layers, name);
+        library.meshes[library.slot(name).unwrap()].visual
+    };
+    assert!(presentation.supplied_by_visual_mod("gfx/models/plane.mesh"));
+    assert!(visual(&presentation, "plane"));
+    assert!(visual(&presentation, "tank"));
+    assert!(!layers.supplied_by_visual_mod("gfx/models/plane.mesh"));
+    assert!(!visual(&layers, "plane") && !visual(&layers, "tank"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Each visual mod entity keeps its recorded counterpart, baked from the recording's own files
+/// apart from the mod's of the same path; the name keeps the mod's entity.
+#[test]
+fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
+    let (root, layers) = visual_stack(
+        "counterpart",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(5.)),
+        ],
+    );
+    let library = baked(layers.presentation(), "plane");
+    let _ = std::fs::remove_dir_all(&root);
+    let shown = library.slot("plane").unwrap();
+    let counterpart = library.alternatives[&shown];
+    assert!(library.meshes[shown].visual && !library.meshes[counterpart].visual);
+    let geometry = |slot: usize| library.meshes[slot].native[0].lods[0][0].geometry.clone();
+    assert!(!Arc::ptr_eq(&geometry(shown), &geometry(counterpart)));
+}
+
+/// A refused draw of a visual mod entity draws its recorded counterpart from the next frame,
+/// named, with the recording's own shaders, and is not recorded as a refusal; one without a
+/// counterpart is. Placements, hidden actors and play positions keyed by the entity's own slot
+/// follow it to the counterpart.
+#[test]
+fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
+    let (root, layers) = visual_stack(
+        "redirect",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(5.)),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(1.)),
+        ],
+    );
+    let mut library = baked(layers.presentation(), "plane");
+    let _ = std::fs::remove_dir_all(&root);
+    let shown = library.slot("plane").unwrap();
+    let counterpart = library.alternatives[&shown];
+    // The recorded entity reaches further than the mod's (the fixture meshes declare no
+    // bounds of their own).
+    library.meshes[shown].radius = 1.0;
+    library.meshes[counterpart].radius = 5.0;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+    let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let arena = shader_pipeline::gpu::Arena::new(&device);
+    let mut pass = ModelPass::new(&library, "unit models");
+    let placed = ModelInstance {
+        scale: 1.0,
+        ..ModelInstance::default()
+    };
+    pass.update_placed(vec![(shown, placed)], 256.0);
+    pass.refuse_actor(
+        &arena,
+        Some(shown),
+        0,
+        usize::MAX,
+        "plane",
+        "skin: no played clip",
+    );
+    assert!(arena.refusals().is_empty());
+    pass.animate(0.0, None, &[0.0]);
+    assert_eq!(pass.field.groups[0].mesh, counterpart);
+    // Culled by the counterpart's own reach, not the refused entity's.
+    let reach = library.meshes[counterpart].radius;
+    assert!(reach > library.meshes[shown].radius);
+    assert_eq!(pass.field.groups[0].bounds, [-reach, -reach, reach, reach]);
+    let lines = pass.refusal_lines(arena.frame());
+    assert!(
+        lines.iter().any(|line| line
+            == "Map shader unit models: visual mod entity plane is drawn from the recording (refused actor plane: skin: no played clip)"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        (pass.shader_library(shown), pass.shader_library(counterpart)),
+        (0, 1)
+    );
+    // Later placements, hidden actors and play positions keyed by the entity's own slot follow
+    // it to the counterpart.
+    pass.update_placed(vec![(shown, ModelInstance::default())], 256.0);
+    assert_eq!(pass.field.groups[0].mesh, counterpart);
+    let (seed, identity) = ModelInstance::default().animation_key();
+    pass.set_hidden([(shown, seed, identity)].into());
+    assert!(pass.hides((shown, seed, identity)) && pass.hides((counterpart, seed, identity)));
+    assert_eq!(
+        pass.root_play_position((shown, seed, identity)),
+        pass.root_play_position((counterpart, seed, identity))
+    );
+    let mut alone = ModelPass::new(&library, "unit models");
+    alone.alternatives.clear();
+    alone.refuse_actor(
+        &arena,
+        Some(shown),
+        0,
+        usize::MAX,
+        "plane",
+        "skin: no played clip",
+    );
+    assert_eq!(
+        arena.refusals(),
+        ["Map shader unit models: refused actor plane".to_owned()].into()
+    );
+}
+
+/// An entity whose visual mod mesh does not bake is baked from the recording, by the
+/// recording's own files, named; it never vanishes when the recording draws it.
+#[test]
+fn an_entity_a_visual_mod_breaks_is_baked_from_the_recording() {
+    let (root, layers) = visual_stack(
+        "broken",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            ("art/gfx/models/plane.mesh", b"not a mesh"),
+        ],
+    );
+    let presentation = layers.presentation().clone();
+    let library = baked(&presentation, "plane");
+    let _ = std::fs::remove_dir_all(&root);
+    let slot = library.slot("plane").unwrap();
+    assert!(!library.meshes[slot].visual);
+    assert!(library.alternatives.is_empty());
+    let refusals = presentation.read_warnings().overlay_refusals().unwrap();
+    assert!(refusals.contains("model plane ("), "{refusals}");
+}
+
+/// An animation a visual mod breaks is read from the recording, named; one neither stack reads
+/// is refused by name and reported, never taken for an entity without an animation.
+#[test]
+fn an_animation_a_mod_breaks_is_read_from_the_recording() {
+    let clip: &[u8] = b"@@b@[info\0[samples\0";
+    // No PDX header: it does not parse.
+    let broken: &[u8] = b"not an animation";
+    let (root, layers) = visual_stack(
+        "animation",
+        &[
+            ("base/gfx/models/idle.anim", clip),
+            ("art/gfx/models/idle.anim", broken),
+            ("base/gfx/models/lost.anim", broken),
+        ],
+    );
+    let presentation = layers.presentation().clone();
+    let mut library = ModelLibrary::default();
+    let idle = library
+        .animation(&presentation, "gfx/models/idle.anim")
+        .is_some();
+    let lost = library
+        .animation(&presentation, "gfx/models/lost.anim")
+        .is_some();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(idle && !lost);
+    let refusals = presentation.read_warnings().overlay_refusals().unwrap();
+    assert!(
+        refusals.contains("animation gfx/models/idle.anim ("),
+        "{refusals}"
+    );
+    assert!(
+        presentation
+            .refused()
+            .contains("model animation gfx/models/lost.anim")
+    );
+    assert!(
+        library
+            .animation_refusals
+            .contains_key("gfx/models/lost.anim")
+    );
+    assert!(
+        !library
+            .animation_refusals
+            .contains_key("gfx/models/idle.anim")
+    );
 }
