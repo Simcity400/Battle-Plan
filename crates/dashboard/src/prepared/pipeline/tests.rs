@@ -1843,7 +1843,15 @@ fn queued_cancellation_and_clear_wait_for_the_real_worker_to_release_its_writer(
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
     }
-    super::super::start(&runner, Arc::clone(&source), None, &AtomicBool::new(false)).unwrap();
+    super::super::start(
+        &runner,
+        Arc::clone(&source),
+        None,
+        super::restore(&source, None, &AtomicBool::new(false)),
+        super::super::store_epoch(&source),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert_eq!(
         super::super::status(&source, "source", "request").state,
         State::Queued
@@ -1971,7 +1979,15 @@ fn completed_cache_restores_before_queue_admission_and_old_schema_rebuilds() {
     let flag = AtomicBool::new(false);
     let expected = run(&source, None, &flag, |_| {}).unwrap();
     let runner = super::super::runner::Runner::new().unwrap();
-    super::super::start(&runner, Arc::clone(&source), None, &flag).unwrap();
+    super::super::start(
+        &runner,
+        Arc::clone(&source),
+        None,
+        super::restore(&source, None, &flag),
+        super::super::store_epoch(&source),
+        &flag,
+    )
+    .unwrap();
     let status = super::super::status(&source, "source", "q");
     assert_eq!(status.state, State::Ready);
     assert_eq!(status.bytes, expected.bytes.to_string());
@@ -1991,7 +2007,15 @@ fn completed_cache_restores_before_queue_admission_and_old_schema_rebuilds() {
     assert!(restore(&source, None, &flag).unwrap().is_none());
     let rebuilt = run(&source, None, &flag, |_| {}).unwrap();
     assert_eq!(rebuilt.new_blocks, replay.index.len());
-    super::super::start(&runner, Arc::clone(&source), None, &flag).unwrap();
+    super::super::start(
+        &runner,
+        Arc::clone(&source),
+        None,
+        super::restore(&source, None, &flag),
+        super::super::store_epoch(&source),
+        &flag,
+    )
+    .unwrap();
     assert_eq!(
         super::super::status(&source, "source", "q2").state,
         State::Ready

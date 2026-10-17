@@ -44,7 +44,7 @@ export function usePreparedProduction(client: DashboardClient, source: Dashboard
           if (client.preparationStatus) {
             let status = validatePreparationReply(await client.preparationStatus(statusRequest, controller.signal), statusRequest);
             if (controller.signal.aborted) return;
-            if (attempt > 0 && !started && client.prepareSource && ['idle', 'cancelled', 'failed', 'ready'].includes(status.state)) {
+            if (attempt > 0 && !started && client.prepareSource && ['idle', 'cancelled', 'paused', 'failed', 'ready'].includes(status.state)) {
               started = true;
               status = validatePreparationReply(await client.prepareSource(statusRequest, controller.signal), statusRequest);
               if (controller.signal.aborted) return;

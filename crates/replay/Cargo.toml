@@ -14,6 +14,7 @@ doctest = false
 slow-tests = []
 
 [dependencies]
+job-priority.workspace = true
 replay-data.workspace = true
 crc32fast = "1"
 foldhash = "0.2"

@@ -1,7 +1,8 @@
 # store
 
 Windows prepared-data files in `%LOCALAPPDATA%\HOI4Replay\prepared\<campaign-id>\`.
-`Store::local` selects a campaign; `SourceKey::capture` records the recording and
+`Store::local` selects a campaign under `local_root`, and `local_space` reports the
+free and total bytes of the volume holding them; `SourceKey::capture` records the recording and
 the ordered files supplied by the resolved content stack, including mod archives.
 Reuse compares paths, sizes and modification times only. Missing or inaccessible
 inputs report an error; a changed key is a cache miss. Capture validates inputs
@@ -17,7 +18,9 @@ invalidates the shared binding. Input checks use scoped threads bounded by the
 available CPU count, retaining input order and the first input error; unavailable
 CPU information uses one thread. Ordinary metadata reads follow links as usual.
 
-`is_reusable` binds the key to the manifest's separate stamp file once.
+`is_reusable` binds the key to the manifest's separate stamp file once. `manifest_identity` reports the manifest file's length and write and creation
+times (none before the first commit); a commit replaces the manifest and Clear
+removes it, so callers compare identities to notice another writer.
 `read(key, section, range)` returns a `Range` for a zero-based range ordinal: an
 owned handle on the range's pack, positioned at the range and bounded to its
 length, with `Read`, `Seek`, `len` and `id`. It stays valid while held, through

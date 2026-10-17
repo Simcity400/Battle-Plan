@@ -1,6 +1,7 @@
 //! Disjoint family observers, packed into scoped workers with a frame barrier.
 use super::{FamilyTimings, Refused};
 use crate::prepared::frame_changes::FrameChanges;
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::frame::DecodedFrame;
 use std::{
     collections::BTreeMap,
@@ -253,16 +254,11 @@ impl<'scope> Lanes<'scope> {
                 let injected = injected.clone();
                 #[cfg(test)]
                 let registry = super::independent::test_registry();
+                let priority = JobPriority::current();
                 let join = scope.spawn(move || {
                     #[cfg(test)]
                     registry.install();
-                    #[cfg(windows)]
-                    unsafe {
-                        use windows_sys::Win32::System::Threading::{
-                            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-                        };
-                        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    }
+                    priority.enter(Level::BelowNormal);
                     while let Ok(frame) = commands.recv() {
                         let mut timings = measured.then(BTreeMap::new);
                         let mut result = Ok(());

@@ -66,13 +66,19 @@ the current source binding and revision. Progress counts and stored byte totals
 are decimal strings, preserving values beyond JavaScript's exact-number range.
 
 At startup, an idle monitor scans the shared library without opening a campaign
-in the UI. It observes newly published recording revisions and admits unfinished
-recordings in most-recently-modified order through the dashboard's existing queue.
+in the UI, so a recording's exact history is usually prepared before it is opened.
+A recording session ends when Battle Plan Recorder publishes its recording: finalization
+renames the finished file into place, and the next scan sees the new revision. The
+monitor hands the library to the dashboard's existing queue, which prepares every
+recording behind its store ahead of the user, newest first and one at a time,
+pauses for recordings the user opens and stops at a free-space floor ([background preparation](../dashboard/README.md#background-preparation)).
+The monitor's observation includes whether the prepared-data volume has room, so
+crossing that floor either way permits one new admission attempt.
 The library scan retries busy admission and checks cancellation between entries
 and trailer metadata reads. Game presence is polled independently every 250 ms,
 so a slow scan or source open cannot delay observing a game start. While any
-`hoi4.exe` process runs, automatic admission stops and automatic jobs yield at
-their next block boundary. The idle monitor retries after game exit; manual Prepare
+`hoi4.exe` process runs, automatic admission stops and automatic jobs pause at
+their next block boundary, shown as Paused with the game as the reason. The idle monitor retries after game exit; manual Prepare
 stays available. Library scans watch for changed recordings once per idle second.
 Unchanged or busy replies stop admission retries until a recording revision,
 worker completion, preference/content binding or game state changes. No additional

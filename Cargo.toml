@@ -215,6 +215,7 @@ installed-content-save = { path = "crates/installed-content-save" }
 mimalloc = { version = "0.1", default-features = false }
 png = "0.18"
 pollster = "0.4"
+job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay" }
 replay-data = { path = "crates/replay-data" }
 replay-identity = { path = "crates/replay-identity" }

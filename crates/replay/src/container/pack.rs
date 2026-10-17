@@ -127,8 +127,12 @@ pub(crate) fn each<T: Send, U: Send>(
     };
     thread::scope(|scope| {
         for _ in 0..helpers {
+            let priority = job_priority::JobPriority::current();
             // A helper the OS refuses leaves its items to the others.
-            let _ = thread::Builder::new().spawn_scoped(scope, run);
+            let _ = thread::Builder::new().spawn_scoped(scope, move || {
+                priority.enter(job_priority::Level::Normal);
+                run()
+            });
         }
         run();
     });
@@ -285,8 +289,12 @@ pub(crate) fn blocks<J: Send, R: Send, P>(
     let written = thread::scope(|scope| {
         let started = (1..workers)
             .filter(|_| {
+                let priority = job_priority::JobPriority::current();
                 thread::Builder::new()
-                    .spawn_scoped(scope, || pool.work())
+                    .spawn_scoped(scope, || {
+                        priority.enter(job_priority::Level::Normal);
+                        pool.work()
+                    })
                     .is_ok()
             })
             .count();

@@ -145,7 +145,9 @@ pub fn scan_blocks_by<'a, T: Send, R>(
         // Install before spawning: a refused worker must wake and join those already running.
         let _stop = Stop(ahead);
         for _ in 0..readers.min(blocks.len().saturating_sub(1)) {
+            let priority = job_priority::JobPriority::current();
             thread::Builder::new().spawn_scoped(scope, || {
+                priority.enter(job_priority::Level::Normal);
                 while let Some(position) = ahead.take(cancelled) {
                     let result = read(position);
                     ahead.lock().reads[position] = Some(result);

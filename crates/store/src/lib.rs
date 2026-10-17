@@ -23,6 +23,35 @@ use windows_sys::Win32::{
 };
 
 const MANIFEST: &str = "manifest";
+
+/// The folder holding every local store.
+pub fn local_root() -> io::Result<PathBuf> {
+    let root =
+        std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is unavailable"))?;
+    Ok(PathBuf::from(root).join("HOI4Replay/prepared"))
+}
+
+/// The free bytes this user may write, and the capacity, of the volume
+/// holding the local stores. Reads the volume of the nearest folder that
+/// exists, so it answers before the first store is written.
+pub fn local_space() -> io::Result<(u64, u64)> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut folder = local_root()?;
+    while !folder.is_dir() {
+        if !folder.pop() {
+            return Err(invalid("No folder of the local stores exists"));
+        }
+    }
+    let wide: Vec<u16> = folder.as_os_str().encode_wide().chain([0]).collect();
+    let (mut free, mut total) = (0u64, 0u64);
+    // SAFETY: `wide` is a NUL-terminated path; the outputs are valid u64s.
+    let ok =
+        unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((free, total))
+}
 const LOCK: &str = "writer.lock";
 /// The manifest is a small root naming each section's runs of entries in
 /// append-only entry logs, with the section names in a names file. Manifests
@@ -123,7 +152,9 @@ fn stamps(
         let tasks: Vec<_> = paths
             .chunks(paths.len().div_ceil(workers))
             .map(|part| {
+                let priority = job_priority::JobPriority::current();
                 scope.spawn(move || {
+                    priority.enter(job_priority::Level::Normal);
                     let result = part.iter().map(read).collect::<io::Result<Vec<_>>>();
                     #[cfg(test)]
                     let checked = tests::INPUT_CHECKS.get();
@@ -256,14 +287,33 @@ pub struct Store {
 type Opened = HashMap<u64, Arc<File>>;
 
 impl Store {
+    /// The store's folder, for tests that damage its files.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     pub fn local(campaign: Uuid) -> io::Result<Self> {
-        let root = std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| invalid("LOCALAPPDATA is unavailable"))?;
         Ok(Self {
-            directory: PathBuf::from(root)
-                .join("HOI4Replay/prepared")
-                .join(campaign.to_string()),
+            directory: local_root()?.join(campaign.to_string()),
         })
+    }
+
+    /// The manifest's on-disk identity (its length, last write and creation
+    /// times), or none before the first commit. Every commit replaces the
+    /// manifest and Clear removes it, so a changed identity means some writer,
+    /// in this process or another, changed the store. Reads file metadata only.
+    pub fn manifest_identity(&self) -> io::Result<Option<(u64, u64, u64)>> {
+        use std::os::windows::fs::MetadataExt;
+        match fs::metadata(self.directory.join(MANIFEST)) {
+            Ok(metadata) => Ok(Some((
+                metadata.len(),
+                metadata.last_write_time(),
+                metadata.creation_time(),
+            ))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Reads just the manifest header, never enumerating or opening pack files.
@@ -2626,7 +2676,13 @@ fn sync_packs(files: &[Arc<File>]) -> io::Result<()> {
     std::thread::scope(|scope| {
         let tasks: Vec<_> = files
             .chunks(files.len().div_ceil(workers))
-            .map(|part| scope.spawn(move || part.iter().try_for_each(|file| file.sync_all())))
+            .map(|part| {
+                let priority = job_priority::JobPriority::current();
+                scope.spawn(move || {
+                    priority.enter(job_priority::Level::Normal);
+                    part.iter().try_for_each(|file| file.sync_all())
+                })
+            })
             .collect();
         let mut error = None;
         for task in tasks {

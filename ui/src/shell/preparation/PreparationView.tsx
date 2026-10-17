@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { PreparationController } from './controller';
-import { preparationActive, preparationLabel, progressPercent } from './contract';
+import { pauseExplanation, preparationActive, preparationLabel, progressPercent } from './contract';
 import type { PreparationAction, PreparationReply } from './contract';
 import './preparation.css';
 
@@ -30,10 +30,11 @@ export function PreparationView({ name, reply, loading, pending, error, onComman
       <p className="preparation-estimate">{reply.bytes} bytes of prepared data on disk.</p>
       <p className="preparation-estimate">Clear removes prepared data immediately. An open campaign keeps the files it has open until it closes, then prepares again.</p>
     </>}
+    {reply?.state === 'paused' && <p className="preparation-estimate">{pauseExplanation(reply.pauseReason)}</p>}
     {(error || reply?.error) && <p className="map-menu-error" role="alert">{error ?? reply?.error}</p>}
     <div className="button-row">
-      <button type="button" className="button small primary" disabled={loading || pending || preparationActive(reply)} onClick={() => onCommand('start')}>{reply?.state === 'failed' ? 'Retry preparation' : reply?.state === 'cancelled' ? 'Resume preparation' : 'Prepare campaign'}</button>
-      {preparationActive(reply) && <button type="button" className="button small" disabled={pending} onClick={() => onCommand('cancel')}>Cancel preparation</button>}
+      <button type="button" className="button small primary" disabled={loading || pending || preparationActive(reply)} onClick={() => onCommand('start')}>{reply?.state === 'failed' ? 'Retry preparation' : reply?.state === 'cancelled' || reply?.state === 'paused' ? 'Resume preparation' : 'Prepare campaign'}</button>
+      {(preparationActive(reply) || reply?.state === 'paused') && <button type="button" className="button small" disabled={pending} onClick={() => onCommand('cancel')}>Cancel preparation</button>}
       <button type="button" className="button small" disabled={loading || pending || !reply} onClick={() => onCommand('clear')}>Clear prepared data</button>
       <button type="button" className="button small quiet" disabled={loading || pending} onClick={() => onCommand('status')}>Refresh</button>
     </div>

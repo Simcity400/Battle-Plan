@@ -1051,7 +1051,9 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
         let workers: Vec<_> = files
             .chunks(files.len().div_ceil(4).max(1))
             .map(|chunk| {
+                let priority = job_priority::JobPriority::current();
                 scope.spawn(move || -> io::Result<Vec<_>> {
+                    priority.enter(job_priority::Level::Normal);
                     chunk
                         .iter()
                         .map(|(replace, _, path)| {

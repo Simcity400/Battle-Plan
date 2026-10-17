@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+job-priority.workspace = true
 engine-executable.workspace = true
 installed-content-image.workspace = true
 # PUC Lua 5.1, the runtime the game links, for common/defines.

@@ -16,6 +16,7 @@ slow-tests = []
 test-support = []
 
 [dependencies]
+job-priority.workspace = true
 replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true

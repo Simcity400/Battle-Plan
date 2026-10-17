@@ -83,6 +83,7 @@ pub fn typescript_contract() -> String {
         transport::HistoryCacheReply::decl(),
         transport::SourceReply::decl(),
         prepared::State::decl(),
+        prepared::PauseReason::decl(),
         prepared::Action::decl(),
         prepared::Section::decl(),
         prepared::Reply::decl(),

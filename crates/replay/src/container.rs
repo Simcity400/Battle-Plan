@@ -2480,7 +2480,9 @@ fn parallel_map<T: Sync, R: Send>(
         let mut handles = engine::allocation::vec(workers)?;
         let mut out = engine::allocation::vec(items.len())?;
         for chunk in items.chunks(run) {
+            let priority = job_priority::JobPriority::current();
             let spawned = std::thread::Builder::new().spawn_scoped(scope, move || {
+                priority.enter(job_priority::Level::Normal);
                 on_worker();
                 engine::allocation::collect_vec(chunk.iter().map(work))
             });

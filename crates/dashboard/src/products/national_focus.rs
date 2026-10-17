@@ -643,7 +643,11 @@ fn prepare_while_scanning<T>(
         ));
     }
     let (scanned, prepared) = std::thread::scope(|scope| {
-        let preparation = scope.spawn(prepare);
+        let priority = dashboard_base::prepared::priority::JobPriority::current();
+        let preparation = scope.spawn(move || {
+            priority.enter(dashboard_base::prepared::priority::Level::Normal);
+            prepare()
+        });
         let scanned = scan();
         (scanned, preparation.join())
     });

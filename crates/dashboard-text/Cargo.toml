@@ -16,6 +16,7 @@ slow-tests = []
 test-support = ["dashboard-core/test-support", "installed-content/test-support"]
 
 [dependencies]
+job-priority.workspace = true
 base64 = "0.22.1"
 dashboard-core.workspace = true
 engine.workspace = true

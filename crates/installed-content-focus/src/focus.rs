@@ -532,7 +532,13 @@ fn read_files(
             std::thread::scope(|scope| {
                 let jobs = files
                     .iter()
-                    .map(|file| scope.spawn(move || parse_one(file)))
+                    .map(|file| {
+                        let priority = job_priority::JobPriority::current();
+                        scope.spawn(move || {
+                            priority.enter(job_priority::Level::Normal);
+                            parse_one(file)
+                        })
+                    })
                     .collect::<Vec<_>>();
                 jobs.into_iter()
                     .map(|job| {

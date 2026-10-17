@@ -15,6 +15,7 @@ doctest = false
 test-support = ["installed-content-core/test-support"]
 
 [dependencies]
+job-priority.workspace = true
 engine.workspace = true
 installed-content-core.workspace = true
 installed-content-settings.workspace = true

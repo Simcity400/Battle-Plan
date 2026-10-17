@@ -11,6 +11,7 @@ pub mod pages;
 #[cfg(any(test, feature = "test-support"))]
 pub mod observer_tests;
 pub mod prepass;
+pub use job_priority as priority;
 pub mod series;
 mod store;
 pub mod timing;

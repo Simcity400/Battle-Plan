@@ -1078,12 +1078,14 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<String, String> {
         let mut expanded = scopes.clone();
         expanded.on_large_stack = true;
+        let caller = job_priority::Caller::current();
         let ((result, session), noted) = std::thread::scope(|thread_scope| {
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
                 // Reserve 64 KiB per backstop level for the entry's debug call frames.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
                 .spawn_scoped(thread_scope, move || {
+                    caller.enter();
                     // The expansion's catalogue notes belong to the calling consumer.
                     crate::catalogue::capture(move || {
                         let result = expand(&expanded);

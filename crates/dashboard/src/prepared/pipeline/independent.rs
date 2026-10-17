@@ -67,6 +67,7 @@ use crate::{
     },
 };
 use dashboard_base::prepared::pages::{Committed, HeldPages, Pages};
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
     container::{BlockIndex, Replay},
     frame::{DecodedFrame, Frame},
@@ -1308,9 +1309,11 @@ pub(super) fn prepare(
             #[cfg(test)]
             let context = context.clone();
             let name = job.name;
+            let priority = JobPriority::current();
             besides.push(
                 crate::prepared::runner::worker_thread(format!("preparation of {name}"))
                     .spawn_scoped(scope, move || {
+                        priority.enter(Level::Normal);
                         #[cfg(test)]
                         let _installed = context.install();
                         let result = {
@@ -1389,11 +1392,13 @@ pub(super) fn prepare(
                     .and_then(|shared| shared.member(run.lane, false));
                 #[cfg(test)]
                 let context = context.clone();
+                let priority = JobPriority::current();
                 let thread = crate::prepared::runner::worker_thread(format!(
                     "preparation of {}",
                     run.own.family().name
                 ))
                 .spawn_scoped(scope, move || {
+                    priority.enter(Level::Normal);
                     // No group waits for it once it has finished.
                     let _finished = Finished(commits);
                     #[cfg(test)]

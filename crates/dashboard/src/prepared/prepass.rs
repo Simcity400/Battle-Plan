@@ -15,6 +15,7 @@
 
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 pub(crate) use dashboard_base::prepared::prepass::{Extract, Family, Folded};
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
     container::{BlockChange, BlockIndex, QuietHours, Replay, TableFields},
     frame::{DecodedFrame, SharedView, TableView},
@@ -237,11 +238,16 @@ impl PrePass {
             let replay = Arc::clone(&replay);
             let families = families.clone();
             let knobs = knobs.clone();
+            let priority = JobPriority::current();
             // A worker that cannot start leaves its blocks to the others or,
             // with none, to hourly observation.
             if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("preparation block pre-pass {worker}"))
-                .spawn(move || work(&replay, alive, &families, &knobs))
+                .spawn(move || {
+                    // Pre-pass work yields to the coordinators and the hourly walk.
+                    priority.enter(Level::BelowNormal);
+                    work(&replay, alive, &families, &knobs)
+                })
             {
                 workers.push(handle);
             }
@@ -324,19 +330,7 @@ impl Drop for PrePass {
     }
 }
 
-/// Pre-pass work yields to the coordinators and the hourly walk.
-pub(crate) fn below_normal_priority() {
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-        };
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    }
-}
-
 fn work(replay: &Replay, alive: Alive, families: &[&'static Family], knobs: &Knobs) {
-    below_normal_priority();
     let shared = &alive.0;
     while let Some(position) = shared.claim() {
         let index = &replay.index[position];
@@ -575,11 +569,15 @@ impl Pool {
             let alive = PoolAlive(Arc::clone(&shared));
             let replay = Arc::clone(&replay);
             let knobs = knobs.clone();
+            let priority = JobPriority::current();
             // A worker that cannot start leaves its blocks to the others or,
             // with none, to hourly observation.
             if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("preparation family pre-pass {worker}"))
-                .spawn(move || work_pool(&replay, alive, &knobs))
+                .spawn(move || {
+                    priority.enter(Level::BelowNormal);
+                    work_pool(&replay, alive, &knobs)
+                })
             {
                 workers.push(handle);
             }
@@ -669,7 +667,6 @@ impl Drop for Pool {
 }
 
 fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
-    below_normal_priority();
     let shared = &alive.0;
     while let Some((lane, position, family)) = shared.claim() {
         let index = &replay.index[position];
@@ -1064,7 +1061,10 @@ fn extract_block_measured(
     extracts
         .into_iter()
         .map(|running| {
-            let bytes = running.extract.as_ref().map_or(0, |extract| extract.bytes());
+            let bytes = running
+                .extract
+                .as_ref()
+                .map_or(0, |extract| extract.bytes());
             let outcome = running
                 .extract
                 .and_then(|extract| extract.finish().ok())

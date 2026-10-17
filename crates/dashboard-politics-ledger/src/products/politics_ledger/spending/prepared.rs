@@ -2,6 +2,7 @@
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::prepass::Extract;
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use replay::rows::RowCodec;
 
@@ -2430,9 +2431,11 @@ fn present_window(
         let parts: Vec<_> = tags
             .chunks(size)
             .map(|part| {
+                let priority = JobPriority::current();
                 let started = std::thread::Builder::new()
                     .name("politics ledger presentation".into())
                     .spawn_scoped(scope, move || {
+                        priority.enter(Level::Normal);
                         part.iter()
                             .map(|tag| present_one(scan, branch, tag, content, cancelled))
                             .collect::<Vec<_>>()

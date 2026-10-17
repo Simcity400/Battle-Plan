@@ -2,7 +2,9 @@
 
 The campaign library context menu opens **Preparation and storage** for loaded and archived recordings. The panel reads preparation state from the host and provides Prepare, Resume, Cancel, Refresh and Clear controls. Sections keep backend labels, exact decimal completed/total counts, and named failures. Only visible section rows render.
 
-`controller.ts` owns one visible panel and one pending request. It polls only queued/preparing jobs, sleeps for terminal/idle states, rejects replies for another source/revision/request, and drops aborted replies. Archived recordings open a temporary source; closing the panel releases it without cancelling preparation. Loaded campaigns retain their existing binding.
+A recording prepared ahead of the user from the library shows **Paused** with its reason when it made way for preparation the user asked for, a newer recording, the free-space floor or a running game (`pauseReason`); it resumes automatically once the reason passes, and Resume or Cancel act on it at once.
+
+`controller.ts` owns one visible panel and one pending request. It polls queued/preparing jobs, checks paused ones every `PAUSED_POLL_MS` (they resume without a notification), sleeps for terminal and idle states, rejects replies for another source/revision/request, and drops aborted replies. Archived recordings open a temporary source; closing the panel releases it without cancelling preparation. Loaded campaigns retain their existing binding.
 
 Clear removes prepared data immediately. Open campaigns keep files already open until they close and prepare again. The panel displays the backend acknowledgement and never estimates progress or storage from timers.
 

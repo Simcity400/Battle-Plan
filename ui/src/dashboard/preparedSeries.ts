@@ -54,13 +54,13 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
     const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
     const status = validatePreparationReply(await client.preparationStatus(request, signal), request);
     if (signal.aborted) break;
-    if (!started && client.prepareSource && restart && ['idle', 'failed', 'cancelled'].includes(status.state)) {
+    if (!started && client.prepareSource && restart && ['idle', 'failed', 'cancelled', 'paused'].includes(status.state)) {
       started = true;
       validatePreparationReply(await client.prepareSource(request, signal), request);
       progress = undefined;
       changed = true;
-    } else if (status.state === 'failed' || status.state === 'cancelled' || status.state === 'idle') {
-      throw new Error(status.error ?? (status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
+    } else if (status.state === 'failed' || status.state === 'cancelled' || status.state === 'idle' || status.state === 'paused') {
+      throw new Error(status.error ?? (status.state === 'paused' ? 'Campaign preparation is paused and resumes automatically. Prepare this recording to continue now.' : status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
     } else {
       const next = status.coverage !== undefined
         ? JSON.stringify(branch ? coverageKey(status.coverage[branch] ?? null)

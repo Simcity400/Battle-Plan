@@ -126,7 +126,7 @@ export async function waitForFocusPreparation(client: FocusPreparedClient, sourc
     if (signal.aborted) break;
     if (reply.sourceId !== request.sourceId || reply.revision !== request.revision || reply.requestId !== request.requestId) throw new Error('Preparation reply does not match this recording.');
     if (reply.state === 'ready' || reply.sections.some(section => section.id === 'focus' && section.state === 'ready')) return;
-    if (!started && client.prepareSource && restart && ['idle', 'failed', 'cancelled'].includes(reply.state)) {
+    if (!started && client.prepareSource && restart && ['idle', 'failed', 'cancelled', 'paused'].includes(reply.state)) {
       started = true;
       await client.prepareSource({ sourceId: source.id, revision: source.revision, requestId: newId() }, signal);
       progress = undefined;
@@ -138,7 +138,7 @@ export async function waitForFocusPreparation(client: FocusPreparedClient, sourc
       await wait(signal);
       if (signal.aborted) break;
       if (!changed && Date.now() - before < POLL_MS) throw new Error('Focus preparation made no progress.');
-    } else throw new Error(reply.error ?? (reply.state === 'idle' ? (reply.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : reply.state === 'cancelled' ? 'Focus preparation cancelled.' : 'Focus preparation failed.'));
+    } else throw new Error(reply.error ?? (reply.state === 'paused' ? 'Focus preparation is paused and resumes automatically. Prepare this recording to continue now.' : reply.state === 'idle' ? (reply.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : reply.state === 'cancelled' ? 'Focus preparation cancelled.' : 'Focus preparation failed.'));
   }
   throw new DOMException('Focus preparation cancelled', 'AbortError');
 }

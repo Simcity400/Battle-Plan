@@ -1968,6 +1968,7 @@ dependencies = [
  "dashboard-text",
  "engine",
  "installed-content",
+ "job-priority",
  "png 0.18.1",
  "replay",
  "serde",
@@ -2004,6 +2005,7 @@ dependencies = [
  "engine",
  "installed-content-core",
  "installed-content-settings",
+ "job-priority",
  "replay",
  "serde",
  "serde_json",
@@ -2348,6 +2350,7 @@ dependencies = [
  "engine",
  "installed-content",
  "installed-content-save",
+ "job-priority",
  "png 0.18.1",
  "replay",
  "serde",
@@ -3404,6 +3407,7 @@ version = "0.1.0"
 dependencies = [
  "engine-executable",
  "installed-content-image",
+ "job-priority",
  "miniz_oxide 0.8.9",
  "mlua",
  "replay-identity",
@@ -3455,6 +3459,7 @@ version = "0.1.0"
 dependencies = [
  "engine-executable",
  "installed-content-core",
+ "job-priority",
 ]
 
 [[package]]
@@ -3479,6 +3484,7 @@ name = "installed-content-localisation"
 version = "0.1.0"
 dependencies = [
  "installed-content-core",
+ "job-priority",
 ]
 
 [[package]]
@@ -4559,6 +4565,13 @@ checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "job-priority"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6860,6 +6873,7 @@ dependencies = [
  "crc32fast",
  "engine",
  "foldhash 0.2.0",
+ "job-priority",
  "replay-data",
  "serde",
  "serde_json",
@@ -7525,6 +7539,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "store"
 version = "0.1.0"
 dependencies = [
+ "job-priority",
  "replay",
  "serde",
  "serde_json",

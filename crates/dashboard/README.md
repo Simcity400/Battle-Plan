@@ -7,7 +7,7 @@ neither reads live game memory nor draws map pixels. See the
 [widget framework](../../ui/src/widgets/README.md) for the surrounding flow.
 
 The host owns a bounded background preparation queue. Published library recordings
-are prepared without being opened, and opening a source also starts preparation
+are prepared without being opened, newest first, and opening a source also starts preparation
 independently of the opening request; Status, Start, Cancel and Clear
 commands operate on that recording through its current source binding. Prepared
 queries use the same host service and cancellation boundary as ordinary products,
@@ -124,15 +124,126 @@ Background preparation defaults on. The optional `background_preparation` choice
 in the host's `content.json` (see [config.rs](../dashboard-core/src/config.rs)) persists the global
 preference while preserving the content folders. Settings can disable automatic admission; explicit
 Prepare and Resume remain available and previously prepared files stay readable.
-The desktop scans the shared recording library at startup and while idle, admitting
-unprepared revisions in most-recently-modified order through the same queue.
+The desktop scans the shared recording library at startup and while idle, so exact
+history is usually ready when a recording is opened. `Service::prepare_library`
+prepares, through the same queue and store as opening, every recording among the
+scanned library and the library work already admitted whose store is behind, one
+at a time, most recently modified first. Every session's finalization replaces the
+recording it saved into, so the latest sessions come first: a recording further
+back is admitted only once every newer one is prepared, and newer work (a session
+that ended meanwhile) pauses older library work. A recording whose store is up to
+date needs nothing. The only bound is a free-space floor: library work neither
+starts nor continues while the volume holding prepared data (`store::local_space`)
+has less than one part in `BACKGROUND_FREE_SHARE` (ten) of its capacity free.
+Preparation stops at that floor instead of predicting a store's size, which grows
+with the recording, and the floor does not apply to preparation the user asks for.
+Prepared data on disk is never evicted; Clear removes it.
+
+Paused automatic work stops at its next block boundary, keeps its accepted prefix
+and reports `Paused` (`prepared::pause`), not `Cancelled`, with its `PauseReason` in
+the status reply's `pauseReason`: `requested` (preparation the user asked for),
+`newerRecording`, `diskSpace` (the floor) or `game` (the game guard). The library
+scan resumes it once the reason has passed and it is again the newest work behind
+its store. A recording opened while the game runs is kept for after it and reports
+`Paused` with reason `game` unless its store is known to be up to date, so its
+panel follows the start.
+
+The user's work is what the user holds now: a recording with an open view, or a job
+an open or Prepare claimed that has not reached a terminal state. The claim lasts
+across pauses of the same job (even one still stopping when the user opened it)
+and ends at every terminal transition, which all go through `prepared::finish`
+(Ready, Failed or Cancelled, including a submission the full queue refused).
+Whose work an admission is gets decided in one place, `start_preparation`, under
+the admission lock at admission time: the scan, refreshes and other automatic
+callers pass a library admission, which runs as the user's exactly when the user
+holds the recording then, and otherwise waits for the user's preparation and
+stops at the free-space floor; only an open's own admission or Prepare passes the
+user's. The scan orders held recordings first, whatever their age, but that order
+classifies nothing, so a view closed while the scan runs, or a finished claim,
+leaves library work. A store whose progress cannot be checked is not known to be
+prepared and is admitted like any other; its preparation succeeds or fails with
+its own reason.
+
+Admission does no store or volume I/O under the admission lock. Every admitting
+path (an open, Prepare, a refresh, the scan) restores the store first, outside the
+lock, and passes the outcome in (`Checked`) with the source's store epoch it read
+(`prepared::store_epoch`, read before the content). The epoch rule: the epoch
+moves on, under the admission lock or with the running job that writes, whenever
+anything may change what a check found (a content rebind, which also forgets
+which revisions are finished; a Clear, for every revision of the path; a job
+queued to write the store; and that job's end). A check's outcome is used only in
+the critical section that acts on it, under the admission lock, and only while
+the source's epoch is unchanged: `publish_prepared` and the hand-off inside
+`prepared::start`. Otherwise it is dropped and the store is prepared, so a path
+that forgets to move the epoch on fails safe. `prepared::start` never restores: a
+complete store becomes Ready, an unreadable one fails with its reason, and
+anything else is queued. The scan shows a recording Ready (with its restored
+sections, no pause or error) only through that check, then retires it; a store
+that reads complete but cannot be restored is prepared again. A recording opened
+during a game whose store restores is shown Ready rather than paused. The scan
+measures the volume once, before any admission; a refresh uses the scan's last
+measurement and measures again, outside the lock, once it is older than the
+interval between scans; an unmeasurable volume never stops work. A refresh reads
+whether the job is the user's Prepare before it cancels it, so a content restart
+restarts the user's Prepare as theirs, and it re-validates under the lock when it
+admits: a Cancel or Clear by the user since it captured that (`user_stops`, or
+the store cleared) drops the refresh, so a captured Prepare never overrides a
+later user action. Newest-first is one rule, `enforce_newest_first`: every
+library admission runs it inside `start_preparation` (from the scan or a
+refresh), and every scan runs it at the end; of the jobs running as library work
+right now, the newest recording's keeps running and the rest pause
+(`newerRecording`); recording age comes from each source's revision stamp.
+
+A store another service or process changes after it was checked is caught
+eventually, without I/O under the lock: each check records the store's manifest
+identity (`Store::manifest_identity`) before restoring, and after any admission
+that may have published from the check (the scan's publication, an open, Prepare
+or a refresh shown Ready from its restore) the identity is read again outside the
+lock. If it changed and nothing else moved the epoch since, the Ready is
+withdrawn to Idle, the revision is no longer stamped finished, and the source is
+kept, so the next scan prepares it. A reader may see Ready until then. Clear deletes a store by its recording's path without
+reading its manifest, so a damaged store can be cleared. A user's Cancel overrides
+a pause, and the scheduler never turns a Cancel into one. Content and preference
+refreshes leave paused work to the library scan.
+
+Exactly this runs under the admission lock (`preparation_actions`): admission
+decisions in `start_preparation` (the lease table, other jobs' progress and
+suppression, all in memory) and the queueing in `prepared::start`;
+`publish_prepared`; making way for the user (`take_over_preparation`, including
+waiting for a replaced revision's writer to stop); pausing library work
+(`pause_library`, `enforce_newest_first`, the game guard); cancelling automatic
+work when the preference turns off; a content rebind and its epoch moves; a
+refresh's ownership read, its restart wait and its re-validation; withdrawing a
+publication another writer invalidated; and Clear, which cancels and waits
+for writers and deletes the store while admissions are kept out. Apart from
+Clear's deletion, no file or volume I/O runs under it: restores, volume
+measurements, store identities, source opening and recording revision reads
+(`recording_revision`, including when the preference turns back on) happen
+before it is taken or after it is released.
+
+Library work yields to the user. Opening a recording, or Prepare, first makes way
+for it (`take_over_preparation`): the recording's own queued or running job is
+joined, the same source and job rather than a second one, and becomes the user's;
+a running job of another revision of the same recording is cancelled and waited
+for before the new one is admitted, since one writer holds a recording's store;
+library jobs of other recordings pause. Library admission waits while any
+preparation the user asked for is queued or running, then resumes. A full queue is
+retried once, after the paused jobs leave it. Library jobs run each
+preparation thread one step below its level in a job the user waits for
+(dashboard-base `prepared::priority`): the hourly walk's coordinator runs in
+background mode for every job, family threads and flush helpers drop from normal to
+below normal, and pre-pass, shared-read and lane workers from below normal to
+lowest. A job the user joins starts its later threads at their usual levels.
 Unchanged and busy replies end admission retries. Recording revisions, completed
-workers, changed preferences/content bindings and game transitions permit a new
-attempt; timer ticks alone do not submit further preparation requests.
+workers, changed preferences/content bindings, game transitions and crossing the
+free-space floor permit a new attempt; timer ticks alone do not submit further
+preparation requests.
 It detects completed sessions through the recorder's atomic recording publication.
-A running game suspends automatic admission and cancels automatic jobs at the
-existing block boundary. After game exit, accepted prefixes resume from their
-unaccepted tails, including interrupted opened recordings outside the library.
+A running game suspends automatic admission and pauses automatic jobs (reason
+`game`) at the existing block boundary, so a session that ends while the game keeps running is
+prepared once the game exits. After game exit, accepted prefixes resume from their
+unaccepted tails, including interrupted opened recordings outside the library,
+whatever their age.
 Manual preparation remains available while the automatic preference or game guard
 is off. Clear and Cancel suppress automatic library retries for the recording path
 until explicit Prepare; that suppression lasts for this app session and spans

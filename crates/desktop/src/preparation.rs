@@ -12,8 +12,9 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-/// The preparation revision and each library recording with its replay revision.
-type Observation = (u64, Vec<(PathBuf, Option<String>)>);
+/// The preparation revision, whether the prepared-data volume has room for
+/// library preparation, and each library recording with its replay revision.
+type Observation = (u64, bool, Vec<(PathBuf, Option<String>)>);
 
 /// One admission attempt per observed input/worker change. A busy or unchanged
 /// reply ends retries until new external inputs or completed work wake them.
@@ -31,6 +32,7 @@ impl LibraryAdmission {
     ) -> io::Result<bool> {
         let current: Observation = (
             runtime.preparation_revision(),
+            runtime.background_room(),
             paths
                 .iter()
                 .map(|path| {
@@ -200,5 +202,45 @@ mod tests {
         runtime.shutdown();
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    /// A session ends when the recorder publishes its recording into the
+    /// library folder by renaming a finished temporary file; the next scan
+    /// requests admission for it once.
+    #[test]
+    fn a_published_session_wakes_library_admission_once() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "preparation-session-end-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("earlier.battleplan"), b"synthetic recording").unwrap();
+        let scan = || {
+            replay_library::scan(&root)
+                .unwrap()
+                .files
+                .into_iter()
+                .map(|file| PathBuf::from(file.path))
+                .collect::<Vec<_>>()
+        };
+        let runtime = dashboard::Service::new(Arc::new(|_| true)).unwrap();
+        let mut admission = LibraryAdmission::default();
+        assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
+        assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
+        // Finalization writes the recording beside its final name first.
+        let temporary = root.join("session.battleplan.tmp");
+        std::fs::write(&temporary, b"synthetic session").unwrap();
+        assert!(
+            !admission.prepare_changed(&runtime, &scan()).unwrap(),
+            "an unfinished recording is not a session end"
+        );
+        std::fs::rename(&temporary, root.join("session.battleplan")).unwrap();
+        assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
+        assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
+        assert_eq!(admission.requests, 2);
+        runtime.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

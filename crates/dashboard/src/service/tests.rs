@@ -565,7 +565,12 @@ fn disabling_background_work_preserves_explicit_preparation_and_clear() {
     // An explicit Start remains valid while the global background default is off.
     service
         .inner
-        .start_preparation(Arc::clone(&manual), false, &AtomicBool::new(false))
+        .start_preparation(
+            Arc::clone(&manual),
+            jobs::Admission::Manual,
+            jobs::Checked::unread(true),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     assert!(
         !manual
@@ -584,7 +589,12 @@ fn disabling_background_work_preserves_explicit_preparation_and_clear() {
     service.set_background_preparation(true);
     service
         .inner
-        .start_preparation(Arc::clone(&cleared), true, &AtomicBool::new(false))
+        .start_preparation(
+            Arc::clone(&cleared),
+            jobs::Admission::Opened,
+            jobs::Checked::unread(true),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     assert_eq!(
         cleared
@@ -959,8 +969,17 @@ fn wait_library_source(source: &Source) {
 struct PreparationHold(Vec<Arc<AtomicBool>>);
 impl PreparationHold {
     fn new(service: &Service) -> Self {
+        Self::holding(service, 2)
+    }
+    /// Occupy the workers and fill their queue too.
+    fn filled(service: &Service) -> Self {
+        Self::holding(service, 4)
+    }
+    fn holding(service: &Service, jobs: usize) -> Self {
         let (sent, seen) = mpsc::channel();
-        let flags: Vec<_> = (0..2).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let flags: Vec<_> = (0..jobs)
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect();
         for flag in &flags {
             let sent = sent.clone();
             service
@@ -974,7 +993,8 @@ impl PreparationHold {
                 })
                 .unwrap();
         }
-        for _ in &flags {
+        // Two workers start; the rest wait in the queue.
+        for _ in 0..jobs.min(2) {
             seen.recv_timeout(HANG_GUARD).unwrap();
         }
         Self(flags)
@@ -1046,16 +1066,14 @@ fn library_preparation_waits_for_game_exit_and_prepares_unopened_published_sessi
 fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
     let fixture = LibraryFixture::new(&["oldest", "middle", "newest"]);
     let service = Service::new(Arc::new(|_| true)).unwrap();
-    let hold = PreparationHold::new(&service);
+    let hold = PreparationHold::filled(&service);
     assert_eq!(
         service.prepare_library(&fixture.paths).unwrap_err().kind(),
         io::ErrorKind::WouldBlock
     );
-    let admitted: Vec<_> = {
+    {
         let sources = service.inner.sources.lock().unwrap();
-        assert!(sources.library.contains_key(&fixture.paths[2]));
-        assert!(sources.library.contains_key(&fixture.paths[1]));
-        let waiting = sources.library.get(&fixture.paths[0]).unwrap();
+        let waiting = sources.library.get(&fixture.paths[2]).unwrap();
         assert_eq!(
             waiting
                 .state::<crate::prepared::Progress>()
@@ -1064,30 +1082,26 @@ fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
                 .state,
             crate::prepared::State::Idle
         );
-        sources
-            .library
-            .values()
-            .filter(|source| {
-                source
-                    .state::<crate::prepared::Progress>()
-                    .lock()
-                    .unwrap()
-                    .running
-            })
-            .cloned()
-            .collect()
-    };
-    drop(hold);
-    for source in admitted {
-        wait_library_source(&source);
+        assert!(
+            !sources.library.contains_key(&fixture.paths[1])
+                && !sources.library.contains_key(&fixture.paths[0]),
+            "older recordings wait for the newest"
+        );
     }
-    service.prepare_library(&fixture.paths).unwrap();
-    let oldest = service.open_map(&fixture.paths[0], None).unwrap();
-    wait_library_source(&oldest);
-    assert_eq!(
-        crate::prepared::unprepared_blocks(&oldest, None).unwrap(),
-        Some(0)
-    );
+    drop(hold);
+    // One recording at a time, newest first.
+    for (index, path) in fixture.paths.iter().enumerate().rev() {
+        admit_library(&service, &fixture.paths);
+        let source = library_source(&service, path).expect("the newest unprepared is admitted");
+        for older in &fixture.paths[..index] {
+            assert!(library_source(&service, older).is_none());
+        }
+        wait_library_source(&source);
+        assert_eq!(
+            crate::prepared::unprepared_blocks(&source, None).unwrap(),
+            Some(0)
+        );
+    }
     service.shutdown();
 }
 
@@ -1112,7 +1126,11 @@ fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_librar
             .load(Ordering::Acquire)
     );
     drop(hold);
-    crate::prepared::wait_cancelled(&source, &AtomicBool::new(false)).unwrap();
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        crate::prepared::status(&source, "paused", "status").pause_reason,
+        Some(crate::prepared::PauseReason::Game)
+    );
     assert_eq!(
         crate::prepared::unprepared_blocks(&source, None).unwrap(),
         None
@@ -1137,7 +1155,7 @@ fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_librar
 }
 
 #[test]
-fn game_presence_cancels_automatic_work_without_cancelling_manual_prepare() {
+fn game_presence_pauses_automatic_work_without_stopping_manual_prepare() {
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let automatic = source();
     let manual = source();
@@ -1163,6 +1181,12 @@ fn game_presence_cancels_automatic_work_without_cancelling_manual_prepare() {
             .cancelled
             .load(Ordering::Acquire)
     );
+    assert_eq!(
+        paused(&automatic),
+        Some(crate::prepared::PauseReason::Game),
+        "a game start pauses automatic work, naming the game"
+    );
+    assert_eq!(paused(&manual), None);
     assert!(
         !manual
             .state::<crate::prepared::Progress>()
@@ -1174,7 +1198,12 @@ fn game_presence_cancels_automatic_work_without_cancelling_manual_prepare() {
     let unopened = source();
     service
         .inner
-        .start_preparation(Arc::clone(&unopened), true, &AtomicBool::new(false))
+        .start_preparation(
+            Arc::clone(&unopened),
+            jobs::Admission::Opened,
+            jobs::Checked::unread(true),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     assert_eq!(
         unopened
@@ -1744,5 +1773,1426 @@ fn prepared_answers_do_not_wait_behind_sampled_reads() {
     let (job, hour, lane) = answers.recv_timeout(HANG_GUARD).unwrap();
     assert_eq!((job, hour), ("sampled", Some(1)));
     assert!(lane.starts_with("dashboard sampled"), "{lane}");
+    service.shutdown();
+}
+
+/// Open `path` through the frontend's open command and return its lease's source.
+fn open_lease(
+    service: &Service,
+    receive: &mpsc::Receiver<DataEvent>,
+    path: &Path,
+    id: &str,
+) -> Arc<Source> {
+    open_view(service, receive, path, id).1
+}
+
+/// Open `path` as the frontend does, returning the view's lease and source.
+fn open_view(
+    service: &Service,
+    receive: &mpsc::Receiver<DataEvent>,
+    path: &Path,
+    id: &str,
+) -> (String, Arc<Source>) {
+    service.dispatch(DataCommand::Open {
+        id: id.into(),
+        path: path.to_string_lossy().into_owned(),
+        revision: crate::protocol::replay_revision(path).unwrap(),
+    });
+    let mut json = String::new();
+    loop {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
+            DataEvent::Chunk {
+                id: received,
+                fragment,
+                last,
+                ..
+            } => {
+                assert_eq!(received, id);
+                json.push_str(&fragment);
+                if last {
+                    break;
+                }
+            }
+            event => panic!("unexpected open event: {event:?}"),
+        }
+    }
+    let opened: SourceReply = serde_json::from_str(&json).unwrap();
+    let source = service.source(&opened.id).unwrap();
+    (opened.id, source)
+}
+
+fn library_source(service: &Service, path: &Path) -> Option<Arc<Source>> {
+    service
+        .inner
+        .sources
+        .lock()
+        .unwrap()
+        .library
+        .get(path)
+        .cloned()
+}
+
+/// Admit library work, retrying while the workers' queue is still full of
+/// jobs that are about to leave it.
+fn admit_library(service: &Service, paths: &[PathBuf]) {
+    let started = std::time::Instant::now();
+    while let Err(error) = service.prepare_library(paths) {
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(started.elapsed() < HANG_GUARD, "the queue never drained");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Whether the source's job is queued or running, was admitted ahead of the
+/// user, and has been asked to stop.
+fn job(source: &Source) -> (bool, bool, bool) {
+    let progress = source.state::<crate::prepared::Progress>();
+    let progress = progress.lock().unwrap();
+    (
+        progress.running,
+        progress.background.load(Ordering::Acquire),
+        progress.cancelled.load(Ordering::Acquire),
+    )
+}
+
+/// Why the scheduler, not the user, stopped the source's job.
+fn paused(source: &Source) -> Option<crate::prepared::PauseReason> {
+    source
+        .state::<crate::prepared::Progress>()
+        .lock()
+        .unwrap()
+        .paused
+}
+
+fn state(source: &Source) -> crate::prepared::State {
+    source
+        .state::<crate::prepared::Progress>()
+        .lock()
+        .unwrap()
+        .state
+}
+
+/// The cancellation flag of the source's latest admission: a new admission
+/// replaces it, so an unchanged pointer means no second job was admitted.
+fn admission_of(source: &Source) -> *const AtomicBool {
+    Arc::as_ptr(
+        &source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled,
+    )
+}
+
+#[test]
+fn ending_a_session_schedules_its_preparation_ahead_of_the_user() {
+    let fixture = LibraryFixture::new(&["earlier", "session"]);
+    let session = fixture.paths[1].clone();
+    // While the session records, its recording is not published yet.
+    std::fs::remove_file(&session).unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&[session.clone()]).unwrap();
+    assert!(library_source(&service, &session).is_none());
+    // Ending the session publishes the recording whole, as finalization does.
+    fixture.append(&session);
+    service.prepare_library(&[session.clone()]).unwrap();
+    let source = library_source(&service, &session).expect("the ended session is admitted");
+    assert_eq!(
+        source.key().revision,
+        crate::protocol::replay_revision(&session).unwrap()
+    );
+    assert_eq!(job(&source), (true, true, false));
+    assert!(
+        source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .automatic
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn app_start_prepares_every_recording_behind_its_store_newest_first() {
+    // Oldest first.
+    let fixture = LibraryFixture::new(&["r0", "r1", "r2", "r3", "r4"]);
+    let paths = &fixture.paths;
+    // An earlier app session prepared r3 fully and r4 before its last session.
+    let earlier = Service::new(Arc::new(|_| true)).unwrap();
+    for path in [&paths[3], &paths[4]] {
+        let source = earlier.open_map(path, None).unwrap();
+        crate::prepared::pipeline::run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+    }
+    earlier.shutdown();
+    fixture.append(&paths[4]);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    // One recording at a time, newest first; r3's store is up to date.
+    for expected in [4, 2, 1, 0] {
+        admit_library(&service, paths);
+        let source = library_source(&service, &paths[expected])
+            .expect("the newest recording behind its store is admitted");
+        assert!(job(&source).1, "prepared ahead of the user");
+        let sources = service.inner.sources.lock().unwrap();
+        for older in &paths[..expected] {
+            assert!(
+                !sources.entries.keys().any(|(opened, _)| opened == older),
+                "{} waits for newer work",
+                older.display()
+            );
+        }
+        drop(sources);
+        wait_library_source(&source);
+        assert_eq!(
+            crate::prepared::unprepared_blocks(&source, None).unwrap(),
+            Some(0)
+        );
+        assert!(library_source(&service, &paths[3]).is_none());
+    }
+    service.prepare_library(paths).unwrap();
+    assert!(
+        service.inner.sources.lock().unwrap().library.is_empty(),
+        "every recording is prepared"
+    );
+    service.shutdown();
+}
+
+#[test]
+fn newer_library_work_goes_first() {
+    let fixture = LibraryFixture::new(&["a", "b", "c"]);
+    let newer = fixture.paths[2].clone();
+    std::fs::remove_file(&newer).unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let b = library_source(&service, &fixture.paths[1]).expect("the newest is admitted");
+    assert_eq!(job(&b), (true, true, false));
+    assert!(
+        library_source(&service, &fixture.paths[0]).is_none(),
+        "older work waits for newer work"
+    );
+    // A later session publishes a newer recording.
+    fixture.append(&newer);
+    service.prepare_library(&fixture.paths).unwrap();
+    let c = library_source(&service, &newer).expect("newer work goes first");
+    assert_eq!(job(&c), (true, true, false));
+    assert!(job(&b).2, "older library work pauses");
+    assert_eq!(
+        paused(&b),
+        Some(crate::prepared::PauseReason::NewerRecording)
+    );
+    assert!(
+        library_source(&service, &fixture.paths[1]).is_some(),
+        "and is kept to resume"
+    );
+    assert!(library_source(&service, &fixture.paths[0]).is_none());
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn library_work_pauses_below_the_free_space_floor_and_resumes_above_it() {
+    assert!(room_for_background(100, 1_000));
+    assert!(!room_for_background(99, 1_000));
+    assert!(!room_for_background(0, 1));
+    assert!(room_for_background(u64::MAX, u64::MAX));
+    let fixture = LibraryFixture::new(&["floor"]);
+    let path = &fixture.paths[0];
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(
+        library_source(&service, path).is_none(),
+        "nothing starts below the floor"
+    );
+    TEST_ROOM.with(|room| room.set(Some(true)));
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).unwrap();
+    let admitted = admission_of(&source);
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(job(&source).2, "running library work pauses at the floor");
+    assert_eq!(
+        paused(&source),
+        Some(crate::prepared::PauseReason::DiskSpace)
+    );
+    assert_eq!(admission_of(&source), admitted);
+    TEST_ROOM.with(|room| room.set(None));
+    drop(hold);
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    let reply = crate::prepared::status(&source, "floor", "status");
+    assert_eq!(reply.state, crate::prepared::State::Paused);
+    assert_eq!(
+        reply.pause_reason,
+        Some(crate::prepared::PauseReason::DiskSpace)
+    );
+    // Above the floor the library scan resumes it, queued behind held workers.
+    let hold = PreparationHold::new(&service);
+    admit_library(&service, &fixture.paths);
+    let resumed = admission_of(&source);
+    assert_ne!(resumed, admitted);
+    assert_eq!(job(&source), (true, true, false));
+    assert_eq!(
+        crate::prepared::status(&source, "floor", "status").pause_reason,
+        None
+    );
+    // A game start pauses it too, naming the game, and the job is kept to
+    // resume after the game exits.
+    service.set_preparation_suspended(true);
+    assert!(job(&source).2);
+    assert_eq!(paused(&source), Some(crate::prepared::PauseReason::Game));
+    drop(hold);
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    let reply = crate::prepared::status(&source, "floor", "status");
+    assert_eq!(reply.state, crate::prepared::State::Paused);
+    assert_eq!(reply.pause_reason, Some(crate::prepared::PauseReason::Game));
+    assert!(library_source(&service, path).is_some());
+    service.set_preparation_suspended(false);
+    admit_library(&service, &fixture.paths);
+    assert_ne!(
+        admission_of(&source),
+        resumed,
+        "it resumes after the game exits"
+    );
+    service.shutdown();
+}
+
+#[test]
+fn opening_a_recording_joins_its_library_preparation() {
+    let fixture = LibraryFixture::new(&["older", "newest"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let library = library_source(&service, &fixture.paths[1]).unwrap();
+    assert_eq!(job(&library), (true, true, false));
+    let admitted = admission_of(&library);
+    let opened = open_lease(&service, &receive, &fixture.paths[1], "join-open");
+    assert!(
+        Arc::ptr_eq(&opened, &library),
+        "the open shares the library's source"
+    );
+    assert_eq!(
+        admission_of(&opened),
+        admitted,
+        "the open joins the queued job instead of admitting a second one"
+    );
+    assert_eq!(
+        job(&opened),
+        (true, false, false),
+        "the joined job keeps running as the user's"
+    );
+    // The older recording waits while the user's preparation runs.
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(library_source(&service, &fixture.paths[0]).is_none());
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn library_work_pauses_for_another_opened_recording_and_waits_for_it() {
+    let fixture = LibraryFixture::new(&["opened", "library"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let library = library_source(&service, &fixture.paths[1]).unwrap();
+    assert_eq!(job(&library), (true, true, false));
+    let opened = open_lease(&service, &receive, &fixture.paths[0], "yield-open");
+    assert_eq!(
+        job(&opened),
+        (true, false, false),
+        "the open admits the user's preparation"
+    );
+    assert!(job(&library).2, "library work pauses for the open");
+    assert_eq!(
+        paused(&library),
+        Some(crate::prepared::PauseReason::Requested)
+    );
+    let paused_at = admission_of(&library);
+    // The library scan keeps the paused job but does not resume it while the
+    // user's preparation is queued or running.
+    service.prepare_library(&fixture.paths).unwrap();
+    assert_eq!(admission_of(&library), paused_at);
+    assert!(library_source(&service, &fixture.paths[1]).is_some());
+    drop(hold);
+    crate::prepared::wait_finished(&library, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        state(&library),
+        crate::prepared::State::Paused,
+        "the status reply says Paused, not Cancelled"
+    );
+    let reply = crate::prepared::status(&library, "library", "status");
+    assert_eq!(reply.state, crate::prepared::State::Paused);
+    assert_eq!(
+        reply.pause_reason,
+        Some(crate::prepared::PauseReason::Requested)
+    );
+    service.shutdown();
+}
+
+#[test]
+fn a_cancel_overrides_a_pause() {
+    let paused_source = source();
+    crate::prepared::pause(&paused_source, crate::prepared::PauseReason::Game);
+    assert_eq!(state(&paused_source), crate::prepared::State::Paused);
+    crate::prepared::cancel(&paused_source);
+    assert_eq!(state(&paused_source), crate::prepared::State::Cancelled);
+    let cancelled = source();
+    crate::prepared::cancel(&cancelled);
+    crate::prepared::pause(&cancelled, crate::prepared::PauseReason::Game);
+    assert_eq!(
+        state(&cancelled),
+        crate::prepared::State::Cancelled,
+        "the scheduler never turns a Cancel into a pause"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn opening_a_newer_revision_takes_over_its_library_preparation() {
+    let fixture = LibraryFixture::new(&["continued"]);
+    let path = fixture.paths[0].clone();
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let earlier = library_source(&service, &path).unwrap();
+    // The next session continues the recording before the library job ran.
+    fixture.append(&path);
+    // The open waits for the earlier revision's writer, which needs a worker.
+    let release = std::thread::spawn(move || drop(hold));
+    let grown = open_lease(&service, &receive, &path, "take-over-open");
+    release.join().unwrap();
+    assert_ne!(grown.key().revision, earlier.key().revision);
+    assert!(
+        !job(&earlier).0,
+        "the earlier revision stopped before the open admitted its own"
+    );
+    // One writer at a time: the grown revision does not fail on the store.
+    wait_library_source(&grown);
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&grown, None).unwrap(),
+        Some(0)
+    );
+    service.shutdown();
+}
+
+#[test]
+fn background_preparation_off_schedules_nothing() {
+    let fixture = LibraryFixture::new(&["off-earlier", "off-session"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_background_preparation(false);
+    // Neither the app start scan nor a session ending admits anything.
+    service.prepare_library(&fixture.paths).unwrap();
+    fixture.append(&fixture.paths[1]);
+    service.prepare_library(&fixture.paths).unwrap();
+    {
+        let sources = service.inner.sources.lock().unwrap();
+        assert!(sources.library.is_empty());
+        assert!(sources.entries.is_empty(), "no recording was even opened");
+    }
+    // Nor does opening a recording.
+    let opened = open_lease(&service, &receive, &fixture.paths[1], "off-open");
+    assert_eq!(job(&opened), (false, false, false));
+    assert_eq!(state(&opened), crate::prepared::State::Idle);
+    service.shutdown();
+}
+
+#[test]
+fn library_admission_rechecks_the_users_preparation_under_the_admission_lock() {
+    let fixture = LibraryFixture::new(&["opened", "library"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    // The scan found no preparation of the user's, then the user opened a recording.
+    let opened = open_lease(&service, &receive, &fixture.paths[0], "race-open");
+    assert_eq!(job(&opened), (true, false, false));
+    // The scan goes on to admit its candidate.
+    service
+        .inner
+        .prepare_recording(&fixture.paths[1], true)
+        .unwrap();
+    assert!(
+        library_source(&service, &fixture.paths[1]).is_none_or(|source| !job(&source).0),
+        "library work is not admitted beside the user's"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn library_work_that_slipped_past_an_open_pauses_at_the_next_scan() {
+    let fixture = LibraryFixture::new(&["opened", "library"]);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths[1..]).unwrap();
+    let library = library_source(&service, &fixture.paths[1]).unwrap();
+    assert_eq!(job(&library), (true, true, false));
+    // The user's preparation started without making way, as a race leaves it.
+    let opened = service.open_map(&fixture.paths[0], None).unwrap();
+    service
+        .inner
+        .start_preparation(
+            Arc::clone(&opened),
+            jobs::Admission::Opened,
+            service.inner.check_store(&opened, true),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(job(&opened), (true, false, false));
+    service.prepare_library(&fixture.paths).unwrap();
+    assert_eq!(
+        paused(&library),
+        Some(crate::prepared::PauseReason::Requested),
+        "the next scan pauses library work running beside the user's"
+    );
+    assert_eq!(job(&opened), (true, false, false));
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn a_stale_scan_never_pauses_preparation_the_user_asked_for() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["manual"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, &fixture.paths[0]).unwrap();
+    // The scan saw library work...
+    let stale = [Arc::clone(&source)];
+    assert_eq!(job(&source), (true, true, false));
+    // ...then the user pressed Prepare, making it theirs.
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Start,
+        "manual-start",
+        &receive,
+    );
+    assert_eq!(job(&source), (true, false, false));
+    // The stale scan's low-space result does not pause it.
+    service
+        .inner
+        .pause_library(&stale, crate::prepared::PauseReason::DiskSpace);
+    assert_eq!(job(&source), (true, false, false));
+    assert_eq!(paused(&source), None);
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    TEST_ROOM.with(|room| room.set(None));
+    assert_eq!(
+        job(&source),
+        (true, false, false),
+        "the floor never bounds the user's work"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn a_recording_opened_while_the_game_runs_is_prepared_after_it_exits() {
+    let fixture = LibraryFixture::new(&["outside-library"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_preparation_suspended(true);
+    let opened = open_lease(&service, &receive, path, "game-open");
+    assert_eq!(
+        job(&opened),
+        (false, false, false),
+        "nothing runs beside the game"
+    );
+    assert!(
+        library_source(&service, path).is_some(),
+        "the open is kept for after the game"
+    );
+    // Its panel sees a pause for the game, so it keeps checking.
+    let reply = crate::prepared::status(&opened, "deferred", "status");
+    assert_eq!(reply.state, crate::prepared::State::Paused);
+    assert_eq!(reply.pause_reason, Some(crate::prepared::PauseReason::Game));
+    service.set_preparation_suspended(false);
+    let hold = PreparationHold::new(&service);
+    // The recording lies outside the scanned library.
+    service.prepare_library(&[]).unwrap();
+    assert_eq!(
+        job(&opened),
+        (true, false, false),
+        "it resumes as the user's after the game exits"
+    );
+    let reply = crate::prepared::status(&opened, "deferred", "status");
+    assert_eq!(reply.state, crate::prepared::State::Queued);
+    assert_eq!(reply.pause_reason, None);
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn opening_a_recording_the_game_is_pausing_makes_it_the_users() {
+    let fixture = LibraryFixture::new(&["stopping"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).unwrap();
+    assert_eq!(job(&source), (true, true, false));
+    // The game starts: the library job is asked to stop but is still queued...
+    service.set_preparation_suspended(true);
+    assert_eq!(job(&source), (true, true, true));
+    // ...when the user opens its recording.
+    let opened = open_lease(&service, &receive, path, "stopping-open");
+    assert!(Arc::ptr_eq(&opened, &source));
+    assert_eq!(
+        job(&source),
+        (true, false, true),
+        "the open makes the stopping job the user's"
+    );
+    drop(hold);
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    assert_eq!(paused(&source), Some(crate::prepared::PauseReason::Game));
+    service.set_preparation_suspended(false);
+    let hold = PreparationHold::new(&service);
+    // Below the floor, which bounds only library work, it still resumes.
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    TEST_ROOM.with(|room| room.set(None));
+    assert_eq!(
+        job(&source),
+        (true, false, false),
+        "it resumes as the user's, not as library work"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_prepared_recording_opened_while_the_game_runs_is_not_shown_paused() {
+    let fixture = LibraryFixture::new(&["prepared"]);
+    let path = &fixture.paths[0];
+    let earlier = Service::new(Arc::new(|_| true)).unwrap();
+    let source = earlier.open_map(path, None).unwrap();
+    crate::prepared::pipeline::run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+    drop(source);
+    earlier.shutdown();
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_preparation_suspended(true);
+    let opened = open_lease(&service, &receive, path, "prepared-open");
+    assert_ne!(state(&opened), crate::prepared::State::Paused);
+    assert_eq!(paused(&opened), None);
+    service.shutdown();
+}
+
+#[test]
+fn a_stale_library_admission_never_takes_back_the_users_job() {
+    let fixture = LibraryFixture::new(&["claimed"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).unwrap();
+    // A pause is stopping the library job, which a scan sees as library work...
+    crate::prepared::pause(&source, crate::prepared::PauseReason::NewerRecording);
+    assert_eq!(job(&source), (true, true, true));
+    // ...when the user opens its recording and claims it.
+    let opened = open_lease(&service, &receive, path, "claim-open");
+    assert!(Arc::ptr_eq(&opened, &source));
+    assert_eq!(job(&source), (true, false, true));
+    drop(hold);
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    assert!(!service.inner.interactive_preparation());
+    // The stale scan's library admission now reaches it.
+    let hold = PreparationHold::new(&service);
+    service.inner.prepare_recording(path, true).unwrap();
+    assert_eq!(
+        job(&source),
+        (true, false, false),
+        "it resumes as the user's, not as library work"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+/// Whether the user's claim on the source's job is still open.
+fn claimed(source: &Source) -> bool {
+    source
+        .state::<crate::prepared::Progress>()
+        .lock()
+        .unwrap()
+        .claimed
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_finished_claim_does_not_carry_into_a_later_revision() {
+    let fixture = LibraryFixture::new(&["continued"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).unwrap();
+    // The user opens the recording, claiming its job, which then finishes.
+    let (lease, opened) = open_view(&service, &receive, path, "claim-view");
+    assert!(Arc::ptr_eq(&opened, &source));
+    wait_library_source(&source);
+    assert!(!claimed(&source), "a finished job is no longer claimed");
+    // The view closes and a game starts before the next scan retires the source.
+    service.dispatch(DataCommand::Release { source_id: lease });
+    drop(opened);
+    service.set_preparation_suspended(true);
+    // Another session appends to the recording.
+    fixture.append(path);
+    service.set_preparation_suspended(false);
+    let hold = PreparationHold::new(&service);
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    TEST_ROOM.with(|room| room.set(None));
+    assert!(
+        library_source(&service, path).is_none_or(|held| !job(&held).0),
+        "below the floor nothing the user does not hold is admitted"
+    );
+    service.prepare_library(&fixture.paths).unwrap();
+    let grown = library_source(&service, path).unwrap();
+    assert_ne!(grown.key().revision, source.key().revision);
+    assert_eq!(
+        job(&grown),
+        (true, true, false),
+        "the new revision is library work"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn a_recording_whose_store_cannot_be_checked_is_prepared_as_library_work() {
+    let fixture = LibraryFixture::new(&["unreadable-store"]);
+    let path = &fixture.paths[0];
+    // A manifest too short to hold its header cannot be read.
+    let store = crate::prepared::recording_store(path).unwrap();
+    std::fs::create_dir_all(store.directory()).unwrap();
+    std::fs::write(store.directory().join("manifest"), b"bad").unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    // It is library work: the floor bounds it.
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    TEST_ROOM.with(|room| room.set(None));
+    assert!(library_source(&service, path).is_none());
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).expect("an unknown store is admitted");
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    {
+        let progress = source.state::<crate::prepared::Progress>();
+        let progress = progress.lock().unwrap();
+        assert!(progress.automatic && progress.background.load(Ordering::Acquire));
+        assert!(!progress.claimed, "nobody holds it");
+    }
+    let reply = crate::prepared::status(&source, "unreadable", "status");
+    assert_eq!(reply.state, crate::prepared::State::Failed);
+    assert!(
+        reply
+            .error
+            .is_some_and(|error| !error.contains("could not be checked")),
+        "the preparation's own failure is shown"
+    );
+    // The failure is terminal and clearable: the next scan retires it.
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(library_source(&service, path).is_none());
+    assert!(
+        service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .completed
+            .contains_key(path)
+    );
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_deferred_recording_completed_by_another_writer_ends_ready() {
+    let fixture = LibraryFixture::new(&["deferred"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_preparation_suspended(true);
+    let opened = open_lease(&service, &receive, path, "deferred-open");
+    assert_eq!(paused(&opened), Some(crate::prepared::PauseReason::Game));
+    // Another writer completes the store while the game runs.
+    let other = Service::new(Arc::new(|_| true)).unwrap();
+    let writer = other.open_map(path, None).unwrap();
+    crate::prepared::pipeline::run(&writer, None, &AtomicBool::new(false), |_| {}).unwrap();
+    drop(writer);
+    other.shutdown();
+    service.set_preparation_suspended(false);
+    service.prepare_library(&[]).unwrap();
+    let reply = crate::prepared::status(&opened, "deferred", "status");
+    assert_eq!(reply.state, crate::prepared::State::Ready);
+    assert_eq!(reply.pause_reason, None);
+    assert_eq!(reply.error, None);
+    assert!(!job(&opened).0, "nothing prepares it again");
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_damaged_store_is_cleared_and_prepared_again() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["damaged"]);
+    let path = &fixture.paths[0];
+    // A manifest too short to hold its header cannot be read or bound.
+    let store = crate::prepared::recording_store(path).unwrap();
+    std::fs::create_dir_all(store.directory()).unwrap();
+    let manifest = store.directory().join("manifest");
+    std::fs::write(&manifest, b"bad").unwrap();
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let source = service.open_map(path, None).unwrap();
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Clear,
+        "clear-damaged",
+        &receive,
+    );
+    assert!(!manifest.exists(), "Clear removes the damaged store");
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Start,
+        "prepare-cleared",
+        &receive,
+    );
+    wait_library_source(&source);
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&source, None).unwrap(),
+        Some(0)
+    );
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_complete_store_that_cannot_be_restored_is_prepared_again() {
+    let fixture = LibraryFixture::new(&["damaged-branch"]);
+    let path = &fixture.paths[0];
+    // An earlier app session prepared it completely...
+    let earlier = Service::new(Arc::new(|_| true)).unwrap();
+    let prepared = earlier.open_map(path, None).unwrap();
+    crate::prepared::pipeline::run(&prepared, None, &AtomicBool::new(false), |_| {}).unwrap();
+    // ...then its branch continuations were damaged; the checkpoint stays complete.
+    let (store, key) = crate::prepared::files(&prepared, None).unwrap();
+    let branches: std::collections::BTreeSet<_> = prepared
+        .replay_ref()
+        .index
+        .iter()
+        .map(|block| block.branch)
+        .collect();
+    let mut writer = store.extend(&key).unwrap();
+    for branch in branches {
+        writer
+            .write_at(&format!("preparation-branch-{branch}"), 0, &b"damaged"[..])
+            .unwrap();
+    }
+    writer.commit().unwrap();
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&prepared, None).unwrap(),
+        Some(0)
+    );
+    assert!(!matches!(
+        crate::prepared::pipeline::restore(&prepared, None, &AtomicBool::new(false)),
+        Ok(Some(_))
+    ));
+    drop(prepared);
+    earlier.shutdown();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).expect("it is admitted");
+    assert_ne!(state(&source), crate::prepared::State::Ready);
+    assert_eq!(
+        job(&source),
+        (true, true, false),
+        "it is prepared again as library work"
+    );
+    assert!(
+        !service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .completed
+            .contains_key(path)
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn a_prepare_that_could_not_be_queued_leaves_no_claim() {
+    let fixture = LibraryFixture::new(&["queue-full"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_preparation_suspended(true);
+    // Opened while the game runs: deferred and claimed.
+    let (lease, opened) = open_view(&service, &receive, path, "deferred-view");
+    assert!(claimed(&opened));
+    // An explicit Prepare meets a full queue.
+    let hold = PreparationHold::filled(&service);
+    let error = service
+        .inner
+        .admit_interactive(
+            &opened,
+            jobs::Admission::Manual,
+            service.inner.check_store(&opened, true),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(state(&opened), crate::prepared::State::Failed);
+    assert!(!claimed(&opened), "a failed submission ends the claim");
+    // The view closes, a session appends and the game exits.
+    service.dispatch(DataCommand::Release { source_id: lease });
+    drop(opened);
+    fixture.append(path);
+    drop(hold);
+    service.set_preparation_suspended(false);
+    admit_library(&service, &fixture.paths);
+    let grown = library_source(&service, path).unwrap();
+    assert_eq!(
+        grown.key().revision,
+        crate::protocol::replay_revision(path).unwrap()
+    );
+    assert!(job(&grown).1, "the new revision is library work");
+    assert!(!claimed(&grown));
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_view_closed_while_the_scan_orders_its_work_leaves_library_work() {
+    let fixture = LibraryFixture::new(&["released"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.prepare_library(&fixture.paths).unwrap();
+    let earlier = library_source(&service, path).unwrap();
+    // The user views it; the job finishes, ending the claim, while the view stays.
+    let (lease, opened) = open_view(&service, &receive, path, "released-view");
+    assert!(Arc::ptr_eq(&opened, &earlier));
+    wait_library_source(&earlier);
+    assert!(!claimed(&earlier));
+    drop(opened);
+    // Another session appends.
+    fixture.append(path);
+    // The view closes right after the scan ordered the recording as the user's.
+    TEST_AFTER_PARTITION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |service: &Service| {
+            service.dispatch(DataCommand::Release { source_id: lease });
+        }));
+    });
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let grown = library_source(&service, path).unwrap();
+    assert_ne!(grown.key().revision, earlier.key().revision);
+    assert_eq!(
+        job(&grown),
+        (true, true, false),
+        "admitted as library work, decided at admission"
+    );
+    assert!(!claimed(&grown));
+    drop(hold);
+    service.shutdown();
+}
+
+/// Prepare `path` completely, as an earlier app session or another writer would.
+fn prepare_elsewhere(path: &Path) {
+    let other = Service::new(Arc::new(|_| true)).unwrap();
+    let writer = other.open_map(path, None).unwrap();
+    crate::prepared::pipeline::run(&writer, None, &AtomicBool::new(false), |_| {}).unwrap();
+    drop(writer);
+    other.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_restore_read_for_replaced_content_is_never_published() {
+    let fixture = LibraryFixture::new(&["rebound"]);
+    let path = &fixture.paths[0];
+    prepare_elsewhere(path);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    // The content binding changes after the scan restored the store, before
+    // it publishes: the rebind invalidates every check under the admission lock.
+    jobs::TEST_AFTER_CHECK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|inner: &Inner| {
+            let _admission = inner.preparation_actions.lock().unwrap();
+            inner.invalidate_checks();
+        }));
+    });
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).expect("it is admitted as usual");
+    assert_ne!(
+        state(&source),
+        crate::prepared::State::Ready,
+        "the restore for the old binding is dropped"
+    );
+    assert_eq!(job(&source), (true, true, false));
+    assert!(
+        !service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .completed
+            .contains_key(path)
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn admission_queues_a_store_the_unlocked_check_found_incomplete_without_restoring_again() {
+    let fixture = LibraryFixture::new(&["checked-once"]);
+    let path = fixture.paths[0].clone();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    // Another writer completes the store after the scan's unlocked check found
+    // it incomplete. Admission uses that check rather than restoring again
+    // under the admission lock, so it queues the preparation.
+    let writer = path.clone();
+    jobs::TEST_AFTER_CHECK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |_: &Inner| prepare_elsewhere(&writer)));
+    });
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, &path).unwrap();
+    assert_eq!(
+        job(&source),
+        (true, true, false),
+        "queued, not restored under the lock"
+    );
+    assert_eq!(state(&source), crate::prepared::State::Queued);
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn admission_never_measures_the_volume_under_the_admission_lock() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["measured-a", "measured-b"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    // The scan measures once, before it admits anything.
+    service.prepare_library(&fixture.paths).unwrap();
+    // Opens and Prepare are the user's and need no measurement.
+    let opened = open_lease(&service, &receive, &fixture.paths[0], "measured-open");
+    library_action(
+        &service,
+        Arc::clone(&opened),
+        Action::Start,
+        "measured-prepare",
+        &receive,
+    );
+    // A refresh whose measurement is stale measures again, outside the lock.
+    service.inner.room.lock().unwrap().measured = None;
+    let before = service.inner.test_measures.load(Ordering::Relaxed);
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&opened), false)
+        .unwrap();
+    let started = std::time::Instant::now();
+    while service.inner.test_measures.load(Ordering::Relaxed) == before {
+        assert!(started.elapsed() < HANG_GUARD, "the refresh never measured");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(service.inner.test_measures.load(Ordering::Relaxed) >= 2);
+    assert_eq!(
+        service.inner.test_measures_locked.load(Ordering::Relaxed),
+        0,
+        "no admission measures the volume under the admission lock"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn work_the_user_stops_holding_mid_scan_yields_to_newer_work() {
+    let fixture = LibraryFixture::new(&["older", "newer"]);
+    let (older, newer) = (fixture.paths[0].clone(), fixture.paths[1].clone());
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    // The older recording is prepared while the user views it, ending the claim.
+    service.prepare_library(&[older.clone()]).unwrap();
+    let earlier = library_source(&service, &older).unwrap();
+    let (lease, opened) = open_view(&service, &receive, &older, "older-view");
+    wait_library_source(&earlier);
+    drop(opened);
+    // Sessions append to both; the newer recording stays the newest.
+    fixture.append(&older);
+    fixture.append(&newer);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&newer)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() + Duration::from_secs(60)),
+        )
+        .unwrap();
+    // The view closes right after the scan ordered the older one as held.
+    TEST_AFTER_PARTITION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |service: &Service| {
+            service.dispatch(DataCommand::Release { source_id: lease });
+        }));
+    });
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let older_job = library_source(&service, &older).unwrap();
+    let newer_job = library_source(&service, &newer).unwrap();
+    assert_ne!(older_job.key().revision, earlier.key().revision);
+    assert_eq!(job(&newer_job), (true, true, false));
+    assert_eq!(
+        paused(&older_job),
+        Some(crate::prepared::PauseReason::NewerRecording),
+        "the older library work yields to the newer"
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_clear_between_prepares_check_and_admission_makes_it_rebuild() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["cleared-between"]);
+    let path = &fixture.paths[0];
+    prepare_elsewhere(path);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let source = service.open_map(path, None).unwrap();
+    // Prepare checks the complete store outside the admission lock...
+    let checked = service.inner.check_store(&source, true);
+    assert!(matches!(checked.restored, Ok(Some(_))));
+    // ...and a Clear runs before Prepare is admitted.
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Clear,
+        "clear-between",
+        &receive,
+    );
+    let hold = PreparationHold::new(&service);
+    {
+        let _admission = service.inner.preparation_actions.lock().unwrap();
+        service
+            .inner
+            .admit_interactive(
+                &source,
+                jobs::Admission::Manual,
+                checked,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+    }
+    assert_ne!(
+        state(&source),
+        crate::prepared::State::Ready,
+        "the cleared store is not reported Ready"
+    );
+    assert_eq!(job(&source), (true, false, false), "it is rebuilt");
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_content_restart_of_the_users_prepare_restarts_it_as_theirs() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["restarted"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_background_preparation(false);
+    let hold = PreparationHold::new(&service);
+    let source = service.open_map(path, None).unwrap();
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Start,
+        "prepare-before-restart",
+        &receive,
+    );
+    assert!(job(&source).0);
+    let admitted = admission_of(&source);
+    // A content change restarts the running Prepare.
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), true)
+        .unwrap();
+    // The cancelled job leaves the queue once the workers are free.
+    drop(hold);
+    let started = std::time::Instant::now();
+    while admission_of(&source) == admitted {
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "the restart was refused as library work"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .automatic,
+        "it restarts as the user's Prepare"
+    );
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn work_that_loses_its_view_yields_to_newer_work_already_running() {
+    let fixture = LibraryFixture::new(&["older", "newer"]);
+    let (older, newer) = (fixture.paths[0].clone(), fixture.paths[1].clone());
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    // The older recording is prepared while the user views it, ending the claim.
+    service.prepare_library(&[older.clone()]).unwrap();
+    let earlier = library_source(&service, &older).unwrap();
+    let (lease, opened) = open_view(&service, &receive, &older, "older-view");
+    wait_library_source(&earlier);
+    drop(opened);
+    // Sessions append to both; the newer recording stays the newest.
+    fixture.append(&older);
+    fixture.append(&newer);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&newer)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() + Duration::from_secs(60)),
+        )
+        .unwrap();
+    // The newer recording's library work is already running.
+    let hold = PreparationHold::new(&service);
+    service.inner.prepare_recording(&newer, true).unwrap();
+    let newer_job = library_source(&service, &newer).unwrap();
+    assert_eq!(job(&newer_job), (true, true, false));
+    // The older one's view closes right after the scan ordered it as held.
+    TEST_AFTER_PARTITION.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |service: &Service| {
+            service.dispatch(DataCommand::Release { source_id: lease });
+        }));
+    });
+    service.prepare_library(&fixture.paths).unwrap();
+    let older_job = library_source(&service, &older).unwrap();
+    assert_ne!(older_job.key().revision, earlier.key().revision);
+    assert_eq!(
+        paused(&older_job),
+        Some(crate::prepared::PauseReason::NewerRecording),
+        "the older library work yields to the newer one already running"
+    );
+    assert_eq!(job(&newer_job), (true, true, false));
+    drop(hold);
+    service.shutdown();
+}
+
+/// Wait until a refresh submitted after `before` reached its admission decision.
+fn wait_refresh(service: &Service, before: u64) {
+    let started = std::time::Instant::now();
+    while service.inner.test_refreshes.load(Ordering::Acquire) == before {
+        assert!(started.elapsed() < HANG_GUARD, "the refresh never decided");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_cancel_during_a_restarts_check_leaves_it_cancelled() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["cancel-restart"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    let source = service.open_map(path, None).unwrap();
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Start,
+        "prepare-to-restart",
+        &receive,
+    );
+    assert_eq!(job(&source), (true, false, false));
+    // The user Cancels while a content restart of their Prepare checks the store.
+    let hooked = Arc::clone(&source);
+    *service.inner.test_refresh_checked.lock().unwrap() = Some(Box::new(move |inner: &Inner| {
+        let _admission = inner.preparation_actions.lock().unwrap();
+        inner.cancel_by_user(&hooked);
+    }));
+    let before = service.inner.test_refreshes.load(Ordering::Acquire);
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), true)
+        .unwrap();
+    // The restart's own cancellation needs a worker to finish.
+    drop(hold);
+    wait_refresh(&service, before);
+    assert!(!job(&source).0, "the restart did not override the Cancel");
+    assert_eq!(state(&source), crate::prepared::State::Cancelled);
+    assert!(
+        service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .suppressed
+            .contains(path.as_path())
+    );
+    service.shutdown();
+}
+
+#[test]
+fn a_refresh_admitted_after_newer_library_work_yields_to_it() {
+    let fixture = LibraryFixture::new(&["older", "newer"]);
+    let (older, newer) = (&fixture.paths[0], &fixture.paths[1]);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    // A scan admitted the newer recording.
+    service.inner.prepare_recording(newer, true).unwrap();
+    let newer_job = library_source(&service, newer).unwrap();
+    assert_eq!(job(&newer_job), (true, true, false));
+    // Then a refresh admits the older one as library work.
+    let older_source = service.open_map(older, None).unwrap();
+    let before = service.inner.test_refreshes.load(Ordering::Acquire);
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&older_source), false)
+        .unwrap();
+    wait_refresh(&service, before);
+    assert_eq!(job(&older_source), (true, true, true));
+    assert_eq!(
+        paused(&older_source),
+        Some(crate::prepared::PauseReason::NewerRecording),
+        "the refresh's library admission keeps newest-first"
+    );
+    assert_eq!(job(&newer_job), (true, true, false));
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn a_store_cleared_elsewhere_after_its_check_is_not_left_ready() {
+    let fixture = LibraryFixture::new(&["cleared-elsewhere"]);
+    let path = fixture.paths[0].clone();
+    prepare_elsewhere(&path);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    // Another service or process clears the store after the scan restored it.
+    let cleared = path.clone();
+    jobs::TEST_AFTER_CHECK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |_: &Inner| {
+            crate::prepared::recording_store(&cleared)
+                .unwrap()
+                .clear()
+                .unwrap();
+        }));
+    });
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, &path).expect("kept for the next scan");
+    assert_ne!(
+        state(&source),
+        crate::prepared::State::Ready,
+        "the publication over a cleared store is withdrawn"
+    );
+    assert!(
+        !service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .completed
+            .contains_key(&path)
+    );
+    service.shutdown();
+}
+
+#[test]
+fn no_recording_revision_is_read_under_the_admission_lock() {
+    let fixture = LibraryFixture::new(&["revision-a", "revision-b"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let _opened = open_lease(&service, &receive, &fixture.paths[0], "revision-open");
+    // Turning background preparation back on reads every live source's revision.
+    service.set_background_preparation(false);
+    service.set_background_preparation(true);
+    assert!(service.inner.test_revisions.load(Ordering::Relaxed) > 0);
+    assert_eq!(
+        service.inner.test_revisions_locked.load(Ordering::Relaxed),
+        0,
+        "no recording revision is read under the admission lock"
+    );
+    drop(hold);
     service.shutdown();
 }

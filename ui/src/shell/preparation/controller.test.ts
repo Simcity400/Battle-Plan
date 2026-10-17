@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PreparationController } from './controller.ts';
+import { PAUSED_POLL_MS, PreparationController } from './controller.ts';
 import { progressPercent, validatePreparationReply, validatePreparationPreferences } from './contract.ts';
 import type { PreparationReply, PreparationRequest } from './contract.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client.ts';
@@ -86,6 +86,26 @@ test('only backend-active work is polled and terminal work sleeps', async contex
   } finally { f.controller.stop(); }
 });
 
+test('a paused panel checks back slowly and follows the automatic resume', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  let state: PreparationReply['state'] = 'paused';
+  f.client.preparationStatus = async query => { f.calls.push('status'); return { ...reply(query, state), pauseReason: state === 'paused' ? 'game' : null }; };
+  try {
+    await f.controller.start(source.path, source);
+    assert.equal(f.controller.getSnapshot().reply?.state, 'paused');
+    context.mock.timers.tick(PAUSED_POLL_MS - 1); await settle();
+    assert.deepEqual(f.calls, ['status'], 'no fast polling while paused');
+    context.mock.timers.tick(1); await settle();
+    assert.deepEqual(f.calls, ['status', 'status']);
+    // The game exits and the library scan resumes the job.
+    state = 'preparing';
+    context.mock.timers.tick(PAUSED_POLL_MS); await settle();
+    assert.equal(f.controller.getSnapshot().reply?.state, 'preparing');
+    context.mock.timers.tick(500); await settle();
+    assert.equal(f.calls.length, 4, 'active work is polled again');
+  } finally { f.controller.stop(); }
+});
 
 test('background preference is explicit in preferences and progress replies', () => {
   assert.deepEqual(validatePreparationPreferences({ backgroundEnabled: false }), { backgroundEnabled: false });

@@ -30,6 +30,45 @@ use jobs::{LoadJob, MapSettingsJob, OpenJob, Sources};
 use pump::{Signal, run_pump};
 
 const MAX_PENDING: usize = 64;
+
+/// Library preparation neither starts nor continues while the volume holding
+/// prepared data has less than one part in this many of its capacity free. It
+/// stops at that floor rather than predicting a store's size, which grows
+/// with the recording; preparation the user asks for is not bounded by it.
+pub const BACKGROUND_FREE_SHARE: u64 = 10;
+
+/// Whether `free` bytes of a volume of `total` bytes leave room for library
+/// preparation.
+pub fn room_for_background(free: u64, total: u64) -> bool {
+    free.saturating_mul(BACKGROUND_FREE_SHARE) >= total
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The volume measurement tests choose for the calling thread; unchosen,
+    /// the volume has room, so tests never depend on the machine's free space.
+    static TEST_ROOM: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// Run by the library scan right after it orders retained work, so tests
+    /// can change what the user holds before the admissions.
+    static TEST_AFTER_PARTITION: std::cell::RefCell<Option<Box<dyn FnOnce(&Service)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the volume holding prepared data has room for library preparation
+/// ([`BACKGROUND_FREE_SHARE`]). A volume that cannot be measured does not stop it.
+pub(super) fn has_room() -> bool {
+    #[cfg(test)]
+    let space = io::Result::Ok(match TEST_ROOM.with(std::cell::Cell::get) {
+        Some(false) => (0, 1),
+        _ => (1, 1),
+    });
+    #[cfg(not(test))]
+    let space = store::local_space();
+    match space {
+        Ok((free, total)) => room_for_background(free, total),
+        Err(_) => true,
+    }
+}
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
 /// The fewest whole-recording and sampled-read loaders on any machine.
@@ -131,6 +170,24 @@ struct Inner {
     preparation_actions: Mutex<()>,
     background_preparation: AtomicBool,
     preparation_suspended: AtomicBool,
+    /// The volume's room as the library scan last measured it.
+    room: Mutex<jobs::Room>,
+    /// Volume measurements, and those taken under the admission lock.
+    #[cfg(test)]
+    test_measures: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    test_measures_locked: std::sync::atomic::AtomicU64,
+    /// Recording revision reads, and those taken under the admission lock.
+    #[cfg(test)]
+    test_revisions: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    test_revisions_locked: std::sync::atomic::AtomicU64,
+    /// Run by a refresh between its store check and its admission.
+    #[cfg(test)]
+    test_refresh_checked: Mutex<Option<Box<dyn FnOnce(&Inner) + Send>>>,
+    /// Refreshes that reached their admission decision.
+    #[cfg(test)]
+    test_refreshes: std::sync::atomic::AtomicU64,
 }
 
 pub struct Service {
@@ -175,6 +232,19 @@ impl Service {
             preparation_actions: Mutex::new(()),
             background_preparation: AtomicBool::new(true),
             preparation_suspended: AtomicBool::new(false),
+            room: Mutex::new(jobs::Room::default()),
+            #[cfg(test)]
+            test_measures: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            test_measures_locked: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            test_revisions: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            test_revisions_locked: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            test_refresh_checked: Mutex::new(None),
+            #[cfg(test)]
+            test_refreshes: std::sync::atomic::AtomicU64::new(0),
         });
         let mut threads = Vec::new();
         let spawn_result = (|| -> io::Result<()> {
@@ -253,6 +323,13 @@ impl Service {
     }
 
     fn replace_content(&self, content: Option<ContentOptions>) {
+        // A rebind invalidates every store check, under the admission lock, so
+        // no admission acts on a check read for the old binding.
+        let admission = self
+            .inner
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut current = self
             .inner
             .content
@@ -272,13 +349,9 @@ impl Service {
         if !changed {
             return;
         }
+        self.inner.invalidate_checks();
+        drop(admission);
         self.inner.preparation.notify_change();
-        self.inner
-            .sources
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .completed
-            .clear();
         let sources: Vec<_> = self
             .inner
             .sources
@@ -294,7 +367,7 @@ impl Service {
             let path = source.path().to_owned();
             let revision = revisions
                 .entry(path.clone())
-                .or_insert_with(|| crate::protocol::replay_revision(&path).ok());
+                .or_insert_with(|| self.inner.recording_revision(&path).ok());
             if revision.as_deref() == Some(source.key().revision.as_str()) {
                 latest.insert(path, source);
             }
@@ -309,7 +382,9 @@ impl Service {
                 .state;
             if !matches!(
                 state,
-                crate::prepared::State::Idle | crate::prepared::State::Cancelled
+                crate::prepared::State::Idle
+                    | crate::prepared::State::Cancelled
+                    | crate::prepared::State::Paused
             ) && let Err(error) = self.inner.refresh_preparation(source, true)
             {
                 eprintln!("Preparation refresh: {error}");
@@ -337,42 +412,142 @@ impl Service {
         self.inner.preparation.revision()
     }
 
-    /// Admit unfinished library recordings, newest first, through the same runner.
-    /// Busy workers leave the path eligible for the next library scan.
+    /// Whether the volume holding prepared data has room for library
+    /// preparation ([`BACKGROUND_FREE_SHARE`]). A volume that cannot be
+    /// measured does not stop it.
+    pub fn background_room(&self) -> bool {
+        has_room()
+    }
+
+    /// Prepare the library ahead of the user through the same runner and store
+    /// as opening: every recording among `paths` and the library work already
+    /// admitted whose store is behind, one at a time, most recently modified
+    /// first. Every session's finalization replaces the recording it saved
+    /// into, so the latest sessions come first. A recording further back is
+    /// admitted only once every newer one is prepared, and newer work pauses
+    /// older library work. Library work waits while preparation the user asked
+    /// for is queued or running, and pauses below the free-space floor
+    /// ([`BACKGROUND_FREE_SHARE`]). Opened recordings the game interrupted
+    /// resume first, whatever their age. Busy workers leave the path eligible
+    /// for the next library scan. Newest-first is enforced after every library
+    /// admission and at the end of every pass, however the pass ends.
     pub fn prepare_library(&self, paths: &[PathBuf]) -> io::Result<()> {
-        let mut paths: std::collections::BTreeSet<_> = paths
+        let result = self.library_pass(paths);
+        self.inner.enforce_newest_first();
+        result
+    }
+
+    fn library_pass(&self, paths: &[PathBuf]) -> io::Result<()> {
+        use crate::prepared::Progress;
+        let retained: Vec<_> = self
+            .inner
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .library
+            .iter()
+            .map(|(path, source)| (path.clone(), Arc::clone(source)))
+            .collect();
+        // Recordings the user holds now resume first. This only orders the
+        // work: each admission decides whose it is when it is made.
+        let (opened, library): (Vec<_>, Vec<_>) = retained
+            .into_iter()
+            .partition(|(_, source)| self.inner.held(source));
+        #[cfg(test)]
+        if let Some(hook) = TEST_AFTER_PARTITION.with(|hook| hook.borrow_mut().take()) {
+            hook(self);
+        }
+        let mut newest: std::collections::BTreeSet<_> = paths
             .iter()
             .filter_map(|path| path.canonicalize().ok())
             .collect();
-        paths.extend(
-            self.inner
-                .sources
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .library
-                .keys()
-                .cloned(),
-        );
-        let mut paths: Vec<_> = paths.into_iter().collect();
-        paths.sort_by_cached_key(|path| {
+        newest.extend(library.iter().map(|(path, _)| path.clone()));
+        let mut newest: Vec<_> = newest.into_iter().collect();
+        newest.sort_by_cached_key(|path| {
             (
                 std::cmp::Reverse(std::fs::metadata(path).and_then(|m| m.modified()).ok()),
                 path.clone(),
             )
         });
-        for path in paths {
-            if self.inner.closed.load(Ordering::Acquire)
+        // Library work running now, whatever the partition said: a recording
+        // the user stopped holding after the partition is library work too.
+        let running = |source: &Source| {
+            let progress = source.state::<Progress>();
+            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            progress.running && progress.background.load(Ordering::Acquire)
+        };
+        let working = || -> Vec<Arc<Source>> {
+            let held: Vec<_> = self
+                .inner
+                .sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .library
+                .values()
+                .map(Arc::clone)
+                .collect();
+            held.into_iter().filter(|source| running(source)).collect()
+        };
+        let pause = |work: Vec<Arc<Source>>, reason| {
+            self.inner.pause_library(&work, reason);
+        };
+        // Measured once, before any admission takes the lock.
+        let room = self.inner.room_for_scan();
+        if !room {
+            pause(working(), crate::prepared::PauseReason::DiskSpace);
+        }
+        let stopped = || {
+            self.inner.closed.load(Ordering::Acquire)
                 || self.inner.preparation_suspended.load(Ordering::Acquire)
                 || !self.inner.background_preparation.load(Ordering::Acquire)
-            {
+        };
+        // Each library admission enforces newest-first itself.
+        let admit = |path: &Path| {
+            let result = self.inner.prepare_recording(path, room);
+            match result {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(error),
+                Err(error) => {
+                    // A damaged or unavailable recording must not starve the others.
+                    eprintln!("Background preparation of {}: {error}", path.display());
+                    Ok(())
+                }
+                Ok(()) => Ok(()),
+            }
+        };
+        for (path, _) in opened {
+            if stopped() {
+                return Ok(());
+            }
+            admit(&path)?;
+        }
+        if !room {
+            return Ok(());
+        }
+        if self.inner.interactive_preparation() {
+            // Library work admitted while the user's started yields now.
+            pause(working(), crate::prepared::PauseReason::Requested);
+            return Ok(());
+        }
+        let library_job = |path: &Path| {
+            self.inner
+                .sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .library
+                .get(path)
+                .cloned()
+                .is_some_and(|source| running(&source))
+        };
+        for path in newest {
+            if stopped() {
                 break;
             }
-            if let Err(error) = self.inner.prepare_recording(&path) {
-                if error.kind() == io::ErrorKind::WouldBlock {
-                    return Err(error);
-                }
-                // A damaged or unavailable recording must not starve the others.
-                eprintln!("Background preparation of {}: {error}", path.display());
+            let was_working = library_job(&path);
+            admit(&path)?;
+            // The newest recording behind its store is being prepared; the
+            // admission enforced newest-first over the rest.
+            if was_working || library_job(&path) {
+                break;
             }
         }
         Ok(())

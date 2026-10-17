@@ -27,7 +27,7 @@ pub(super) struct Sources {
     // retain a cheap stamp; explicit Cancel/Clear suppress ticks across revisions.
     pub(super) library: BTreeMap<PathBuf, Arc<Source>>,
     pub(super) completed: BTreeMap<PathBuf, String>,
-    suppressed: BTreeSet<PathBuf>,
+    pub(super) suppressed: BTreeSet<PathBuf>,
     pub(super) entries: BTreeMap<(PathBuf, String), Weak<Source>>,
     // Failed openers leave their waiters' gate discoverable; idle gates expire.
     opening: BTreeMap<(PathBuf, String), Weak<Mutex<()>>>,
@@ -47,6 +47,94 @@ impl Sources {
         let gate = Arc::new(Mutex::new(()));
         self.opening.insert(key, Arc::downgrade(&gate));
         gate
+    }
+}
+
+/// The volume's room as the library scan last measured it, and how often it
+/// measures, which bounds how old a refresh lets the measurement get.
+#[derive(Default)]
+pub(super) struct Room {
+    pub(super) room: bool,
+    pub(super) measured: Option<std::time::Instant>,
+    pub(super) interval: Option<std::time::Duration>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Run by the scan between reading a store and admitting it, so tests can
+    /// change the content binding or the store in between.
+    pub(super) static TEST_AFTER_CHECK: std::cell::RefCell<Option<Box<dyn FnOnce(&super::Inner)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What an admission's caller read before taking the admission lock, so
+/// admission does no store or volume I/O: the store's restore outcome at one
+/// store epoch, and whether the volume has room for library work. The outcome
+/// is used only under the admission lock while the source's epoch is
+/// unchanged (`publish_prepared`, `prepared::start`); otherwise it is dropped
+/// and the store is prepared.
+pub(super) struct Checked {
+    pub(super) epoch: u64,
+    pub(super) restored: std::io::Result<Option<crate::prepared::pipeline::Accepted>>,
+    pub(super) room: bool,
+    /// The store's manifest identity, read before the restore (`None` when it
+    /// could not be read), to notice another writer after publication.
+    pub(super) identity: StoreIdentity,
+}
+
+/// A store's on-disk manifest identity (`store::Store::manifest_identity`);
+/// `None` when it could not be read, which never matches.
+pub(super) type StoreIdentity = Option<Option<(u64, u64, u64)>>;
+
+impl Checked {
+    /// Nothing read: an admitted preparation reads the store itself.
+    pub(super) fn unread(room: bool) -> Self {
+        Self {
+            epoch: 0,
+            restored: Ok(None),
+            room,
+            identity: None,
+        }
+    }
+
+    /// What confirming a publication from this check needs: only a check that
+    /// found a complete store can be published.
+    fn confirmation(&self) -> Option<(u64, StoreIdentity)> {
+        matches!(self.restored, Ok(Some(_))).then_some((self.epoch, self.identity))
+    }
+}
+
+fn store_identity(source: &Source) -> StoreIdentity {
+    crate::prepared::recording_store(source.path())
+        .and_then(|store| store.manifest_identity())
+        .ok()
+}
+
+/// The modification time a revision stamp (`len:secs:nanos`) records, for
+/// ordering recordings by age without reading files.
+fn modified(revision: &str) -> Option<(i64, u32)> {
+    let mut parts = revision.split(':').skip(1);
+    let seconds = parts.next()?.parse().ok()?;
+    let nanos = parts.next()?.parse().ok()?;
+    Some((seconds, nanos))
+}
+
+/// Who admitted a preparation, which decides what it yields to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Admission {
+    /// The library scan, ahead of the user: it yields to the other two and
+    /// lowers its threads.
+    Library,
+    /// Opening the recording. Like the library scan it is automatic: the
+    /// background preference and the game guard apply.
+    Opened,
+    /// An explicit Prepare.
+    Manual,
+}
+
+impl Admission {
+    fn automatic(self) -> bool {
+        self != Self::Manual
     }
 }
 
@@ -80,10 +168,6 @@ impl Inner {
             return;
         }
         self.preparation.notify_change();
-        let _admission = self
-            .preparation_actions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let sources: Vec<_> = self
             .sources
             .lock()
@@ -93,6 +177,10 @@ impl Inner {
             .filter_map(Weak::upgrade)
             .collect();
         if !enabled {
+            let _admission = self
+                .preparation_actions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             for source in sources {
                 let progress = source.state::<crate::prepared::Progress>();
                 let progress = progress.lock().unwrap_or_else(|error| error.into_inner());
@@ -104,9 +192,11 @@ impl Inner {
             }
             return;
         }
+        // Revisions are read without the admission lock; each refresh takes it
+        // when it runs.
         let mut latest = BTreeMap::new();
         for source in sources {
-            if replay_revision(source.path()).ok().as_deref()
+            if self.recording_revision(source.path()).ok().as_deref()
                 == Some(source.key().revision.as_str())
             {
                 latest.insert(source.path().to_owned(), source);
@@ -157,53 +247,522 @@ impl Inner {
         }
     }
 
+    /// Admit `source`'s preparation. Ownership is decided here alone, at
+    /// admission time and under the admission lock every caller holds: the
+    /// scan, refreshes and other automatic callers pass `Library`, which runs
+    /// as the user's (`Opened`) exactly when the user holds the recording now
+    /// ([`Self::held`]); only the user's own actions pass `Opened` or
+    /// `Manual`. Library work waits while the user's preparation is queued or
+    /// running and stops at the free-space floor.
     pub(super) fn start_preparation(
         &self,
         source: Arc<Source>,
-        automatic: bool,
+        admission: Admission,
+        checked: Checked,
         cancelled: &AtomicBool,
     ) -> std::io::Result<()> {
+        // Read the lease table and the other jobs before this source's
+        // progress lock, which neither is taken under. The volume and the
+        // store were read by the caller before the admission lock.
+        let library = admission == Admission::Library;
+        let viewed = library && self.viewed(source.path());
+        let interactive = library && self.interactive_preparation();
+        let room = !library || checked.room;
+        let suppressed = self
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .suppressed
+            .contains(source.path());
+        let suspended = self.preparation_suspended.load(Ordering::Acquire);
+        let enabled = self.background_preparation.load(Ordering::Acquire);
         let progress = source.state::<crate::prepared::Progress>();
         let mut progress = progress.lock().unwrap_or_else(|error| error.into_inner());
-        if automatic
-            && self.preparation_suspended.load(Ordering::Acquire)
-            && !progress.cleared
-            && !self
-                .sources
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .suppressed
-                .contains(source.path())
-        {
-            // An opened file outside the configured library also resumes after exit.
+        let admission = if library && (progress.claimed || viewed) {
+            Admission::Opened
+        } else {
+            admission
+        };
+        let automatic = admission.automatic();
+        let user = admission != Admission::Library;
+        if user && progress.running {
+            // The user joins the job, even while a pause is still stopping it:
+            // it resumes as the user's, beyond the library's order, floor and
+            // priority.
+            progress.claimed = true;
+            progress.background.store(false, Ordering::Release);
+        }
+        if automatic && suspended && !progress.cleared && !suppressed {
+            // Kept for after the game, opened files outside the library too.
             self.sources
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .library
                 .insert(source.path().to_owned(), Arc::clone(&source));
             self.preparation.notify_change();
+            if user && enabled {
+                progress.claimed = true;
+                progress.background.store(false, Ordering::Release);
+            }
         }
         if automatic
-            && (self.preparation_suspended.load(Ordering::Acquire)
-                || !self.background_preparation.load(Ordering::Acquire)
-                || progress.cleared
-                || progress.running)
+            && (suspended || !enabled || progress.cleared || progress.running || suppressed)
         {
             return Ok(());
         }
-        if automatic
-            && self
+        if admission == Admission::Library && (interactive || !room) {
+            return Ok(());
+        }
+        progress.automatic = automatic;
+        progress.claimed |= user;
+        progress
+            .background
+            .store(admission == Admission::Library, Ordering::Release);
+        drop(progress);
+        // `prepared::start` checks the outcome's epoch in this critical section.
+        let started = crate::prepared::start(
+            &self.preparation,
+            source,
+            self.content(),
+            checked.restored,
+            checked.epoch,
+            cancelled,
+        );
+        // Every library admission, from the scan or a refresh, keeps
+        // newest-first.
+        if started.is_ok() && admission == Admission::Library {
+            self.enforce_newest_first_locked();
+        }
+        started
+    }
+
+    /// Read a recording's revision. Never under the admission lock.
+    pub(super) fn recording_revision(&self, path: &Path) -> std::io::Result<String> {
+        #[cfg(test)]
+        {
+            self.test_revisions.fetch_add(1, Ordering::Relaxed);
+            if self.preparation_actions.try_lock().is_err() {
+                self.test_revisions_locked.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        replay_revision(path)
+    }
+
+    /// Confirm a publication from a check outside the admission lock: if the
+    /// store's manifest changed since the check (another service or process
+    /// cleared or replaced it), withdraw the Ready it published, forget the
+    /// revision as finished and keep the source for the next scan, which
+    /// prepares it. Eventually consistent: a reader may see Ready until then.
+    /// Nothing is withdrawn once the epoch moved on (a job, a rebind, a Clear),
+    /// as that path reports its own outcome.
+    fn confirm_checked(&self, source: &Arc<Source>, confirmation: Option<(u64, StoreIdentity)>) {
+        let Some((epoch, identity)) = confirmation else {
+            return;
+        };
+        if identity.is_some() && store_identity(source) == identity {
+            return;
+        }
+        let _admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        {
+            let progress = source.state::<crate::prepared::Progress>();
+            let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.running
+                || progress.store_epoch != epoch
+                || progress.state != crate::prepared::State::Ready
+            {
+                return;
+            }
+            crate::prepared::invalidate(&mut progress);
+            progress.state = crate::prepared::State::Idle;
+            progress.sections.clear();
+            progress.coverage.clear();
+            progress.bytes = 0;
+        }
+        let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+        sources.completed.remove(source.path());
+        sources
+            .library
+            .insert(source.path().to_owned(), Arc::clone(source));
+        drop(sources);
+        self.preparation.notify_change();
+    }
+
+    /// The user's Cancel: the job stops, the path is suppressed from automatic
+    /// retries, and work captured before it never overrides it. The caller
+    /// holds the admission lock.
+    pub(super) fn cancel_by_user(&self, source: &Source) {
+        {
+            let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            sources.suppressed.insert(source.path().to_owned());
+            sources.library.remove(source.path());
+        }
+        {
+            let progress = source.state::<crate::prepared::Progress>();
+            let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            progress.user_stops = progress.user_stops.wrapping_add(1);
+        }
+        crate::prepared::cancel(source);
+    }
+
+    /// Restore `source`'s store for the current content, outside the admission
+    /// lock; the caller passes the outcome to admission. The epoch is read
+    /// before the content, so a rebind in between shows as a changed epoch.
+    pub(super) fn check_store(&self, source: &Source, room: bool) -> Checked {
+        let epoch = crate::prepared::store_epoch(source);
+        let content = self.content();
+        let identity = store_identity(source);
+        Checked {
+            epoch,
+            restored: crate::prepared::pipeline::restore(source, content.as_ref(), &self.closed),
+            room,
+            identity,
+        }
+    }
+
+    /// Invalidate every store check taken so far, for a content rebind: every
+    /// live source's epoch moves on and no revision is known finished. The
+    /// caller holds the admission lock.
+    pub(super) fn invalidate_checks(&self) {
+        let sources: Vec<_> = {
+            let mut held = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            held.completed.clear();
+            held.entries.values().filter_map(Weak::upgrade).collect()
+        };
+        for source in sources {
+            let progress = source.state::<crate::prepared::Progress>();
+            crate::prepared::invalidate(&mut progress.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+    }
+
+    /// Of the jobs running as library work now, keep the newest recording's
+    /// and pause the rest; the caller holds no lock. Recording age comes from
+    /// each source's revision stamp, so this reads no files.
+    pub(super) fn enforce_newest_first(&self) {
+        let _admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.enforce_newest_first_locked();
+    }
+
+    /// [`Self::enforce_newest_first`] for a caller holding the admission lock.
+    fn enforce_newest_first_locked(&self) {
+        let sources: Vec<_> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let mut library: Vec<_> = sources
+            .into_iter()
+            .filter(|source| {
+                let progress = source.state::<crate::prepared::Progress>();
+                let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+                progress.running
+                    && progress.background.load(Ordering::Acquire)
+                    && !progress.cancelled.load(Ordering::Acquire)
+            })
+            .collect();
+        if library.len() < 2 {
+            return;
+        }
+        library.sort_by_cached_key(|source| {
+            (
+                std::cmp::Reverse(modified(&source.key().revision)),
+                source.path().to_owned(),
+            )
+        });
+        for older in &library[1..] {
+            crate::prepared::pause(older, crate::prepared::PauseReason::NewerRecording);
+        }
+        self.preparation.notify_change();
+    }
+
+    /// Measure the volume's room for library work. Never under the admission
+    /// lock: a slow or network volume must not stall opens, preparation
+    /// actions or game pauses.
+    fn measure_room(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.test_measures.fetch_add(1, Ordering::Relaxed);
+            if self.preparation_actions.try_lock().is_err() {
+                self.test_measures_locked.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        super::has_room()
+    }
+
+    /// The scan's measurement, once per scan, before it admits anything.
+    pub(super) fn room_for_scan(&self) -> bool {
+        let room = self.measure_room();
+        let now = std::time::Instant::now();
+        let mut last = self.room.lock().unwrap_or_else(|e| e.into_inner());
+        last.interval = last.measured.map(|measured| now.duration_since(measured));
+        last.measured = Some(now);
+        last.room = room;
+        room
+    }
+
+    /// A refresh's measurement: the scan's last one, measured again outside
+    /// the admission lock once it is older than the scans' own interval.
+    pub(super) fn room_for_refresh(&self) -> bool {
+        let fresh = {
+            let last = self.room.lock().unwrap_or_else(|e| e.into_inner());
+            match (last.measured, last.interval) {
+                (Some(measured), Some(interval)) if measured.elapsed() <= interval => {
+                    Some(last.room)
+                }
+                _ => None,
+            }
+        };
+        fresh.unwrap_or_else(|| self.measure_room())
+    }
+
+    /// Whether an open view holds a source of the recording at `path`.
+    pub(super) fn viewed(&self, path: &Path) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .leases
+            .values()
+            .any(|lease| lease.source.path() == path)
+    }
+
+    /// Whether the user currently holds `source`'s recording: an open view, or
+    /// a job they claimed that has not reached a terminal state. A retained
+    /// source's classification says nothing about current demand.
+    pub(super) fn held(&self, source: &Source) -> bool {
+        source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .claimed
+            || self.viewed(source.path())
+    }
+
+    /// Publish a store the scan restored (another writer may have completed
+    /// it, or it completed while deferred) as Ready with its sections,
+    /// clearing any pause or error, under the admission lock. Whether it was
+    /// published: a job that started meanwhile reports its own outcome.
+    fn publish_prepared(
+        &self,
+        source: &Source,
+        accepted: crate::prepared::pipeline::Accepted,
+        epoch: u64,
+    ) -> bool {
+        let progress = source.state::<crate::prepared::Progress>();
+        let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+        // A check the epoch has moved past (a rebind, a Clear, a write) is
+        // dropped, in the same critical section that would publish it.
+        if progress.running || progress.store_epoch != epoch {
+            return false;
+        }
+        crate::prepared::finish(&mut progress, crate::prepared::State::Ready);
+        progress.error = None;
+        progress.sections = accepted.sections;
+        progress.coverage = accepted.coverage;
+        progress.bytes = accepted.bytes;
+        true
+    }
+
+    /// Whether preparation the user asked for (opened or explicit) is queued
+    /// or running. Library admission waits until none is.
+    pub(super) fn interactive_preparation(&self) -> bool {
+        let sources: Vec<_> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        sources.iter().any(|source| {
+            let progress = source.state::<crate::prepared::Progress>();
+            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            progress.running && !progress.background.load(Ordering::Acquire)
+        })
+    }
+
+    /// Make way for the user's preparation of `source`, under the admission
+    /// lock. Its own running job is joined and stops yielding; a job of another
+    /// revision of the same recording is cancelled and waited for, since only
+    /// one writer can hold the recording's store; library jobs of other
+    /// recordings pause at their next block boundary and are kept for the
+    /// library scan, which resumes them from their accepted prefix once no
+    /// preparation of the user's runs. Returns the jobs that yielded.
+    pub(super) fn take_over_preparation(
+        &self,
+        source: &Arc<Source>,
+        cancelled: &AtomicBool,
+    ) -> std::io::Result<Vec<Arc<Source>>> {
+        let sources: Vec<_> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let (mut yielded, mut replaced) = (Vec::new(), Vec::new());
+        for other in sources {
+            let progress = other.state::<crate::prepared::Progress>();
+            let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            if !progress.running {
+                continue;
+            }
+            if Arc::ptr_eq(&other, source) {
+                progress.claimed = true;
+                progress.background.store(false, Ordering::Release);
+            } else if other.path() == source.path() {
+                drop(progress);
+                replaced.push(other);
+            } else if progress.background.load(Ordering::Acquire) {
+                drop(progress);
+                yielded.push(other);
+            }
+        }
+        if yielded.is_empty() && replaced.is_empty() {
+            return Ok(yielded);
+        }
+        self.preparation.notify_change();
+        for other in &yielded {
+            crate::prepared::pause(other, crate::prepared::PauseReason::Requested);
+        }
+        for other in &replaced {
+            crate::prepared::cancel(other);
+        }
+        {
+            let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            for other in &yielded {
+                sources
+                    .library
+                    .entry(other.path().to_owned())
+                    .or_insert_with(|| Arc::clone(other));
+            }
+        }
+        for other in &replaced {
+            crate::prepared::wait_cancelled(other, cancelled)?;
+        }
+        Ok(yielded)
+    }
+
+    /// Admit the user's preparation of `source` after making way for it. A
+    /// full queue is retried once after the jobs that yielded have left it.
+    pub(super) fn admit_interactive(
+        &self,
+        source: &Arc<Source>,
+        admission: Admission,
+        checked: Checked,
+        cancelled: &AtomicBool,
+    ) -> std::io::Result<()> {
+        let yielded = self.take_over_preparation(source, cancelled)?;
+        let room = checked.room;
+        match self.start_preparation(Arc::clone(source), admission, checked, cancelled) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && !yielded.is_empty() => {
+                for other in &yielded {
+                    crate::prepared::wait_finished(other, cancelled)?;
+                }
+                // Only a store that needed preparing reaches the queue.
+                self.start_preparation(
+                    Arc::clone(source),
+                    admission,
+                    Checked::unread(room),
+                    cancelled,
+                )
+            }
+            result => result,
+        }
+    }
+
+    /// Pause library work for `reason` under the admission lock. Each job is
+    /// checked again there: an open or an explicit Prepare may have made it
+    /// the user's since the caller looked, and the user's work is never paused
+    /// by the library's bounds.
+    pub(super) fn pause_library<'a>(
+        &self,
+        sources: impl IntoIterator<Item = &'a Arc<Source>>,
+        reason: crate::prepared::PauseReason,
+    ) {
+        let _admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut paused = false;
+        for source in sources {
+            let library = {
+                let progress = source.state::<crate::prepared::Progress>();
+                let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+                progress.running && progress.background.load(Ordering::Acquire)
+            };
+            if library {
+                crate::prepared::pause(source, reason);
+                paused = true;
+            }
+        }
+        if paused {
+            self.preparation.notify_change();
+        }
+    }
+
+    /// Show an open the game defers as paused for the game, so its panel keeps
+    /// checking and follows the start once the game exits. A store that is
+    /// already up to date needs nothing, and a running job reports its own
+    /// pause when it stops. A store that cannot be checked is not known to be
+    /// prepared, so it waits too; its preparation reports any real failure.
+    fn show_deferred(
+        &self,
+        source: &Arc<Source>,
+        restored: std::io::Result<Option<crate::prepared::pipeline::Accepted>>,
+        epoch: u64,
+    ) {
+        use crate::prepared::{PauseReason, Progress, State};
+        if !self.preparation_suspended.load(Ordering::Acquire)
+            || !self.background_preparation.load(Ordering::Acquire)
+            || !self
+                .sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .library
+                .get(source.path())
+                .is_some_and(|held| Arc::ptr_eq(held, source))
+        {
+            return;
+        }
+        // A complete store, read before the admission lock, is shown Ready.
+        if let Ok(Some(accepted)) = restored
+            && self.publish_prepared(source, accepted, epoch)
+        {
+            return;
+        }
+        let progress = source.state::<Progress>();
+        let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+        if !progress.running && matches!(progress.state, State::Idle | State::Cancelled) {
+            progress.state = State::Paused;
+            progress.paused = Some(PauseReason::Game);
+            progress.error = None;
+        }
+    }
+
+    /// Whether opening `source` admits its preparation now.
+    fn opening_admits(&self, source: &Source) -> bool {
+        self.background_preparation.load(Ordering::Acquire)
+            && !self.preparation_suspended.load(Ordering::Acquire)
+            && !self
                 .sources
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .suppressed
                 .contains(source.path())
-        {
-            return Ok(());
-        }
-        progress.automatic = automatic;
-        drop(progress);
-        crate::prepared::start(&self.preparation, source, self.content(), cancelled)
+            && !source
+                .state::<crate::prepared::Progress>()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cleared
     }
 
     pub(super) fn set_preparation_suspended(&self, suspended: bool) {
@@ -233,7 +792,7 @@ impl Inner {
             let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
             if progress.running && progress.automatic {
                 drop(progress);
-                crate::prepared::cancel(&source);
+                crate::prepared::pause(&source, crate::prepared::PauseReason::Game);
                 self.sources
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -243,7 +802,9 @@ impl Inner {
         }
     }
 
-    pub(super) fn prepare_recording(&self, path: &Path) -> std::io::Result<()> {
+    /// Admit one library recording for the scan, which measured the volume's
+    /// `room` before taking any lock.
+    pub(super) fn prepare_recording(&self, path: &Path, room: bool) -> std::io::Result<()> {
         if self.preparation_suspended.load(Ordering::Acquire)
             || !self.background_preparation.load(Ordering::Acquire)
         {
@@ -252,8 +813,8 @@ impl Inner {
         self.check_open(&self.preparation_suspended)
             .map_err(std::io::Error::other)?;
         let path = path.canonicalize()?;
-        let revision = replay_revision(&path)?;
-        let result = self.prepare_recording_inner(path.clone(), revision.clone());
+        let revision = self.recording_revision(&path)?;
+        let result = self.prepare_recording_inner(path.clone(), revision.clone(), room);
         if let Err(error) = &result
             && !matches!(
                 error.kind(),
@@ -271,7 +832,12 @@ impl Inner {
         result
     }
 
-    fn prepare_recording_inner(&self, path: PathBuf, revision: String) -> std::io::Result<()> {
+    fn prepare_recording_inner(
+        &self,
+        path: PathBuf,
+        revision: String,
+        room: bool,
+    ) -> std::io::Result<()> {
         use crate::prepared::{Progress, State};
         let previous = {
             let sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
@@ -306,7 +872,28 @@ impl Inner {
                     std::io::Error::other(error)
                 }
             })?;
-        let _admission = self
+        let progress = source.state::<Progress>();
+        // Check the store before taking the admission lock, so restoring many
+        // recordings on a first scan never delays opens, preparation actions
+        // or game pauses. Only a restore that succeeds shows the recording
+        // prepared; a store that cannot be checked or restored is not known to
+        // be prepared, and its preparation succeeds or reports the real
+        // failure through the ordinary terminal failure.
+        let idle = {
+            let state = progress.lock().unwrap_or_else(|e| e.into_inner());
+            !state.running && !matches!(state.state, State::Ready | State::Failed)
+        };
+        let checked = if idle {
+            self.check_store(&source, room)
+        } else {
+            Checked::unread(room)
+        };
+        #[cfg(test)]
+        if let Some(hook) = TEST_AFTER_CHECK.with(|hook| hook.borrow_mut().take()) {
+            hook(self);
+        }
+        let confirmation = checked.confirmation();
+        let admission = self
             .preparation_actions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -321,7 +908,6 @@ impl Inner {
                 return Ok(());
             }
         }
-        let progress = source.state::<Progress>();
         let state = progress.lock().unwrap_or_else(|e| e.into_inner());
         if state.cleared {
             return Ok(());
@@ -337,17 +923,47 @@ impl Inner {
         }
         let finished = matches!(state.state, State::Ready | State::Failed);
         drop(state);
-        if finished
-            || crate::prepared::unprepared_blocks(&source, self.content().as_ref())? == Some(0)
-        {
+        let Checked {
+            epoch,
+            restored,
+            room,
+            identity,
+        } = checked;
+        let restored = match restored {
+            Ok(Some(accepted)) if !finished => {
+                if self.publish_prepared(&source, accepted, epoch) {
+                    {
+                        let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+                        sources.library.remove(&path);
+                        sources.completed.insert(path, revision);
+                    }
+                    drop(admission);
+                    self.confirm_checked(&source, confirmation);
+                    return Ok(());
+                }
+                // Read for another content binding, or a job started: admit as
+                // usual, and the preparation reads the store itself.
+                Ok(None)
+            }
+            other => other,
+        };
+        if finished {
             let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
             sources.library.remove(&path);
             sources.completed.insert(path, revision);
             return Ok(());
         }
-        if let Err(error) =
-            self.start_preparation(Arc::clone(&source), true, &self.preparation_suspended)
-        {
+        if let Err(error) = self.start_preparation(
+            Arc::clone(&source),
+            Admission::Library,
+            Checked {
+                epoch,
+                restored,
+                room,
+                identity,
+            },
+            &self.preparation_suspended,
+        ) {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 let mut state = progress.lock().unwrap_or_else(|e| e.into_inner());
                 state.state = State::Idle;
@@ -397,7 +1013,9 @@ impl Inner {
     ) -> Result<Arc<Source>, String> {
         self.check_open(cancelled)?;
         let path = path.canonicalize().map_err(|error| error.to_string())?;
-        let revision = replay_revision(&path).map_err(|error| error.to_string())?;
+        let revision = self
+            .recording_revision(&path)
+            .map_err(|error| error.to_string())?;
         if expected.is_some_and(|expected| expected != revision) {
             return Err("The recording changed. Reopen it before requesting another view.".into());
         }
@@ -669,28 +1287,82 @@ impl Inner {
         match job {
             LoadJob::PreparationRefresh { source, restart } => {
                 let restart = restart.load(Ordering::Acquire);
-                let _admission = self
+                let progress = source.state::<crate::prepared::Progress>();
+                let (admission, user_stops) = {
+                    let _admission = self
+                        .preparation_actions
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    // Whose job it is, read before cancelling clears `running`:
+                    // a restart of the user's Prepare restarts as theirs.
+                    let (state, manual, user_stops) = {
+                        let progress = progress.lock().unwrap_or_else(|error| error.into_inner());
+                        (
+                            progress.state,
+                            progress.running && !progress.automatic,
+                            progress.user_stops,
+                        )
+                    };
+                    // Paused library work resumes through the library scan,
+                    // which yields to the user's preparation.
+                    if state == crate::prepared::State::Paused
+                        || restart
+                            && matches!(
+                                state,
+                                crate::prepared::State::Idle | crate::prepared::State::Cancelled
+                            )
+                    {
+                        return;
+                    }
+                    if restart && crate::prepared::wait_cancelled(&source, &self.closed).is_err() {
+                        return;
+                    }
+                    // Library otherwise: admission promotes it when the user
+                    // holds the recording.
+                    let admission = if manual {
+                        Admission::Manual
+                    } else {
+                        Admission::Library
+                    };
+                    (admission, user_stops)
+                };
+                // Read the store and the volume outside the admission lock, for
+                // the latest options: several Apply requests may have replaced
+                // the content while work stopped.
+                let checked = self.check_store(&source, self.room_for_refresh());
+                #[cfg(test)]
+                if let Some(hook) = self
+                    .test_refresh_checked
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    hook(self);
+                }
+                let confirmation = checked.confirmation();
+                let lock = self
                     .preparation_actions
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                let progress = source.state::<crate::prepared::Progress>();
-                let (state, automatic) = {
+                // A Cancel or Clear by the user since the capture wins over it.
+                let stopped = {
                     let progress = progress.lock().unwrap_or_else(|error| error.into_inner());
-                    (progress.state, progress.automatic || !progress.running)
+                    progress.user_stops != user_stops || progress.cleared
                 };
-                if restart
-                    && matches!(
-                        state,
-                        crate::prepared::State::Idle | crate::prepared::State::Cancelled
-                    )
-                {
-                    return;
+                if !stopped {
+                    let _ = self.start_preparation(
+                        Arc::clone(&source),
+                        admission,
+                        checked,
+                        &self.closed,
+                    );
                 }
-                if !restart || crate::prepared::wait_cancelled(&source, &self.closed).is_ok() {
-                    // Read the latest options after waiting: several Apply
-                    // requests may have replaced the content while work stopped.
-                    let _ = self.start_preparation(source, automatic, &self.closed);
+                drop(lock);
+                if !stopped {
+                    self.confirm_checked(&source, confirmation);
                 }
+                #[cfg(test)]
+                self.test_refreshes.fetch_add(1, Ordering::Release);
             }
             LoadJob::PreparationPreferences { request, enabled } => {
                 if request.cancelled() {
@@ -794,7 +1466,9 @@ impl Inner {
                         crate::prepared::Action::Status => {}
                         crate::prepared::Action::Start => {
                             self.preparation.notify_change();
-                            let _admission = self
+                            let checked = self.check_store(&source, true);
+                            let confirmation = checked.confirmation();
+                            let admission = self
                                 .preparation_actions
                                 .lock()
                                 .map_err(|error| error.to_string())?;
@@ -803,8 +1477,15 @@ impl Inner {
                                 sources.suppressed.remove(source.path());
                                 sources.completed.remove(source.path());
                             }
-                            self.start_preparation(Arc::clone(&source), false, &request.cancelled)
-                                .map_err(|error| error.to_string())?;
+                            let admitted = self.admit_interactive(
+                                &source,
+                                Admission::Manual,
+                                checked,
+                                &request.cancelled,
+                            );
+                            drop(admission);
+                            self.confirm_checked(&source, confirmation);
+                            admitted.map_err(|error| error.to_string())?;
                         }
                         crate::prepared::Action::Cancel => {
                             self.preparation.notify_change();
@@ -812,12 +1493,7 @@ impl Inner {
                                 .preparation_actions
                                 .lock()
                                 .map_err(|error| error.to_string())?;
-                            {
-                                let mut sources = self.sources.lock().map_err(|e| e.to_string())?;
-                                sources.suppressed.insert(source.path().to_owned());
-                                sources.library.remove(source.path());
-                            }
-                            crate::prepared::cancel(&source);
+                            self.cancel_by_user(&source);
                         }
                         crate::prepared::Action::Clear => {
                             self.preparation.notify_change();
@@ -835,14 +1511,31 @@ impl Inner {
                                 .filter_map(|(_, entry)| entry.upgrade())
                                 .collect();
                             for revision in &revisions {
+                                let progress = revision.state::<crate::prepared::Progress>();
+                                {
+                                    let mut progress =
+                                        progress.lock().unwrap_or_else(|e| e.into_inner());
+                                    progress.user_stops = progress.user_stops.wrapping_add(1);
+                                }
                                 crate::prepared::cancel(revision);
                             }
                             for revision in &revisions {
                                 crate::prepared::wait_cancelled(revision, &request.cancelled)
                                     .map_err(|error| error.to_string())?;
                             }
-                            crate::prepared::clear(&source, content.as_ref(), &request.cancelled)
-                                .map_err(|error| error.to_string())?;
+                            let cleared = crate::prepared::clear(
+                                &source,
+                                content.as_ref(),
+                                &request.cancelled,
+                            );
+                            // Checks of any revision read the store Clear removes.
+                            for revision in &revisions {
+                                let progress = revision.state::<crate::prepared::Progress>();
+                                crate::prepared::invalidate(
+                                    &mut progress.lock().unwrap_or_else(|e| e.into_inner()),
+                                );
+                            }
+                            cleared.map_err(|error| error.to_string())?;
                             let mut sources = self.sources.lock().map_err(|e| e.to_string())?;
                             sources.suppressed.insert(source.path().to_owned());
                             sources.completed.remove(source.path());
@@ -893,13 +1586,42 @@ impl Inner {
             )
             .inspect(|source| source.name_countries(self.content().as_ref()));
         if let Ok(source) = &result {
-            let _admission = self
+            // Read the store before the admission lock.
+            let checked = self.check_store(source, true);
+            let confirmation = checked.confirmation();
+            let admission = self
                 .preparation_actions
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             // Metadata and independent products remain available when a
             // background worker cannot be admitted; Start exposes its status.
-            let _ = self.start_preparation(Arc::clone(source), true, &job.request.cancelled);
+            if self.opening_admits(source) {
+                let _ = self.admit_interactive(
+                    source,
+                    Admission::Opened,
+                    checked,
+                    &job.request.cancelled,
+                );
+            } else {
+                // Not now (a running game, the preference, Clear or Cancel):
+                // starting it keeps a recording the game defers for after the
+                // game exits, and admits nothing otherwise.
+                let Checked {
+                    epoch,
+                    restored,
+                    room,
+                    ..
+                } = checked;
+                let _ = self.start_preparation(
+                    Arc::clone(source),
+                    Admission::Opened,
+                    Checked::unread(room),
+                    &job.request.cancelled,
+                );
+                self.show_deferred(source, restored, epoch);
+            }
+            drop(admission);
+            self.confirm_checked(source, confirmation);
         }
         let mut pending = self
             .pending

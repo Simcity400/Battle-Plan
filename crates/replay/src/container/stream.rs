@@ -145,14 +145,9 @@ impl ReplayStream {
             // The receiver belongs to the scope body: unwinding drops it before
             // joining a producer blocked on a full frame channel.
             let (sender, receiver) = mpsc::sync_channel(1);
+            let priority = job_priority::JobPriority::current();
             let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
-                #[cfg(windows)]
-                unsafe {
-                    use windows_sys::Win32::System::Threading::{
-                        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-                    };
-                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                }
+                priority.enter(job_priority::Level::BelowNormal);
                 let check = || {
                     if worker_stopped.load(Ordering::Acquire) {
                         Err(io::Error::from(io::ErrorKind::Interrupted))
@@ -168,15 +163,8 @@ impl ReplayStream {
                 };
                 let frames = if grouped {
                     // Below-normal workers, as this thread, leave observers their cores.
-                    let lower = || {
-                        #[cfg(windows)]
-                        unsafe {
-                            use windows_sys::Win32::System::Threading::{
-                                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-                            };
-                            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                        }
-                    };
+                    let job = job_priority::JobPriority::current();
+                    let lower = move || job.clone().enter(job_priority::Level::BelowNormal);
                     let parallel = Parallel {
                         workers: super::pack::workers(),
                         on_worker: &lower,

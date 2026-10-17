@@ -3,6 +3,7 @@
 //! and applies its refusal check and timings in the fixed serial order, so the
 //! store's files, manifest and sections are exactly those of serial flushing.
 use super::{FamilyTimings, Refused, finish_timing, refuses, start_timing};
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use std::{
     any::Any,
     collections::BTreeMap,
@@ -224,9 +225,11 @@ fn parallel(
         let registry = super::independent::test_registry();
         let helpers: Vec<_> = (0..helpers)
             .map(|_| {
+                let priority = JobPriority::current();
                 scope.spawn(move || {
                     #[cfg(test)]
                     registry.install();
+                    priority.enter(Level::Normal);
                     with_injected(injected, worker)
                 })
             })

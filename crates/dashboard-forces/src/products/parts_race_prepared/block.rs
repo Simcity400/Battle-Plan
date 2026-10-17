@@ -18,6 +18,7 @@
 //! the caller observes the rest of the block hour by hour.
 
 use super::{Family, Prepared, Projected, Rows, project, step_rows};
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use dashboard_base::{
     prepared::{
         frame_changes::FrameChanges,
@@ -297,7 +298,9 @@ where
         let handles: Vec<_> = hours
             .chunks_mut(chunk)
             .map(|rows| {
+                let priority = JobPriority::current();
                 scope.spawn(move || {
+                    priority.enter(Level::Normal);
                     rows.iter_mut()
                         .map(|rows| {
                             rows.renumber(numbering);

@@ -2,6 +2,8 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client.ts
 import { newId } from '../ids.ts';
 import { preparationActive, validatePreparationReply } from './contract.ts';
 import type { PreparationAction, PreparationReply } from './contract.ts';
+/** Paused work resumes without a notification, so its panel checks back slowly. */
+export const PAUSED_POLL_MS = 5000;
 export interface PreparationState { source: DashboardSource | null; reply: PreparationReply | null; loading: boolean; pending: boolean; error: string | null }
 /** One visible campaign, one pending request, no retained campaign histories. */
 export class PreparationController {
@@ -43,6 +45,7 @@ export class PreparationController {
       if (request.signal.aborted || !this.active) return;
       this.update({ ...this.state, reply, loading: false, pending: false });
       if (preparationActive(reply)) this.timer = setTimeout(() => { void this.command('status'); }, 500);
+      else if (reply.state === 'paused') this.timer = setTimeout(() => { void this.command('status'); }, PAUSED_POLL_MS);
     } catch (error) {
       if (!request.signal.aborted && this.active) this.update({ ...this.state, loading: false, pending: false, error: String(error) });
     }

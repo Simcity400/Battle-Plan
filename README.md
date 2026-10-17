@@ -159,6 +159,7 @@ Each component's README describes its layout, concepts and local rules.
 | [recorder-oracle-weather](crates/recorder-oracle-weather/README.md) | weather save comparisons and recorded consistency checks. |
 | [recorder-app](crates/recorder-app/README.md) | Battle Plan Recorder: the tray program that records campaigns while HOI4 runs. |
 | [replay](crates/replay/README.md) | Recording format, tables, branches and sample history. |
+| [job-priority](crates/job-priority/README.md) | The scheduling priority every preparation thread takes from its job, in every crate that starts one. |
 | [replay-data](crates/replay-data/README.md) | Recorded rows, cadence, exact values, identity and shared data codecs. |
 | [store](crates/store/README.md) | Immutable prepared ranges, manifest publication and storage Clear. |
 | [installed-content](crates/installed-content/README.md) | Recorded content stack, game assets, shared text parser and identity verification. |

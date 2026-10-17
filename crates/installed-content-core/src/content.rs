@@ -2681,7 +2681,9 @@ impl HashCache {
         std::thread::scope(|scope| {
             let tasks: Vec<_> = (0..workers)
                 .map(|_| {
+                    let priority = job_priority::JobPriority::current();
                     scope.spawn(|| {
+                        priority.enter(job_priority::Level::Normal);
                         let mut done = Vec::new();
                         loop {
                             let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

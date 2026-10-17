@@ -365,10 +365,11 @@ export type SourceReply = {
  * A client lease. Several leases may share one underlying source and cache.
  */
 id: string, path: string, revision: string, metadata: ReplayMetadata, };
-export type PreparationState = "idle" | "queued" | "preparing" | "ready" | "cancelled" | "failed";
+export type PreparationState = "idle" | "queued" | "preparing" | "paused" | "ready" | "cancelled" | "failed";
+export type PreparationPauseReason = "requested" | "newerRecording" | "diskSpace" | "game";
 export type PreparationAction = "status" | "start" | "cancel" | "clear";
 export type PreparationSection = { id: string, label: string, state: PreparationState, done: string, total: string | null, error: string | null, };
-export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>, coverage: { [key in string]?: PreparedCoverage }, bytes: string, error: string | null, };
+export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>, coverage: { [key in string]?: PreparedCoverage }, bytes: string, error: string | null, pauseReason: PreparationPauseReason | null, };
 export type PreparedCoverage = { schema: number, firstHour: number, lastHour: number, complete: boolean, };
 export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };

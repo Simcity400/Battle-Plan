@@ -36,7 +36,9 @@
 //! readers rather than wait for one another. A family that does not read the
 //! block it takes next (it refused that block's branch) wants nothing.
 
+#[cfg(test)]
 use crate::prepared::prepass;
+use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
     container::Replay,
     frame::{DecodedFrame, Frame, TABLE_COUNT},
@@ -354,12 +356,13 @@ impl Shared {
         let mut readers = Vec::with_capacity(count);
         for reader in 0..count {
             let inner = Arc::clone(&inner);
+            let priority = JobPriority::current();
             // A reader that cannot start leaves its blocks to the others or
             // to the families themselves.
             if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("preparation shared block reader {reader}"))
                 .spawn(move || {
-                    prepass::below_normal_priority();
+                    priority.enter(Level::BelowNormal);
                     while let Some(block) = inner.claim() {
                         let entry = inner.read(block);
                         inner.store(block, entry);
