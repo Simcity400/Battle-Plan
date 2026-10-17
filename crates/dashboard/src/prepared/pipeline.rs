@@ -937,9 +937,9 @@ impl BranchState {
             casualties: Unsaved::new(crate::products::war_casualties::prepared::Prepared::new(
                 replay, branch,
             )),
-            equipment_losses: Unsaved::new(crate::products::equipment_losses::prepared::Prepared::new(
-                replay, branch, first,
-            )),
+            equipment_losses: Unsaved::new(
+                crate::products::equipment_losses::prepared::Prepared::new(replay, branch, first),
+            ),
         })
     }
 }
@@ -952,14 +952,21 @@ fn invalid(message: &str) -> io::Error {
 /// The branch continuation is rewritten at every commit, so it is stored
 /// compressed. Level 1 keeps the per-block cost small.
 fn save_branch(writer: &mut store::Writer, branch: u64, state: &BranchState) -> io::Result<()> {
+    writer.write_at(
+        &branch_section(branch),
+        0,
+        compressed_json(state)?.as_slice(),
+    )
+}
+/// The JSON encoding shared by hourly branch and independent family continuations.
+fn compressed_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
     let mut encoded =
         io::BufWriter::with_capacity(1 << 20, zstd::stream::Encoder::new(Vec::new(), 1)?);
-    serde_json::to_writer(&mut encoded, state)?;
-    let bytes = encoded
+    serde_json::to_writer(&mut encoded, value)?;
+    encoded
         .into_inner()
         .map_err(io::IntoInnerError::into_error)?
-        .finish()?;
-    writer.write_at(&branch_section(branch), 0, bytes.as_slice())
+        .finish()
 }
 fn json<T: Serialize>(writer: &mut store::Writer, section: &str, value: &T) -> io::Result<()> {
     writer.write_at(section, 0, serde_json::to_vec(value)?.as_slice())
@@ -1288,12 +1295,53 @@ fn reload_flushed() -> bool {
 #[cfg(test)]
 thread_local! {
     pub(super) static RELOAD_FLUSHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_ALL_TABLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Flushed branches continued in memory into their next block.
     pub(super) static CONTINUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn selected() -> &'static [TableId] {
-    &TableId::ALL
+    #[cfg(test)]
+    if TEST_ALL_TABLES.with(std::cell::Cell::get) {
+        return &TableId::ALL;
+    }
+    // A partial registry returns families with content-dependent reads to
+    // the walk. Keep their whole selection, including the hourly oracle's.
+    if independent::walks_own() {
+        return &TableId::ALL;
+    }
+    static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
+        let reads = [
+            crate::prepared_measure::TABLES,
+            &crate::products::land_battles::CENSUS_TABLES,
+            crate::products::game_score::SCORE_TABLES,
+            crate::products::autonomy::TABLES,
+            crate::products::land_owners::TABLES,
+            &installed_content::country_names::TABLES,
+        ];
+        TableId::ALL
+            .into_iter()
+            .filter(|table| reads.iter().any(|tables| tables.contains(table)))
+            .collect()
+    });
+    &SELECTED
+}
+
+/// The walk reads a block-prepared family's rows only when that block's
+/// extract could not be folded. Every block starts at its own keyframe.
+fn block_selected(resources_hourly: bool, army_hourly: bool) -> Vec<TableId> {
+    let selected = selected();
+    TableId::ALL
+        .into_iter()
+        .filter(|table| {
+            selected.contains(table)
+                || (resources_hourly
+                    && crate::products::resource_balance::prepared::FAMILY
+                        .tables
+                        .contains(table))
+                || (army_hourly && crate::products::army_size::prepared::TABLES.contains(table))
+        })
+        .collect()
 }
 
 fn checkpoint(
@@ -1742,6 +1790,15 @@ pub struct PreparationTimings {
 // Keep the original expression's value and error propagation at every call site.
 macro_rules! time_family {
     ($timings:ident, $family:literal, $phase:ident, $operation:expr) => {{
+        // Measurement only: thread CPU by family, when the harness enables it.
+        let _cpu = ::replay::cpu::scope(
+            if stringify!($phase) == "flush" {
+                "commit"
+            } else {
+                "observe"
+            },
+            Some($family),
+        );
         if $timings.is_some() {
             let started = start_timing(&$timings);
             let result = $operation;
@@ -1762,6 +1819,7 @@ mod flush;
 mod independent;
 mod lanes;
 mod newest;
+mod production_scans;
 
 /// One completed manifest commit, emitted before any next block is admitted.
 pub struct MeasuredBlock {
@@ -2425,6 +2483,17 @@ fn run_inner(
             store.extend(&key)
         )?;
     }
+    // What each family's newest windows did, reported in status rows of
+    // their own with every accepted commit while preparation runs.
+    let reports = newest::Reports::default();
+    let mut accepted = |next: &Accepted| {
+        if reports.is_empty() {
+            return accepted(next);
+        }
+        let mut next = next.clone();
+        reports.annotate(&mut next.sections);
+        accepted(&next)
+    };
     // Families prepared on their own accept every block before the hourly
     // walk starts, so their queries do not wait for it. Beside them, each
     // branch's newest block window answers before forward preparation
@@ -2442,7 +2511,8 @@ fn run_inner(
             measured: measurement.is_some(),
             cancelled,
         };
-        let beside = newest::jobs(&phase, &state, &saved)?;
+        let mut beside = newest::jobs(&phase, &state, &saved, &reports)?;
+        beside.extend(production_scans::jobs(&phase)?);
         independent::prepare(
             &phase,
             writer,
@@ -2492,6 +2562,8 @@ fn run_inner(
         frame_changes.invalidate();
     }
     finish_timing(&mut family_timings, setup_started, "setup.overhead", false);
+    let sparse_map = selected().len() != TableId::ALL.len();
+    let mut stream_tables = selected().to_vec();
     // The last flushed branch and its state, which the flush saved: the next
     // block of that branch continues it rather than reading it back.
     let mut kept: Option<(u64, Box<BranchState>)> = None;
@@ -2656,6 +2728,15 @@ fn run_inner(
         }
         let hourly = |name: &str| !folds.iter().any(|(family, _)| family.name == name);
         let (resources_hourly, army_hourly) = (hourly("resources"), hourly("army"));
+        let block_tables = block_selected(resources_hourly, army_hourly);
+        if block_tables != stream_tables {
+            stream = ReplayStream::resume(
+                &block_tables,
+                stream.cursor().clone(),
+                stream.accumulator().cloned(),
+            )?;
+            stream_tables = block_tables;
+        }
         let serial =
             measurement.as_ref().is_some_and(|value| value.serial) || lanes::parallelism() <= 2;
         let decoding_started = measured.then(Instant::now);
@@ -3506,20 +3587,24 @@ fn run_inner(
                         lanes.serial("equipment_losses", frame, changes, &mut family_timings)?;
                         frame_count += 1;
                         coordinator_order = 48;
-                        time_family!(
-                            family_timings,
-                            "map",
-                            observe,
-                            map.accept(
-                                &mut writer,
-                                &updates,
-                                frame,
-                                dashboard_base::prepared_map::Position {
-                                    block,
-                                    next_frame: frame_count,
-                                },
-                            )
-                        )?;
+                        time_family!(family_timings, "map", observe, {
+                            let position = dashboard_base::prepared_map::Position {
+                                block,
+                                next_frame: frame_count,
+                            };
+                            if sparse_map {
+                                map.accept_sparse(
+                                    &mut writer,
+                                    replay,
+                                    &updates,
+                                    frame,
+                                    position,
+                                    || check_cancel(cancelled),
+                                )
+                            } else {
+                                map.accept(&mut writer, &updates, frame, position)
+                            }
+                        })?;
 
                         Ok(())
                     })();

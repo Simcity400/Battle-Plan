@@ -38,5 +38,7 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
 installed-content = { workspace = true, features = ["test-support"] }
 png.workspace = true
+# Grouped-table decode counts, so tests can see which tables a read decodes.
+replay = { workspace = true, features = ["test-support"] }
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }

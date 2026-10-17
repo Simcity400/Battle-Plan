@@ -2,7 +2,11 @@
 //! look-back, publishes the page and manifest forward preparation publishes.
 use super::*;
 use crate::products::naval_battles::{newest as first, prepared as forward_query};
-use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
+use dashboard_base::prepared::{
+    frame_changes::FrameChangeTracker,
+    newest::{Outcome, Unproven},
+    series::tests::Fixture,
+};
 use serde_json::{Value, json};
 use std::{io::Read, ops::RangeInclusive};
 
@@ -269,12 +273,43 @@ fn newest_window_reaches_open_combats_and_retained_results() {
         .into_iter()
         .map(|hours| block(hours, &at))
         .collect();
-    let (window, read, earlier) = assert_newest_equals_forward(&recording(blocks));
+    let source = recording(blocks);
+    let (window, read, earlier) = assert_newest_equals_forward(&source);
     // The last block, then from result 10's first read.
     assert_eq!(read, 1 + 4);
     assert_eq!(
         earlier, 4,
         "the blocks before the last read once by changes"
+    );
+    // Each look-back tried, with the check that failed and the hour it named.
+    let (_, report) = first::prepare_reported(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(report.outcome, Outcome::Proven);
+    assert_eq!((report.blocks, report.earlier), (5, 4));
+    let tried: Vec<_> = report
+        .tried
+        .iter()
+        .map(|tried| (tried.from, tried.blocks, tried.unproven.clone()))
+        .collect();
+    assert_eq!(
+        tried,
+        vec![
+            (
+                4,
+                1,
+                Some(Unproven {
+                    check: "a result read before the look-back",
+                    hour: 107
+                })
+            ),
+            (1, 4, None),
+        ]
+    );
+    assert!(
+        report
+            .describe()
+            .starts_with("proven from block 1 of 5; 4 earlier blocks read by their changes"),
+        "{}",
+        report.describe()
     );
     assert_eq!(row(&window, "combat:2:113")["runs"][0]["firstHour"], 116);
     let linked = row(&window, "result:20");
@@ -501,10 +536,22 @@ fn newest_window_look_back_stops_at_the_branch_start() {
     };
     let flag = AtomicBool::new(false);
     let single = recording(vec![block(100..=103, &at)]);
-    assert!(first::prepare(&single, 1, &flag).unwrap().is_none());
+    let (newest, report) = first::prepare_reported(&single, 1, &flag).unwrap();
+    assert!(newest.is_none());
+    assert_eq!(report.outcome, Outcome::BranchStart(None));
+    assert!(report.tried.is_empty(), "no look-back is tried");
     // Combat 7 is open from the branch's first hour.
     let open = recording(vec![block(100..=103, &at), block(104..=107, &at)]);
-    assert!(first::prepare(&open, 1, &flag).unwrap().is_none());
+    let (newest, report) = first::prepare_reported(&open, 1, &flag).unwrap();
+    assert!(newest.is_none());
+    assert_eq!(
+        report.outcome,
+        Outcome::BranchStart(Some(Unproven {
+            check: "a combat open at the hour before the look-back",
+            hour: 100
+        }))
+    );
+    assert_eq!(report.tried.len(), 1, "the last block's look-back alone");
 }
 
 /// The earlier blocks' facts read on parallel workers, each block alone and

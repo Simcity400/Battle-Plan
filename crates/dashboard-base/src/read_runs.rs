@@ -135,6 +135,14 @@ impl<K: Ord + Copy> ReadRuns<K> {
         self.frontier = Some(hour);
     }
 
+    /// Authenticate every unchanged hour in `first..=last` in one step.
+    /// Only the first can break the preceding carry; the rest are consecutive.
+    pub fn advance_span(&mut self, first: i32, last: i32) {
+        debug_assert!(first <= last);
+        self.advance(first);
+        self.frontier = Some(last);
+    }
+
     /// Materialise effective endpoints before direct `runs`/`spans` access,
     /// publication or a checkpoint. Only currently open keys are visited.
     pub fn seal(&mut self) {
@@ -205,6 +213,29 @@ impl<K: Ord + Copy> Default for ReadRuns<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spans_preserve_hourly_frontiers_carries_gaps_and_restores() {
+        let mut hourly = ReadRuns::new();
+        hourly.read(-10, [(1, Some(7)), (2, None)]);
+        let mut spans = hourly.clone();
+        for (first, last) in [(-9, 5), (8, 12), (13, 40)] {
+            for hour in first..=last {
+                hourly.advance(hour);
+            }
+            spans.advance_span(first, last);
+            hourly.seal();
+            spans.seal();
+            assert_eq!(
+                serde_json::to_vec(&spans).unwrap(),
+                serde_json::to_vec(&hourly).unwrap()
+            );
+            for rows in [&mut hourly, &mut spans] {
+                *rows = serde_json::from_slice(&serde_json::to_vec(&*rows).unwrap()).unwrap();
+                rows.read(last + 1, [(1, Some(7))]);
+            }
+        }
+    }
 
     #[test]
     fn deferred_carry_seals_at_reads_gaps_publication_resume_and_append() {

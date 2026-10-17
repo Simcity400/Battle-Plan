@@ -41,8 +41,10 @@ mod independent_windowed;
 mod newest_windows;
 mod parallel_flush;
 mod prepass_parity;
+mod production_scans;
 mod serialization_order;
 mod stability_progressive;
+mod walk_selection;
 
 /// Whether `query`'s data covers the whole branch ([`product_coverage`]).
 fn complete(

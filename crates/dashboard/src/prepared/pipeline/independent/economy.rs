@@ -1,8 +1,9 @@
 //! The economy ledgers prepared on their own: construction, the equipment
-//! stockpile, production and country experience. Each is read daily: its
-//! observer acts when a field it reads changes or when one of its tables'
+//! stockpile, production, country experience and fuel. Each is read daily:
+//! its observer acts when a field it reads changes or when one of its tables'
 //! daily reads is dated, and an hour between does nothing but advance its
-//! accepted hours. So a block is read by its changes ([`prepass::Family`]
+//! accepted hours (and, for fuel, carry its ownership proofs and settle the
+//! days a day after their reads). So a block is read by its changes ([`prepass::Family`]
 //! fields), with each family's daily read hour as the extract's deadline: a
 //! pre-pass worker keeps the frames of the hours the family observes (the
 //! block's first, each hour a watched field, row key or availability changes,
@@ -22,6 +23,7 @@
 //! branch state, as `<family>-continuation-<branch>`, and publishes the pages
 //! hourly preparation publishes, flushing where hourly preparation flushes.
 
+use super::super::compressed_json;
 use super::{Block, Branch, Load, Observed, Own};
 use crate::{
     prepared::{
@@ -32,6 +34,7 @@ use crate::{
     prepared_stability::ExperienceAccumulator,
     products::{
         construction_log::{self, NameSource},
+        country_fuel,
         country_groups::HourSpan,
         equipment_stockpile,
     },
@@ -327,7 +330,9 @@ fn observe_block(
                 return Ok(());
             }
             if from.is_some_and(|from| frame.hour < from) {
-                before = Some(frame.clone());
+                if frame.hour.checked_add(1) == from {
+                    before = Some(frame.clone());
+                }
                 return Ok(());
             }
             if let Some(before) = before
@@ -370,9 +375,7 @@ fn continuation(family: &str, branch: u64) -> String {
 
 /// Write a continuation, compressed as the hourly branch state holding it is.
 fn save<T: Serialize>(writer: &mut store::Writer, section: &str, value: &T) -> io::Result<()> {
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1)?;
-    serde_json::to_writer(&mut encoder, value)?;
-    writer.write_at(section, 0, encoder.finish()?.as_slice())
+    writer.write_at(section, 0, compressed_json(value)?.as_slice())
 }
 
 /// A continuation the last commit saved, if it has one.
@@ -505,16 +508,7 @@ impl ConstructionBranch {
         if self.prepared.last_hour() != Some(previous.last_hour) {
             return Ok(());
         }
-        let mut last = None;
-        replay.read_block_alone(
-            previous,
-            construction_log::TABLES,
-            |_, frame| {
-                last = Some(frame.clone());
-                Ok(())
-            },
-            || Ok(()),
-        )?;
+        let last = super::shared::read_last(replay, previous, construction_log::TABLES)?;
         if let Some(frame) = last {
             self.prepared.restore_frame(&frame);
         }
@@ -1137,6 +1131,168 @@ impl Branch for ExperienceBranch {
     }
 }
 
+// --- Fuel ------------------------------------------------------------------
+
+/// The tables fuel reads: the fuel amounts and their demand parts, and the
+/// countries, links and state owners they are joined through.
+const FUEL_TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::States,
+    TableId::CountryFuel,
+    TableId::FuelDemandParts,
+];
+
+/// The fuel read the observer dates.
+const FUEL_READS: &[TableId] = &[TableId::CountryFuel];
+
+static FUEL_FAMILY: prepass::Family = prepass::Family {
+    name: "fuel",
+    extract: "fuel.extract",
+    sequential: "fuel.sequential",
+    fallback: "fuel.fallback",
+    tables: FUEL_TABLES,
+    fields: Some(fuel_fields),
+    start: fuel_start,
+};
+
+/// What the fuel scan reads.
+fn fuel_fields() -> io::Result<Vec<TableFields>> {
+    Ok(vec![
+        // Country keys (`CountryKeys`): the id (the row key), canonical slot
+        // and tag. The balances move every hour and are not read.
+        TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
+        // Every link: holders and state owners are joined through them.
+        TableFields::all(TableId::CountryLinks),
+        // Each state's owner, the ownership proof's operand; the states'
+        // manpower, infrastructure and names move without it.
+        TableFields::named(TableId::States, &["owner"])?,
+        // The daily fuel read and its demand parts, at each read: rows
+        // change only there, and a read with equal rows dates a read again.
+        TableFields::all(TableId::CountryFuel).when_read(),
+        TableFields::all(TableId::FuelDemandParts).when_read(),
+    ])
+}
+
+fn fuel_start(format: FormatVersion) -> Box<dyn Extract> {
+    DailyExtract::start(format, FUEL_READS)
+}
+
+/// Fuel and current consumption.
+pub(in crate::prepared::pipeline) struct Fuel;
+
+pub(in crate::prepared::pipeline) static FUEL: Fuel = Fuel;
+
+impl Own for Fuel {
+    fn family(&self) -> &'static prepass::Family {
+        &FUEL_FAMILY
+    }
+
+    fn timing(&self) -> &'static str {
+        "independent.fuel"
+    }
+
+    fn gates(&self) -> &'static [&'static str] {
+        &["country-fuel"]
+    }
+
+    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
+        Ok(Box::new(FuelBranch {
+            prepared: read(load, &continuation("fuel", branch))?,
+            format: load.replay.format,
+        }))
+    }
+}
+
+/// One branch's fuel observer.
+struct FuelBranch {
+    /// None until a block is observed on a branch with no saved state, where
+    /// hourly preparation makes a new one.
+    prepared: Option<Box<country_fuel::prepared::Prepared>>,
+    format: FormatVersion,
+}
+
+impl FuelBranch {
+    fn prepared(&mut self) -> &mut country_fuel::prepared::Prepared {
+        self.prepared.get_or_insert_with(Box::default)
+    }
+}
+
+impl Ledger for FuelBranch {
+    fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
+        self.prepared();
+        Ok(())
+    }
+
+    fn observe(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
+        let format = self.format;
+        // Cancellation is checked between hours.
+        self.prepared()
+            .observe_changes(frame, format, changes, &AtomicBool::new(false))
+    }
+
+    fn quiet(&mut self, first: i32, last: i32, _: &DecodedFrame) -> io::Result<bool> {
+        let format = self.format;
+        self.prepared().advance_quiet(first, last, format)
+    }
+}
+
+impl Branch for FuelBranch {
+    fn begin_block(&mut self) {}
+
+    fn fold(
+        &mut self,
+        facts: Box<dyn Any + Send>,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<(Folded, Option<i32>)> {
+        fold(self, &FUEL_FAMILY, facts, block, observed, check)
+    }
+
+    fn observe_block(
+        &mut self,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<Option<i32>> {
+        observe_block(self, &FUEL_FAMILY, block, None, observed, check)
+    }
+
+    fn end_block(&mut self, _: &Replay, _: u64) {}
+
+    fn pending(&self) -> usize {
+        self.prepared
+            .as_ref()
+            .map_or(0, |prepared| prepared.buffered_bytes())
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        _: &Replay,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        match self.prepared.as_mut() {
+            Some(prepared) => prepared.flush(writer, branch, self.format, cancelled),
+            None => Ok(()),
+        }
+    }
+
+    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
+        Ok(Ok(()))
+    }
+
+    fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
+        match self.prepared.as_ref() {
+            Some(prepared) => save(writer, &continuation("fuel", branch), &**prepared),
+            None => Ok(()),
+        }
+    }
+}
+
 // --- Test counts -------------------------------------------------------------
 
 /// What one family's folds did on this thread.
@@ -1166,4 +1322,19 @@ fn count(family: &'static str, update: impl FnOnce(&mut Counts)) {
 #[cfg(test)]
 pub(in crate::prepared::pipeline) fn counts(family: &str) -> Counts {
     COUNTS.with(|counts| counts.borrow().get(family).copied().unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continuation_compression_preserves_its_bytes() {
+        let value: std::collections::BTreeMap<_, _> = (0..5_000)
+            .map(|id| (format!("holder {id}"), vec![id; 24]))
+            .collect();
+        let mut direct = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+        serde_json::to_writer(&mut direct, &value).unwrap();
+        assert_eq!(direct.finish().unwrap(), compressed_json(&value).unwrap());
+    }
 }

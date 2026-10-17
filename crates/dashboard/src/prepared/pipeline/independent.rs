@@ -115,6 +115,29 @@ pub(super) trait Own: Sync {
     /// Its pre-pass family: its name (that of its refusals, progress and
     /// coverage pages), tables, read fields and block extract.
     fn family(&self) -> &'static prepass::Family;
+    /// Whether it chooses its run's block reads from the bound content
+    /// ([`Self::bound`]): the pool reads none of its blocks until its own
+    /// thread has, before its first block.
+    fn binds(&self) -> bool {
+        false
+    }
+    /// Whether the pre-pass pool extracts its blocks. A family whose own
+    /// thread observes every block hour by hour on the block read alone,
+    /// keeping nothing of an extract, has no lane: the pool reads none of
+    /// its blocks for it, and its thread observes each block as its fold of
+    /// an extract would.
+    fn laned(&self) -> bool {
+        true
+    }
+    /// The tables, fields and extract of this run's block reads, chosen
+    /// from the content the phase binds, where that content decides what
+    /// the family's observation can read; None reads as [`Self::family`]
+    /// declares. Its branches bind the same content, and its facts say
+    /// what its extract read.
+    fn bound(&self, phase: &Phase<'_>) -> Option<prepass::Bound> {
+        let _ = phase;
+        None
+    }
     /// The timing row of its whole preparation.
     fn timing(&self) -> &'static str;
     /// The product queries that wait only for its coverage, and refuse from
@@ -349,7 +372,7 @@ static REGISTRY: [&dyn Own; 37] = [
     &sampled::AIR,
     &sampled::STABILITY,
     &sampled::NAVY,
-    &sampled::FUEL,
+    &economy::FUEL,
     &sampled::EQUIPMENT_LOSSES,
     &sampled::SUPPLY,
     &sampled::PARTIES,
@@ -367,7 +390,8 @@ pub(super) mod quiet_politics;
 /// The military air ledger, raids and air aces.
 pub(super) mod air;
 
-/// Construction, equipment stockpiles, production and country experience.
+/// Construction, equipment stockpiles, production, country experience and
+/// fuel.
 pub(super) mod economy;
 
 /// Decryption, operative placements, agencies, the roster and espionage.
@@ -400,7 +424,7 @@ pub(super) mod windowed;
 /// Unit leaders' careers, commands and battles.
 pub(super) mod leaders;
 
-/// Air force and navy size, stability and its parts, fuel, equipment losses,
+/// Air force and navy size, stability and its parts, equipment losses,
 /// supply health, the party history, trade flows and territory.
 pub(super) mod sampled;
 
@@ -889,6 +913,11 @@ pub(super) fn hourly(family: &str) -> bool {
         })
 }
 
+/// Whether any family normally prepared on its own is observed by the walk.
+pub(super) fn walks_own() -> bool {
+    REGISTRY.iter().any(|own| hourly(own.family().name))
+}
+
 /// Whether `family` is prepared on its own.
 pub(super) fn registered(family: &str) -> bool {
     registry().iter().any(|own| own.family().name == family)
@@ -1239,17 +1268,6 @@ pub(super) fn prepare(
     {
         knobs.refusals = lanes::test_refusals();
     }
-    // Every family's blocks from its own first one, on one set of workers.
-    let pool = (!runs.is_empty()).then(|| {
-        Pool::start(
-            phase.source.replay(),
-            runs.iter()
-                .map(|run| (run.own.family(), run.progress.next_block))
-                .collect(),
-            prepass::workers(lanes::parallelism()),
-            knobs,
-        )
-    });
     let at_once = !(runs.len() == 1 || one_after_another());
     // The families observing every block hour by hour read each block once,
     // together, each from its own first block: all from the start when they
@@ -1263,6 +1281,28 @@ pub(super) fn prepare(
     } else {
         shared::Shared::start(phase.source.replay(), &consumers, at_once)
     };
+    // Every family's blocks from its own first one, on one set of workers,
+    // which read the shared reader's blocks with theirs.
+    let pool = (!runs.is_empty()).then(|| {
+        Pool::start(
+            phase.source.replay(),
+            runs.iter()
+                .map(|run| {
+                    // A family without a lane claims nothing: its lane
+                    // starts at the recording's end.
+                    let from = if run.own.laned() {
+                        run.progress.next_block
+                    } else {
+                        replay.index.len()
+                    };
+                    (run.own.family(), from, run.own.binds())
+                })
+                .collect(),
+            prepass::workers(lanes::parallelism()),
+            knobs,
+            shared.as_ref().map(shared::Shared::depot),
+        )
+    });
     // With other families or work beside them committing too, each commit
     // adopts a family's writes only once all of them succeeded, in group
     // commits.
@@ -1316,9 +1356,11 @@ pub(super) fn prepare(
                         priority.enter(Level::Normal);
                         #[cfg(test)]
                         let _installed = context.install();
+                        let _cpu = ::replay::cpu::scope("newest", Some(name));
                         let result = {
                             let mut publish =
                                 |write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>| {
+                                    let _cpu = ::replay::cpu::scope("commit", None);
                                     let next = commit(
                                         commits,
                                         phase,
@@ -1450,20 +1492,43 @@ pub(super) fn prepare(
             .collect();
         (ran, besides)
     });
-    drop(pool);
-    if let Some(shared) = shared {
-        let (spent, reads) = shared.read_time();
-        drop(shared);
+    // The pool's block reads (decoding and reconstruction, beside every
+    // family's extract), counted with the blocks read.
+    if let Some(pool) = pool {
+        let (spent, reads) = pool.read_time();
+        drop(pool);
         if let Some(workers) = workers.as_mut() {
-            let entry = workers.entry(shared::SHARED_READ).or_default();
+            let entry = workers.entry(prepass::PREPASS_READ).or_default();
             entry.observe += spent;
             entry.calls += reads;
         }
         #[cfg(test)]
         prepass::add_notes(&BTreeMap::from([(
-            shared::SHARED_READ,
+            prepass::PREPASS_READ,
             usize::try_from(reads).unwrap_or(usize::MAX),
         )]));
+    }
+    if let Some(shared) = shared {
+        let (spent, reads) = shared.read_time();
+        let deposits = shared.deposits();
+        drop(shared);
+        if let Some(workers) = workers.as_mut() {
+            let entry = workers.entry(shared::SHARED_READ).or_default();
+            entry.observe += spent;
+            entry.calls += reads;
+            workers.entry(shared::SHARED_DEPOSITED).or_default().calls += deposits;
+        }
+        #[cfg(test)]
+        prepass::add_notes(&BTreeMap::from([
+            (
+                shared::SHARED_READ,
+                usize::try_from(reads).unwrap_or(usize::MAX),
+            ),
+            (
+                shared::SHARED_DEPOSITED,
+                usize::try_from(deposits).unwrap_or(usize::MAX),
+            ),
+        ]));
     }
     let mut first_error = None;
     let mut panic = None;
@@ -1555,9 +1620,14 @@ fn prepare_family(
         mut progress,
     } = run;
     let _retire = Retire(pool, lane);
-    let replay = phase.replay;
+    let laned = own.laned();
+    if laned && own.binds() {
+        pool.bind(lane, own.bound(phase));
+    }
     let family = own.family();
+    let replay = phase.replay;
     let name = family.name;
+    let _cpu = ::replay::cpu::scope("fold", Some(name));
     let started = super::start_timing(timings);
     let mut held: Option<(u64, Box<dyn Branch>)> = None;
     // The pages its blocks published since its last commit.
@@ -1591,12 +1661,17 @@ fn prepare_family(
             held = Some((branch, state));
         }
         let (_, state) = held.as_mut().expect("held family state");
-        let (outcome, took) = pool.take(lane, block, phase.cancelled)?;
-        if let Some(workers) = workers.as_mut() {
-            let entry = workers.entry(family.extract).or_default();
-            entry.observe += took;
-            entry.calls += 1;
-        }
+        let outcome = if laned {
+            let (outcome, took) = pool.take(lane, block, phase.cancelled)?;
+            if let Some(workers) = workers.as_mut() {
+                let entry = workers.entry(family.extract).or_default();
+                entry.observe += took;
+                entry.calls += 1;
+            }
+            Some(outcome)
+        } else {
+            None
+        };
         let refused = progress.refused.entry(branch).or_default();
         let mut reached = None;
         if refused.open(name) {
@@ -1616,16 +1691,30 @@ fn prepare_family(
                     .map(|member| shared::Lease { member, block }),
             };
             reached = match outcome {
-                Outcome::Facts(facts) => {
+                Some(Outcome::Facts(facts)) => {
+                    let cpu_started = ::replay::cpu::thread_cycles();
                     let (folded, reached) = state.fold(facts, &at, &mut observed, &mut check)?;
                     if folded == Folded::Fallback {
                         note(timings, family.fallback);
+                        ::replay::cpu::note("fold-fallback", name, cpu_started);
+                    } else {
+                        ::replay::cpu::note("fold-facts", name, cpu_started);
                     }
                     reached
                 }
-                Outcome::Sequential => {
+                Some(Outcome::Sequential) => {
                     note(timings, family.sequential);
-                    state.observe_block(&at, &mut observed, &mut check)?
+                    let cpu_started = ::replay::cpu::thread_cycles();
+                    let reached = state.observe_block(&at, &mut observed, &mut check)?;
+                    ::replay::cpu::note("fold-sequential", name, cpu_started);
+                    reached
+                }
+                // Its own thread observes the block, as its fold does.
+                None => {
+                    let cpu_started = ::replay::cpu::thread_cycles();
+                    let reached = state.observe_block(&at, &mut observed, &mut check)?;
+                    ::replay::cpu::note("fold-own", name, cpu_started);
+                    reached
                 }
             };
             if refused.open(name) {
@@ -1665,6 +1754,7 @@ fn prepare_family(
         // The family's hourly flush, at the hour it would run.
         let commit_started = super::start_timing(timings);
         let hour = reached.unwrap_or(index.last_hour);
+        let cpu_commit = ::replay::cpu::scope("commit", None);
         let next = commit(
             commits,
             phase,
@@ -1701,6 +1791,7 @@ fn prepare_family(
             },
         )?;
         touched.clear();
+        drop(cpu_commit);
         super::finish_timing(timings, commit_started, "independent.commit", true);
         accepted(next);
         if !continues || super::reload_flushed() {

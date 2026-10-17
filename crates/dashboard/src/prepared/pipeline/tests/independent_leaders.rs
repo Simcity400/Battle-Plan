@@ -6,8 +6,10 @@
 //! results, a command reassigned, a skill rise, a renamed country, a gap,
 //! two branches, append, resume, cancellation and refusals, with one and
 //! several pre-pass workers and with blocks read whole; their queries answer
-//! while the hourly walk has accepted nothing; and the fold observes only
-//! the hours at which something leaders read changed.
+//! while the hourly walk has accepted nothing; the fold observes only the
+//! hours at which something leaders read changed; and the extract takes each
+//! hour's changes from the block reader, reduces kept rows only where they
+//! changed, and reads only the tables its run binds.
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
@@ -522,6 +524,67 @@ fn leaders_observe_only_the_hours_whose_inputs_changed() {
             "{label}: {observed} hours observed of {recorded}"
         );
         assert!(observed <= frames, "{label}: {observed} of {frames} frames");
+    }
+}
+
+/// Read by their changes, the leaders' extract takes each hour's changed
+/// tables from the block reader and compares no table's rows with the hour
+/// before's; read whole, it finds them from the rows. Either way it makes
+/// the countries' kept rows again only where their slots or tags changed
+/// since (the first kept hour of each block or after the gap, and the
+/// rename at 175), although their balances move every hour; and no block is
+/// read with the whole trigger kit: without a catalogue the run binds the
+/// scan's own tables and the trigger world's core. Both publish and save
+/// what hourly preparation does, and no block falls back.
+#[test]
+fn leaders_take_the_block_readers_changes_and_read_only_their_bound_tables() {
+    use crate::products::unit_leaders::block::{COMPARED, REDUCED_COUNTRIES, WHOLE_KIT};
+    let replay = scenario(LAST, true);
+    let blocks = replay.index.len();
+    let mut fixture = Fixture::new(&replay);
+    let hourly =
+        independent::with_test_hourly(|| prepared(&mut fixture, "leaders-bound", &plain));
+    for whole in [false, true] {
+        let label = format!("read whole {whole}");
+        let counts = || {
+            (
+                prepass::noted(COMPARED),
+                prepass::noted(REDUCED_COUNTRIES),
+                prepass::noted(WHOLE_KIT),
+            )
+        };
+        let before = (counts(), notes());
+        let source = fixture.source("leaders-bound");
+        let read = || {
+            prepass::with_test_prepass(2, None, || {
+                independent::with_test_families(&[leaders()], || plain(&source))
+            })
+        };
+        if whole {
+            prepass::with_test_alone(read);
+        } else {
+            read();
+        }
+        let payloads = payloads(&source, None);
+        clear(source);
+        assert_same(&payloads, &hourly, &label, false);
+        assert_eq!(notes(), before.1, "{label}: every block folded");
+        let after = counts();
+        let (compared, reduced, kit) = (
+            after.0 - before.0.0,
+            after.1 - before.0.1,
+            after.2 - before.0.2,
+        );
+        assert_eq!(kit, 0, "{label}: a block read with the whole trigger kit");
+        if whole {
+            assert!(compared > 0, "{label}: no table compared from its rows");
+        } else {
+            assert_eq!(compared, 0, "{label}: tables compared row by row");
+        }
+        assert!(
+            reduced > 0 && reduced <= blocks + 2,
+            "{label}: the countries reduced {reduced} times in {blocks} blocks"
+        );
     }
 }
 

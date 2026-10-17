@@ -208,6 +208,13 @@ impl shared::Family for Air {
     fn tail(scan: &Self::Scan, hour: i32) -> Self::Tail {
         scan.tail(hour)
     }
+    /// A census names its wings' equipment by the variant names it read,
+    /// which hold until the next read: a worker's, started at a block's first
+    /// hour, knows none the carried census knows from before until the block
+    /// reads or forgets them.
+    fn settled(scan: &Self::Scan) -> bool {
+        scan.names_settled
+    }
     /// Air names its equipment by token: nothing is renumbered.
     type Numbering = ();
     fn numbering(_: &Self::Scan, _: &Self::Scan) -> Self::Numbering {}

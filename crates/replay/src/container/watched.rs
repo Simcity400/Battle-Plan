@@ -1,0 +1,967 @@
+//! One read of a block for every consumer of it.
+//!
+//! [`Replay::read_block_watched`] decodes a block's tables once, for the
+//! union of the tables its watches read, and reconstructs each of them once
+//! per hour. Each watch is handed exactly what its own read hands it: a watch
+//! of changes ([`Watching::Changes`]) the steps [`Replay::read_block_changes`]
+//! visits for its fields, and a watch of every hour ([`Watching::Every`]) the
+//! frames [`Replay::read_block_alone`] reconstructs for its tables.
+//!
+//! This holds table by table. A selected read decodes each table's updates on
+//! their own, so a table's updates, and every hour and its metrics, are the
+//! same whatever else is read. Each table's view is advanced from its own
+//! update and its own view of the hour before alone, so its rows,
+//! availability and sample hour are those of a read of fewer tables. Which
+//! hours share a table's allocation follows from its updates alone: an
+//! unchanged table keeps the hour before's allocation, and every other update
+//! (a delta included) makes a new one, whoever else holds the view. A table a
+//! watch does not read is the one view every unselected table shares, as in
+//! its own read.
+//!
+//! The one check a read makes over every table, that a keyframe holds only
+//! updates needing no earlier hour, is made for each watch as its own read
+//! makes it: a watch whose own read refuses the block's keyframe is refused
+//! with that read's error, and the others go on. A failure of the read
+//! itself (the block cannot be read or verified, an allocation fails, the
+//! campaign identity differs, cancellation) fails every watch still reading.
+//! A watch whose visit fails stops there with its error, and the others go on.
+
+use super::*;
+use crate::{
+    BranchId,
+    frame::{SharedView, TableUpdate, advance_table, keyframe_update, not_selected},
+    rows::{compatibility::HISTORY, full_mask},
+};
+use std::sync::Arc;
+
+use super::changes::{QuietHours, complete_len, touches, view_differs};
+
+/// What one watch of [`Replay::read_block_watched`] reads of a block.
+#[derive(Clone, Copy, Debug)]
+pub enum Watching<'a> {
+    /// The hours at which these fields change, as
+    /// [`Replay::read_block_changes`] visits them.
+    Changes(&'a [TableFields]),
+    /// Every hour of these tables, as [`Replay::read_block_alone`]
+    /// reconstructs them.
+    Every(&'a [TableId]),
+}
+
+/// One step handed to a watch, in hour order.
+#[derive(Debug)]
+pub enum Watched<'a> {
+    /// Before a visited hour replaces these tables, after its preceding
+    /// quiet span was handed over. Only watches opting into
+    /// [`BlockWatch::releasing`] receive this housekeeping step; no frame
+    /// is observed here. Earlier views of these tables can now be released.
+    Replacing(&'a [TableId]),
+    /// A watch of changes' step, as [`Replay::read_block_changes`] visits it.
+    Change(BlockChange<'a>),
+    /// An hour of a watch of every hour: the frame
+    /// [`Replay::read_block_alone`] reconstructs for its tables, and the
+    /// hour's recorded updates. Those of the watch's tables (and Campaign)
+    /// are its own read's; the updates of tables it does not read are other
+    /// watches' or none, which change facts never read for a table whose
+    /// reconstructed view is not complete.
+    Hour {
+        updates: &'a Arc<Frame>,
+        frame: &'a DecodedFrame,
+    },
+}
+
+type Visit<'v> = Box<dyn FnMut(Watched<'_>) -> io::Result<()> + 'v>;
+
+/// One consumer of [`Replay::read_block_watched`]: what it reads, the visit
+/// that is handed its steps, and once read its own outcome.
+pub struct BlockWatch<'v> {
+    watching: Watching<'v>,
+    visit: Visit<'v>,
+    outcome: Option<io::Result<()>>,
+    releasing: bool,
+}
+
+impl<'v> BlockWatch<'v> {
+    pub fn new(
+        watching: Watching<'v>,
+        visit: impl FnMut(Watched<'_>) -> io::Result<()> + 'v,
+    ) -> Self {
+        Self {
+            watching,
+            visit: Box::new(visit),
+            outcome: None,
+            releasing: false,
+        }
+    }
+
+    /// Request a [`Watched::Replacing`] step before an hour known to visit
+    /// this watch is reconstructed. A consumer keeping its last frame only
+    /// to build quiet hours can release the views that hour will replace,
+    /// letting deltas apply in place. Other retained frames stay intact.
+    pub fn releasing(mut self) -> Self {
+        self.releasing = true;
+        self
+    }
+
+    /// Whether it stopped with an outcome of its own: its keyframe refused
+    /// or its visit failed.
+    pub fn stopped(&self) -> bool {
+        self.outcome.is_some()
+    }
+
+    /// Its own outcome: the error its own read would have returned for the
+    /// block's keyframe, or its visit's error; Ok when neither.
+    pub fn finish(self) -> io::Result<()> {
+        self.outcome.unwrap_or(Ok(()))
+    }
+}
+
+/// What a block's read keeps for a reader besides its watches: these tables
+/// decoded with the watches' tables, and every hour's recorded updates of
+/// all of them handed to `frames` once the block is admitted and before any
+/// hour is reconstructed, as [`Replay::read_block_selected`] returns them for
+/// those tables (the updates of tables no read selected are unavailable).
+pub struct Keep<'k> {
+    pub tables: &'k [TableId],
+    pub frames: &'k mut dyn FnMut(&[Arc<Frame>]),
+}
+
+impl Replay {
+    /// One read of a block for every one of `watches`: the tables any of
+    /// them reads (and Campaign) decoded and reconstructed once, each watch
+    /// handed what its own read hands it ([`Watching`]), the watches in order
+    /// at each hour. Changed hours, and frames of every hour, share a
+    /// table's allocation exactly when the watch's own read's do. Admission
+    /// and verification are [`Replay::read_block_changes`]'s, for the union.
+    ///
+    /// Each watch's own outcome is [`BlockWatch::finish`]'s. An error here is
+    /// a failure of the read itself, which fails every watch that had not
+    /// stopped; earlier hours may have been visited.
+    pub fn read_block_watched(
+        &self,
+        index: &BlockIndex,
+        watches: &mut [BlockWatch<'_>],
+        check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.read_block_watched_keeping(index, watches, None, check)
+    }
+
+    /// [`Replay::read_block_watched`], keeping a grouped block's frames for
+    /// another reader ([`Keep`]); an interleaved block's are not kept, and
+    /// `keep` is not called.
+    pub fn read_block_watched_keeping(
+        &self,
+        index: &BlockIndex,
+        watches: &mut [BlockWatch<'_>],
+        keep: Option<Keep<'_>>,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        check()?;
+        let extra = keep.as_ref().map_or(&[][..], |keep| keep.tables);
+        let mut reading =
+            Reading::new(&self.campaign_id, index.branch, self.format, watches, extra)?;
+        if let Some(block) = self.grouped_block(index)? {
+            // Admission as `read_block_selected`: the selected tables
+            // decoded, then every section's checksum on a first read.
+            let read = super::grouped::read_selected_updates(
+                self,
+                index,
+                &block,
+                &reading.tables.tables,
+                &mut check,
+            )?;
+            if !self.is_verified(index) {
+                super::grouped::verify(&block, index)?;
+            }
+            self.mark_verified(index);
+            drop(block);
+            check()?;
+            let super::grouped::SelectedUpdates {
+                hours,
+                metrics,
+                mut updates,
+                dependent_keyframe,
+            } = read;
+            let keyframe = Keyframe::Grouped(dependent_keyframe);
+            if let Some(keep) = keep {
+                // Every hour's frame first, for the reader keeping them.
+                let frames = engine::allocation::collect_vec(
+                    hours.into_iter().zip(metrics).enumerate().map(
+                        |(position, (hour, metrics))| {
+                            Arc::new(reading.tables.take_frame(
+                                index.branch,
+                                hour,
+                                position == 0,
+                                metrics,
+                                &mut updates,
+                                position,
+                            ))
+                        },
+                    ),
+                )?;
+                drop(updates);
+                (keep.frames)(&frames);
+                for frame in frames {
+                    check()?;
+                    if !reading.hour(frame, keyframe)? {
+                        break;
+                    }
+                }
+                reading.flush();
+                return Ok(());
+            }
+            for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
+                check()?;
+                let frame = reading.tables.take_frame(
+                    index.branch,
+                    hour,
+                    position == 0,
+                    metrics,
+                    &mut updates,
+                    position,
+                );
+                if !reading.hour(Arc::new(frame), keyframe)? {
+                    break;
+                }
+            }
+            reading.flush();
+            return Ok(());
+        }
+        // Interleaved blocks keep their bounded payload streaming: an
+        // admission pass, then reconstruction.
+        let tables = reading.tables.tables.clone();
+        self.visit_block(index, Some(&tables), |_| {
+            check()?;
+            Ok(true)
+        })?;
+        check()?;
+        self.visit_block(index, Some(&tables), |frame| {
+            check()?;
+            reading.hour(Arc::new(frame), Keyframe::Interleaved)
+        })?;
+        reading.flush();
+        Ok(())
+    }
+}
+
+impl Replay {
+    /// A block's frames for `tables` (and Campaign) as
+    /// [`Replay::read_block_selected`] returns them, except that a grouped
+    /// block's tables not read are unavailable without a reason, which no
+    /// reader reconstructs: for readers that keep a block for others and may
+    /// give it up partway. `check` is called before each table section of a
+    /// grouped block is decoded and before each hour of an interleaved
+    /// block, so an error from it (a reader giving the block up) ends the
+    /// read with what it decoded released. Admission and verification are
+    /// `read_block_selected`'s.
+    pub fn read_block_kept(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<Arc<Frame>>> {
+        check()?;
+        let mut chosen = [false; TABLE_COUNT];
+        chosen[TableId::Campaign.index()] = true;
+        for table in tables {
+            chosen[table.index()] = true;
+        }
+        let read = BlockTables::new(&self.campaign_id, self.format, &chosen)?;
+        if let Some(block) = self.grouped_block(index)? {
+            let selected = super::grouped::read_selected_updates(
+                self,
+                index,
+                &block,
+                &read.tables,
+                &mut check,
+            )?;
+            if !self.is_verified(index) {
+                super::grouped::verify(&block, index)?;
+            }
+            self.mark_verified(index);
+            drop(block);
+            let super::grouped::SelectedUpdates {
+                hours,
+                metrics,
+                mut updates,
+                ..
+            } = selected;
+            let mut frames = Vec::new();
+            engine::allocation::reserve(&mut frames, hours.len())?;
+            for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
+                check()?;
+                frames.push(Arc::new(read.take_frame(
+                    index.branch,
+                    hour,
+                    position == 0,
+                    metrics,
+                    &mut updates,
+                    position,
+                )));
+            }
+            return Ok(frames);
+        }
+        let selected = read.tables.clone();
+        self.visit_block(index, Some(&selected), |_| {
+            check()?;
+            Ok(true)
+        })?;
+        let mut frames = Vec::new();
+        self.visit_block(index, Some(&selected), |frame| {
+            check()?;
+            engine::allocation::reserve(&mut frames, 1)?;
+            frames.push(Arc::new(frame));
+            Ok(true)
+        })?;
+        Ok(frames)
+    }
+}
+
+/// How a block's read made the keyframe check over tables no watch reads.
+#[derive(Clone, Copy)]
+enum Keyframe {
+    /// A grouped block: whether a table the read decodes although none
+    /// selected it holds a first update no keyframe may hold.
+    Grouped(bool),
+    /// An interleaved block, whose frames hold every table's update.
+    Interleaved,
+}
+
+/// The union's tables, each advanced once per hour exactly as a reader of
+/// that table alone advances it, and what each hour's step left for the
+/// watches' decisions.
+struct BlockTables<'r> {
+    campaign_id: &'r [u8],
+    format: crate::format::FormatVersion,
+    /// The tables read, Campaign included, in table order, and each one's
+    /// position among them by table index.
+    tables: Vec<TableId>,
+    slots: Vec<Option<usize>>,
+    views: Vec<Option<SharedView>>,
+    last_hour: Option<Hour>,
+    /// This hour, by position: whether the update rebuilt the view; the
+    /// row count of the complete view a delta applied to; the view of the
+    /// hour before that another update replaced.
+    rebuilt: Vec<bool>,
+    count: Vec<Option<usize>>,
+    before: Vec<Option<SharedView>>,
+}
+
+impl<'r> BlockTables<'r> {
+    fn new(
+        campaign_id: &'r [u8],
+        format: crate::format::FormatVersion,
+        chosen: &[bool; TABLE_COUNT],
+    ) -> io::Result<Self> {
+        let tables = engine::allocation::collect_vec(
+            TableId::ALL
+                .into_iter()
+                .filter(|table| chosen[table.index()]),
+        )?;
+        let mut slots = engine::allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
+        for (position, table) in tables.iter().enumerate() {
+            slots[table.index()] = Some(position);
+        }
+        Ok(Self {
+            campaign_id,
+            format,
+            views: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
+            rebuilt: engine::allocation::collect_vec(tables.iter().map(|_| false))?,
+            count: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
+            before: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
+            tables,
+            slots,
+            last_hour: None,
+        })
+    }
+
+    /// The hour at `position` of a grouped block's decoded updates, taken
+    /// out of them: the union's updates, and an unavailable update without
+    /// a reason for every other table, which nothing reconstructs.
+    fn take_frame(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+        keyframe: bool,
+        metrics: Metrics,
+        updates: &mut [Vec<TableUpdate>],
+        position: usize,
+    ) -> Frame {
+        let none = || TableUpdate::Unavailable {
+            reason: String::new(),
+        };
+        Frame {
+            branch,
+            hour,
+            keyframe,
+            metrics,
+            tables: std::array::from_fn(|index| match self.slots[index] {
+                Some(at) => std::mem::replace(&mut updates[at][position], none()),
+                None => none(),
+            }),
+        }
+    }
+
+    /// Whether a watch reading `own` (positions among the tables) is refused
+    /// this keyframe by its own read: one of its tables holds an update no
+    /// keyframe may hold, or another table its own read checks does.
+    fn refuses_keyframe(&self, own: &[usize], frame: &Frame, keyframe: Keyframe) -> bool {
+        let version = self.format.version();
+        TableId::ALL.into_iter().any(|table| {
+            let update = &frame.tables[table.index()];
+            match self.slots[table.index()] {
+                Some(position) if own.contains(&position) => !keyframe_update(update),
+                // Its own read does not select this table.
+                Some(_) => match keyframe {
+                    // A grouped read decodes an unselected table only when
+                    // the format no longer records it, and checks it.
+                    Keyframe::Grouped(_) => {
+                        let change = &HISTORY[table.index()];
+                        change.present(version)
+                            && change.table_gap(table, version).is_some()
+                            && !keyframe_update(update)
+                    }
+                    // An interleaved read refuses a delta of an unselected
+                    // table at a keyframe and holds every other unselected
+                    // update as unavailable.
+                    Keyframe::Interleaved => matches!(update, TableUpdate::Delta { .. }),
+                },
+                None => match keyframe {
+                    Keyframe::Grouped(_) => false,
+                    Keyframe::Interleaved => !keyframe_update(update),
+                },
+            }
+        }) || matches!(keyframe, Keyframe::Grouped(true))
+    }
+
+    /// Advance every table to `frame`'s hour from its update, exactly as
+    /// `FrameDecoder::advance` advances it, and check the campaign.
+    fn advance(&mut self, frame: &Frame) -> io::Result<()> {
+        // Measurement only: each table's reconstruct cycles, when enabled.
+        let _cpu = crate::cpu::scope("reconstruct", None);
+        let measured = crate::cpu::enabled();
+        let mut spent: Vec<(usize, u64)> = Vec::new();
+        let hour = frame.hour;
+        // As the decoder: only the hour before's complete views are
+        // baselines, and a keyframe has none.
+        let before_hour = self.last_hour.filter(|_| !frame.keyframe);
+        for position in 0..self.tables.len() {
+            let table = self.tables[position];
+            let update = &frame.tables[table.index()];
+            let read = frame.metrics.table_ns[table.index()] != 0;
+            let started = if measured { crate::cpu::stamp() } else { 0 };
+            let before = self.views[position].take();
+            let view = if let TableUpdate::Delta { .. } = update {
+                // The view moves into the delta, which applies in place when
+                // no visited frame still holds it. A delta always yields a
+                // new view, as it does for a reader holding the hour before.
+                self.count[position] = before.as_deref().and_then(complete_len);
+                self.before[position] = None;
+                self.rebuilt[position] = true;
+                advance_table(table, update, baseline(before_hour, before), hour, read)?
+            } else {
+                let view = advance_table(
+                    table,
+                    update,
+                    baseline(before_hour, before.clone()),
+                    hour,
+                    read,
+                )?;
+                // Only an unchanged table keeps the hour before's view; it is
+                // still held here, so a new view cannot reuse its address.
+                self.rebuilt[position] = before
+                    .as_ref()
+                    .is_none_or(|before| !SharedView::ptr_eq(before, &view));
+                self.count[position] = None;
+                self.before[position] = before;
+                view
+            };
+            if measured {
+                spent.push((table.index(), crate::cpu::stamp().wrapping_sub(started)));
+            }
+            self.views[position] = Some(view);
+        }
+        if measured {
+            crate::cpu::reconstructed(hour, &spent);
+        }
+        if let Some(position) = self.slots[TableId::Campaign.index()]
+            && let Some(view) = &self.views[position]
+        {
+            validate_campaign_view(view, self.campaign_id)?;
+        }
+        self.last_hour = Some(hour);
+        Ok(())
+    }
+
+    /// Whether the table at `position` differs this hour in availability, a
+    /// truncated table's missing count, an unavailable table's reason, row
+    /// keys or `fields`, as `read_block_changes` decides it.
+    fn differs(&self, position: usize, fields: Option<u64>, update: &TableUpdate) -> bool {
+        let table = self.tables[position];
+        let view = self.views[position].as_ref().expect("an advanced table");
+        if let TableUpdate::Delta {
+            changed: rows,
+            deleted,
+            ..
+        } = update
+        {
+            return match (&**view, self.count[position]) {
+                (TableView::Complete(after), Some(count)) => {
+                    !deleted.is_empty()
+                        || after.len() != count
+                        || rows.iter().any(|row| touches(table, fields, row))
+                }
+                _ => true,
+            };
+        }
+        self.before[position]
+            .as_ref()
+            .is_none_or(|before| view_differs(table, fields, before, view))
+    }
+
+    /// The views of the hour before, which no decision needs any more.
+    fn release_before(&mut self) {
+        for before in &mut self.before {
+            *before = None;
+        }
+    }
+}
+
+/// The hour before's view as the decoder's baseline: only a complete one.
+fn baseline(hour: Option<Hour>, view: Option<SharedView>) -> Option<(Hour, SharedView)> {
+    let hour = hour?;
+    view.filter(|view| matches!(**view, TableView::Complete(_)))
+        .map(|view| (hour, view))
+}
+
+/// What a watch of changes follows: each reconstructed table's watched
+/// fields (None for a Campaign it does not name) and whether its read hours
+/// are visited, the quiet hours not yet visited and this hour's lists.
+struct Changes {
+    fields: Vec<(Option<u64>, bool)>,
+    quiet: QuietHours,
+    changed: Vec<TableId>,
+    rebuilt: Vec<TableId>,
+    /// Whether this hour is visited rather than kept quiet.
+    visits: bool,
+}
+
+/// One watch while the block is read.
+struct Consumer {
+    /// Its reconstructed tables (Campaign too), by position among the
+    /// union's, in table order.
+    own: Vec<usize>,
+    /// None for a watch of every hour.
+    changes: Option<Changes>,
+    /// The frame it was last handed, kept to hand the next with only its
+    /// changed tables replaced; a table an hour will replace is released
+    /// before the hour is reconstructed, so no delta copies for it.
+    frame: Option<DecodedFrame>,
+    replaced: Vec<TableId>,
+}
+
+/// A block's read for its watches.
+struct Reading<'w, 'v, 'r> {
+    tables: BlockTables<'r>,
+    branch: BranchId,
+    /// The tables whose updates the hour handed to watches of every hour
+    /// keeps: theirs, those kept for another reader and Campaign. Every
+    /// other table's update is released once the hour is reconstructed,
+    /// unless the hour is kept for another reader whole.
+    kept: [bool; TABLE_COUNT],
+    consumers: Vec<Consumer>,
+    watches: &'w mut [BlockWatch<'v>],
+}
+
+impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
+    fn new(
+        campaign_id: &'r [u8],
+        branch: BranchId,
+        format: crate::format::FormatVersion,
+        watches: &'w mut [BlockWatch<'v>],
+        extra: &[TableId],
+    ) -> io::Result<Self> {
+        let mut chosen = [false; TABLE_COUNT];
+        chosen[TableId::Campaign.index()] = true;
+        for table in extra {
+            chosen[table.index()] = true;
+        }
+        for watch in watches.iter() {
+            match watch.watching {
+                Watching::Changes(fields) => {
+                    for entry in fields {
+                        chosen[entry.table.index()] = true;
+                    }
+                }
+                Watching::Every(tables) => {
+                    for table in tables {
+                        chosen[table.index()] = true;
+                    }
+                }
+            }
+        }
+        let tables = BlockTables::new(campaign_id, format, &chosen)?;
+        let mut kept = [false; TABLE_COUNT];
+        kept[TableId::Campaign.index()] = true;
+        for table in extra {
+            kept[table.index()] = true;
+        }
+        for watch in watches.iter() {
+            if let Watching::Every(selected) = watch.watching {
+                for table in selected {
+                    kept[table.index()] = true;
+                }
+            }
+        }
+        let mut consumers = Vec::new();
+        engine::allocation::reserve(&mut consumers, watches.len())?;
+        for watch in watches.iter() {
+            let own_tables: Vec<TableId> = match watch.watching {
+                Watching::Changes(fields) => {
+                    engine::allocation::collect_vec(TableId::ALL.into_iter().filter(|&table| {
+                        table == TableId::Campaign
+                            || fields.iter().any(|entry| entry.table == table)
+                    }))?
+                }
+                Watching::Every(selected) => engine::allocation::collect_vec(
+                    TableId::ALL
+                        .into_iter()
+                        .filter(|&table| table == TableId::Campaign || selected.contains(&table)),
+                )?,
+            };
+            let own: Vec<usize> = engine::allocation::collect_vec(
+                own_tables
+                    .iter()
+                    .map(|table| tables.slots[table.index()].expect("a chosen table")),
+            )?;
+            let changes = match watch.watching {
+                Watching::Changes(fields) => Some(Changes {
+                    // Duplicate entries of a table watch the union of their
+                    // fields.
+                    fields: engine::allocation::collect_vec(own_tables.iter().map(|&table| {
+                        let named = fields
+                            .iter()
+                            .filter(|entry| entry.table == table)
+                            .fold(None, |union, entry| Some(union.unwrap_or(0) | entry.fields));
+                        let read = fields
+                            .iter()
+                            .any(|entry| entry.table == table && entry.read);
+                        (named, read)
+                    }))?,
+                    quiet: QuietHours::for_tables(own_tables),
+                    changed: Vec::new(),
+                    rebuilt: Vec::new(),
+                    visits: false,
+                }),
+                Watching::Every(_) => None,
+            };
+            let replaced = engine::allocation::vec(if watch.releasing { own.len() } else { 0 })?;
+            consumers.push(Consumer {
+                own,
+                changes,
+                frame: None,
+                replaced,
+            });
+        }
+        Ok(Self {
+            tables,
+            branch,
+            kept,
+            consumers,
+            watches,
+        })
+    }
+
+    fn live(&self) -> bool {
+        self.watches.iter().any(|watch| !watch.stopped())
+    }
+
+    /// A visit witnessed without advancing rows: every-hour watches, read
+    /// hours, and a delta from a complete baseline deleting keys or naming
+    /// watched fields. A failed delta makes that complete view unavailable,
+    /// which also visits. Other cases keep their views until the normal
+    /// decision, including unwatched deltas in a quiet span.
+    fn visits_before(&self, consumer: &Consumer, frame: &Frame) -> bool {
+        let Some(changes) = &consumer.changes else {
+            return true;
+        };
+        consumer
+            .own
+            .iter()
+            .zip(&changes.fields)
+            .any(|(&position, &(fields, read))| {
+                let table = self.tables.tables[position];
+                fields.is_some()
+                    && ((read && frame.metrics.table_ns[table.index()] != 0)
+                        || match &frame.tables[table.index()] {
+                            TableUpdate::Delta {
+                                changed, deleted, ..
+                            } => match self.tables.views[position].as_deref() {
+                                Some(TableView::Complete(rows)) => {
+                                    !deleted.is_empty()
+                                        || changed.iter().any(|row| {
+                                            touches(table, fields, row)
+                                                || (row.mask == full_mask(row.recorded_fields)
+                                                    && !has_key(rows, row.key))
+                                        })
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        })
+            })
+    }
+
+    fn release_visiting(&mut self, frame: &Frame) {
+        for index in 0..self.consumers.len() {
+            if self.watches[index].stopped()
+                || !self.watches[index].releasing
+                || !self.visits_before(&self.consumers[index], frame)
+            {
+                continue;
+            }
+            let consumer = &mut self.consumers[index];
+            let watch = &mut self.watches[index];
+            if let Some(changes) = &mut consumer.changes
+                && let Err(error) = changes.quiet.flush(&mut watch.visit)
+            {
+                watch.outcome = Some(Err(error));
+                continue;
+            }
+            consumer.replaced.clear();
+            for &position in &consumer.own {
+                let table = self.tables.tables[position];
+                if !matches!(frame.tables[table.index()], TableUpdate::Unchanged { .. }) {
+                    consumer.replaced.push(table);
+                }
+            }
+            if let Err(error) = (watch.visit)(Watched::Replacing(&consumer.replaced)) {
+                watch.outcome = Some(Err(error));
+            }
+        }
+    }
+
+    /// Reconstruct one hour and hand it to every watch still reading;
+    /// whether any still reads.
+    fn hour(&mut self, mut frame: Arc<Frame>, keyframe: Keyframe) -> io::Result<bool> {
+        if frame.keyframe {
+            for (consumer, watch) in self.consumers.iter().zip(self.watches.iter_mut()) {
+                if !watch.stopped()
+                    && self
+                        .tables
+                        .refuses_keyframe(&consumer.own, &frame, keyframe)
+                {
+                    watch.outcome = Some(Err(invalid_static(
+                        "keyframe contains a dependent or partial table",
+                    )));
+                }
+            }
+            if !self.live() {
+                return Ok(false);
+            }
+        } else {
+            self.release_visiting(&frame);
+            // A table this hour replaces is released from the frames kept,
+            // so its delta applies in place unless a visitor holds it.
+            for consumer in &mut self.consumers {
+                if let Some(kept) = &mut consumer.frame {
+                    for &position in &consumer.own {
+                        let table = self.tables.tables[position];
+                        if !matches!(frame.tables[table.index()], TableUpdate::Unchanged { .. }) {
+                            kept.tables[table.index()] = not_selected();
+                        }
+                    }
+                }
+            }
+        }
+        self.tables.advance(&frame)?;
+        let metrics = &frame.metrics;
+        for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter()) {
+            if watch.stopped() {
+                continue;
+            }
+            let Some(changes) = &mut consumer.changes else {
+                continue;
+            };
+            changes.changed.clear();
+            changes.rebuilt.clear();
+            for (&position, &(fields, visit_read)) in consumer.own.iter().zip(&changes.fields) {
+                let table = self.tables.tables[position];
+                let read = metrics.table_ns[table.index()] != 0;
+                let differs = self
+                    .tables
+                    .differs(position, fields, &frame.tables[table.index()]);
+                if fields.is_some() && (frame.keyframe || differs || (visit_read && read)) {
+                    engine::allocation::reserve(&mut changes.changed, 1)?;
+                    changes.changed.push(table);
+                }
+                if frame.keyframe || self.tables.rebuilt[position] {
+                    engine::allocation::reserve(&mut changes.rebuilt, 1)?;
+                    changes.rebuilt.push(table);
+                }
+            }
+            changes.visits = frame.keyframe || !changes.changed.is_empty();
+            if !changes.visits {
+                let views = &self.tables.views;
+                let rebuilt = &self.tables.rebuilt;
+                changes.quiet.push(
+                    frame.hour,
+                    metrics.clone(),
+                    consumer.own.iter().map(|&position| {
+                        (
+                            views[position].as_ref().and_then(SharedView::sampled_at),
+                            rebuilt[position],
+                        )
+                    }),
+                )?;
+            }
+        }
+        self.tables.release_before();
+        if let Some(owned) = Arc::get_mut(&mut frame) {
+            for &table in &self.tables.tables {
+                if !self.kept[table.index()] {
+                    owned.tables[table.index()] = TableUpdate::Unavailable {
+                        reason: String::new(),
+                    };
+                }
+            }
+        }
+        for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter_mut()) {
+            if watch.stopped() {
+                continue;
+            }
+            if consumer
+                .changes
+                .as_ref()
+                .is_some_and(|changes| !changes.visits)
+            {
+                continue;
+            }
+            if let Some(changes) = &mut consumer.changes
+                && let Err(error) = changes.quiet.flush(&mut watch.visit)
+            {
+                watch.outcome = Some(Err(error));
+                continue;
+            }
+            let decoded = project(
+                &mut consumer.frame,
+                &self.tables,
+                &consumer.own,
+                self.branch,
+                &frame,
+            );
+            let visited = match &consumer.changes {
+                Some(changes) => (watch.visit)(Watched::Change(BlockChange::Changed {
+                    frame: decoded,
+                    tables: &changes.changed,
+                    rebuilt: &changes.rebuilt,
+                })),
+                None => (watch.visit)(Watched::Hour {
+                    updates: &frame,
+                    frame: decoded,
+                }),
+            };
+            if let Err(error) = visited {
+                watch.outcome = Some(Err(error));
+            }
+        }
+        Ok(self.live())
+    }
+
+    /// Hand every watch of changes still reading its quiet hours not yet
+    /// visited.
+    fn flush(&mut self) {
+        for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter_mut()) {
+            if watch.stopped() {
+                continue;
+            }
+            if let Some(changes) = &mut consumer.changes
+                && let Err(error) = changes.quiet.flush(&mut watch.visit)
+            {
+                watch.outcome = Some(Err(error));
+            }
+        }
+    }
+}
+
+fn has_key(rows: &TableRows, key: u128) -> bool {
+    let mut low = 0;
+    let mut high = rows.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        match rows
+            .get(middle)
+            .expect("a row within the table")
+            .key()
+            .cmp(&key)
+        {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Equal => return true,
+            std::cmp::Ordering::Greater => high = middle,
+        }
+    }
+    false
+}
+
+/// The frame a watch reading `own` is handed at `frame`'s hour: its tables'
+/// views (Campaign too) and the view every unselected table shares for the
+/// others, as its own decoder reconstructs them. The frame it was last handed
+/// is reused, with each table whose view or sample hour differs replaced.
+fn project<'f>(
+    kept: &'f mut Option<DecodedFrame>,
+    tables: &BlockTables<'_>,
+    own: &[usize],
+    branch: BranchId,
+    frame: &Frame,
+) -> &'f DecodedFrame {
+    let view = |position: usize| tables.views[position].clone().unwrap_or_else(not_selected);
+    match kept {
+        Some(kept) => {
+            for &position in own {
+                let index = tables.tables[position].index();
+                let current = tables.views[position].as_ref();
+                let same = current.is_some_and(|current| {
+                    SharedView::ptr_eq(&kept.tables[index], current)
+                        && kept.tables[index].sampled_at() == current.sampled_at()
+                });
+                if !same {
+                    kept.tables[index] = view(position);
+                }
+            }
+            kept.branch = branch;
+            kept.hour = frame.hour;
+            kept.metrics = frame.metrics.clone();
+        }
+        None => {
+            *kept = Some(DecodedFrame {
+                branch,
+                hour: frame.hour,
+                tables: std::array::from_fn(|index| match tables.slots[index] {
+                    Some(position) if own.contains(&position) => view(position),
+                    _ => not_selected(),
+                }),
+                metrics: frame.metrics.clone(),
+            });
+        }
+    }
+    kept.as_ref().expect("a projected frame")
+}
+
+// Each table section decoded on this thread, counted in tests.
+#[cfg(test)]
+thread_local! {
+    static DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn note_decoded() {
+    DECODED.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+pub(super) fn decoded() -> usize {
+    DECODED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+#[path = "watched_tests.rs"]
+mod tests;

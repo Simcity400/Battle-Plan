@@ -1,12 +1,13 @@
 //! The sampled families prepared on their own: air force size, navy size,
-//! country stability and its parts, fuel, equipment losses, supply health, the
+//! country stability and its parts, equipment losses, supply health, the
 //! party history and trade flows. Their widgets answer at open through
-//! samplers; their exact history is this preparation.
+//! samplers; their exact history is this preparation. (Fuel, sampled too, is
+//! read daily and prepared with the economy ledgers.)
 //!
 //! Each observer reads tables that move nearly every hour while countries
 //! fight or produce (wing equipment, ship strength, sliced stability and
-//! command-power reads, fuel amounts, division supply, combat-log losses,
-//! resource exchanges), and carries state from one hour to the next that
+//! command-power reads, division supply, combat-log losses, resource
+//! exchanges), and carries state from one hour to the next that
 //! decides what the next adds (open runs and their parts, composition
 //! versions, sliced read dates, open loss days, open deals). An hour's observation already does nothing where nothing it
 //! reads changed. So no block is read by its changes alone, and no block can
@@ -65,7 +66,7 @@ use crate::{
     },
     prepared_stability::StabilityAccumulator,
     products::{
-        air_force, country_fuel, country_history::HistoryScan, equipment_losses, navy,
+        air_force, country_history::HistoryScan, equipment_losses, navy,
         parts_race_prepared::Family as _, party_history, supply_health, territory, trade_flows,
     },
 };
@@ -449,65 +450,6 @@ impl Sampled for StabilityAccumulator {
         timings: &mut Timings,
     ) -> io::Result<()> {
         self.flush_timed(writer, branch, cancelled, timings)
-    }
-}
-
-// --- Fuel ------------------------------------------------------------------
-
-impl Sampled for country_fuel::prepared::Prepared {
-    fn family() -> &'static prepass::Family {
-        &FUEL_FAMILY
-    }
-
-    const TIMING: &'static str = "independent.fuel";
-    const GATES: &'static [&'static str] = &["country-fuel"];
-    #[cfg(test)]
-    const OBSERVED: &'static str = "fuel.observed";
-
-    /// Fuel amounts and capacities, their demand parts and consumers, and the
-    /// states and countries they are joined through.
-    fn tables() -> &'static [TableId] {
-        static TABLES: LazyLock<Vec<TableId>> = LazyLock::new(|| {
-            union(&[&[
-                TableId::Countries,
-                TableId::CountryLinks,
-                TableId::States,
-                TableId::CountryFuel,
-                TableId::FuelDemandParts,
-                TableId::CountryFuelConsumers,
-            ]])
-        });
-        &TABLES
-    }
-
-    fn new(_: &Block<'_>) -> Self {
-        Self::default()
-    }
-
-    fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        block: &Block<'_>,
-        changes: &FrameChanges,
-        running: &AtomicBool,
-        _: &mut Timings,
-    ) -> io::Result<()> {
-        self.observe_changes(frame, block.replay.format, changes, running)
-    }
-
-    fn bytes(&self) -> usize {
-        self.buffered_bytes()
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        format: FormatVersion,
-        branch: u64,
-        cancelled: &AtomicBool,
-        _: &mut Timings,
-    ) -> io::Result<()> {
-        Self::flush(self, writer, branch, format, cancelled)
     }
 }
 
@@ -998,7 +940,8 @@ impl Sampled for Territory {
 // --- Families --------------------------------------------------------------
 
 /// A sampled family's pre-pass family: its extract keeps nothing, as the
-/// family's own thread reads each block from the shared read.
+/// family's own thread reads each block from the shared read, so it has no
+/// pool lane ([`Own::laned`]) and the extract is never run.
 macro_rules! family {
     ($static:ident, $name:literal) => {
         static $static: prepass::Family = prepass::Family {
@@ -1075,10 +1018,12 @@ pub(in crate::prepared::pipeline) const AIR_APPLIED: &str = "air.applied";
 pub(in crate::prepared::pipeline) const NAVY_APPLIED: &str = "navy.applied";
 
 /// Fold a force census's block from a worker's facts: observe the block's
-/// first hour on the carried state, then publish each later hour's rows when
-/// the carried scan continues as the worker's did, or observe the rest of
-/// the block hour by hour on the block read alone with `tables` when it
-/// does not. How it folded, the last hour reached and the block's last frame.
+/// first hour on the carried state and, where the worker took its tail at a
+/// later hour, the hours through the tail's hour by hour on the block read
+/// alone with `tables`; then publish each later hour's rows when the carried
+/// scan continues as the worker's did, or observe the rest of the block hour
+/// by hour when it does not. How it folded, the last hour reached and the
+/// block's last frame.
 fn fold_forces<F: parts_race_prepared::Family + 'static>(
     prepared: &mut parts_race_prepared::Prepared<F>,
     tables: &[TableId],
@@ -1106,18 +1051,17 @@ where
     if !observed(first, result)? {
         return Ok((Folded::Fast, Some(first), facts.last));
     }
-    let continues = prepared.fold_continues(&mut facts);
-    #[cfg(test)]
-    let continues = continues && !FALLBACK.with(std::cell::Cell::get);
-    if continues {
-        let last = facts.last.clone();
-        #[cfg(test)]
-        for _ in 0..facts.later_hours() {
-            prepass::note(notes.1);
-        }
-        let threads = super::super::lanes::parallelism().clamp(1, 8);
-        let reached = prepared.fold_rest(facts, block.source, block.context, threads, observed)?;
-        return Ok((Folded::Fast, reached.or(Some(first)), last));
+    let tail = facts.tail_hour();
+    if tail == Some(first) && forces_continue(prepared, &mut facts) {
+        return fold_forces_rest(
+            prepared,
+            facts,
+            first,
+            block,
+            observed,
+            #[cfg(test)]
+            notes.1,
+        );
     }
     let format = block.replay.format;
     let mut tracker = FrameChangeTracker::new();
@@ -1125,12 +1069,17 @@ where
     let mut last = None;
     let mut stopped = false;
     let mut failure = None;
+    // The carried scan continued as the worker's from its tail's hour: the
+    // read stops there.
+    let mut handed = false;
     let read = block.replay.read_block_alone(
         block.index,
         tables,
         |raw, frame| {
             let changes = tracker.observe_updates(frame, Arc::new(raw), format);
-            last = Some(frame.clone());
+            if frame.hour == block.index.last_hour {
+                last = Some(frame.clone());
+            }
             if stopped || frame.hour <= first {
                 return Ok(());
             }
@@ -1148,6 +1097,10 @@ where
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;
+                    if live && tail == Some(frame.hour) && forces_continue(prepared, &mut facts) {
+                        handed = true;
+                        return Err(io::Error::other("Force fold continues from its tail"));
+                    }
                     Ok(())
                 }
                 Err(error) => {
@@ -1161,11 +1114,65 @@ where
     if let Some(error) = failure {
         return Err(error);
     }
+    if handed {
+        let hour = tail.unwrap_or(first);
+        return fold_forces_rest(
+            prepared,
+            facts,
+            hour,
+            block,
+            observed,
+            #[cfg(test)]
+            notes.1,
+        );
+    }
     read?;
     Ok((Folded::Fallback, reached, last))
 }
+
+/// Whether the carried scan, having observed the block through the worker's
+/// tail's hour, continues as the worker's did.
+fn forces_continue<F: parts_race_prepared::Family + 'static>(
+    prepared: &parts_race_prepared::Prepared<F>,
+    facts: &mut BlockFacts<F>,
+) -> bool
+where
+    F::Raw: Send,
+    F::Scanned: Send,
+    F::Part: Send,
+{
+    let continues = prepared.fold_continues(facts);
+    #[cfg(test)]
+    let continues = continues && !FALLBACK.with(std::cell::Cell::get);
+    continues
+}
+
+/// Publish every hour's rows after the worker's tail's, `hour`, and carry
+/// the scan to the block's end: how it folded, the last hour reached and the
+/// block's last frame.
+fn fold_forces_rest<F: parts_race_prepared::Family + 'static>(
+    prepared: &mut parts_race_prepared::Prepared<F>,
+    facts: BlockFacts<F>,
+    hour: i32,
+    block: &Block<'_>,
+    observed: &mut Observed<'_>,
+    #[cfg(test)] applied: &'static str,
+) -> io::Result<(Folded, Option<i32>, Option<DecodedFrame>)>
+where
+    F::Raw: Send,
+    F::Scanned: Send,
+    F::Part: Send,
+{
+    let last = facts.last.clone();
+    #[cfg(test)]
+    for _ in 0..facts.later_hours() {
+        prepass::note(applied);
+    }
+    let threads = super::super::lanes::parallelism().clamp(1, 8);
+    let reached = prepared.fold_rest(facts, block.source, block.context, threads, observed)?;
+    Ok((Folded::Fast, reached.or(Some(hour)), last))
+}
 family!(STABILITY_FAMILY, "stability");
-family!(FUEL_FAMILY, "fuel");
 family!(LOSSES_FAMILY, "equipment_losses");
 family!(SUPPLY_FAMILY, "supply");
 family!(PARTIES_FAMILY, "parties");
@@ -1204,9 +1211,6 @@ pub(in crate::prepared::pipeline) static NAVY: Entry<navy::prepared::Prepared> =
 /// Country stability and its parts.
 pub(in crate::prepared::pipeline) static STABILITY: Entry<StabilityAccumulator> =
     Entry(PhantomData);
-/// Fuel and current consumption.
-pub(in crate::prepared::pipeline) static FUEL: Entry<country_fuel::prepared::Prepared> =
-    Entry(PhantomData);
 /// Equipment losses.
 pub(in crate::prepared::pipeline) static EQUIPMENT_LOSSES: Entry<
     equipment_losses::prepared::Prepared,
@@ -1238,6 +1242,11 @@ impl<S: Sampled> Own for Entry<S> {
     /// A family that folds reads its blocks on pre-pass workers instead.
     fn shared_tables(&self) -> &'static [TableId] {
         if S::FOLDS { &[] } else { S::tables() }
+    }
+
+    /// Only a family that folds keeps anything of an extract.
+    fn laned(&self) -> bool {
+        S::FOLDS
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -1288,17 +1297,7 @@ impl<S: Sampled> SampledBranch<S> {
         {
             return Ok(Some(frame));
         }
-        let mut frame = None;
-        block.replay.read_block_alone(
-            previous,
-            S::tables(),
-            |_, read| {
-                frame = Some(read.clone());
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        Ok(frame)
+        super::shared::read_last(block.replay, previous, S::tables())
     }
 
     /// Observe the block hour by hour, as hourly preparation does, with the
@@ -1333,7 +1332,7 @@ impl<S: Sampled> SampledBranch<S> {
             S::tables(),
             |raw, frame| {
                 let changes = tracker.observe_updates(frame, raw, format);
-                if S::RESUMES {
+                if S::RESUMES && frame.hour == block.index.last_hour {
                     last = Some(frame.clone());
                 }
                 if stopped {

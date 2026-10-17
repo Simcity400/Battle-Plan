@@ -252,6 +252,7 @@ fn intel_frame(branch: u64, hour: i32) -> DecodedFrame {
                 bonus: Recorded::Value(0),
                 detected: Recorded::Value(0),
                 effect_description: Recorded::Value(Vec::new()),
+                ..Default::default()
             }]
         } else {
             Vec::new()

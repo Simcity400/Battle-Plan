@@ -685,6 +685,11 @@ pub struct Scan {
     rates: [usize; 5],
     #[serde(skip)]
     joined: bool,
+    /// The scan has read or forgotten variant names since it started: the
+    /// names it holds are then those any scan holds after that hour, where
+    /// before, a scan started afresh knows none a carried one knows.
+    #[serde(skip)]
+    pub(super) names_settled: bool,
     #[cfg(test)]
     #[serde(skip)]
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
@@ -811,6 +816,7 @@ impl Scan {
             countries,
             census,
             joined,
+            names_settled,
             ..
         } = self;
         // The continuation keeps each known variant's token: those variants stay
@@ -837,15 +843,19 @@ impl Scan {
         });
         let hour = decoded.hour;
         let continuous = last_hour.is_some_and(|last| last.checked_add(1) == Some(hour));
+        let gap = last_hour.is_some() && !continuous;
         *last_hour = Some(hour);
         if !continuous {
             variants.forget(hour);
             variant_tokens.clear();
         }
         let complete = decoded.complete::<tables::VariantDefinitions>().is_ok();
-        let check_names = !continuous
-            || complete != *definitions_complete
-            || slot_read(format, &decoded.metrics, TableId::VariantDefinitions, hour);
+        let read = slot_read(format, &decoded.metrics, TableId::VariantDefinitions, hour);
+        // The catalogue reads every name at a due read, and forgets them all
+        // after a gap, where the table is not complete or the read did not
+        // land: after any of these, no name it holds comes from before.
+        *names_settled |= gap || read || !complete;
+        let check_names = !continuous || complete != *definitions_complete || read;
         *definitions_complete = complete;
         variants.observe(format, decoded);
         let names_changed = if check_names {
@@ -1059,14 +1069,21 @@ impl TrackTail {
 }
 
 /// What decides a scan's next hours: its last hour and read evidence, the
-/// variant names it knows and the variant catalogue's current versions, the
+/// variant names it knows and the variant catalogue's current names, the
 /// country join, the census's readiness, the active tracks' tails (as the
 /// next hour extends them) and the counter rates an unchanged hour adds. The
-/// census itself is rebuilt from the hour's frame at a block's first hour,
-/// from the same variant names and country join, so it is equal whenever
-/// these are. Whether the hour's join changed is left out: every hour sets
-/// it before reading it, and a census starting afresh joins anew where the
-/// carried one finds its join held.
+/// census itself holds the hour's wings either way, counted with the same
+/// variant names and country join, so it is equal whenever these are.
+/// Whether the hour's join changed is left out: every hour sets it before
+/// reading it, and a census starting afresh joins anew where the carried
+/// one finds its join held.
+///
+/// Of the catalogue, the census and the names check read only each known
+/// variant's current token; its last hour is the scan's. When a version
+/// began is left out: a read keeps a variant's version unless what it read
+/// changed, so a carried catalogue dates a name from the read that first
+/// gave it, a worker's from its own first read, and a restored one from its
+/// restore, with the same name.
 #[derive(PartialEq)]
 struct Decision {
     last_hour: Option<i32>,
@@ -1075,7 +1092,7 @@ struct Decision {
     applied: Option<i32>,
     rates: [usize; 5],
     variant_tokens: BTreeMap<u64, String>,
-    variants: Option<serde_json::Value>,
+    names: Option<BTreeMap<u64, String>>,
     countries: Vec<(Vec<u8>, Option<Identity>)>,
     census: (bool, Option<bool>),
     through: Option<i32>,
@@ -1085,7 +1102,7 @@ struct Decision {
 }
 
 /// The counters a scan adds to, which a fold carries by the block's
-/// increase after its first hour.
+/// increase after its tail's hour.
 #[derive(Clone)]
 struct Counters {
     unreadable_owners: [usize; 2],
@@ -1093,7 +1110,7 @@ struct Counters {
     undisplayable_tags: BTreeMap<Vec<u8>, usize>,
 }
 
-/// The scan right after a block's first hour.
+/// A worker's scan right after the hour it takes its tail at.
 pub struct Tail {
     hour: i32,
     decision: Decision,
@@ -1115,7 +1132,7 @@ impl Scan {
             applied: self.applied,
             rates: self.rates,
             variant_tokens: self.variant_tokens.clone(),
-            variants: self.variants.as_ref().map(current_variants),
+            names: self.variants.as_ref().map(current_names),
             countries: self.countries.tags.clone(),
             census: (self.census.ready, self.census.equipment_complete),
             through: histories.through,
@@ -1148,7 +1165,7 @@ impl Scan {
         }
     }
 
-    /// The scan right after a block's first hour, `hour`.
+    /// The scan right after the hour it takes its tail at, `hour`.
     pub(super) fn tail(&self, hour: i32) -> Tail {
         Tail {
             hour,
@@ -1160,12 +1177,13 @@ impl Scan {
         }
     }
 
-    /// Whether this carried scan, after the block's first hour, decides every
-    /// later hour as the extract's did from `tail`: then each later step is
-    /// the extract's, as every step reads only the hour's frame and what the
-    /// decision holds. A track idle at the first hour continues only through
-    /// adjacent hours, so its history decides nothing later. The extract's
-    /// tracks active then each opened their run and segment at that hour.
+    /// Whether this carried scan, having observed the block through the
+    /// tail's hour, decides every later hour as the extract's did from
+    /// `tail`: then each later step is the extract's, as every step reads
+    /// only the hour's frame and what the decision holds. A track idle at
+    /// the tail's hour continues only through adjacent hours, so its history
+    /// decides nothing later. The extract's tracks active then each had a run
+    /// and segment by that hour, which the carried ones continue.
     pub(super) fn continues(&self, tail: &Tail, block: &Scan) -> bool {
         self.decision() == tail.decision
             && tail.active.iter().all(|tag| {
@@ -1174,20 +1192,22 @@ impl Scan {
                     track
                         .runs
                         .first()
-                        .is_some_and(|run| run.first_hour == tail.hour)
+                        .is_some_and(|run| run.first_hour <= tail.hour)
                         && track
                             .segments
                             .first()
-                            .is_some_and(|segment| segment.first_hour == tail.hour)
+                            .is_some_and(|segment| segment.first_hour <= tail.hour)
                 })
             })
     }
 
-    /// Carry this scan to the block's end: the run and segment each track
-    /// active at the first hour opened then extend the carried ones it
-    /// continued, later ones follow, new tags take the next tracks in the
-    /// order the extract made them, the counters add their increase after
-    /// the first hour, and everything else is the extract's.
+    /// Carry this scan to the block's end: of each track, what the extract
+    /// stepped through the tail's hour the carried scan observed itself; the
+    /// run and segment a track active then held at that hour extend the
+    /// carried ones they continued, later ones follow, new tags take the
+    /// next tracks in the order the extract made them, the counters add
+    /// their increase after the tail's hour, and everything else is the
+    /// extract's.
     pub(super) fn carry(&mut self, tail: Tail, block: Scan) {
         let Scan {
             histories,
@@ -1299,30 +1319,22 @@ impl Scan {
     }
 }
 
-/// The catalogue's state with each variant's current version in place of
-/// its versions: what its next observations read.
-fn current_variants(variants: &VariantCatalogue) -> serde_json::Value {
-    let mut value = serde_json::to_value(variants).unwrap_or_default();
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "versions".to_owned(),
-            serde_json::to_value(
-                variants
-                    .versions
-                    .keys()
-                    .filter_map(|&id| variants.current(id).map(|current| (id, current)))
-                    .collect::<BTreeMap<_, _>>(),
-            )
-            .unwrap_or_default(),
-        );
-    }
-    value
+/// Each variant the catalogue names now, with its current token: what its
+/// next hours read of it.
+fn current_names(variants: &VariantCatalogue) -> BTreeMap<u64, String> {
+    variants
+        .versions
+        .keys()
+        .filter_map(|&id| variants.current(id).map(|raw| (id, raw.token.clone())))
+        .collect()
 }
 
-/// Carry one track: with `opened`, the extract opened its first run and
-/// segment at `hour`, where the carried track's continue, so they extend
-/// those; every later run and segment follows, and a track the extract
-/// touched takes its identity and last known hour.
+/// Carry one track: the runs and segments the extract began by `hour` cover
+/// hours the carried track observed itself, so they go; with `opened`, the
+/// track was active at `hour`, where the carried track's run and segment
+/// continue, so the last of each extend those. Every later run and segment
+/// follows, and a track the extract touched after `hour` takes its identity
+/// and last known hour.
 fn carry_track(carried: &mut Track, extracted: Track, opened: bool, hour: i32) {
     let Track {
         mut runs,
@@ -1330,22 +1342,22 @@ fn carry_track(carried: &mut Track, extracted: Track, opened: bool, hour: i32) {
         last_identity,
         last_known,
     } = extracted;
-    if opened {
-        if runs.first().is_some_and(|run| run.first_hour == hour)
-            && let Some(open) = carried.runs.last_mut()
-        {
-            open.last_hour = runs[0].last_hour;
-            runs.remove(0);
-        }
-        if segments
-            .first()
-            .is_some_and(|segment| segment.first_hour == hour)
-            && let Some(open) = carried.segments.last_mut()
-        {
-            open.last_hour = segments[0].last_hour;
-            segments.remove(0);
-        }
+    let begun = runs.partition_point(|run| run.first_hour <= hour);
+    if opened
+        && begun > 0
+        && let Some(open) = carried.runs.last_mut()
+    {
+        open.last_hour = runs[begun - 1].last_hour;
     }
+    runs.drain(..begun);
+    let begun = segments.partition_point(|segment| segment.first_hour <= hour);
+    if opened
+        && begun > 0
+        && let Some(open) = carried.segments.last_mut()
+    {
+        open.last_hour = segments[begun - 1].last_hour;
+    }
+    segments.drain(..begun);
     let touched = opened || !runs.is_empty() || !segments.is_empty();
     carried.runs.extend(runs);
     carried.segments.extend(segments);
@@ -1454,29 +1466,6 @@ mod held {
         }
     }
 
-    /// A JSON value's strings, lists and objects.
-    fn json(value: &serde_json::Value, bytes: &mut HeldBytes) {
-        match value {
-            serde_json::Value::String(text) => {
-                bytes.heap(text);
-            }
-            serde_json::Value::Array(items) => {
-                bytes.add(items.capacity() * size_of::<serde_json::Value>());
-                for item in items {
-                    json(item, bytes);
-                }
-            }
-            serde_json::Value::Object(entries) => {
-                bytes.tree::<String, serde_json::Value>(entries.len());
-                for (key, item) in entries {
-                    bytes.heap(key);
-                    json(item, bytes);
-                }
-            }
-            _ => {}
-        }
-    }
-
     impl Held for Scan {
         fn held(&self, bytes: &mut HeldBytes) {
             bytes
@@ -1503,15 +1492,13 @@ mod held {
             let decision = &self.decision;
             bytes
                 .heap(&decision.variant_tokens)
+                .heap(&decision.names)
                 .heap(&decision.countries)
                 .heap(&decision.active)
                 .heap(&decision.undisplayable)
                 .heap(&decision.tracks)
                 .heap(&self.counters.undisplayable_tags)
                 .heap(&self.active);
-            if let Some(value) = &decision.variants {
-                json(value, bytes);
-            }
         }
     }
 }

@@ -551,3 +551,196 @@ fn manual_alias_projection_keeps_selected_holders_and_excludes_unrelated_alias_r
             .any(|identity| identity.country_id == 9003)
     );
 }
+
+#[test]
+fn gain_runs_visit_only_changed_countries_and_banked_reads() {
+    use super::Scan;
+    use crate::{prepared::frame_changes::FrameChangeTracker, test_fixtures::scale_frame};
+    use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
+    use std::{collections::VecDeque, sync::Arc};
+    const COUNT: u32 = 32;
+    const HOURS: i32 = 73;
+    let frames = (0..HOURS)
+        .map(|offset| {
+            let mut frame = scale_frame(1, slot_base() + offset, COUNT);
+            *frame.tables[TableId::CountryExperience.index()] =
+                TableView::Complete(TableRows::CountryExperience(
+                    (0..COUNT)
+                        .map(|index| CountryExperienceRow {
+                            country: 100_000 + index,
+                            army_raw: 100,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            *frame.tables[TableId::CountryExperienceGains.index()] =
+                TableView::Complete(TableRows::CountryExperienceGains(
+                    (0..COUNT)
+                        .map(|index| CountryExperienceGainRow {
+                            country: 100_000 + index,
+                            instance: if index == 0 && offset >= 45 { 2 } else { 1 },
+                            complete: u8::from(index != 0 || offset != 37),
+                            army_raw: if index == 0 {
+                                1 + i64::from(offset % 2)
+                            } else {
+                                7
+                            },
+                            air_raw: i64::MAX,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let mut scan = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    let mut reference: Vec<VecDeque<(i32, u32, [i64; 3])>> = vec![VecDeque::new(); COUNT as usize];
+    let mut reads = 0;
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            &TableId::ALL,
+            |raw, frame| {
+                // Independent hourly queues authenticate every interval, including the
+                // partial interval and the change of native instance.
+                for (index, row) in frame
+                    .complete::<replay::rows::tables::CountryExperienceGains>()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                {
+                    let queue = &mut reference[index];
+                    if row.complete != 1
+                        || queue
+                            .back()
+                            .is_some_and(|(_, instance, _)| *instance != row.instance)
+                    {
+                        queue.clear();
+                    }
+                    if row.complete == 1 {
+                        queue.push_back((
+                            frame.hour,
+                            row.instance,
+                            [row.army_raw, row.navy_raw, row.air_raw],
+                        ));
+                        while queue
+                            .front()
+                            .is_some_and(|(hour, _, _)| frame.hour - *hour >= 24)
+                        {
+                            queue.pop_front();
+                        }
+                    }
+                }
+                let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                scan.step(frame, replay.format, Some(&changes), |_, identity, read| {
+                    if read.read_hour == frame.hour {
+                        let queue = &reference[identity.0 as usize];
+                        let expected = (queue.len() == 24).then(|| {
+                            queue.iter().fold([0_i128; 3], |mut sum, (_, _, values)| {
+                                for index in 0..3 {
+                                    sum[index] += i128::from(values[index]);
+                                }
+                                sum
+                            })
+                        });
+                        assert_eq!(
+                            read.gain, expected,
+                            "country {identity:?} at {}",
+                            frame.hour
+                        );
+                        reads += 1;
+                    }
+                    Ok(())
+                })
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(reads, COUNT as usize * 4);
+    assert!(
+        scan.gain_updates() <= COUNT as usize * 4 + HOURS as usize,
+        "unchanged gain owners were revisited: {} updates",
+        scan.gain_updates()
+    );
+    assert!(
+        scan.seen
+            .iter()
+            .filter(|(identity, _)| identity.0 != 0)
+            .all(|(_, state)| state.gains.len() == 1)
+    );
+}
+
+#[test]
+fn quiet_gain_runs_advance_without_visiting_countries_and_resume_at_a_daily_read() {
+    use super::Scan;
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::rows::CountryExperienceGainRow;
+    let mut first = experience_frame(0, false, 9001);
+    *first.tables[TableId::CountryExperienceGains.index()] =
+        TableView::Complete(TableRows::CountryExperienceGains(vec![
+            CountryExperienceGainRow {
+                country: 11,
+                instance: 77,
+                complete: 1,
+                army_raw: 3,
+                ..Default::default()
+            },
+        ]));
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut hourly = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    let changes = tracker.observe(&first, format);
+    hourly
+        .step(&first, format, Some(&changes), |_, _, _| Ok(()))
+        .unwrap();
+    let mut quiet = Scan::default();
+    quiet
+        .step(&first, format, Some(&changes), |_, _, _| Ok(()))
+        .unwrap();
+    // Runtime joins are rebuilt at the first hour after loading.
+    let mut resumed: Scan = serde_json::from_slice(&serde_json::to_vec(&hourly).unwrap()).unwrap();
+    let mut resumed_tracker = FrameChangeTracker::new();
+    let mut next = first.clone();
+    next.hour += 1;
+    let changes = resumed_tracker.observe(&next, format);
+    resumed
+        .step(&next, format, Some(&changes), |_, _, _| Ok(()))
+        .unwrap();
+    let ticks = quiet.gain_updates();
+    assert!(quiet.advance_quiet(first.hour + 1, first.hour + 23));
+    assert_eq!(
+        quiet.gain_updates(),
+        ticks,
+        "a quiet span visits no gain queue"
+    );
+    for offset in 1..24 {
+        let mut next = first.clone();
+        next.hour += offset;
+        let changes = tracker.observe(&next, format);
+        hourly
+            .step(&next, format, Some(&changes), |_, _, _| Ok(()))
+            .unwrap();
+    }
+    assert_eq!(
+        serde_json::to_value(&quiet).unwrap(),
+        serde_json::to_value(&hourly).unwrap()
+    );
+    assert!(resumed.advance_quiet(first.hour + 2, first.hour + 23));
+    let mut daily = first.clone();
+    daily.hour += 24;
+    let mut found = Vec::new();
+    for scan in [&mut hourly, &mut quiet, &mut resumed] {
+        scan.step(&daily, format, None, |_, _, read| {
+            found.push(read.gain);
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert_eq!(found, vec![Some([72, 0, 0]); 3]);
+    assert_eq!(
+        serde_json::to_value(&resumed).unwrap(),
+        serde_json::to_value(&hourly).unwrap()
+    );
+}

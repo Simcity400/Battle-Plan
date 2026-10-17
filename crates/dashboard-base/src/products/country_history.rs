@@ -642,6 +642,7 @@ impl HistoryScan {
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
         mut observed: impl FnMut(&str, Option<i64>, bool),
     ) {
+        let _cpu = replay::cpu::scope("identities-read", None);
         self.witnesses.observe(frame, changes);
         let contiguous = self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         let previous_hour = self.hour;

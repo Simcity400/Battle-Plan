@@ -708,6 +708,44 @@ fn observed_on_its_own(family: Sampled) {
     );
 }
 
+/// A sampled family whose own thread observes every block has no pre-pass
+/// lane: prepared alone, no block is read on the pre-pass pool for it (a lane
+/// reading each block's campaign identity and keeping nothing did before),
+/// and it publishes and covers what hourly preparation does.
+#[test]
+fn sampled_families_observing_every_block_have_no_prepass_lane() {
+    for family in [STABILITY, EQUIPMENT_LOSSES, SUPPLY, TRADE, TERRITORY, PARTIES] {
+        let replay = scenario(3, true);
+        let mut fixture = Fixture::new(&replay);
+        let revision = format!("{}-unlaned", family.name);
+        let hourly = hourly(&mut fixture, &revision, plain);
+        let source = fixture.source(&revision);
+        let (reads, sequential) = (
+            prepass::noted(prepass::PREPASS_READ),
+            prepass::noted(&format!("{}.sequential", family.name)),
+        );
+        prepass::with_test_prepass(2, None, || {
+            lanes::with_test_lanes(4, None, || family.own(|| plain(&source)))
+        });
+        assert_eq!(
+            prepass::noted(prepass::PREPASS_READ),
+            reads,
+            "{}: no block read on the pool",
+            family.name
+        );
+        assert_eq!(
+            prepass::noted(&format!("{}.sequential", family.name)),
+            sequential,
+            "{}: no block counted as observed for want of facts",
+            family.name
+        );
+        let own = payloads(&source, None);
+        assert_same(family, &own, &hourly, family.name, true);
+        assert_covered(family, &own, family.name);
+        clear(source);
+    }
+}
+
 macro_rules! sampled_tests {
     ($family:ident, $parity:ident, $commits:ident, $refusals:ident, $hours:ident) => {
         #[test]
@@ -753,13 +791,23 @@ sampled_tests!(
     stability_prepared_on_its_own_refuses_where_hourly_preparation_does,
     stability_is_observed_every_hour_on_its_own_thread_and_skipped_by_the_walk
 );
-sampled_tests!(
-    FUEL,
-    fuel_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_does,
-    fuel_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation,
-    fuel_prepared_on_its_own_refuses_where_hourly_preparation_does,
-    fuel_is_observed_every_hour_on_its_own_thread_and_skipped_by_the_walk
-);
+// Fuel is read by its changes with the economy ledgers, whose tests count its
+// frames and quiet hours (`independent_ledgers`). Here its fuel moves every
+// hour, so every hour is a read it observes.
+#[test]
+fn fuel_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_does() {
+    parity(FUEL);
+}
+
+#[test]
+fn fuel_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation() {
+    commits(FUEL);
+}
+
+#[test]
+fn fuel_prepared_on_its_own_refuses_where_hourly_preparation_does() {
+    refusals(FUEL);
+}
 sampled_tests!(
     EQUIPMENT_LOSSES,
     equipment_losses_prepared_on_their_own_publish_and_save_what_hourly_preparation_does,
@@ -877,9 +925,16 @@ fn navy_size_observes_the_rest_of_a_block_where_its_census_does_not_continue() {
 /// later hour published from a worker's rows and no block falling back,
 /// publishing and saving what hourly preparation does.
 fn folds_every_block(family: Sampled, replay: &Replay, revision: &str) {
+    folds_every_block_from(family, replay, revision, replay.index.len());
+}
+
+/// [`folds_every_block`] where `carried` hours in all are observed on the
+/// carried state (each block's hours through its worker's tail), and every
+/// other hour is published from a worker's rows.
+fn folds_every_block_from(family: Sampled, replay: &Replay, revision: &str, carried: usize) {
     let applied_name = family.applied.expect("a family folded from workers' facts");
     let total = hours(replay);
-    let blocks = replay.index.len();
+    let blocks = carried;
     let mut fixture = Fixture::new(replay);
     let hourly = hourly(&mut fixture, revision, plain);
     let source = fixture.source(revision);
@@ -891,7 +946,7 @@ fn folds_every_block(family: Sampled, replay: &Replay, revision: &str) {
     assert_eq!(
         prepass::noted(family.observed) - observed,
         blocks,
-        "{label}: only each block's first hour observed on the carried state"
+        "{label}: only each block's hours through its worker's tail observed on the carried state"
     );
     assert_eq!(
         prepass::noted(applied_name) - applied,
@@ -944,6 +999,89 @@ fn force_folds_continue_where_the_country_join_holds_and_a_country_holds_no_forc
     assert_eq!(held, 3);
     folds_every_block(AIR, &replay, "held-joins");
     folds_every_block(NAVY, &replay, "held-joins");
+}
+
+/// [`sampled_frame`] whose wings' equipment, variant 1, the variant table
+/// names. The table is read in its daily slot and, here, three hours into
+/// each six-hour block, never at a block's first hour, as a recording's
+/// blocks and daily reads fall.
+fn named_variant_frame(branch: u64, hour: i32) -> DecodedFrame {
+    let mut observed = sampled_frame(branch, hour);
+    set(
+        &mut observed,
+        TableRows::VariantDefinitions(vec![replay::rows::VariantDefinitionRow {
+            id: 1,
+            equipment_token: 1,
+            ..Default::default()
+        }]),
+    );
+    let slot = replay::cadence::cadence(TableId::VariantDefinitions);
+    for table in TableId::ALL {
+        if replay::cadence::cadence(table) == slot {
+            observed.metrics.table_ns[table.index()] = 0;
+        }
+    }
+    if (hour - BASE).rem_euclid(6) == 3 {
+        // A slot-mate walked: the read was due.
+        observed.metrics.table_ns[TableId::VariantModules.index()] = 1;
+    }
+    observed
+}
+
+/// Variant names hold from the read that gave them, in the variant table's
+/// daily slot, which a block's first hour need not be: there a census
+/// carried from the block before names its wings' equipment, while a
+/// worker's, starting afresh, names none until the block reads them. Air's
+/// worker takes its tail at that read, its fold observes each block through
+/// it on the carried state, and every later hour is published from the
+/// worker's rows, as hourly preparation publishes them; navy, which names no
+/// variants, still folds from each block's first hour.
+#[test]
+fn force_folds_continue_from_the_blocks_variant_read_where_its_first_hour_names_none() {
+    use dashboard_base::products::equipment::{VariantCatalogue, VariantHour};
+    let replay = scenario_of(5, false, named_variant_frame);
+    let format = replay.format;
+    let mut carried = VariantCatalogue::default();
+    let mut through = 0;
+    let mut named = 0;
+    for (number, index) in replay.index.iter().enumerate() {
+        let mut first = true;
+        let mut settled = false;
+        replay
+            .read_block_alone(
+                index,
+                &VariantCatalogue::TABLES,
+                |_, frame| {
+                    let read = VariantCatalogue::hour_of(format, frame);
+                    if first && number > 0 {
+                        // A census starting afresh here names nothing yet.
+                        assert_eq!(read, VariantHour::Carried { complete: true });
+                        let mut fresh = VariantCatalogue::default();
+                        fresh.observe(format, frame);
+                        assert!(fresh.current(1).is_none());
+                    }
+                    carried.observe(format, frame);
+                    if first && carried.current(1).is_some_and(|raw| !raw.token.is_empty()) {
+                        named += 1;
+                    }
+                    first = false;
+                    if !settled {
+                        through += 1;
+                        settled = read != VariantHour::Carried { complete: true };
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        assert!(settled, "block {number} reads its variants");
+    }
+    // The carried names hold into each block after an adjacent one (the
+    // second, third and fifth); the gap before the fourth ends them.
+    assert_eq!(named, 3);
+    assert!(through > replay.index.len());
+    folds_every_block_from(AIR, &replay, "variant-reads", through);
+    folds_every_block(NAVY, &replay, "variant-reads");
 }
 
 /// Three countries with a task force and a ship each at `hour`, but for the
@@ -1368,4 +1506,111 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
         );
         clear(source);
     });
+}
+
+/// Signed drains change only their amounts most hours. The log prunes an
+/// earlier owner's rows, holds two raw owners of one slot, and also records
+/// an unresolved owner. Truncated log reads retain their supplied rows.
+fn loss_frame(branch: u64, hour: i32) -> DecodedFrame {
+    use replay::rows::{
+        CombatLogEquipmentRow, CountryLinkRow, EquipmentDestructionCause, EquipmentDestructionRow,
+    };
+    let mut frame = sampled_frame(branch, hour);
+    let at = hour - BASE - if branch == 2 { 100 } else { 0 };
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.insert(
+            0,
+            CountryLinkRow {
+                id: 42,
+                canonical_slot: 0,
+            },
+        );
+    }
+    set(
+        &mut frame,
+        TableRows::EquipmentDestruction(
+            (0..2)
+                .map(|index| EquipmentDestructionRow {
+                    country: FIRST + index,
+                    cause: EquipmentDestructionCause::LandCombat,
+                    variant: 17_u64 << 32 | u64::from(engine::cequipment_variant::REFERENCE_TYPE),
+                    amount_raw: if at % 2 == 0 {
+                        100 + i64::from(at)
+                    } else {
+                        -50
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    let mut log = Vec::new();
+    for country in [42, FIRST, FIRST + 1, 999_999] {
+        for group in 0..3 {
+            if country == FIRST && group == 0 && at >= 8 {
+                continue;
+            }
+            log.push(CombatLogEquipmentRow {
+                country,
+                group,
+                variant: 17,
+                amount_raw: 100 + i64::from(at / 3),
+                ..Default::default()
+            });
+        }
+    }
+    set(&mut frame, TableRows::CombatLogEquipment(log.clone()));
+    if at == 13 {
+        *frame.tables[TableId::CombatLogEquipment.index()] = TableView::Truncated {
+            rows: TableRows::CombatLogEquipment(log),
+            missing: 1,
+        };
+    }
+    let mut reads = frame
+        .complete::<replay::rows::tables::SliceReads>()
+        .unwrap()
+        .to_vec();
+    reads.extend([42, FIRST, FIRST + 1, 999_999].map(|owner| SliceReadRow {
+        table: TableId::CombatLogEquipment.index() as u32,
+        owner,
+        sample_hour: hour - at.rem_euclid(3),
+    }));
+    reads.sort_by_key(SliceReadRow::key);
+    set(&mut frame, TableRows::SliceReads(reads));
+    frame
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: full preparation, resume and append"
+)]
+fn loss_owner_ranges_and_amount_only_drains_publish_and_resume_as_hourly_preparation() {
+    let first = scenario_of(3, false, loss_frame);
+    let grown = scenario_of(5, true, loss_frame);
+    let mut fixture = Fixture::new(&first);
+    let both = |fixture: &mut Fixture| {
+        fixture.replace(&first);
+        let source = fixture.source("loss-owner-ranges");
+        measured(&source);
+        drop(source);
+        fixture.replace(&grown);
+        let source = fixture.source("loss-owner-ranges");
+        measured(&source);
+        let pages = payloads(&source, None);
+        clear(source);
+        pages
+    };
+    let expected = independent::with_test_hourly(|| both(&mut fixture));
+    let actual =
+        EQUIPMENT_LOSSES.own(|| prepass::with_test_prepass(3, None, || both(&mut fixture)));
+    assert_same(
+        EQUIPMENT_LOSSES,
+        &actual,
+        &expected,
+        "loss owner ranges, resume and append",
+        true,
+    );
 }

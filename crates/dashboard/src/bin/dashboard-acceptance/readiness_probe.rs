@@ -134,6 +134,9 @@ impl Channel {
     }
 }
 
+/// How often the evidence records every thread's CPU by label.
+const CPU_EVERY: Duration = Duration::from_secs(30);
+
 fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
@@ -480,6 +483,8 @@ fn first_frame(
 
 pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
     fresh(path)?;
+    // Measurement only: every thread's CPU by label, into the evidence.
+    replay::cpu::enable();
     let table = match &settings.table {
         Some(file) => fs::read_to_string(file)?,
         None => readiness::WIDGETS.to_owned(),
@@ -592,6 +597,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             })
             .sum()
     });
+    replay::cpu::set_hours(first, last);
     output.line(json!({
         "event": "open", "recording": recording, "startedUnixMs": started_unix_ms, "openMs": open_ms,
         "branch": branch_id, "firstHour": first, "lastHour": last, "tag": tag, "totalHours": total_hours,
@@ -667,8 +673,18 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
     let mut status = Value::Null;
     let mut finished = false;
     let mut loops = 0_u64;
+    let mut next_cpu = Instant::now() + CPU_EVERY;
+    let mut cpu_at_ready = false;
+    let until_prepared = std::env::var_os("BATTLE_PLAN_READINESS_CPU_UNTIL_PREPARED").or_else(|| std::env::var_os("HOI4_READINESS_CPU_UNTIL_PREPARED")).is_some();
     loop {
         loops += 1;
+        if Instant::now() >= next_cpu {
+            next_cpu = Instant::now() + CPU_EVERY;
+            output.line(json!({
+                "event": "cpu", "ms": probe.now_ms(), "acceptedHours": accepted_hours(&status),
+                "sections": status["sections"], "cpu": replay::cpu::snapshot(),
+            }))?;
+        }
         // Preparation status has its own poll, apart from the queries.
         if status_asked.is_none() && Instant::now() >= next_status {
             let id = probe.id();
@@ -701,7 +717,8 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                     "coverage": status["coverage"], "error": status["error"],
                     "inFlight": probe.in_flight(),
                     "sections": status["sections"].as_array().map(|sections| sections.iter().map(|section| json!({
-                        "id": section["id"], "state": section["state"], "done": section["done"], "total": section["total"]
+                        "id": section["id"], "state": section["state"], "done": section["done"], "total": section["total"],
+                        "error": section["error"]
                     })).collect::<Vec<_>>())
                 }))?;
                 previous = Some(key);
@@ -795,7 +812,17 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                 }))?;
             }
         }
-        if widgets.iter().all(|widget| widget.ready_ms.is_some()) || Instant::now() >= deadline {
+        let ready_now = widgets.iter().all(|widget| widget.ready_ms.is_some());
+        if ready_now && !cpu_at_ready {
+            cpu_at_ready = true;
+            output.line(json!({
+                "event": "cpu", "ms": probe.now_ms(), "acceptedHours": accepted_hours(&status),
+                "sections": status["sections"], "cpu": replay::cpu::snapshot(), "allReady": true,
+            }))?;
+        }
+        // Measurement only: with BATTLE_PLAN_READINESS_CPU_UNTIL_PREPARED set, the
+        // CPU record continues until preparation itself ends.
+        if (ready_now && (!until_prepared || finished)) || Instant::now() >= deadline {
             break;
         }
         let mut waiting: HashSet<String> = probe
@@ -888,7 +915,13 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             .filter_map(|widget| widget.ready_ms)
             .fold(map_ms.unwrap_or(0.0), f64::max)
     });
+    let cpu = replay::cpu::snapshot();
+    output.line(json!({
+        "event": "cpu", "ms": probe.now_ms(), "acceptedHours": accepted_hours(&status),
+        "sections": status["sections"], "cpu": cpu, "final": true,
+    }))?;
     let summary = json!({
+        "cpu": cpu,
         "event": "summary", "recording": recording, "allReady": all_ready, "allReadyMs": overall,
         "warmContentOpenMs": warm_open_ms,
         "endedMs": ended_ms, "limitMs": millis(settings.limit), "openMs": open_ms, "mapMs": map_ms,

@@ -2092,6 +2092,7 @@ impl Scan {
         }
     }
     pub fn observe(&mut self, decoded: &replay::frame::DecodedFrame) -> io::Result<()> {
+        let _cpu = replay::cpu::scope("groups-read", None);
         self.refresh_holders(decoded, true, true);
         let mut operands = GroupOperands::default();
         let visits = operands.refresh(decoded, true, true, true, true, true);

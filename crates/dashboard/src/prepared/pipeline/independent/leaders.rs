@@ -29,6 +29,25 @@ impl Own for Leaders {
         &block::FAMILY
     }
 
+    fn binds(&self) -> bool {
+        true
+    }
+
+    /// The scan's own tables and the trigger world's core, and the shared
+    /// trigger tables leader visibility's declared reads read where the
+    /// phase binds a catalogue: without one no leader's visibility is
+    /// evaluated. Every hour checks that its evaluations read only what the
+    /// block read holds, else the block is observed hour by hour with the
+    /// whole trigger kit (`block::bound`).
+    fn bound(&self, phase: &super::Phase<'_>) -> Option<prepass::Bound> {
+        let content = phase
+            .context
+            .content()
+            .and_then(|options| crate::catalogue::catalogue(phase.source, options))
+            .is_ok();
+        Some(block::bound(content))
+    }
+
     fn timing(&self) -> &'static str {
         "independent.leaders"
     }

@@ -1,21 +1,26 @@
 //! Air force and navy size prepared block by block. A pre-pass worker reads
 //! the block alone and steps a scan of its own through it: the scan's state
-//! right after the block's first hour (what decides its later hours, and its
-//! counters then: [`Family::tail`]), then each later hour's rows (the runs
-//! that changed and the rows removed), and the scan at the block's end. The
-//! scan step reads the recording alone, so the worker does it; the rows'
-//! projections name parts through the recorded content, so the fold makes
-//! them, each hour apart from the others.
+//! right after the first hour it holds nothing a carried scan would hold
+//! from earlier hours ([`Family::settled`]: the block's first hour for navy;
+//! for air, the first hour the block reads or forgets variant names), which
+//! is what decides its later hours, and its counters then ([`Family::tail`]);
+//! then each later hour's rows (the runs that changed and the rows removed),
+//! and the scan at the block's end. The scan step reads the recording alone,
+//! so the worker does it; the rows' projections name parts through the
+//! recorded content, so the fold makes them, each hour apart from the
+//! others.
 //!
 //! The fold observes the block's first hour on the carried state, as hourly
-//! preparation does. When the carried scan then decides every later hour as
-//! the worker's scan did ([`Family::continues`]), every later hour's rows
+//! preparation does, and the caller observes the hours after it through the
+//! tail's hour by hour. When the carried scan then decides every later hour
+//! as the worker's scan did ([`Family::continues`]), every later hour's rows
 //! are the worker's: the fold renumbers what the worker's scan numbered in
 //! its own order as the carried scan numbers it ([`Family::numbering`]:
 //! navy's ship classes), projects the rows, publishes each hour's rows on
 //! the carried state (keys, compositions and parts from the carried series),
-//! and carries the scan to the block's end ([`Family::carry`]). Otherwise
-//! the caller observes the rest of the block hour by hour.
+//! and carries the scan to the block's end ([`Family::carry`]). Otherwise,
+//! or where the worker's scan was never settled, the caller observes the
+//! rest of the block hour by hour.
 
 use super::{Family, Prepared, Projected, Rows, project, step_rows};
 use dashboard_base::prepared::priority::{JobPriority, Level};
@@ -34,9 +39,10 @@ use std::{any::Any, io, sync::atomic::AtomicBool};
 pub struct BlockFacts<F: Family> {
     /// The block's first frame, observed on the carried state.
     first: DecodedFrame,
-    /// The worker's scan right after the first hour.
-    tail: F::Tail,
-    /// Each later hour's rows, in order.
+    /// The worker's scan right after the first hour it was settled, and
+    /// that hour; none where it never was.
+    tail: Option<(i32, F::Tail)>,
+    /// Each hour's rows after the tail's, in order.
     hours: Vec<Rows<F>>,
     /// The hour whose scan step failed, and why: nothing after it was read.
     failed: Option<(i32, io::Error)>,
@@ -53,7 +59,8 @@ pub struct BlockFacts<F: Family> {
 /// A pre-pass worker's extract of one block.
 pub struct BlockExtract<F: Family> {
     scan: F::Scan,
-    first: Option<(DecodedFrame, F::Tail)>,
+    first: Option<DecodedFrame>,
+    tail: Option<(i32, F::Tail)>,
     hours: Vec<Rows<F>>,
     failed: Option<(i32, io::Error)>,
     last: Option<DecodedFrame>,
@@ -64,6 +71,7 @@ impl<F: Family> BlockExtract<F> {
         Box::new(Self {
             scan: F::Scan::default(),
             first: None,
+            tail: None,
             hours: Vec::new(),
             failed: None,
             last: None,
@@ -100,32 +108,43 @@ where
                 &running,
                 changes,
             )?;
-            self.first = Some((frame.clone(), F::tail(&self.scan, frame.hour)));
-            return Ok(());
+            self.first = Some(frame.clone());
+        } else {
+            match step_rows::<F>(
+                &mut self.scan,
+                true,
+                frame,
+                replay.format,
+                &running,
+                changes,
+            ) {
+                // The fold observes the hours through the tail's itself.
+                Ok(rows) if self.tail.is_some() => self.hours.push(rows),
+                Ok(_) => {}
+                Err(error) => {
+                    self.failed = Some((frame.hour, error));
+                    return Ok(());
+                }
+            }
         }
-        match step_rows::<F>(
-            &mut self.scan,
-            true,
-            frame,
-            replay.format,
-            &running,
-            changes,
-        ) {
-            Ok(rows) => self.hours.push(rows),
-            Err(error) => self.failed = Some((frame.hour, error)),
+        if self.tail.is_none() && F::settled(&self.scan) {
+            self.tail = Some((frame.hour, F::tail(&self.scan, frame.hour)));
         }
         Ok(())
     }
 
     /// What the block's facts hold: the first and last frames (each view
-    /// once), the scan's tail after the first hour, each later hour's rows
+    /// once), the scan's tail, each hour's rows after it
     /// (their runs, removed tags and projection bases) and the scan at hand,
     /// which is the scan at the block's end the facts keep; each allocation
     /// shared among them once.
     fn bytes(&self) -> u64 {
         let mut held = HeldBytes::default();
-        if let Some((frame, tail)) = &self.first {
-            held.frame(frame).value(tail);
+        if let Some(frame) = &self.first {
+            held.frame(frame);
+        }
+        if let Some((_, tail)) = &self.tail {
+            held.value(tail);
         }
         if let Some(last) = &self.last {
             held.frame(last);
@@ -137,13 +156,12 @@ where
         let Self {
             scan,
             first,
+            tail,
             hours,
             failed,
             last,
-            ..
         } = *self;
-        let (first, tail) =
-            first.ok_or_else(|| io::Error::other("Force block has no first hour"))?;
+        let first = first.ok_or_else(|| io::Error::other("Force block has no first hour"))?;
         Ok(Box::new(BlockFacts::<F> {
             first,
             tail,
@@ -188,7 +206,13 @@ impl<F: Family> BlockFacts<F> {
         self.first.hour
     }
 
-    /// The later hours the worker stepped, failed or not.
+    /// The hour of the worker's tail, after which the fold may publish the
+    /// worker's rows; none where its scan was never settled.
+    pub fn tail_hour(&self) -> Option<i32> {
+        self.tail.as_ref().map(|&(hour, _)| hour)
+    }
+
+    /// The hours after the tail's the worker stepped, failed or not.
     pub fn later_hours(&self) -> usize {
         self.hours.len() + usize::from(self.failed.is_some())
     }
@@ -216,19 +240,23 @@ where
         (facts.first.hour, result)
     }
 
-    /// Whether the carried state, after the block's first hour, decides the
-    /// rest of the block as the worker's scan did, with the worker's numbers
-    /// named as the carried scan names them (kept in `facts` for the rest).
+    /// Whether the carried state, having observed the block through the
+    /// tail's hour, decides the rest of the block as the worker's scan did,
+    /// with the worker's numbers named as the carried scan names them (kept
+    /// in `facts` for the rest). False where the worker has no tail.
     pub fn fold_continues(&self, facts: &mut BlockFacts<F>) -> bool {
+        let Some((_, tail)) = &facts.tail else {
+            return false;
+        };
         let numbering = F::numbering(&self.scan, &facts.scan);
-        let continues = F::continues(&self.scan, &facts.tail, &facts.scan, &numbering);
+        let continues = F::continues(&self.scan, tail, &facts.scan, &numbering);
         facts.numbering = Some(numbering);
         continues
     }
 
-    /// Publish every later hour's rows on the carried state, each hour's
-    /// outcome handed to `observed` (false once it refused the branch), and
-    /// carry the scan to the block's end. The projections are made on up to
+    /// Publish every hour's rows after the tail's on the carried state, each
+    /// hour's outcome handed to `observed` (false once it refused the
+    /// branch), and carry the scan to the block's end. The projections are made on up to
     /// `threads` threads, each hour's alone. The last hour reached.
     pub fn fold_rest(
         &mut self,
@@ -246,6 +274,8 @@ where
             numbering,
             ..
         } = facts;
+        let (_, tail) =
+            tail.ok_or_else(|| io::Error::other("Force block's worker was never settled"))?;
         let numbering = numbering.unwrap_or_else(|| F::numbering(&self.scan, &scan));
         let projected = project_hours(&mut hours, &numbering, source, context, threads);
         let mut reached = None;
@@ -294,6 +324,8 @@ where
     }
     let chunk = hours.len().div_ceil(threads);
     let running = &running;
+    // Measurement only: the projections' CPU is the fold's family's.
+    let cpu_family = replay::cpu::family();
     std::thread::scope(|scope| {
         let handles: Vec<_> = hours
             .chunks_mut(chunk)
@@ -301,6 +333,7 @@ where
                 let priority = JobPriority::current();
                 scope.spawn(move || {
                     priority.enter(Level::Normal);
+                    let _cpu = replay::cpu::scope("fold projection", cpu_family);
                     rows.iter_mut()
                         .map(|rows| {
                             rows.renumber(numbering);
@@ -359,7 +392,7 @@ mod bytes_tests {
     /// What an extract's first and last frames alone hold.
     fn frames_alone<F: Family>(extract: &BlockExtract<F>) -> u64 {
         let mut held = HeldBytes::default();
-        if let Some((first, _)) = &extract.first {
+        if let Some(first) = &extract.first {
             held.frame(first);
         }
         if let Some(last) = &extract.last {

@@ -468,6 +468,63 @@ impl Prepared {
         }
         Ok(())
     }
+
+    /// Hours `first..=last` following the last observed, at which no country
+    /// key, link, state owner, fuel or demand row changed, the fuel table's
+    /// availability is the last hour's and no fuel read is dated: what
+    /// observing each of them does. The scan carries every current country
+    /// through them in one pass ([`Scan::advance_quiet`]) and the current
+    /// series advances its accepted hours. Settling at such an hour decides
+    /// no read, retires none and ends no country's settling unless its cutoff
+    /// is a read's first or last hour; otherwise it only extends each open
+    /// day run by that hour, which the next settlement extends over the same
+    /// hours (runs of one key and value merge), so the days are settled at
+    /// each hour whose cutoff is one of those and at `last`, in hour order,
+    /// with the scan carried to that hour first. False when the last hour
+    /// observed is not the one before `first`, or the scan cannot step from
+    /// it ([`Scan::continues_quiet`]); nothing has changed then.
+    pub fn advance_quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        format: replay::format::FormatVersion,
+    ) -> io::Result<bool> {
+        if first > last
+            || self.metadata.last.and_then(|hour| hour.checked_add(1)) != Some(first)
+            || !self.scan.continues_quiet(first)
+        {
+            return Ok(false);
+        }
+        self.current.advance_span(first, last)?;
+        // Hours of the span before `last` whose cutoff is a settling read's
+        // first or last hour. An open read's last hour moves with the span,
+        // so its hour here only adds a settlement hourly preparation also
+        // makes.
+        let mut points = BTreeSet::new();
+        for tag in &self.settling {
+            for read in &self.scan.countries[tag].result.reads {
+                for hour in [read.first_hour, read.last_hour] {
+                    if let Some(at) = hour
+                        .checked_add(UNSETTLED_HOURS)
+                        .filter(|at| (first..last).contains(at))
+                    {
+                        points.insert(at);
+                    }
+                }
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut from = first;
+        for through in points.into_iter().chain(std::iter::once(last)) {
+            self.scan.advance_quiet(from, through);
+            self.metadata.last = Some(through);
+            if let Some(cutoff) = through.checked_sub(UNSETTLED_HOURS) {
+                self.settle(cutoff, format, &cancelled)?;
+            }
+            from = through + 1;
+        }
+        Ok(true)
+    }
     fn settle(
         &mut self,
         cutoff: i32,

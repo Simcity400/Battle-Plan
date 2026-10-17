@@ -1776,6 +1776,177 @@ fn prepared_answers_do_not_wait_behind_sampled_reads() {
     service.shutdown();
 }
 
+/// Reads `id`'s reply chunks to their end.
+fn reply_of(receive: &mpsc::Receiver<DataEvent>, wanted: &str) -> String {
+    let mut json = String::new();
+    loop {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
+            DataEvent::Chunk {
+                id, fragment, last, ..
+            } if id == wanted => {
+                json.push_str(&fragment);
+                if last {
+                    return json;
+                }
+            }
+            DataEvent::Chunk { .. } => {}
+            event => panic!("unexpected event for {wanted}: {event:?}"),
+        }
+    }
+}
+
+/// Waits until `done` holds, failing instead of hanging.
+fn wait_until(done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + HANG_GUARD;
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the condition never held"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A recording of eight one-hour blocks, each a read of Germany's two lines,
+/// written to a file of its own, opened through the service and prepared
+/// whole: the service, its events, the opened source's reply and source.
+fn prepared_production_source() -> (
+    Arc<Service>,
+    mpsc::Receiver<DataEvent>,
+    SourceReply,
+    Arc<Source>,
+    PathBuf,
+) {
+    use crate::test_fixtures::{
+        CAMPAIGN, PRODUCTION_HOUR as FIRST, continuation_records, production_frame, records,
+    };
+    let frame = |hour: i32| {
+        let units = i64::from(hour - FIRST);
+        production_frame(
+            hour,
+            true,
+            true,
+            9001,
+            &[(5, 70, 8, 0), (6, 71, 2, 0)],
+            Some(&[(5, 70, units, true, false), (6, 71, units, true, false)]),
+        )
+    };
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(FIRST)])]).unwrap();
+    for hour in FIRST + 1..FIRST + 8 {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, vec![frame(hour)])])
+            .unwrap();
+    }
+    let folder = std::env::temp_dir().join(format!("production-kept-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&folder).unwrap();
+    let path = folder.join("campaign.battleplan");
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    // No automatic preparation: the one below is the source's only one.
+    service.set_preparation_suspended(true);
+    service.dispatch(DataCommand::Open {
+        id: "open".into(),
+        path: path.to_string_lossy().into_owned(),
+        revision: crate::protocol::replay_revision(&path).unwrap(),
+    });
+    let opened: SourceReply = serde_json::from_str(&reply_of(&receive, "open")).unwrap();
+    let source = service.source(&opened.id).unwrap();
+    let before = service.preparation_revision();
+    crate::prepared::start(
+        &service.inner.preparation,
+        Arc::clone(&source),
+        None,
+        crate::prepared::pipeline::restore(&source, None, &AtomicBool::new(false)),
+        crate::prepared::store_epoch(&source),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    // Ready, and the runner's job has returned: its revision moved past it.
+    wait_until(|| {
+        progress_of(&source) == (false, crate::prepared::State::Ready)
+            && service.preparation_revision() > before
+    });
+    (service, receive, opened, source, path)
+}
+
+/// Whether the source's preparation runs, and its state.
+fn progress_of(source: &Source) -> (bool, crate::prepared::State) {
+    let progress = source.state::<crate::prepared::Progress>();
+    let progress = progress.lock().unwrap();
+    (progress.running, progress.state)
+}
+
+/// The source's preparation sections as its status reports them.
+fn sections_of(source: &Source) -> serde_json::Value {
+    let progress = source.state::<crate::prepared::Progress>();
+    serde_json::to_value(&progress.lock().unwrap().sections).unwrap()
+}
+
+/// Asks for Germany's exact production lines through the service.
+fn request_exact(
+    service: &Service,
+    receive: &mpsc::Receiver<DataEvent>,
+    opened: &SourceReply,
+) -> String {
+    service.dispatch(DataCommand::Product {
+        id: "exact".into(),
+        request: ProductRequest {
+            source_id: opened.id.clone(),
+            revision: opened.revision.clone(),
+            product: "production-lines".into(),
+            params: serde_json::json!({"branchId": "1", "tag": "GER", "exact": true}),
+        },
+    });
+    reply_of(receive, "exact")
+}
+
+fn germany_kept(source: &Source) -> bool {
+    let (store, key) = crate::prepared::files(source, None).unwrap();
+    crate::products::production_lines::saved_current(
+        &store,
+        &key,
+        source,
+        &crate::products::LoadContext { content: None },
+        1,
+        "GER",
+    )
+    .unwrap()
+}
+
+/// After the source's preparation is complete, a production line request that
+/// reads a country's scan whole queues no preparation and writes nothing: the
+/// scan waits for the source's next preparation in this session.
+#[test]
+fn a_production_request_after_preparation_queues_no_preparation_and_writes_nothing() {
+    use crate::products::production_lines;
+    let (service, receive, opened, source, _path) = prepared_production_source();
+    let sections = sections_of(&source);
+    let revision = service.preparation_revision();
+    // A production line request has nothing to run after its reply.
+    request_exact(&service, &receive, &opened);
+    assert!(
+        service
+            .inner
+            .loader
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|lanes| lanes.refreshes.is_empty()),
+        "no preparation refresh is queued"
+    );
+    assert!(
+        production_lines::has_unkept(&source),
+        "it waits for a preparation"
+    );
+    assert!(!germany_kept(&source), "nothing is written");
+    assert_eq!(progress_of(&source), (false, crate::prepared::State::Ready));
+    assert_eq!(sections_of(&source), sections);
+    assert_eq!(service.preparation_revision(), revision);
+    service.shutdown();
+}
+
 /// Open `path` through the frontend's open command and return its lease's source.
 fn open_lease(
     service: &Service,

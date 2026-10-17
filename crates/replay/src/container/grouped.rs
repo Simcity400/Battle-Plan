@@ -2447,6 +2447,7 @@ pub(crate) fn sections(block: &[u8], index: &BlockIndex) -> io::Result<Vec<Secti
 /// Inflate every section of a grouped block, checking the directory's CRC and
 /// each section's zstd checksum, without decoding any table.
 pub(crate) fn verify(block: &[u8], index: &BlockIndex) -> io::Result<()> {
+    let _cpu = crate::cpu::scope("decode", None);
     let directory = Directory::parse(block, index)?;
     for id in 0..SECTIONS {
         directory.raw(block, id)?;
@@ -2635,6 +2636,8 @@ impl Replay {
                 .ok_or_else(|| {
                     invalid(format!("grouped block has no keyframe entry for {table:?}"))
                 })?;
+            #[cfg(any(test, feature = "test-support"))]
+            super::test_work::decoded(index, table, 1);
             Ok(keyframe_update(
                 self,
                 &from,
@@ -2726,6 +2729,7 @@ fn read_through(
     parallel: Option<&Parallel<'_>>,
     through: Option<Hour>,
 ) -> io::Result<Vec<Frame>> {
+    let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
         return Err(invalid(format!(
@@ -2807,13 +2811,16 @@ pub(crate) struct SelectedUpdates {
 /// [`read`] of a whole block for `selected` (each table once), keeping each
 /// selected table's updates by table rather than by frame. The same sections
 /// are inflated and decoded, in the same table order, so it fails exactly
-/// where [`read`] fails.
+/// where [`read`] fails. `check` is called before each table is decoded; its
+/// error ends the read.
 pub(crate) fn read_selected_updates(
     replay: &Replay,
     index: &BlockIndex,
     block: &[u8],
     selected: &[TableId],
+    check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<SelectedUpdates> {
+    let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
         return Err(invalid(format!(
@@ -2849,6 +2856,7 @@ pub(crate) fn read_selected_updates(
         engine::allocation::collect_vec(selected.iter().map(|_| None))?;
     let mut dependent_keyframe = false;
     for table in TableId::ALL {
+        check()?;
         let wanted = selected.iter().position(|selected| *selected == table);
         // `read` repeats an unselected table's refusal at every hour, and
         // nothing reconstructs it; a table it decodes anyway is decoded here.
@@ -3085,6 +3093,26 @@ fn keyframe_update(
 }
 
 fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
+    // Measurement only: each selected table section's decode, by block.
+    let _cpu = crate::cpu::scope("decode", None);
+    let started = crate::cpu::thread_cycles();
+    let decoded = table_updates_inner(context, table);
+    if crate::cpu::enabled()
+        && context
+            .selected
+            .is_none_or(|selected| selected.contains(&table))
+    {
+        crate::cpu::decoded(
+            context.index.branch,
+            context.index.first_hour,
+            table,
+            crate::cpu::thread_cycles().saturating_sub(started),
+        );
+    }
+    decoded
+}
+
+fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
     let format = context.format;
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
@@ -3094,6 +3122,10 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
     if let Some(update) = keyframe_refusal(context.directory, format, context.selected, table)? {
         return Ok(vec![update; frames]);
     }
+    #[cfg(test)]
+    super::watched::note_decoded();
+    #[cfg(any(test, feature = "test-support"))]
+    super::test_work::decoded(context.index, table, context.hours.len());
     let gap = change.table_gap(table, version);
     let fields = change.fields(table, version);
     let ordinal = context.present.ordinal[table.index()];

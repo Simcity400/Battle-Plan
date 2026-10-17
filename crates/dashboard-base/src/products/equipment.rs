@@ -8,14 +8,14 @@ pub mod production;
 
 use crate::{Source, catalogue::Catalogue, metadata::slot_read};
 use replay::{
-    frame::DecodedFrame,
+    frame::{DecodedFrame, SharedView},
     rows::{
         LexicalTokenRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables,
     },
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
 use ts_rs::TS;
@@ -184,6 +184,180 @@ pub struct VariantVersion {
     pub raw: Option<RawVariant>,
 }
 
+/// A complete variant read's operands for [`VariantCatalogue::observe_built`],
+/// built again only where an input changed since the read before: the
+/// countries' keys, links, appearance and lexical tokens that every name reads,
+/// or a definition's own row, modules or upgrades. The views read before are
+/// kept: the same allocation holds the same rows, and a table in a new
+/// allocation is compared.
+#[derive(Default)]
+pub(crate) struct VariantReads {
+    keys: Option<crate::metadata::CountryKeys>,
+    links: Option<SharedView>,
+    appearance: Option<SharedView>,
+    lexical: Option<SharedView>,
+    definitions: Option<SharedView>,
+    modules: Option<SharedView>,
+    upgrades: Option<SharedView>,
+    /// Each definition's inputs at the read before.
+    inputs: HashMap<u64, VariantInput>,
+}
+
+/// A definition's inputs at a read: its row, and its modules and upgrades in
+/// recorded order (None where either table was not complete).
+struct VariantInput {
+    definition: VariantDefinitionRow,
+    design: Option<(Vec<VariantModuleRow>, Vec<VariantUpgradeRow>)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Definitions whose operands a scan on this thread built.
+    pub(crate) static VARIANT_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether `now` holds the rows of the view held: the same allocation, or equal.
+fn same_view(held: Option<&SharedView>, now: &SharedView) -> bool {
+    held.is_some_and(|held| SharedView::ptr_eq(held, now) || held == now)
+}
+
+/// A design's modules and upgrades at a read, in recorded order.
+type Design<'a> = (&'a [&'a VariantModuleRow], &'a [&'a VariantUpgradeRow]);
+
+/// Whether a design's inputs are those held.
+fn same_design(
+    held: Option<&(Vec<VariantModuleRow>, Vec<VariantUpgradeRow>)>,
+    now: Option<Design<'_>>,
+) -> bool {
+    match (held, now) {
+        (None, None) => true,
+        (Some((modules, upgrades)), Some((now_modules, now_upgrades))) => {
+            modules.len() == now_modules.len()
+                && upgrades.len() == now_upgrades.len()
+                && modules.iter().zip(now_modules).all(|(a, b)| a == *b)
+                && upgrades.iter().zip(now_upgrades).all(|(a, b)| a == *b)
+        }
+        _ => false,
+    }
+}
+
+impl VariantReads {
+    pub(crate) fn contains(&self, id: u64) -> bool {
+        self.inputs.contains_key(&id)
+    }
+
+    /// The operands of `frame`'s complete variant read: every definition's
+    /// with `all` (names were forgotten since the read before), else only those
+    /// whose inputs changed. A definition's operands are a function of its
+    /// inputs and the hour alone ([`read_raw`]), so one not built
+    /// holds those it had.
+    pub(crate) fn build(&mut self, frame: &DecodedFrame, all: bool) -> Vec<(u64, RawVariant)> {
+        let hour = frame.hour;
+        let view = |table: TableId| &frame.tables[table.index()];
+        // Called only at a complete read of these.
+        let (Ok(countries), Ok(links), Ok(definitions), Ok(lexical)) = (
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+            frame.complete::<tables::VariantDefinitions>(),
+            frame.complete::<tables::LexicalTokens>(),
+        ) else {
+            return Vec::new();
+        };
+        let context = !all
+            && self.keys.as_ref().is_some_and(|keys| keys.same(countries))
+            && same_view(self.links.as_ref(), view(TableId::CountryLinks))
+            && same_view(self.appearance.as_ref(), view(TableId::CountryAppearance))
+            && same_view(self.lexical.as_ref(), view(TableId::LexicalTokens));
+        let designs = same_view(self.modules.as_ref(), view(TableId::VariantModules))
+            && same_view(self.upgrades.as_ref(), view(TableId::VariantUpgrades));
+        if context
+            && designs
+            && self
+                .definitions
+                .as_ref()
+                .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantDefinitions)))
+        {
+            return Vec::new();
+        }
+        let appearance = frame.complete::<tables::CountryAppearance>().ok();
+        // This read's modules and upgrades by variant, grouped once when needed.
+        type Groups<'a> = Option<(
+            VariantRows<'a, VariantModuleRow>,
+            VariantRows<'a, VariantUpgradeRow>,
+        )>;
+        let mut groups: Option<Groups<'_>> = None;
+        let mut tags: Option<Tags> = None;
+        let mut built = Vec::new();
+        let mut inputs = HashMap::with_capacity(definitions.len());
+        for definition in definitions {
+            let id = definition.id;
+            let held = self.inputs.remove(&id);
+            // With both design tables unchanged, a held design is this read's.
+            let rows: Option<(Vec<&VariantModuleRow>, Vec<&VariantUpgradeRow>)> =
+                match (&held, designs) {
+                    (Some(held), true) => held.design.as_ref().map(|(modules, upgrades)| {
+                        (modules.iter().collect(), upgrades.iter().collect())
+                    }),
+                    _ => groups
+                        .get_or_insert_with(|| {
+                            frame
+                                .complete::<tables::VariantModules>()
+                                .ok()
+                                .zip(frame.complete::<tables::VariantUpgrades>().ok())
+                                .map(|(modules, upgrades)| {
+                                    (modules_by_variant(modules), upgrades_by_variant(upgrades))
+                                })
+                        })
+                        .as_ref()
+                        .map(|(modules, upgrades)| {
+                            (
+                                modules.get(&id).cloned().unwrap_or_default(),
+                                upgrades.get(&id).cloned().unwrap_or_default(),
+                            )
+                        }),
+                };
+            let design = rows
+                .as_ref()
+                .map(|(modules, upgrades)| (modules.as_slice(), upgrades.as_slice()));
+            let unchanged = context
+                && held.as_ref().is_some_and(|held| {
+                    held.definition == *definition && same_design(held.design.as_ref(), design)
+                });
+            if unchanged && let Some(held) = held {
+                inputs.insert(id, held);
+                continue;
+            }
+            let tags = tags.get_or_insert_with(|| Tags::new(countries, links, appearance));
+            #[cfg(test)]
+            VARIANT_BUILDS.with(|builds| builds.set(builds.get() + 1));
+            built.push((id, read_raw(definition, hour, tags, lexical, design)));
+            inputs.insert(
+                id,
+                VariantInput {
+                    definition: definition.clone(),
+                    design: design.map(|(modules, upgrades)| {
+                        (
+                            modules.iter().map(|row| (*row).clone()).collect(),
+                            upgrades.iter().map(|row| (*row).clone()).collect(),
+                        )
+                    }),
+                },
+            );
+        }
+        self.inputs = inputs;
+        if !context {
+            self.keys = Some(crate::metadata::CountryKeys::read(countries));
+        }
+        self.links = Some(view(TableId::CountryLinks).clone());
+        self.appearance = Some(view(TableId::CountryAppearance).clone());
+        self.lexical = Some(view(TableId::LexicalTokens).clone());
+        self.definitions = Some(view(TableId::VariantDefinitions).clone());
+        self.modules = Some(view(TableId::VariantModules).clone());
+        self.upgrades = Some(view(TableId::VariantUpgrades).clone());
+        built
+    }
+}
+
 /// Every variant's naming operands over a branch, with where they are known. The
 /// variant table is read in its own daily slot and names hold until the next read,
 /// but only while the recording is unbroken: a gap, a due read of the table that is
@@ -198,9 +372,97 @@ pub struct VariantCatalogue {
     known: BTreeSet<u64>,
     #[serde(skip)]
     country_keys: Option<crate::metadata::CountryKeys>,
+    /// A complete read was applied and nothing was forgotten since, so every
+    /// definition not read again holds its operands from that read
+    /// ([`Self::observe_built`]). False when restored from a save.
+    #[serde(skip)]
+    settled: bool,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
+}
+
+/// What the variant catalogue reads of an hour besides a complete read's rows
+/// ([`VariantCatalogue::hour_of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariantHour {
+    /// The variant table was not read: names carry while it is complete.
+    Carried { complete: bool },
+    /// It was read, but it or a table its names need was not complete.
+    Incomplete,
+    /// A complete read.
+    Read,
+}
+
+/// One complete read's variant modules or upgrades, each variant's rows in
+/// their recorded order.
+pub type VariantRows<'a, T> = BTreeMap<u64, Vec<&'a T>>;
+
+/// Each variant's modules, in their recorded order.
+pub fn modules_by_variant(rows: &[VariantModuleRow]) -> VariantRows<'_, VariantModuleRow> {
+    let mut by_variant: VariantRows<'_, VariantModuleRow> = BTreeMap::new();
+    for row in rows {
+        by_variant.entry(row.variant).or_default().push(row);
+    }
+    for rows in by_variant.values_mut() {
+        rows.sort_by_key(|row| row.source_ordinal);
+    }
+    by_variant
+}
+
+/// Each variant's upgrades, in their recorded order.
+pub fn upgrades_by_variant(rows: &[VariantUpgradeRow]) -> VariantRows<'_, VariantUpgradeRow> {
+    let mut by_variant: VariantRows<'_, VariantUpgradeRow> = BTreeMap::new();
+    for row in rows {
+        by_variant.entry(row.variant).or_default().push(row);
+    }
+    for rows in by_variant.values_mut() {
+        rows.sort_by_key(|row| row.source_ordinal);
+    }
+    by_variant
+}
+
+/// A definition's naming operands at a complete read at `hour`, as the catalogue
+/// records them: `design` holds its modules and upgrades in recorded order, or
+/// is None where either table is not complete.
+pub fn read_raw(
+    definition: &VariantDefinitionRow,
+    hour: i32,
+    tags: &Tags,
+    lexical: &[LexicalTokenRow],
+    design: Option<(&[&VariantModuleRow], &[&VariantUpgradeRow])>,
+) -> RawVariant {
+    let mut raw = raw_variant(definition, hour, tags, lexical);
+    raw.design = design.and_then(|(modules, upgrades)| {
+        let own: Result<Vec<(String, String, bool)>, String> = modules
+            .iter()
+            .map(|row| {
+                Ok((
+                    known_spelling(row.slot, lexical)?,
+                    known_spelling(row.definition_token, lexical)?,
+                    row.definition_active != 0,
+                ))
+            })
+            .collect();
+        let own_upgrades: Result<Vec<(String, u8)>, String> = upgrades
+            .iter()
+            .map(|row| {
+                let definition = known_spelling(row.definition_token as u32, lexical)?;
+                if definition.is_empty() {
+                    return Err("equipment upgrade definition has no token spelling".into());
+                }
+                Ok((definition, row.level))
+            })
+            .collect();
+        match own.and_then(|own| own_upgrades.map(|upgrades| (own, upgrades))) {
+            Ok((own, upgrades)) => design_fingerprint(&raw, &own, &upgrades),
+            Err(why) => {
+                raw.refusals.push(("design".into(), why));
+                None
+            }
+        }
+    });
+    raw
 }
 
 impl VariantCatalogue {
@@ -329,104 +591,142 @@ impl VariantCatalogue {
         // Modules and upgrades share the variant read's slot; a complete table
         // without a variant's rows means it has none, an unavailable one is unknown.
         let modules = frame.complete::<tables::VariantModules>().ok().map(|rows| {
-            let mut by_variant: BTreeMap<u64, Vec<&VariantModuleRow>> = BTreeMap::new();
-            for row in rows {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    self.work.row_visits += 1;
-                }
-                by_variant.entry(row.variant).or_default().push(row);
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.work.row_visits += rows.len();
             }
-            for rows in by_variant.values_mut() {
-                rows.sort_by_key(|row| row.source_ordinal);
-            }
-            by_variant
+            modules_by_variant(rows)
         });
         let upgrades = frame
             .complete::<tables::VariantUpgrades>()
             .ok()
             .map(|rows| {
-                let mut by_variant: BTreeMap<u64, Vec<&VariantUpgradeRow>> = BTreeMap::new();
-                for row in rows {
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        self.work.row_visits += 1;
-                    }
-                    by_variant.entry(row.variant).or_default().push(row);
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += rows.len();
                 }
-                for rows in by_variant.values_mut() {
-                    rows.sort_by_key(|row| row.source_ordinal);
-                }
-                by_variant
+                upgrades_by_variant(rows)
             });
         for definition in definitions {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.row_visits += 1;
             }
-            let mut raw = raw_variant(definition, hour, &tags, lexical);
-            raw.design = modules
+            let design = modules
                 .as_ref()
                 .zip(upgrades.as_ref())
-                .and_then(|(modules, upgrades)| {
-                    let own: Result<Vec<(String, String, bool)>, String> = modules
-                        .get(&definition.id)
-                        .into_iter()
-                        .flatten()
-                        .map(|row| {
-                            Ok((
-                                known_spelling(row.slot, lexical)?,
-                                known_spelling(row.definition_token, lexical)?,
-                                row.definition_active != 0,
-                            ))
-                        })
-                        .collect();
-                    let own_upgrades: Result<Vec<(String, u8)>, String> = upgrades
-                        .get(&definition.id)
-                        .into_iter()
-                        .flatten()
-                        .map(|row| {
-                            let definition = known_spelling(row.definition_token as u32, lexical)?;
-                            if definition.is_empty() {
-                                return Err(
-                                    "equipment upgrade definition has no token spelling".into()
-                                );
-                            }
-                            Ok((definition, row.level))
-                        })
-                        .collect();
-                    match own.and_then(|own| own_upgrades.map(|upgrades| (own, upgrades))) {
-                        Ok((own, upgrades)) => design_fingerprint(&raw, &own, &upgrades),
-                        Err(why) => {
-                            raw.refusals.push(("design".into(), why));
-                            None
-                        }
-                    }
+                .map(|(modules, upgrades)| {
+                    (
+                        modules.get(&definition.id).map_or(&[][..], Vec::as_slice),
+                        upgrades.get(&definition.id).map_or(&[][..], Vec::as_slice),
+                    )
                 });
-            let versions = self.versions.entry(definition.id).or_default();
-            let same = versions.last().is_some_and(|last| {
-                last.raw.as_ref().is_some_and(|last| {
-                    RawVariant {
-                        first_hour: hour,
-                        ..last.clone()
-                    } == raw
-                })
-            });
-            if !same {
-                let version = VariantVersion {
+            let raw = read_raw(definition, hour, &tags, lexical, design);
+            self.apply(definition.id, raw, hour, &mut changed);
+        }
+        self.settled = true;
+        changed
+    }
+
+    /// A complete read's operands of one definition: a new version unless its
+    /// last one holds the same.
+    fn apply(
+        &mut self,
+        id: u64,
+        raw: RawVariant,
+        hour: i32,
+        changed: &mut Vec<(u64, VariantVersion)>,
+    ) {
+        let versions = self.versions.entry(id).or_default();
+        let same = versions.last().is_some_and(|last| {
+            last.raw.as_ref().is_some_and(|last| {
+                RawVariant {
                     first_hour: hour,
-                    raw: Some(raw),
-                };
-                push(versions, version.clone());
-                self.known.insert(definition.id);
-                changed.push((definition.id, version));
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    self.work.emitted += 1;
-                }
+                    ..last.clone()
+                } == raw
+            })
+        });
+        if !same {
+            let version = VariantVersion {
+                first_hour: hour,
+                raw: Some(raw),
+            };
+            push(versions, version.clone());
+            self.known.insert(id);
+            changed.push((id, version));
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.work.emitted += 1;
             }
         }
-        changed
+    }
+
+    /// What [`Self::observe`] reads of an hour's frame besides a complete
+    /// read's rows: whether the variant table was read, and which of its tables
+    /// were complete.
+    pub fn hour_of(format: replay::format::FormatVersion, frame: &DecodedFrame) -> VariantHour {
+        if !slot_read(
+            format,
+            &frame.metrics,
+            TableId::VariantDefinitions,
+            frame.hour,
+        ) {
+            VariantHour::Carried {
+                complete: frame.complete::<tables::VariantDefinitions>().is_ok(),
+            }
+        } else if frame.complete::<tables::Countries>().is_err()
+            || frame.complete::<tables::CountryLinks>().is_err()
+            || frame.complete::<tables::VariantDefinitions>().is_err()
+            || frame.complete::<tables::LexicalTokens>().is_err()
+        {
+            VariantHour::Incomplete
+        } else {
+            VariantHour::Read
+        }
+    }
+
+    /// [`Self::observe`], with a complete read's operands built by `build`
+    /// rather than here: it is called only at such a read, with whether names
+    /// were forgotten since the catalogue's last complete read (or it never had
+    /// one), and returns each definition's operands ([`read_raw`]) in table
+    /// order, or, when nothing was forgotten, at least every one that may
+    /// differ from what it returned at that read; any other reads as it did
+    /// then, so it keeps its version. The versions are those `observe` records.
+    pub fn observe_built(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        build: impl FnOnce(bool) -> Vec<(u64, RawVariant)>,
+    ) {
+        self.observe_hour(frame.hour, Self::hour_of(format, frame), build);
+    }
+
+    /// [`Self::observe_built`] of an hour as [`Self::hour_of`] read it.
+    pub fn observe_hour(
+        &mut self,
+        hour: i32,
+        read: VariantHour,
+        build: impl FnOnce(bool) -> Vec<(u64, RawVariant)>,
+    ) {
+        if let Some(last) = self.last_hour
+            && last.checked_add(1) != Some(hour)
+        {
+            self.forget_versions(last.saturating_add(1));
+        }
+        self.last_hour = Some(hour);
+        match read {
+            VariantHour::Carried { complete: true } => {}
+            VariantHour::Carried { complete: false } | VariantHour::Incomplete => {
+                self.forget_versions(hour);
+            }
+            VariantHour::Read => {
+                let mut changed = Vec::new();
+                for (id, raw) in build(!self.settled) {
+                    self.apply(id, raw, hour, &mut changed);
+                }
+                self.settled = true;
+            }
+        }
     }
 
     /// Names are not known from `hour` until the next complete read.
@@ -435,6 +735,7 @@ impl VariantCatalogue {
     }
 
     fn forget_versions(&mut self, hour: i32) -> Vec<(u64, VariantVersion)> {
+        self.settled = false;
         std::mem::take(&mut self.known)
             .into_iter()
             .map(|id| {

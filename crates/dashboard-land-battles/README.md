@@ -15,6 +15,7 @@ at the crates that own it (dashboard-base, dashboard-text and dashboard-core). T
 re-exports them at `dashboard::products::<name>`, registers them, and prepares
 and queries them in its pipeline; [dashboard-naval](../dashboard-naval/README.md)
 reads the land battles' country filter.
+`CENSUS_TABLES` declares every land-census input for the shared walk and direct reads.
 
 The division log's block preparation, for the dashboard's family prepared on
 its own, is in [products/division_log/block.rs](src/products/division_log/block.rs):

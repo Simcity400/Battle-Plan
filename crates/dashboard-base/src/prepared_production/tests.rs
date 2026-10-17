@@ -77,6 +77,301 @@ fn observer_format(frame: &DecodedFrame) -> FormatVersion {
     .format
 }
 
+fn naming_frame() -> DecodedFrame {
+    use replay::rows::{LexicalTokenRow, ProductionLineOutputRow, TableRows, VariantDefinitionRow};
+    let mut frame = observer_frame(2, false);
+    frame.hour = crate::test_fixtures::slot_hour(TableId::VariantDefinitions);
+    frame.metrics.table_ns.fill(0);
+    frame.metrics.table_ns[TableId::ProductionLineOutput.index()] = 1;
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        [(1, "mod_equipment_a"), (2, "mod_equipment_b")]
+            .into_iter()
+            .map(|(token, literal)| LexicalTokenRow {
+                token,
+                literal: literal.as_bytes().to_vec(),
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
+            (1..=2)
+                .map(|id| VariantDefinitionRow {
+                    id,
+                    equipment_token: 1,
+                    creator_link: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ProductionLineOutput.index()] =
+        TableView::Complete(TableRows::ProductionLineOutput(
+            (1..=2)
+                .map(|variant| ProductionLineOutputRow {
+                    line: 1,
+                    ordinal: variant as u32,
+                    country: 1,
+                    variant,
+                    units: 1,
+                    since_hour: frame.hour,
+                    exact: true,
+                    spent_raw: Recorded::Value(Some(7)),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+#[test]
+fn equal_variant_reads_build_and_classify_once_but_keep_each_reads_name_date() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let flag = AtomicBool::new(false);
+    let first = naming_frame();
+    let format = observer_format(&first);
+    let mut state = ProductionAccumulator::new(format.version(), 1, first.hour);
+    let mut tracker = FrameChangeTracker::new();
+    equipment::VARIANT_BUILDS.with(|count| count.set(0));
+    for offset in 0..=72 {
+        let mut frame = first.clone();
+        frame.hour += offset;
+        if offset != 0 {
+            frame.metrics.table_ns.fill(0);
+        }
+        state
+            .ingest_changed(
+                format,
+                &frame,
+                Named::default(),
+                &flag,
+                &tracker.observe(&frame, format),
+            )
+            .unwrap();
+        if offset % 24 == 0 {
+            assert_eq!(state.classifications[&1].names[0].first_hour, frame.hour);
+        }
+    }
+    assert_eq!(equipment::VARIANT_BUILDS.with(std::cell::Cell::get), 2);
+    assert_eq!(state.variants.classifications, 2);
+    let mut frame = first.clone();
+    frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+    for (offset, expected) in [(73, 3), (74, 4), (75, 5), (76, 7)] {
+        use replay::rows::{TableRows, VariantModuleRow, VariantUpgradeRow};
+        frame.hour = first.hour + offset;
+        match offset {
+            73 => {
+                if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                    &mut *frame.tables[TableId::VariantDefinitions.index()]
+                {
+                    rows[0].display_name = b"mod design".to_vec();
+                }
+            }
+            74 => {
+                *frame.tables[TableId::VariantModules.index()] =
+                    TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
+                        variant: 1,
+                        slot: 1,
+                        definition_token: 2,
+                        definition_active: 1,
+                        ..Default::default()
+                    }]))
+            }
+            75 => {
+                *frame.tables[TableId::VariantUpgrades.index()] =
+                    TableView::Complete(TableRows::VariantUpgrades(vec![VariantUpgradeRow {
+                        variant: 1,
+                        definition_token: 2,
+                        level: 3,
+                        ..Default::default()
+                    }]))
+            }
+            76 => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    rows[0].tag = b"mod renamed country".to_vec();
+                }
+            }
+            _ => unreachable!(),
+        }
+        state
+            .ingest_changed(
+                format,
+                &frame,
+                Named::default(),
+                &flag,
+                &tracker.observe(&frame, format),
+            )
+            .unwrap();
+        assert_eq!(
+            equipment::VARIANT_BUILDS.with(std::cell::Cell::get),
+            expected
+        );
+        assert_eq!(state.variants.classifications, expected);
+    }
+}
+
+#[test]
+fn endpoint_events_serialize_once_for_hashing_and_publication() {
+    struct Payload(std::cell::Cell<usize>);
+    impl Serialize for Payload {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0.set(self.0.get() + 1);
+            serializer.serialize_str("mod payload")
+        }
+    }
+    let mut state = ProductionAccumulator::new(FormatVersion::CURRENT.version(), 1, 8);
+    let payload = Payload(std::cell::Cell::new(0));
+    state.endpoint_event(0, 8, &payload).unwrap();
+    state.endpoint_event(0, 9, &payload).unwrap();
+    assert_eq!(payload.0.get(), 2);
+    assert_eq!(state.spent.state(0).unwrap().events, 1);
+}
+
+#[test]
+fn cached_variant_operands_keep_fresh_frame_pages_state_and_publication_across_resume() {
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::tests::{Fixture, assert_payloads_equal},
+    };
+    use replay::rows::{TableRows, VariantModuleRow, VariantUpgradeRow};
+    let flag = AtomicBool::new(false);
+    let mut frame = naming_frame();
+    let first = frame.hour;
+    let format = observer_format(&frame);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut held = [HeldPages::default(), HeldPages::default()];
+    let mut states = [
+        ProductionAccumulator::new(format.version(), 1, first),
+        ProductionAccumulator::new(format.version(), 1, first),
+    ];
+    let mut tracker = FrameChangeTracker::new();
+    let mut definitions = None;
+    for offset in 0..=120 {
+        if offset == 73 {
+            continue;
+        }
+        frame.hour = first + offset;
+        if offset != 0 {
+            frame.metrics.table_ns.fill(0);
+        }
+        match offset {
+            24 => {
+                *frame.tables[TableId::VariantModules.index()] =
+                    TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
+                        variant: 1,
+                        slot: 1,
+                        definition_token: 2,
+                        definition_active: 1,
+                        ..Default::default()
+                    }]))
+            }
+            32 => {
+                if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                    &mut *frame.tables[TableId::VariantDefinitions.index()]
+                {
+                    rows[1].display_name = b"mod renamed design".to_vec();
+                }
+            }
+            48 => {
+                *frame.tables[TableId::VariantUpgrades.index()] =
+                    TableView::Complete(TableRows::VariantUpgrades(vec![VariantUpgradeRow {
+                        variant: 1,
+                        definition_token: 2,
+                        level: 3,
+                        ..Default::default()
+                    }]))
+            }
+            50 => {
+                definitions = Some(frame.tables[TableId::VariantDefinitions.index()].clone());
+                *frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+                    reason: "synthetic unread names".into(),
+                };
+            }
+            54 => {
+                frame.tables[TableId::VariantDefinitions.index()] = definitions.take().unwrap();
+                frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+            }
+            56 => {
+                if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                    &mut *frame.tables[TableId::VariantDefinitions.index()]
+                {
+                    rows.retain(|row| row.id != 2);
+                }
+            }
+            64 => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    rows[0].tag = b"renamed mod country".to_vec();
+                }
+            }
+            80 | 104 => {
+                if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                    &mut *frame.tables[TableId::LexicalTokens.index()]
+                {
+                    rows[0].literal = if offset == 80 {
+                        vec![255]
+                    } else {
+                        b"mod_equipment_a".to_vec()
+                    };
+                }
+            }
+            _ => {}
+        }
+        let changes = tracker.observe(&frame, format);
+        let mut pages = Vec::new();
+        for (index, state) in states.iter_mut().enumerate() {
+            if index == 1 {
+                state.variants = ProductionVariants::default();
+            }
+            pages.push(
+                state
+                    .ingest_changed(format, &frame, Named::default(), &flag, &changes)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&pages[0]).unwrap(),
+            serde_json::to_vec(&pages[1]).unwrap(),
+            "completed page at {offset}"
+        );
+        for (index, ((state, fixture), page)) in
+            states.iter_mut().zip(&fixtures).zip(pages).enumerate()
+        {
+            if let Some(page) = page {
+                publish_endpoint_to(&mut held[index], state, &page).unwrap();
+            }
+            if [36, 72, 120].contains(&offset) {
+                let mut writer = fixture.writer();
+                held[index].write(&mut writer).unwrap();
+                if let Some(page) = state.flush() {
+                    publish_endpoint(&mut writer, state, &page).unwrap();
+                }
+                write_state(&mut writer, state).unwrap();
+                writer.commit().unwrap();
+            }
+        }
+        assert_eq!(
+            serde_json::to_vec(&states[0]).unwrap(),
+            serde_json::to_vec(&states[1]).unwrap(),
+            "state at {offset}"
+        );
+        if [36, 72, 120].contains(&offset) {
+            assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "cached and fresh naming",
+            );
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                *state = latest_state(&fixture.store, &fixture.key, 1)
+                    .unwrap()
+                    .unwrap();
+            }
+            tracker.invalidate();
+        }
+    }
+}
+
 #[test]
 fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
     use crate::prepared::{

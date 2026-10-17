@@ -58,7 +58,7 @@ fn an_equal_dictionary_recorded_again_is_reported_rebuilt_by_the_block_reader() 
         &alone[at].tables[lexical],
         &alone[at - 1].tables[lexical]
     ));
-    let watched = fields().unwrap();
+    let watched = fields(true).unwrap();
     assert!(watched.contains(&TableFields::all(TableId::LexicalTokens)));
     let mut rebuilt = Vec::new();
     replay
@@ -96,7 +96,7 @@ fn an_equal_dictionary_recorded_again_is_reported_rebuilt_by_the_block_reader() 
 /// The family's watch list names fields every table holds.
 #[test]
 fn the_watch_list_names_existing_fields() {
-    let watched = fields().unwrap();
+    let watched = fields(true).unwrap();
     assert_eq!(
         watched.len(),
         tables(true).len() - 1,
@@ -110,6 +110,7 @@ fn the_watch_list_names_existing_fields() {
 fn extract() -> BlockExtract {
     BlockExtract {
         format: replay::format::FormatVersion::CURRENT,
+        world: true,
         hours: Vec::new(),
         last: None,
         built: Vec::new(),

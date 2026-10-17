@@ -18,6 +18,7 @@ The shared recording contract: rows, tables, frames, sample provenance, branches
 | [spool.rs](src/spool.rs), [witness.rs](src/witness.rs) | Versioned CRC records, durability and terminal failure evidence. |
 | [fixed_layout.rs](src/fixed_layout.rs) | Consumers of fixed modifier/token layouts. |
 | [acceptance.rs](src/acceptance.rs) | Synthetic capture/recovery campaign; `DOMAIN_TABLES` and direct fixtures cover every table exactly once. |
+| [cpu.rs](src/cpu.rs) | Measurement-only thread CPU by (category, family) label, section decodes by block and table, and reconstructed table-hours; off unless a harness (the dashboard readiness probe) enables it, and never changes what is read. |
 
 Code owns versions, TableIds, field counts, lifetimes and cadence; keep catalogs out of prose. Shared rules live in [AGENTS.md](../../AGENTS.md).
 
@@ -114,6 +115,32 @@ before's frame finds a new allocation, even of equal rows (an unwatched
 field's delta, or an incompatible table decoded again), so a consumer that
 tells changes by allocation can follow the hours it is not given.
 
+`Replay::read_block_watched` ([container/watched.rs](src/container/watched.rs))
+reads a block once for several consumers (`BlockWatch`), each a watch of
+changes (fields, as `read_block_changes`) or of every hour (tables, as
+`read_block_alone`). It decodes the union of their tables' sections once and
+advances each table's view once per hour, then hands each watch, in order, what
+its own read hands it: the same changed hours, quiet spans, frames, sample
+hours, recorded updates of its tables and allocation sharing, since a table's
+updates, view and allocations depend on that table alone. A watch's frame
+holds its own tables and the one unselected view for the rest; the recorded
+updates handed to a watch of every hour hold the other watches' tables too,
+which change facts read only where the watch's view is complete. The keyframe
+check over every table is made per watch as its own read makes it, so a
+keyframe one watch's read refuses refuses that watch alone; a watch whose visit
+fails stops alone; a failure of the read itself fails every watch still
+reading. `read_block_changes` is this read with one watch.
+
+A watch opting into `BlockWatch::releasing` also receives
+`Watched::Replacing` before reconstruction of an hour already known to visit
+it, after its preceding quiet span. It may release those tables from a frame
+kept only for quiet-hour reconstruction. Read flags, watched delta fields and
+key edits from a complete view witness such a visit; other updates keep the
+ordinary decision after reconstruction. Retained historical frames still own
+their rows, and every delta still creates a new view identity.
+Measured CPU snapshots include `deltaCopies`: shared-baseline delta counts,
+baseline rows traversed and cycles converted to nanoseconds, by table.
+
 Preparation reads each block on one below-normal-priority worker, decoding a
 grouped block's selected tables in parallel, and sends its frames in source order
 through a channel retaining one queued frame. The observing thread reconstructs
@@ -125,6 +152,11 @@ observer failure drop the receiver, release unaccepted frames and join the worke
 An observer panic also drops the receiver before joining a blocked producer.
 Only complete successful observation advances the decoder and cursor. Single-core
 preparation uses the serial stream.
+
+The `test-support` feature exposes `container::test_work::table_decodes`: the
+grouped tables actually decoded on the calling thread, by branch and block
+with the number of hours decoded (including single-keyframe reads),
+so consumer tests count selected decode work independently of their visitors.
 
 Prepared snapshots use `DecodedFrame::encode_checkpoint` and `decode_checkpoint`,
 a separate schema-stamped packet. Independent typed traits preserve decoded raw

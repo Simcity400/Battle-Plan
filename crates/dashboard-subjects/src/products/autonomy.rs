@@ -56,7 +56,8 @@ use ts_rs::TS;
 pub struct Autonomy;
 pub mod prepared;
 
-pub(crate) const TABLES: &[TableId] = &[
+/// Every table the autonomy observer reads.
+pub const TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
     TableId::Autonomy,

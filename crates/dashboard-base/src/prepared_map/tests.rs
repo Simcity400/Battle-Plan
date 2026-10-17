@@ -160,6 +160,27 @@ fn checkpoints_refuse_changed_selection_contract_and_trailing_payload() {
 }
 
 #[test]
+fn resume_reader_uses_and_validates_the_stored_selection() {
+    let source = frame();
+    let position = Position {
+        block: 0,
+        next_frame: 1,
+    };
+    let bytes = encode_checkpoint(&source, position, SELECTED).unwrap();
+    let restored = decode_resume(bytes.as_slice()).unwrap();
+    assert_eq!(restored.frame, source);
+    assert_eq!(restored.position, position);
+    assert!(restored.selects(TableId::DivisionStatus));
+    assert!(!restored.selects(TableId::AirAces));
+    let mut changed = bytes.clone();
+    changed[38 + TableId::Countries.index()] = 0;
+    assert!(decode_resume(changed.as_slice()).is_err());
+    let mut trailing = bytes;
+    trailing.push(0);
+    assert!(decode_resume(trailing.as_slice()).is_err());
+}
+
+#[test]
 fn checkpoint_compresses_native_state_and_rejects_corrupt_or_concatenated_frames() {
     let source = frame();
     let mut raw = Vec::new();
@@ -253,4 +274,146 @@ fn gap_intervals_keep_overlap_order_duplicates_and_maximum_hour() {
             (Hour::MAX, Hour::MAX, "end".into()),
         ]
     );
+}
+
+#[test]
+fn sparse_map_checkpoints_equal_hourly_bytes_across_short_blocks_gaps_branches_and_resume() {
+    use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame};
+    use replay::container::{Replay, ReplayStream, test_work::table_decodes};
+    let observed = |branch, hour| {
+        let mut frame = scale_frame(branch, hour, 2);
+        frame.metrics.table_ns[TableId::Countries.index()] = 1;
+        frame.tables[TableId::DivisionStatus.index()] = match hour {
+            104 => TableView::Truncated {
+                rows: TableRows::DivisionStatus(vec![DivisionStatusRow {
+                    division: 1,
+                    ..Default::default()
+                }]),
+                missing: 7,
+            },
+            105 => TableView::Unavailable {
+                reason: "synthetic failed census".into(),
+            },
+            _ => TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+                division: 1,
+                maximum_hit_points: i64::from(hour) * 1000,
+                ..Default::default()
+            }])),
+        }
+        .into();
+        frame
+    };
+    let frames = |branch, hours: &[i32]| hours.iter().map(|&hour| observed(branch, hour)).collect();
+    let first =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, frames(1, &[100, 101]))]).unwrap();
+    let mut replay = first
+        .append(&[continuation_records(
+            &first,
+            1,
+            frames(1, &[102, 104, 105, 106]),
+        )])
+        .unwrap();
+    replay = replay.append(&[records(2, frames(2, &[20, 21]))]).unwrap();
+    replay = replay
+        .append(&[continuation_records(
+            &replay,
+            1,
+            frames(1, &[108, 109, 110]),
+        )])
+        .unwrap();
+    let appended = replay
+        .append(&[continuation_records(
+            &replay,
+            1,
+            frames(1, &[111, 112, 113]),
+        )])
+        .unwrap();
+    let control = crate::prepared::series::tests::Fixture::new();
+    let sparse = crate::prepared::series::tests::Fixture::new();
+    let stride = NonZeroU32::new(3).unwrap();
+    let mut full_map = Builder::new(stride, SELECTED, Progress::default()).unwrap();
+    let mut sparse_map = Builder::new(stride, SELECTED, Progress::default()).unwrap();
+    let mut full = ReplayStream::new(SELECTED).unwrap();
+    let mut narrow = ReplayStream::new(&[TableId::Campaign]).unwrap();
+    for block in 0..appended.index.len() {
+        // The appended tail is first opened after accepting the earlier revision.
+        let replay = if block < replay.index.len() {
+            &replay
+        } else {
+            &appended
+        };
+        let mut writer = control.writer();
+        let mut count = 0;
+        full.next_block_with(
+            replay,
+            |raw, frame| {
+                count += 1;
+                full_map.accept(
+                    &mut writer,
+                    &raw,
+                    frame,
+                    Position {
+                        block,
+                        next_frame: count,
+                    },
+                )
+            },
+            || Ok(()),
+        )
+        .unwrap();
+        writer.commit().unwrap();
+        let mut writer = sparse.writer();
+        let mut count = 0;
+        let (_, decodes) = table_decodes(|| {
+            narrow
+                .next_block_with(
+                    replay,
+                    |raw, frame| {
+                        count += 1;
+                        sparse_map.accept_sparse(
+                            &mut writer,
+                            replay,
+                            &raw,
+                            frame,
+                            Position {
+                                block,
+                                next_frame: count,
+                            },
+                            || Ok(()),
+                        )
+                    },
+                    || Ok(()),
+                )
+                .unwrap()
+        });
+        writer.commit().unwrap();
+        assert_eq!(
+            sparse.payloads(),
+            control.payloads(),
+            "block {block}: every compressed checkpoint byte"
+        );
+        assert_eq!(
+            serde_json::to_vec(sparse_map.progress()).unwrap(),
+            serde_json::to_vec(full_map.progress()).unwrap()
+        );
+        let hours: Vec<_> = decodes
+            .iter()
+            .filter(|(_, _, table, _)| *table == TableId::DivisionStatus)
+            .map(|(_, _, _, hours)| *hours)
+            .collect();
+        assert_eq!(
+            hours,
+            if block == 1 { vec![2] } else { vec![1] },
+            "block {block}: only checkpoint prefixes decoded"
+        );
+        let progress =
+            serde_json::from_slice(&serde_json::to_vec(sparse_map.progress()).unwrap()).unwrap();
+        sparse_map = Builder::new(stride, SELECTED, progress).unwrap();
+        narrow = ReplayStream::resume(
+            &[TableId::Campaign],
+            narrow.cursor().clone(),
+            narrow.accumulator().cloned(),
+        )
+        .unwrap();
+    }
 }

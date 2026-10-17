@@ -7,32 +7,43 @@
 //! the shared trigger tables the fields their declared reads read
 //! (`triggers::inputs::Key::dependence`), the row keys of the others.
 //!
-//! At each hour it reads, the worker finds what changed since the hour
-//! before as the block reader does (`BlockChange::Changed`: each watched
-//! table whose watched fields, row keys or availability changed, made again
-//! from the hour before's rows) and keeps it as the hour's change facts
-//! (`BlockTables`); a combat whose commanders did not change is not a change
-//! of what leaders read, although its other operands move every hour. An
-//! hour at which nothing leaders read changed, and whose reads are the hour
-//! before's, joins the quiet hours, whose change facts are the reader's
-//! (`QuietTables`). It keeps the block's first hour (and one after a gap)
-//! whole, every other hour it keeps reduced: the hourly-moving tables only by
-//! the fields leaders and the declared reads read, and the tables no declared
+//! A run binds what its blocks are read with ([`bound`]): the scan's own
+//! tables, the trigger world's core and, where content binds, the shared
+//! trigger tables the declared reads read; not the rest of the trigger kit,
+//! which only an evaluation the hour's check refuses reads. Every table the
+//! read leaves out is taken as changed anywhere at every hour, and as
+//! differing from the hour's whole frame.
+//!
+//! At each hour it reads, the worker takes what changed since the hour
+//! before from the block reader (`BlockChange::Changed`: each watched table
+//! whose watched fields, row keys or availability changed), or finds it so
+//! from the hour before's rows where its read watches more than its fields,
+//! and keeps it as the hour's change facts (`BlockTables`); a combat whose
+//! commanders did not change is not a change of what leaders read, although
+//! its other operands move every hour. An hour at which nothing leaders read
+//! changed, and whose reads are the hour before's, joins the quiet hours,
+//! whose change facts are the reader's (`QuietTables`). It keeps the block's
+//! first hour (and one after a gap) as read, every other hour it keeps
+//! reduced: the hourly-moving tables only by the fields leaders and the
+//! declared reads read (a table's reduced rows made again only where its
+//! watched fields changed since they were made), and the tables no declared
 //! read reads not at all. A quiet hour whose reads differ from the hour
 //! before's is kept as the reads alone (its metrics and sample hours), on the
 //! last kept hour's rows.
 //!
-//! The family folds each block in order on the carried leaders: the whole
-//! hours as hourly preparation observes them; each kept hour through the same
-//! step on its kept frame ([`Prepared::observe_kept`]), with the hour's change
-//! facts, so a visibility verdict is reused while its inputs' declared
-//! dependence did not change, read again on the kept frame only where its
-//! inputs read there what the whole frame holds, and evaluated there only
-//! where everything the evaluation read is the whole frame's; each quiet span
-//! as the carried leaders' unchanged hours ([`Prepared::advance_quiet`]).
-//! Where a kept hour cannot give its verdicts so, or a quiet span would not
-//! carry, the rest of the block is observed hour by hour, on its whole
-//! frames, as hourly preparation observes it.
+//! The family folds each block in order on the carried leaders: each hour
+//! kept as read as hourly preparation observes it, or, where the read left
+//! tables out, through the same step as a kept hour; each kept hour through
+//! the same step on its kept frame ([`Prepared::observe_kept`]), with the
+//! hour's change facts, so a visibility verdict is reused while its inputs'
+//! declared dependence did not change, read again on the kept frame only
+//! where its inputs read there what the whole frame holds, and evaluated
+//! there only where everything the evaluation read is the whole frame's;
+//! each quiet span as the carried leaders' unchanged hours
+//! ([`Prepared::advance_quiet`]). Where an hour cannot give its verdicts so,
+//! or a quiet span would not carry, the rest of the block is observed hour
+//! by hour, on its whole frames read with the whole trigger kit, as hourly
+//! preparation observes it.
 
 use super::{
     Commanders, Content, battle_tables, experience_field, land_commanders, naval_commanders,
@@ -43,10 +54,11 @@ use dashboard_base::prepared::kept::{note_frames, note_observed};
 use dashboard_base::prepared::{
     frame_changes::FrameChanges,
     kept::{Observed, consecutive, kept_changes, observe_hours},
-    prepass::{Extract, Family, Folded},
+    prepass::{Bound, Extract, Family, Folded},
 };
 use dashboard_text::triggers::inputs::{BlockTables, QuietTables, TableChange, TableChanges};
 use replay::{
+    BranchId,
     container::{BlockIndex, QuietHours, Replay, TableFields},
     format::FormatVersion,
     frame::{DecodedFrame, Metrics, SharedView, TableView},
@@ -75,6 +87,16 @@ enum Watch {
     Leaders,
 }
 
+/// Which runs read a table ([`bound`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Every run: the scan's own tables and the trigger world's core.
+    Every,
+    /// A run whose content binds, whose leaders' visibility evaluations
+    /// read it.
+    Content,
+}
+
 /// How a kept frame keeps a table.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Keep {
@@ -89,98 +111,110 @@ enum Keep {
 /// The family's tables that are not watched by their keys and dropped from
 /// kept frames: the scan's own, and the shared trigger tables a declared
 /// read reads (`triggers::world::dependence`, the scope queries' and the
-/// trigger world's own reads), with the fields those reads read. A table a
-/// declared read reads more of than is watched is only read again on whole
-/// frames, so this list decides how often hours are quiet, never what is
-/// published.
-const POLICY: &[(TableId, Watch, Keep)] = &[
+/// trigger world's own reads), with the fields those reads read, and which
+/// runs read each. A table a declared read reads more of than is watched is
+/// only read again on whole frames, and one a run does not read only on the
+/// whole trigger kit's frames, so this list decides how often hours are
+/// quiet and blocks fall back, never what is published.
+const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     // The scan's own tables.
-    (TableId::UnitLeaders, Watch::Leaders, Keep::Reduced),
-    (TableId::Characters, Watch::All, Keep::Whole),
-    (TableId::CharacterPortraits, Watch::All, Keep::Whole),
-    (TableId::LexicalTokens, Watch::All, Keep::Whole),
-    (TableId::UnitLeaderTraits, Watch::All, Keep::Whole),
-    (TableId::LandCombatDetails, Watch::Named(&["sides"]), Keep::Reduced),
-    (TableId::NavalCombatDetails, Watch::Named(&["sides"]), Keep::Reduced),
-    (TableId::LandCombatResults, Watch::All, Keep::Whole),
-    (TableId::NavalResultSources, Watch::All, Keep::Whole),
-    (TableId::NavalResults, Watch::All, Keep::Whole),
-    (TableId::NavalCombatResultDetails, Watch::All, Keep::Whole),
+    (TableId::UnitLeaders, Watch::Leaders, Keep::Reduced, Reach::Every),
+    (TableId::Characters, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::CharacterPortraits, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::LexicalTokens, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::UnitLeaderTraits, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::LandCombatDetails, Watch::Named(&["sides"]), Keep::Reduced, Reach::Every),
+    (TableId::NavalCombatDetails, Watch::Named(&["sides"]), Keep::Reduced, Reach::Every),
+    (TableId::LandCombatResults, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::NavalResultSources, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::NavalResults, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::NavalCombatResultDetails, Watch::All, Keep::Whole, Reach::Every),
     (
         TableId::OrdersGroups,
         Watch::Named(&["leader", "name", "is_army_group"]),
         Keep::Whole,
+        Reach::Every,
     ),
-    (TableId::OrdersGroupPlans, Watch::All, Keep::Whole),
-    (TableId::Fleets, Watch::All, Keep::Whole),
+    (TableId::OrdersGroupPlans, Watch::All, Keep::Whole, Reach::Every),
+    (TableId::Fleets, Watch::All, Keep::Whole, Reach::Every),
     (
         TableId::NavalMissionTaskForces,
         Watch::Named(&["leader"]),
         Keep::Reduced,
+        Reach::Every,
     ),
-    (TableId::TaskForces, Watch::Named(&["fleet"]), Keep::Reduced),
+    (TableId::TaskForces, Watch::Named(&["fleet"]), Keep::Reduced, Reach::Every),
     (
         TableId::Countries,
         Watch::Named(&["canonical_slot", "tag"]),
         Keep::Reduced,
+        Reach::Every,
     ),
-    (TableId::CountryLinks, Watch::All, Keep::Whole),
+    (TableId::CountryLinks, Watch::All, Keep::Whole, Reach::Every),
     // The shared trigger tables declared reads read.
-    (TableId::Clock, Watch::Named(&["seed"]), Keep::Whole),
+    (TableId::Clock, Watch::Named(&["seed"]), Keep::Whole, Reach::Content),
     (
         TableId::PoliticalParties,
         Watch::Named(&["is_ruling", "token"]),
         Keep::Whole,
+        Reach::Content,
     ),
     (
         TableId::Politics,
         Watch::Named(&["ruling_party", "has_elections"]),
         Keep::Whole,
+        Reach::Content,
     ),
     (
         TableId::ReservedCountryNaming,
         Watch::Named(&["faction", "original_tag_reference"]),
         Keep::Whole,
+        Reach::Content,
     ),
-    (TableId::FactionMembers, Watch::Named(&["faction"]), Keep::Whole),
+    (TableId::FactionMembers, Watch::Named(&["faction"]), Keep::Whole, Reach::Content),
     (
         TableId::WarRelations,
         Watch::Named(&["start_hour", "end_hour"]),
         Keep::Reduced,
+        Reach::Content,
     ),
     (
         TableId::Subjects,
         Watch::Named(&["start_hour", "end_hour"]),
         Keep::Whole,
+        Reach::Content,
     ),
-    (TableId::Focus, Watch::Named(&["tree"]), Keep::Whole),
+    (TableId::Focus, Watch::Named(&["tree"]), Keep::Whole, Reach::Content),
     (
         TableId::CountryAppearance,
         Watch::Named(&["original_tag_reference"]),
         Keep::Whole,
+        Reach::Content,
     ),
-    (TableId::CompletedFocuses, Watch::Named(&["token"]), Keep::Whole),
+    (TableId::CompletedFocuses, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
     (
         TableId::Projects,
         Watch::Named(&["definition_id", "completed"]),
         Keep::Whole,
+        Reach::Content,
     ),
-    (TableId::ScriptFlags, Watch::Named(&["value"]), Keep::Whole),
+    (TableId::ScriptFlags, Watch::Named(&["value"]), Keep::Whole, Reach::Content),
     (
         TableId::PartyLeaders,
         Watch::Named(&["character", "leader_id", "role"]),
         Keep::Whole,
+        Reach::Content,
     ),
-    (TableId::CountryCharacters, Watch::Named(&["character"]), Keep::Whole),
-    (TableId::CountryCivilWars, Watch::Named(&["target"]), Keep::Whole),
-    (TableId::AdvisorTokens, Watch::Named(&["token"]), Keep::Whole),
-    (TableId::FactionAdvisors, Watch::Named(&["token"]), Keep::Whole),
-    (TableId::HiredAdvisors, Watch::Named(&["idea"]), Keep::Whole),
-    (TableId::ActiveIdeas, Watch::Named(&["token"]), Keep::Whole),
-    (TableId::CountryWars, Watch::All, Keep::Whole),
+    (TableId::CountryCharacters, Watch::Named(&["character"]), Keep::Whole, Reach::Content),
+    (TableId::CountryCivilWars, Watch::Named(&["target"]), Keep::Whole, Reach::Content),
+    (TableId::AdvisorTokens, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
+    (TableId::FactionAdvisors, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
+    (TableId::HiredAdvisors, Watch::Named(&["idea"]), Keep::Whole, Reach::Content),
+    (TableId::ActiveIdeas, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
+    (TableId::CountryWars, Watch::All, Keep::Whole, Reach::Content),
     // The trigger world's core tables: their keys and availability.
-    (TableId::Provinces, Watch::Keys, Keep::Reduced),
-    (TableId::States, Watch::Keys, Keep::Reduced),
+    (TableId::Provinces, Watch::Keys, Keep::Reduced, Reach::Every),
+    (TableId::States, Watch::Keys, Keep::Reduced, Reach::Every),
 ];
 
 /// How the family watches and keeps `table`.
@@ -191,7 +225,7 @@ fn policy(table: TableId) -> (Watch, Keep) {
     POLICY
         .iter()
         .find(|(listed, ..)| *listed == table)
-        .map_or((Watch::Keys, Keep::Dropped), |&(_, watch, keep)| {
+        .map_or((Watch::Keys, Keep::Dropped), |&(_, watch, keep, _)| {
             (watch, keep)
         })
 }
@@ -218,8 +252,95 @@ pub static FAMILY: LazyLock<Family> = LazyLock::new(|| Family {
     fallback: "leaders.fallback",
     tables: tables(),
     fields: Some(fields),
-    start,
+    start: |format| start(format, whole()),
 });
+
+/// What a run's block reads hold.
+struct Selection {
+    /// The tables read, in `TableId` order, the campaign among them.
+    tables: Vec<TableId>,
+    /// The fields watched of each but the campaign, as the block reader
+    /// reads them; None when the schema no longer names one (its blocks are
+    /// then read whole).
+    fields: Option<Vec<TableFields>>,
+    /// Those fields as its change facts read them: every field of a table
+    /// whose watched fields the schema no longer names.
+    watch: Vec<TableFields>,
+    /// Every other table leaders may read ([`tables`]), changed anywhere
+    /// at every hour and differing anywhere from the hour's whole frame.
+    unread: Changes,
+}
+
+impl Selection {
+    fn of(read: Vec<TableId>) -> Self {
+        let fields: io::Result<Vec<TableFields>> = read
+            .iter()
+            .filter(|&&table| table != TableId::Campaign)
+            .map(|&table| watched(table))
+            .collect();
+        let watch = match &fields {
+            Ok(fields) => fields.clone(),
+            Err(_) => read
+                .iter()
+                .filter(|&&table| table != TableId::Campaign)
+                .map(|&table| TableFields::all(table))
+                .collect(),
+        };
+        let unread = Changes(
+            tables()
+                .iter()
+                .filter(|table| !read.contains(table))
+                .map(|&table| (table, Change::Any))
+                .collect(),
+        );
+        Self {
+            tables: read,
+            fields: fields.ok(),
+            watch,
+            unread,
+        }
+    }
+}
+
+/// The reads [`FAMILY`] declares: every table leaders may read.
+fn whole() -> &'static Selection {
+    static WHOLE: LazyLock<Selection> = LazyLock::new(|| Selection::of(tables().to_vec()));
+    &WHOLE
+}
+
+/// A run's reads: the scan's own tables and the trigger world's core, and
+/// where `content` binds the shared trigger tables declared reads read.
+fn selected(content: bool) -> &'static Selection {
+    fn read(content: bool) -> Selection {
+        let mut tables: Vec<TableId> = POLICY
+            .iter()
+            .filter(|(.., reach)| content || *reach == Reach::Every)
+            .map(|(table, ..)| *table)
+            .collect();
+        tables.push(TableId::Campaign);
+        tables.sort_unstable();
+        tables.dedup();
+        Selection::of(tables)
+    }
+    static OWN: LazyLock<Selection> = LazyLock::new(|| read(false));
+    static CONTENT: LazyLock<Selection> = LazyLock::new(|| read(true));
+    if content { &CONTENT } else { &OWN }
+}
+
+/// A run's block reads, with or without bound `content`: the scan's own
+/// tables, the trigger world's core and, with content, the shared trigger
+/// tables leader visibility's declared reads read ([`POLICY`]). The rest of
+/// the trigger kit is read only where an hour falls back
+/// ([`observe_block`]): every hour's evaluations are checked to read only
+/// what the read holds.
+pub fn bound(content: bool) -> Bound {
+    let selection = selected(content);
+    Bound {
+        tables: selection.tables.clone(),
+        fields: selection.fields.clone(),
+        start: Box::new(move |format| start(format, selection)),
+    }
+}
 
 /// What a block is read by: every table but the campaign, which the reader
 /// checks on its own.
@@ -290,10 +411,12 @@ enum Change {
 pub struct Changes(Vec<(TableId, Change)>);
 
 impl Changes {
-    /// `changes`' report of each of the family's tables.
-    fn read(changes: &dyn TableChanges) -> Self {
-        Self(
-            tables()
+    /// `changes`' report of each table `selection` reads, and every table it
+    /// does not read changed anywhere.
+    fn read(changes: &dyn TableChanges, selection: &Selection) -> Self {
+        let mut read = Self(
+            selection
+                .tables
                 .iter()
                 .filter_map(|&table| match changes.table(table) {
                     TableChange::Same => None,
@@ -301,7 +424,9 @@ impl Changes {
                     TableChange::Rows(..) | TableChange::Any => Some((table, Change::Any)),
                 })
                 .collect(),
-        )
+        );
+        read.merge(&selection.unread);
+        read
     }
 
     fn get(&self, table: TableId) -> Option<Change> {
@@ -420,24 +545,57 @@ struct BlockFacts {
     hours: Vec<Hour>,
     /// What every kept frame's rows may differ from the whole frame's by.
     reduction: Changes,
+    /// What a frame kept as read may differ from the whole frame by: the
+    /// tables the block's read left out.
+    unread: Changes,
     /// Frames the extract was given or built.
     #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     frames: usize,
+    /// Tables the extract compared row by row with the hour before's, and
+    /// the countries' kept rows it reduced, counted in tests.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    work: Work,
 }
 
-/// One table of the kept frames reduced: the last view reduced and its
-/// reduced view, shared while the reduced rows are equal.
+/// The extract's counted work.
+#[derive(Default)]
+#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+struct Work {
+    compared: usize,
+    reduced_countries: usize,
+}
+
+/// Each table the extract compares row by row with the hour before's,
+/// counted in tests: none where the block reader's changed tables are its
+/// own.
+pub const COMPARED: &str = "leaders.compared";
+
+/// Each time the extract reduces the countries' rows of a kept frame anew,
+/// counted in tests: only where their slots, tags, keys or availability
+/// changed since the rows last reduced.
+pub const REDUCED_COUNTRIES: &str = "leaders.reduced_countries";
+
+/// Each block folded from an extract that read every table leaders may
+/// read, counted in tests.
+pub const WHOLE_KIT: &str = "leaders.whole_kit";
+
+/// One table of the kept frames reduced: its last reduced view, shared
+/// while the reduced rows are equal, and whether the table changed where
+/// leaders watch it since the rows it was made from. Every field a reduced
+/// table keeps is a watched field or its row key, so while nothing watched
+/// changed the last reduced view holds the reduced rows: the table's rows
+/// are neither held nor reduced again.
 struct Reducer<T> {
-    source: Option<SharedView>,
     view: Option<SharedView>,
+    stale: bool,
     table: PhantomData<T>,
 }
 
 impl<T> Default for Reducer<T> {
     fn default() -> Self {
         Self {
-            source: None,
             view: None,
+            stale: true,
             table: PhantomData,
         }
     }
@@ -445,22 +603,26 @@ impl<T> Default for Reducer<T> {
 
 impl<T: TableSchema> Reducer<T> {
     /// Replace `frame`'s complete view of the table by its rows reduced by
-    /// `reduce`. Another view stays as read.
-    fn apply(&mut self, frame: &mut DecodedFrame, reduce: impl Fn(&T::Row) -> T::Row) {
+    /// `reduce`: the last reduced view while nothing watched changed since,
+    /// else the rows reduced again. Another view stays as read. Whether the
+    /// rows were reduced again.
+    fn apply(&mut self, frame: &mut DecodedFrame, reduce: impl Fn(&T::Row) -> T::Row) -> bool {
         let index = T::ID.index();
         let source = frame.tables[index].clone();
         let sampled = source.sampled_at();
-        if let (Some(last), Some(view)) = (&self.source, &self.view)
-            && SharedView::ptr_eq(last, &source)
+        let TableView::Complete(rows) = &*source else {
+            self.stale = true;
+            return false;
+        };
+        if !self.stale
+            && let Some(view) = &self.view
         {
             frame.tables[index] = view.clone().with_sampled_at(sampled);
-            return;
+            return false;
         }
-        let TableView::Complete(rows) = &*source else {
-            return;
-        };
         let Some(rows) = rows.rows::<T>() else {
-            return;
+            self.stale = true;
+            return false;
         };
         let reduced: Vec<T::Row> = rows.iter().map(reduce).collect();
         let held = self.view.as_ref().filter(|view| match &***view {
@@ -475,8 +637,9 @@ impl<T: TableSchema> Reducer<T> {
                 view
             }
         };
-        self.source = Some(source);
+        self.stale = false;
         frame.tables[index] = view.with_sampled_at(sampled);
+        true
     }
 }
 
@@ -493,12 +656,36 @@ struct Reducers {
     navy: Reducer<tables::NavalCombatDetails>,
 }
 
+impl Reducers {
+    /// `table` changed where leaders watch it.
+    fn changed(&mut self, table: TableId) {
+        let stale = match table {
+            TableId::UnitLeaders => &mut self.leaders.stale,
+            TableId::Countries => &mut self.countries.stale,
+            TableId::Provinces => &mut self.provinces.stale,
+            TableId::States => &mut self.states.stale,
+            TableId::WarRelations => &mut self.wars.stale,
+            TableId::TaskForces => &mut self.task_forces.stale,
+            TableId::NavalMissionTaskForces => &mut self.missions.stale,
+            TableId::LandCombatDetails => &mut self.land.stale,
+            TableId::NavalCombatDetails => &mut self.navy.stale,
+            _ => return,
+        };
+        *stale = true;
+    }
+}
+
 struct BlockExtract {
     format: FormatVersion,
+    /// What the block is read with.
+    selection: &'static Selection,
     hours: Vec<Hour>,
-    /// The last frame observed, as read: the hour before's rows of every
-    /// watched field, which the next hour read is compared with.
+    /// The last frame observed, as read, where the block reader's changed
+    /// tables are not given: the hour before's rows of every watched field,
+    /// which the next hour read is compared with.
     last: Option<DecodedFrame>,
+    /// The branch of the last frame observed.
+    branch: Option<BranchId>,
     /// The last recorded hour given, observed or quiet.
     previous: Option<i32>,
     /// The scan's reads at that hour ([`read_mask`]).
@@ -515,13 +702,17 @@ struct BlockExtract {
     /// Whether a kept leader had experience, which kept frames do not keep.
     experience: bool,
     frames: usize,
+    work: Work,
 }
 
-fn start(format: FormatVersion) -> Box<dyn Extract> {
+/// An extract of a block read with `selection`.
+fn start(format: FormatVersion, selection: &'static Selection) -> Box<dyn Extract> {
     Box::new(BlockExtract {
         format,
+        selection,
         hours: Vec::new(),
         last: None,
+        branch: None,
         previous: None,
         mask: None,
         commanders: [None, None],
@@ -531,6 +722,7 @@ fn start(format: FormatVersion) -> Box<dyn Extract> {
         dropped: BTreeMap::new(),
         experience: false,
         frames: 0,
+        work: Work::default(),
     })
 }
 
@@ -691,7 +883,7 @@ impl BlockExtract {
         let mut kept = frame.clone();
         let reducers = &mut self.reducers;
         let had = Cell::new(false);
-        reducers.leaders.apply(&mut kept, |row: &UnitLeaderRow| {
+        let reduced = reducers.leaders.apply(&mut kept, |row: &UnitLeaderRow| {
             if row.experience != Default::default() {
                 had.set(true);
             }
@@ -700,13 +892,25 @@ impl BlockExtract {
                 ..row.clone()
             }
         });
+        // Kept as last reduced: whether a leader has experience now.
+        if !reduced
+            && !self.experience
+            && let Ok(rows) = frame.complete::<tables::UnitLeaders>()
+        {
+            had.set(
+                rows.iter()
+                    .any(|row| row.experience != Default::default()),
+            );
+        }
         self.experience |= had.get();
-        reducers.countries.apply(&mut kept, |row: &CountryRow| CountryRow {
+        if reducers.countries.apply(&mut kept, |row: &CountryRow| CountryRow {
             id: row.id,
             canonical_slot: row.canonical_slot,
             tag: row.tag.clone(),
             ..Default::default()
-        });
+        }) {
+            self.work.reduced_countries += 1;
+        }
         reducers.provinces.apply(&mut kept, |row: &ProvinceRow| ProvinceRow {
             id: row.id,
             ..Default::default()
@@ -758,7 +962,7 @@ impl BlockExtract {
                 }),
                 ..Default::default()
             });
-        for &table in tables() {
+        for &table in &self.selection.tables {
             if policy(table).1 == Keep::Dropped {
                 let index = table.index();
                 let view = self
@@ -795,13 +999,119 @@ impl BlockExtract {
         }
     }
 
-    /// Remember `frame` as the last observed.
-    fn observed(&mut self, frame: &DecodedFrame, mask: u32, commanders: [Option<Commanders>; 2]) {
+    /// Remember `frame` as the last observed: its rows too where the next
+    /// hour's changes are found from them (`compare`).
+    fn observed(
+        &mut self,
+        frame: &DecodedFrame,
+        mask: u32,
+        commanders: [Option<Commanders>; 2],
+        compare: bool,
+    ) {
         self.deadline = next_end(frame, frame.hour);
         self.previous = Some(frame.hour);
+        self.branch = Some(frame.branch);
         self.mask = Some(mask);
         self.commanders = commanders;
-        self.last = Some(frame.clone());
+        self.last = compare.then(|| frame.clone());
+    }
+
+    /// An hour's frame, with the watched tables the block reader reports
+    /// changed since the hour before (`reported`), or none where its read
+    /// watches more than leaders' fields: the changed tables are then found
+    /// from the hour before's rows.
+    fn hour(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        reported: Option<&[TableId]>,
+    ) -> io::Result<()> {
+        self.frames += 1;
+        let hour = frame.hour;
+        let compare = reported.is_none();
+        let mask = read_mask(self.format, &frame.metrics, hour, true);
+        let (land, navy) = battle_tables(self.format, frame);
+        let commanders = [land.map(land_commanders), navy.map(naval_commanders)];
+        let continues = self.previous.and_then(|previous| previous.checked_add(1)) == Some(hour)
+            && self.branch == Some(frame.branch)
+            && (!compare || self.last.is_some());
+        if !continues {
+            self.hours.push(Hour::Whole {
+                frame: frame.clone(),
+                changes: kept_changes(changes),
+            });
+            self.stale = Changes::default();
+            // Nothing tells what changed since the rows last reduced.
+            for table in tables() {
+                self.reducers.changed(*table);
+            }
+            self.observed(frame, mask, commanders, compare);
+            return Ok(());
+        }
+        let selection = self.selection;
+        // The block reader's report of this hour (`BlockChange::Changed`):
+        // the tables its update rebuilt, and of those, each whose watched
+        // fields, row keys or availability changed. A combat table counts
+        // as changed whenever rebuilt; leaders read its commanders.
+        let rebuilt: Vec<TableId> = selection
+            .tables
+            .iter()
+            .copied()
+            .filter(|table| changes.rows_changed[table.index()])
+            .collect();
+        let changed: Vec<TableId> = match reported {
+            Some(reported) => rebuilt
+                .iter()
+                .copied()
+                .filter(|table| is_combat(*table) || reported.contains(table))
+                .collect(),
+            None => {
+                let last = self.last.as_ref().expect("the hour before's frame");
+                let mut compared = 0;
+                let changed = rebuilt
+                    .iter()
+                    .copied()
+                    .filter(|&table| {
+                        is_combat(table) || {
+                            compared += 1;
+                            differs(
+                                table,
+                                watched_fields(table),
+                                &last.tables[table.index()],
+                                &frame.tables[table.index()],
+                            )
+                        }
+                    })
+                    .collect();
+                self.work.compared += compared;
+                changed
+            }
+        };
+        for &table in &changed {
+            self.reducers.changed(table);
+        }
+        let since = Changes::read(
+            &BlockTables::new(&selection.watch, &changed, &rebuilt),
+            selection,
+        );
+        let read_changed = changed.iter().any(|&table| !is_combat(table));
+        if !read_changed
+            && commanders == self.commanders
+            && Some(mask) == self.mask
+            && self.deadline.is_none_or(|deadline| deadline > hour)
+        {
+            self.push_quiet(hour, hour, since);
+        } else {
+            let kept = self.reduce(frame);
+            self.hours.push(Hour::Kept {
+                frame: kept,
+                changes: kept_changes(changes),
+                since,
+            });
+            self.stale = Changes::default();
+        }
+        self.observed(frame, mask, commanders, compare);
+        Ok(())
     }
 }
 
@@ -848,70 +1158,27 @@ impl Extract for BlockExtract {
         held.total()
     }
 
+    /// An hour's frame, whose changes since the hour before are found from
+    /// the hour before's rows.
     fn observe(
         &mut self,
         _: &Replay,
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        self.frames += 1;
-        let hour = frame.hour;
-        let mask = read_mask(self.format, &frame.metrics, hour, true);
-        let (land, navy) = battle_tables(self.format, frame);
-        let commanders = [land.map(land_commanders), navy.map(naval_commanders)];
-        let continues = self.previous.and_then(|previous| previous.checked_add(1)) == Some(hour)
-            && self.last.as_ref().is_some_and(|last| last.branch == frame.branch);
-        if !continues {
-            self.hours.push(Hour::Whole {
-                frame: frame.clone(),
-                changes: kept_changes(changes),
-            });
-            self.stale = Changes::default();
-            self.observed(frame, mask, commanders);
-            return Ok(());
-        }
-        let last = self.last.as_ref().expect("the hour before's frame");
-        // The block reader's report of this hour (`BlockChange::Changed`):
-        // the tables its update rebuilt, and of those, each whose watched
-        // fields, row keys or availability changed. A combat table counts
-        // as changed whenever rebuilt; leaders read its commanders.
-        let rebuilt: Vec<TableId> = tables()
-            .iter()
-            .copied()
-            .filter(|table| changes.rows_changed[table.index()])
-            .collect();
-        let changed: Vec<TableId> = rebuilt
-            .iter()
-            .copied()
-            .filter(|&table| {
-                is_combat(table)
-                    || differs(
-                        table,
-                        watched_fields(table),
-                        &last.tables[table.index()],
-                        &frame.tables[table.index()],
-                    )
-            })
-            .collect();
-        let since = Changes::read(&BlockTables::new(watch(), &changed, &rebuilt));
-        let read_changed = changed.iter().any(|&table| !is_combat(table));
-        if !read_changed
-            && commanders == self.commanders
-            && Some(mask) == self.mask
-            && self.deadline.is_none_or(|deadline| deadline > hour)
-        {
-            self.push_quiet(hour, hour, since);
-        } else {
-            let kept = self.reduce(frame);
-            self.hours.push(Hour::Kept {
-                frame: kept,
-                changes: kept_changes(changes),
-                since,
-            });
-            self.stale = Changes::default();
-        }
-        self.observed(frame, mask, commanders);
-        Ok(())
+        self.hour(frame, changes, None)
+    }
+
+    /// An hour's frame, with the block reader's changed tables, which are
+    /// leaders' own.
+    fn observe_reported(
+        &mut self,
+        _: &Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        reported: &[TableId],
+    ) -> io::Result<()> {
+        self.hour(frame, changes, Some(reported))
     }
 
     fn deadline(&self) -> Option<i32> {
@@ -930,7 +1197,8 @@ impl Extract for BlockExtract {
                 "Quiet leader hours do not follow the hour before",
             ));
         }
-        let watch = watch();
+        let selection = self.selection;
+        let watch = &selection.watch;
         let mut run: Option<(i32, i32)> = None;
         for position in span.clone() {
             let hour = hours.hours()[position];
@@ -942,16 +1210,18 @@ impl Extract for BlockExtract {
                     self.push_quiet(
                         first,
                         last,
-                        Changes::read(&QuietTables::new(watch, hours, position)),
+                        Changes::read(&QuietTables::new(watch, hours, position), selection),
                     );
                 }
-                let since = Changes::read(&QuietTables::new(watch, hours, position + 1));
+                let since =
+                    Changes::read(&QuietTables::new(watch, hours, position + 1), selection);
                 let mut stale = self.stale.clone();
                 stale.merge(&since);
                 self.hours.push(Hour::Built {
                     hour,
                     metrics: hours.metrics()[position].clone(),
-                    sampled: tables()
+                    sampled: selection
+                        .tables
                         .iter()
                         .map(|&table| (table, hours.sampled_at(position, table)))
                         .collect(),
@@ -967,7 +1237,7 @@ impl Extract for BlockExtract {
             self.push_quiet(
                 first,
                 last,
-                Changes::read(&QuietTables::new(watch, hours, span.end)),
+                Changes::read(&QuietTables::new(watch, hours, span.end), selection),
             );
         }
         Ok(())
@@ -977,10 +1247,15 @@ impl Extract for BlockExtract {
         if self.hours.is_empty() {
             return Err(io::Error::other("Leader block has no hours"));
         }
+        let unread = self.selection.unread.clone();
+        let mut reduction = reduction(self.experience);
+        reduction.merge(&unread);
         Ok(Box::new(BlockFacts {
-            reduction: reduction(self.experience),
+            reduction,
+            unread,
             hours: self.hours,
             frames: self.frames,
+            work: self.work,
         }))
     }
 }
@@ -1018,9 +1293,23 @@ pub fn fold(
         .downcast::<BlockFacts>()
         .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
     #[cfg(any(test, feature = "test-support"))]
-    note_frames(FAMILY.name, facts.frames);
+    {
+        note_frames(FAMILY.name, facts.frames);
+        for _ in 0..facts.work.compared {
+            dashboard_base::prepared::prepass::note(COMPARED);
+        }
+        for _ in 0..facts.work.reduced_countries {
+            dashboard_base::prepared::prepass::note(REDUCED_COUNTRIES);
+        }
+        if facts.unread.0.is_empty() {
+            dashboard_base::prepared::prepass::note(WHOLE_KIT);
+        }
+    }
     let BlockFacts {
-        hours, reduction, ..
+        hours,
+        reduction,
+        unread,
+        ..
     } = *facts;
     let mut reached = None;
     // The last kept hour's frame, and whether it is reduced.
@@ -1029,11 +1318,32 @@ pub fn fold(
         check()?;
         match hour {
             Hour::Whole { frame, changes } => {
+                // A frame that lacks tables the read left out gives its
+                // verdicts as a kept frame does: only where they read none
+                // of them, else the block is observed with every table.
+                let result = if unread.0.is_empty() {
+                    prepared
+                        .observe(&frame, replay, content, &changes)
+                        .map(|()| true)
+                } else {
+                    prepared.observe_kept(&frame, replay, content, &changes, &changes, &unread)
+                };
+                if matches!(result, Ok(false)) {
+                    let reached = observe_block(
+                        prepared,
+                        replay,
+                        index,
+                        Some(frame.hour),
+                        content,
+                        observed,
+                        check,
+                    )?;
+                    return Ok((Folded::Fallback, reached));
+                }
                 reached = Some(frame.hour);
                 #[cfg(any(test, feature = "test-support"))]
                 note_observed(FAMILY.name);
-                let result = prepared.observe(&frame, replay, content, &changes);
-                if !observed(frame.hour, result)? {
+                if !observed(frame.hour, result.map(drop))? {
                     return Ok((Folded::Fast, reached));
                 }
                 base = Some((frame, false));
@@ -1079,11 +1389,10 @@ pub fn fold(
                 let changes =
                     FrameChanges::rebuilt(&frame, replay.format, true, |table| since.has(table));
                 // Its rows are the last kept hour's: what changed since,
-                // besides that hour's own reduction.
+                // besides that hour's own reduction, or the tables the read
+                // left out.
                 let mut differ = stale;
-                if *reduced {
-                    differ.merge(&reduction);
-                }
+                differ.merge(if *reduced { &reduction } else { &unread });
                 let result =
                     prepared.observe_kept(&frame, replay, content, &changes, &since, &differ);
                 if matches!(result, Ok(false)) {
@@ -1128,8 +1437,9 @@ pub fn fold(
 }
 
 /// Observe the block hour by hour from `from` (every hour without it), on its
-/// whole frames, with the change facts of the block alone, as hourly
-/// preparation does. Returns the last hour observed.
+/// whole frames read with every table leaders may read, with the change
+/// facts of the block alone, as hourly preparation does. Returns the last
+/// hour observed.
 pub fn observe_block(
     prepared: &mut Prepared,
     replay: &Replay,

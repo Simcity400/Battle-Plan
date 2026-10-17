@@ -16,5 +16,13 @@ keeps its dashboard path and names what it uses at the crates that own it
 `dashboard::products::` path, registers it, and prepares and queries it in its
 pipeline.
 
+Prepared holders catch up through an authenticated span in one step, retaining
+the same open-run endpoints and saved state as advancing every hour. Identity
+changes and breaks are observed at their own hours between those spans. Numeric
+reads use recorded row deltas when present; a changed table without them,
+or a change to table availability, holders or dictionary, rebuilds the whole
+projection. Continuation JSON uses the hourly branch writer's shared buffered
+compression helper.
+
 `cargo test -p dashboard-equipment-stockpile` builds and runs only this crate's
 tests.

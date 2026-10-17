@@ -14,8 +14,7 @@
 
 use super::*;
 use crate::{
-    BranchId,
-    frame::{SharedView, TableUpdate, advance_table, decode_update, not_selected},
+    frame::{SharedView, TableUpdate, decode_update},
     rows::{DeltaRow, compatibility::HISTORY, full_mask},
 };
 
@@ -170,6 +169,50 @@ impl QuietHours {
     }
 }
 
+impl QuietHours {
+    /// An empty span of a reader reconstructing `tables`, in TableId order.
+    pub(super) fn for_tables(tables: Vec<TableId>) -> Self {
+        Self {
+            tables,
+            ..Self::default()
+        }
+    }
+
+    /// One more quiet hour: its metrics and each reconstructed table's sample
+    /// hour and whether its update rebuilt it, in the tables' order.
+    pub(super) fn push(
+        &mut self,
+        hour: Hour,
+        metrics: Metrics,
+        tables: impl Iterator<Item = (Option<Hour>, bool)>,
+    ) -> io::Result<()> {
+        engine::allocation::reserve(&mut self.hours, 1)?;
+        engine::allocation::reserve(&mut self.metrics, 1)?;
+        engine::allocation::reserve(&mut self.sampled, self.tables.len())?;
+        engine::allocation::reserve(&mut self.rebuilt, self.tables.len())?;
+        self.hours.push(hour);
+        self.metrics.push(metrics);
+        for (sampled, rebuilt) in tables {
+            self.sampled.push(sampled);
+            self.rebuilt.push(rebuilt);
+        }
+        Ok(())
+    }
+
+    /// Visit the quiet hours not yet visited.
+    pub(super) fn flush(
+        &mut self,
+        visit: &mut dyn FnMut(super::Watched<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.hours.is_empty() {
+            return Ok(());
+        }
+        let visited = visit(super::Watched::Change(BlockChange::Quiet(self)));
+        self.clear();
+        visited
+    }
+}
+
 impl Replay {
     /// One block read alone, as [`Replay::read_block_alone`] reads it with
     /// `fields`' tables, visiting only its first hour and the hours at which a
@@ -183,300 +226,31 @@ impl Replay {
     /// `read_block_alone` does, and watched only when `fields` names it.
     /// Admission, verification, cancellation and errors are
     /// `read_block_alone`'s; a failed read may have visited earlier hours.
+    /// It is [`Replay::read_block_watched`] with this one watch.
     pub fn read_block_changes(
         &self,
         index: &BlockIndex,
         fields: &[TableFields],
         mut visit: impl FnMut(BlockChange<'_>) -> io::Result<()>,
-        mut check: impl FnMut() -> io::Result<()>,
+        check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
-        check()?;
-        let mut reader = ChangeReader::new(&self.campaign_id, index.branch, fields)?;
-        let tables = engine::allocation::collect_vec(reader.quiet.tables.iter().copied())?;
-        if let Some(block) = self.grouped_block(index)? {
-            // Admission as `read_block_selected`: the selected tables
-            // decoded, then every section's checksum on a first read.
-            let read = super::grouped::read_selected_updates(self, index, &block, &tables)?;
-            if !self.is_verified(index) {
-                super::grouped::verify(&block, index)?;
-            }
-            self.mark_verified(index);
-            drop(block);
-            check()?;
-            let super::grouped::SelectedUpdates {
-                hours,
-                metrics,
-                updates,
-                dependent_keyframe,
-            } = read;
-            let updates = &updates;
-            for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
-                check()?;
-                let keyframe = position == 0;
-                if keyframe && dependent_keyframe {
-                    return Err(invalid_static(
-                        "keyframe contains a dependent or partial table",
-                    ));
+        let mut watches = [super::BlockWatch::new(
+            super::Watching::Changes(fields),
+            |step| match step {
+                super::Watched::Change(change) => visit(change),
+                super::Watched::Hour { .. } | super::Watched::Replacing(_) => {
+                    unreachable!("a watch of changes")
                 }
-                reader.hour(
-                    hour,
-                    keyframe,
-                    metrics,
-                    move |table| &updates[table][position],
-                    &mut visit,
-                )?;
-            }
-            return reader.flush(&mut visit);
-        }
-        // Interleaved blocks keep their bounded payload streaming: an
-        // admission pass, then reconstruction.
-        self.visit_block(index, Some(&tables), |_| {
-            check()?;
-            Ok(true)
-        })?;
-        check()?;
-        let watched = &tables;
-        self.visit_block(index, Some(&tables), |frame| {
-            check()?;
-            let Frame {
-                hour,
-                keyframe,
-                metrics,
-                tables: updates,
-                ..
-            } = frame;
-            if keyframe && updates.iter().any(|update| !keyframe_holds(update)) {
-                return Err(invalid_static(
-                    "keyframe contains a dependent or partial table",
-                ));
-            }
-            let updates = &updates;
-            reader.hour(
-                hour,
-                keyframe,
-                metrics,
-                move |table| &updates[watched[table].index()],
-                &mut visit,
-            )?;
-            Ok(true)
-        })?;
-        reader.flush(&mut visit)
-    }
-}
-
-/// An update a keyframe may hold.
-fn keyframe_holds(update: &TableUpdate) -> bool {
-    matches!(
-        update,
-        TableUpdate::Snapshot(_)
-            | TableUpdate::Unavailable { .. }
-            | TableUpdate::Incompatible { .. }
-    )
-}
-
-/// A reconstructed table and the fields watched in it; None for the Campaign
-/// table the caller did not name, which is reconstructed and checked only.
-/// With `read`, the hours it was read are visited.
-struct Watch {
-    table: TableId,
-    fields: Option<u64>,
-    read: bool,
-}
-
-/// Each reconstructed table's view, advanced every hour exactly as
-/// `FrameDecoder::advance` advances it, and the quiet hours not yet visited.
-struct ChangeReader<'r> {
-    campaign_id: &'r [u8],
-    branch: BranchId,
-    watches: Vec<Watch>,
-    /// Each table's position in `watches`, by table index.
-    slots: Vec<Option<usize>>,
-    views: Vec<Option<SharedView>>,
-    last_hour: Option<Hour>,
-    changed: Vec<TableId>,
-    /// The reconstructed tables the current hour's update rebuilt.
-    rebuilt: Vec<TableId>,
-    quiet: QuietHours,
-}
-
-impl<'r> ChangeReader<'r> {
-    fn new(campaign_id: &'r [u8], branch: BranchId, fields: &[TableFields]) -> io::Result<Self> {
-        let mut watches = Vec::new();
-        for table in TableId::ALL {
-            let named = fields
-                .iter()
-                .filter(|entry| entry.table == table)
-                .fold(None, |union, entry| Some(union.unwrap_or(0) | entry.fields));
-            if named.is_some() || table == TableId::Campaign {
-                engine::allocation::reserve(&mut watches, 1)?;
-                watches.push(Watch {
-                    table,
-                    fields: named,
-                    read: fields
-                        .iter()
-                        .any(|entry| entry.table == table && entry.read),
-                });
-            }
-        }
-        let mut slots = engine::allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
-        for (position, watch) in watches.iter().enumerate() {
-            slots[watch.table.index()] = Some(position);
-        }
-        Ok(Self {
-            campaign_id,
-            branch,
-            views: engine::allocation::collect_vec(watches.iter().map(|_| None))?,
-            quiet: QuietHours {
-                tables: engine::allocation::collect_vec(watches.iter().map(|watch| watch.table))?,
-                ..QuietHours::default()
             },
-            watches,
-            slots,
-            last_hour: None,
-            changed: Vec::new(),
-            rebuilt: Vec::new(),
-        })
-    }
-
-    /// Advance every reconstructed table to `hour` from its update
-    /// (`update(position)`, by position in `watches`), then visit the hour
-    /// when it is the first or a watched table changed, after the quiet hours
-    /// before it; otherwise keep it quiet.
-    fn hour<'u>(
-        &mut self,
-        hour: Hour,
-        keyframe: bool,
-        metrics: Metrics,
-        update: impl Fn(usize) -> &'u TableUpdate,
-        visit: &mut impl FnMut(BlockChange<'_>) -> io::Result<()>,
-    ) -> io::Result<()> {
-        if keyframe && (0..self.watches.len()).any(|position| !keyframe_holds(update(position))) {
-            return Err(invalid_static(
-                "keyframe contains a dependent or partial table",
-            ));
-        }
-        // As the decoder: only the hour before's complete views are baselines,
-        // and a keyframe has none.
-        let before_hour = self.last_hour.filter(|_| !keyframe);
-        self.changed.clear();
-        self.rebuilt.clear();
-        for position in 0..self.watches.len() {
-            let table = self.watches[position].table;
-            let fields = self.watches[position].fields;
-            let visit_read = self.watches[position].read;
-            let update = update(position);
-            let read = metrics.table_ns[table.index()] != 0;
-            let before = self.views[position].take();
-            let (view, differs, rebuilt) = if let TableUpdate::Delta {
-                changed: rows,
-                deleted,
-                ..
-            } = update
-            {
-                // The view moves into the delta, which applies in place when
-                // no visited frame still holds it. A delta always yields a new
-                // view, as it does for a reader holding the hour before.
-                let count = before.as_deref().and_then(complete_len);
-                let view = advance_table(table, update, baseline(before_hour, before), hour, read)?;
-                let differs = match (&*view, count) {
-                    (TableView::Complete(after), Some(count)) => {
-                        !deleted.is_empty()
-                            || after.len() != count
-                            || rows.iter().any(|row| touches(table, fields, row))
-                    }
-                    _ => true,
-                };
-                (view, differs, true)
-            } else {
-                let view = advance_table(
-                    table,
-                    update,
-                    baseline(before_hour, before.clone()),
-                    hour,
-                    read,
-                )?;
-                let differs = before
-                    .as_ref()
-                    .is_none_or(|before| view_differs(table, fields, before, &view));
-                // Only an unchanged table keeps the hour before's view; it is
-                // still held here, so a new view cannot reuse its address.
-                let rebuilt = before
-                    .as_ref()
-                    .is_none_or(|before| !SharedView::ptr_eq(before, &view));
-                (view, differs, rebuilt)
-            };
-            self.views[position] = Some(view);
-            if fields.is_some() && (keyframe || differs || (visit_read && read)) {
-                engine::allocation::reserve(&mut self.changed, 1)?;
-                self.changed.push(table);
-            }
-            if keyframe || rebuilt {
-                engine::allocation::reserve(&mut self.rebuilt, 1)?;
-                self.rebuilt.push(table);
-            }
-        }
-        if let Some(position) = self.slots[TableId::Campaign.index()]
-            && let Some(view) = &self.views[position]
-        {
-            validate_campaign_view(view, self.campaign_id)?;
-        }
-        self.last_hour = Some(hour);
-        if !keyframe && self.changed.is_empty() {
-            engine::allocation::reserve(&mut self.quiet.hours, 1)?;
-            engine::allocation::reserve(&mut self.quiet.metrics, 1)?;
-            engine::allocation::reserve(&mut self.quiet.sampled, self.views.len())?;
-            engine::allocation::reserve(&mut self.quiet.rebuilt, self.views.len())?;
-            self.quiet.hours.push(hour);
-            self.quiet.metrics.push(metrics);
-            for view in &self.views {
-                self.quiet
-                    .sampled
-                    .push(view.as_ref().and_then(SharedView::sampled_at));
-            }
-            for watch in &self.watches {
-                self.quiet.rebuilt.push(self.rebuilt.contains(&watch.table));
-            }
-            return Ok(());
-        }
-        self.flush(visit)?;
-        let frame = DecodedFrame {
-            branch: self.branch,
-            hour,
-            tables: std::array::from_fn(|index| match self.slots[index] {
-                Some(position) => self.views[position].clone().unwrap_or_else(not_selected),
-                None => not_selected(),
-            }),
-            metrics,
-        };
-        visit(BlockChange::Changed {
-            frame: &frame,
-            tables: &self.changed,
-            rebuilt: &self.rebuilt,
-        })
-    }
-
-    /// Visit the quiet hours not yet visited.
-    fn flush(
-        &mut self,
-        visit: &mut impl FnMut(BlockChange<'_>) -> io::Result<()>,
-    ) -> io::Result<()> {
-        if self.quiet.hours.is_empty() {
-            return Ok(());
-        }
-        let visited = visit(BlockChange::Quiet(&self.quiet));
-        self.quiet.clear();
-        visited
+        )];
+        self.read_block_watched(index, &mut watches, check)?;
+        let [watch] = watches;
+        watch.finish()
     }
 }
 
-/// The hour before's view as the decoder's baseline: only a complete one.
-fn baseline(hour: Option<Hour>, view: Option<SharedView>) -> Option<(Hour, SharedView)> {
-    let hour = hour?;
-    view.filter(|view| matches!(**view, TableView::Complete(_)))
-        .map(|view| (hour, view))
-}
-
-fn complete_len(view: &TableView) -> Option<usize> {
+/// The row count of a complete view.
+pub(super) fn complete_len(view: &TableView) -> Option<usize> {
     match view {
         TableView::Complete(rows) => Some(rows.len()),
         _ => None,
@@ -486,7 +260,7 @@ fn complete_len(view: &TableView) -> Option<usize> {
 /// Whether a delta row can change a watched field: one in its mask, or one
 /// at or past the fields an older format recorded, which every row a delta
 /// names takes as not recorded.
-fn touches(table: TableId, fields: Option<u64>, row: &DeltaRow) -> bool {
+pub(super) fn touches(table: TableId, fields: Option<u64>, row: &DeltaRow) -> bool {
     let Some(fields) = fields else {
         return false;
     };
@@ -504,7 +278,7 @@ fn touches(table: TableId, fields: Option<u64>, row: &DeltaRow) -> bool {
 /// Whether a view replaced by an update other than a delta differs from the
 /// hour before's in availability, a truncated table's missing count, an
 /// unavailable table's reason, row keys or watched fields.
-fn view_differs(
+pub(super) fn view_differs(
     table: TableId,
     fields: Option<u64>,
     before: &SharedView,

@@ -18,3 +18,11 @@ pipeline.
 `cargo test -p dashboard-equipment-losses` builds and runs only this crate's
 tests. The `test-support` feature compiles the frame-at-a-time observer the
 dashboard's pipeline tests drive.
+
+The prepared observer selects Combat Log rows by their raw owner's recorded-key
+range, so changes and pruning of other owners' rows rebuild no log index.
+Amount-only destruction deltas with unchanged keys reuse the owner join and
+availability operands; every hour still consumes its signed drain, including an
+equal one. Country balance changes keep the slot projection, and unchanged typed
+read keys keep their saved serialized text. These joins and comparisons rebuild
+at resume; recorded rows, published pages and saved loss operands keep their order.

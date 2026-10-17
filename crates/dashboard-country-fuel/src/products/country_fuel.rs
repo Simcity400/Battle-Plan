@@ -1186,6 +1186,64 @@ impl Scan {
         self.prior.push_back((hour, prior));
         Ok(identities_changed)
     }
+
+    /// Whether the scan can step through quiet hours from `first`: it holds
+    /// the live joins an observed hour leaves (none after a restore, before
+    /// its first observation), and the shared and every current country's
+    /// ownership proofs end at the hour before.
+    fn continues_quiet(&self, first: i32) -> bool {
+        let before = first.checked_sub(1);
+        let ends_before =
+            |proof: &VecDeque<(i32, Holding)>| proof.back().map(|(hour, _)| *hour) == before;
+        self.country_keys.is_some()
+            && self.slots.is_some()
+            && ends_before(&self.prior)
+            && self.active.iter().all(|tag| {
+                self.countries
+                    .get(tag)
+                    .is_some_and(|country| ends_before(&country.recent))
+            })
+    }
+
+    /// Hours `first..=last` following the last observed ([`Self::continues_quiet`]),
+    /// at which no country key, link, state owner, fuel row or availability
+    /// changed and no fuel read is dated: what observing each of them does.
+    /// No identity, ownership or open state changes there, so every proof
+    /// repeats its last hour's holding at each hour (only the last day of
+    /// hours is kept), every identity track and open read extends through
+    /// them, and no country is updated.
+    fn advance_quiet(&mut self, first: i32, last: i32) {
+        self.updated.clear();
+        // Hours earlier than a day before `last` would be dropped again by
+        // `last`'s own trim; every later one is kept.
+        let kept = first.max(last.saturating_sub(DAY_HOURS));
+        let repeat = |proof: &mut VecDeque<(i32, Holding)>| {
+            let seen = proof.back().and_then(|(_, seen)| *seen);
+            proof.extend((kept..=last).map(|hour| (hour, seen)));
+            while proof
+                .front()
+                .is_some_and(|(seen, _)| last.saturating_sub(*seen) > DAY_HOURS)
+            {
+                proof.pop_front();
+            }
+        };
+        repeat(&mut self.prior);
+        for tag in &self.active {
+            let country = self.countries.get_mut(tag).expect("current fuel country");
+            repeat(&mut country.recent);
+            country.track.advance(last);
+            if country.open
+                && let Some(read) = country.result.reads.last_mut()
+            {
+                read.last_hour = last;
+            }
+            if country.demand_open
+                && let Some(read) = country.result.consumption.last_mut()
+            {
+                read.last_hour = last;
+            }
+        }
+    }
 }
 
 /// Leaves out the day of every read that overlaps a day kept. Reads in the fuel

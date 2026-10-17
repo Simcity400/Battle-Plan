@@ -972,7 +972,8 @@ fn with_scope_tables(mut frame: DecodedFrame) -> DecodedFrame {
 /// Special projects read the trigger kit only where their content can
 /// evaluate scoped text: with content whose project name, and every
 /// country-prefixed variant of it, is plain (scoped text elsewhere does not
-/// count), no block is read with it; with a scoped project name, every
+/// count), no block is read with it, neither by the pre-pass worker's
+/// extract nor by the family's own reads; with a scoped project name, every
 /// block is, and the name evaluates against the hour's trigger world. Both
 /// publish and save what hourly preparation does, across an appended block.
 #[test]
@@ -1012,14 +1013,20 @@ fn special_projects_read_the_trigger_kit_only_where_content_can_evaluate_scoped_
             payloads
         };
         let hourly = independent::with_test_hourly(|| prepare(&mut fixture));
-        let before = prepass::noted(evaluated::PROJECTS_WORLD);
+        let kit = crate::products::special_projects::prepared::block::KIT;
+        let before = (prepass::noted(evaluated::PROJECTS_WORLD), prepass::noted(kit));
         let own = own(&PROJECTS, || {
             prepass::with_test_prepass(2, None, || prepare(&mut fixture))
         });
         assert_eq!(
-            prepass::noted(evaluated::PROJECTS_WORLD) - before,
+            prepass::noted(evaluated::PROJECTS_WORLD) - before.0,
             if scoped { 2 } else { 0 },
             "{label}: blocks read with the trigger kit"
+        );
+        assert_eq!(
+            prepass::noted(kit) - before.1,
+            if scoped { 2 } else { 0 },
+            "{label}: blocks the pre-pass worker read with the trigger kit"
         );
         assert_same(&PROJECTS, &own, &hourly, label, false);
         let state: serde_json::Value =

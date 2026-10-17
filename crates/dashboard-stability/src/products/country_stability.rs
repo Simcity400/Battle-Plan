@@ -1181,6 +1181,112 @@ fn changed_keys<T: PartialEq>(
         })
         .collect()
 }
+/// The Countries fields a country's keys read besides its id, the row key
+/// ([`dashboard_text::metadata::CountryKeys`]).
+static COUNTRY_KEY_FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    dashboard_base::prepared::frame_changes::field_mask(
+        TableId::Countries,
+        &["canonical_slot", "tag"],
+    )
+});
+
+/// An hour's recorded changed rows and deleted keys of one table
+/// (`FrameChanges::rows`).
+pub(super) type Delta<'a> = (&'a [replay::rows::DeltaRow], &'a [u128]);
+
+/// `held`, the hour before's rows of a table keyed by one id (the row key),
+/// made this hour's `rows` from the hour's recorded changes: the ids whose
+/// rows differ from the hour before's, which [`changed_keys`] finds comparing
+/// the two whole tables, go to `dirty`, and the result is whether the ids
+/// held changed. None, with `held` untouched, when a changed row is not
+/// among `rows`.
+pub(super) fn apply_rows<R: Clone + PartialEq>(
+    held: &mut BTreeMap<u32, R>,
+    rows: &[R],
+    key: impl Fn(&R) -> u128,
+    (changed, deleted): Delta<'_>,
+    dirty: &mut BTreeSet<u32>,
+) -> Option<bool> {
+    let found = changed
+        .iter()
+        .map(|delta| {
+            rows.binary_search_by_key(&delta.key, &key)
+                .ok()
+                .map(|at| &rows[at])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut membership = false;
+    for row in found {
+        let id = key(row) as u32;
+        match held.get_mut(&id) {
+            Some(old) if old == row => {}
+            Some(old) => {
+                *old = row.clone();
+                dirty.insert(id);
+            }
+            None => {
+                held.insert(id, row.clone());
+                dirty.insert(id);
+                membership = true;
+            }
+        }
+    }
+    for &key in deleted {
+        let id = key as u32;
+        if held.remove(&id).is_some() {
+            dirty.insert(id);
+            membership = true;
+        }
+    }
+    Some(membership)
+}
+
+/// `held`, each owner's read hour of `table` in the hour before's SliceReads,
+/// made this hour's `rows` from the hour's recorded changes to SliceReads, as
+/// [`apply_rows`] does: owners whose read hour differs go to `dirty`, and the
+/// result is whether the owners held changed. Rows of other tables are not
+/// visited. None, with `held` untouched, when a changed row is not among
+/// `rows`.
+pub(super) fn apply_reads(
+    held: &mut BTreeMap<u32, i32>,
+    rows: &[replay::rows::SliceReadRow],
+    table: TableId,
+    (changed, deleted): Delta<'_>,
+    dirty: &mut BTreeSet<u32>,
+) -> Option<bool> {
+    let of_table = |key: u128| (key >> 32) as u32 == table as u32;
+    let found = changed
+        .iter()
+        .filter(|delta| of_table(delta.key))
+        .map(|delta| {
+            rows.binary_search_by_key(&delta.key, replay::rows::SliceReadRow::key)
+                .ok()
+                .map(|at| &rows[at])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut membership = false;
+    for row in found {
+        match held.insert(row.owner, row.sample_hour) {
+            Some(old) if old == row.sample_hour => {}
+            Some(_) => {
+                dirty.insert(row.owner);
+            }
+            None => {
+                dirty.insert(row.owner);
+                membership = true;
+            }
+        }
+    }
+    for &key in deleted.iter().filter(|&&key| of_table(key)) {
+        let owner = key as u32;
+        if held.remove(&owner).is_some() {
+            dirty.insert(owner);
+            membership = true;
+        }
+    }
+    Some(membership)
+}
+
 fn same_keys<T>(old: &Option<BTreeMap<u32, T>>, new: &Option<BTreeMap<u32, T>>) -> bool {
     match (old, new) {
         (Some(old), Some(new)) => old.keys().eq(new.keys()),
@@ -1206,14 +1312,32 @@ impl Native {
         // SliceReads rows; an equal fresh acquisition changes no operand here.
         let reads =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
+        // The hour's recorded changes of a table, when it continues the hour
+        // before: each table held from that hour then takes only its changed
+        // rows, and those its observation reads.
+        let delta = |table: TableId| changes.and_then(|changes| changes.rows(table));
         let mut roster_changed = false;
         if reads(TableId::Countries) {
             let rows = frame.complete::<tables::Countries>().ok();
+            // No country deleted or added and no key field changed: the keys
+            // are the hour before's without comparing every country.
+            let kept = self.keys.is_some()
+                && rows
+                    .zip(self.countries.as_ref())
+                    .is_some_and(|(rows, held)| rows.len() == held.len())
+                && delta(TableId::Countries).is_some_and(|(changed, deleted)| {
+                    deleted.is_empty()
+                        && changed
+                            .iter()
+                            .all(|row| row.mask & *COUNTRY_KEY_FIELDS == 0)
+                });
             #[cfg(test)]
-            {
+            if !kept {
                 self.work.row_visits += rows.map_or(0, |rows| rows.len());
             }
-            if !rows.is_some_and(|rows| self.keys.as_ref().is_some_and(|keys| keys.same(rows))) {
+            if !kept
+                && !rows.is_some_and(|rows| self.keys.as_ref().is_some_and(|keys| keys.same(rows)))
+            {
                 self.keys = rows.map(dashboard_text::metadata::CountryKeys::read);
                 self.countries = rows.map(|rows| rows.to_vec());
                 roster_changed = true;
@@ -1250,47 +1374,107 @@ impl Native {
             dirty.extend(self.roster.keys().copied());
         }
         if reads(TableId::CountryStabilityInputs) {
-            let rows = recorded_rows::<tables::CountryStabilityInputs>(frame).ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            let applied = match (
+                delta(TableId::CountryStabilityInputs),
+                self.inputs.as_mut(),
+                frame.complete::<tables::CountryStabilityInputs>().ok(),
+            ) {
+                (Some(delta), Some(held), Some(rows)) => {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += delta.0.len();
+                    }
+                    apply_rows(held, rows, CountryStabilityInputRow::key, delta, &mut dirty)
+                }
+                _ => None,
+            };
+            if let Some(membership) = applied {
+                self.membership_changed |= membership;
+            } else {
+                let rows = recorded_rows::<tables::CountryStabilityInputs>(frame).ok();
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
+                let next =
+                    rows.map(|rows| rows.iter().map(|row| (row.country, row.clone())).collect());
+                self.membership_changed |= !same_keys(&self.inputs, &next);
+                dirty.extend(changed_keys(&self.inputs, &next));
+                self.inputs = next;
             }
-            let next = rows.map(|rows| rows.iter().map(|row| (row.country, row.clone())).collect());
-            self.membership_changed |= !same_keys(&self.inputs, &next);
-            dirty.extend(changed_keys(&self.inputs, &next));
-            self.inputs = next;
         }
         if reads(TableId::SliceReads) {
             let rows = frame.complete::<tables::SliceReads>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            let applied = match (delta(TableId::SliceReads), self.reads.as_mut(), rows) {
+                (Some(delta), Some(held), Some(rows)) => {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += delta.0.len();
+                    }
+                    apply_reads(
+                        held,
+                        rows,
+                        TableId::CountryStabilityInputs,
+                        delta,
+                        &mut dirty,
+                    )
+                }
+                _ => None,
+            };
+            if let Some(membership) = applied {
+                self.membership_changed |= membership;
+            } else {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
+                let next = rows.map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.table == TableId::CountryStabilityInputs as u32)
+                        .map(|row| (row.owner, row.sample_hour))
+                        .collect()
+                });
+                self.membership_changed |= !same_keys(&self.reads, &next);
+                dirty.extend(changed_keys(&self.reads, &next));
+                self.reads = next;
             }
-            let next = rows.map(|rows| {
-                rows.iter()
-                    .filter(|row| row.table == TableId::CountryStabilityInputs as u32)
-                    .map(|row| (row.owner, row.sample_hour))
-                    .collect()
-            });
-            self.membership_changed |= !same_keys(&self.reads, &next);
-            dirty.extend(changed_keys(&self.reads, &next));
-            self.reads = next;
         }
         if command_power && reads(TableId::CountryCommandPower) {
             let rows = frame.complete::<tables::CountryCommandPower>().ok();
-            #[cfg(test)]
+            let mut slots = BTreeSet::new();
+            let applied = match (delta(TableId::CountryCommandPower), self.command.as_mut(), rows)
             {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                (Some(delta), Some(held), Some(rows)) => {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += delta.0.len();
+                    }
+                    apply_rows(
+                        held,
+                        rows,
+                        replay::rows::CountryCommandPowerRow::key,
+                        delta,
+                        &mut slots,
+                    )
+                }
+                _ => None,
+            };
+            if applied.is_none() {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
+                let next = rows.map(|rows| {
+                    rows.iter()
+                        .map(|row| (row.canonical_slot, row.clone()))
+                        .collect()
+                });
+                slots = changed_keys(&self.command, &next);
+                self.command = next;
             }
-            let next = rows.map(|rows| {
-                rows.iter()
-                    .map(|row| (row.canonical_slot, row.clone()))
-                    .collect()
-            });
-            for slot in changed_keys(&self.command, &next) {
+            for slot in slots {
                 dirty.extend(self.slots.get(&slot).into_iter().flatten().copied());
             }
-            self.command = next;
         }
         if changes.is_none_or(|changes| changes.rows_changed.iter().all(|changed| *changed)) {
             dirty.extend(self.roster.keys().copied());
@@ -1411,7 +1595,7 @@ impl Scan {
         }
         Ok(())
     }
-    #[cfg(all(test, feature = "slow-tests"))]
+    #[cfg(test)]
     pub(crate) fn work(&self) -> dashboard_base::prepared::observer_tests::Work {
         self.native.work
     }

@@ -987,3 +987,186 @@ fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_the
     }
     Ok(())
 }
+
+#[test]
+fn a_combat_read_selects_only_its_owner_after_other_owners_rows_are_pruned() -> io::Result<()> {
+    use dashboard_base::prepared::observer_tests::{Work, assert_flat, scaled_work};
+    use replay::rows::{CombatLogEquipmentRow, SliceReadRow};
+    let measured = scaled_work(10, |history| {
+        let mut first = frame(10, 2, 0, false);
+        empty_drain(&mut first);
+        let mut log: Vec<_> = (0..history as u32)
+            .map(|group| CombatLogEquipmentRow {
+                country: 100_000,
+                group,
+                variant: 17,
+                amount_raw: 100,
+                ..Default::default()
+            })
+            .collect();
+        log.push(CombatLogEquipmentRow {
+            country: 100_001,
+            group: 1,
+            variant: 17,
+            amount_raw: 200,
+            ..Default::default()
+        });
+        *first.tables[TableId::CombatLogEquipment.index()] =
+            TableView::Complete(TableRows::CombatLogEquipment(log));
+        *first.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
+            (0..2)
+                .map(|index| SliceReadRow {
+                    table: TableId::CombatLogEquipment.index() as u32,
+                    owner: 100_000 + index,
+                    sample_hour: 10,
+                })
+                .collect(),
+        ));
+        let mut changed = first.clone();
+        changed.hour = 11;
+        if let TableView::Complete(TableRows::CombatLogEquipment(rows)) =
+            &mut *changed.tables[TableId::CombatLogEquipment.index()]
+        {
+            rows.remove(0);
+            rows.last_mut().unwrap().amount_raw = 250;
+        }
+        if let TableView::Complete(TableRows::SliceReads(rows)) =
+            &mut *changed.tables[TableId::SliceReads.index()]
+        {
+            rows[1].sample_hour = 11;
+        }
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![first.clone(), changed.clone()])],
+        )?;
+        let flag = AtomicBool::new(false);
+        let mut prepared = Prepared::new(&replay, 1, 10);
+        prepared.observe(&first, &replay, &flag)?;
+        let before = prepared.work();
+        prepared.observe(&changed, &replay, &flag)?;
+        let after = prepared.work();
+        let work = Work {
+            row_visits: after.row_visits - before.row_visits,
+            history_visits: after.history_visits - before.history_visits,
+            emitted: after.emitted - before.emitted,
+            ..Default::default()
+        };
+        assert_eq!(
+            work.row_visits, 3,
+            "two read dates and the supplying owner's one row"
+        );
+        assert_eq!(work.history_visits, 1);
+        assert_eq!(
+            prepared.countries[&(1, 100_001)].totals[&(LossSource::CombatLog(0), Some(17))],
+            250
+        );
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, &flag)?;
+        writer.commit()?;
+        let selection = LossesParams {
+            branch_id: "1".into(),
+            tag: String::from_utf8(scale_tag(1)).unwrap(),
+            land_source: LandSource::CombatLog,
+            country: Some(LossCountry {
+                slot: 1,
+                country_id: 100_001,
+                origin_hour: 10,
+            }),
+        };
+        let reference = scan(
+            &replay,
+            1,
+            &selection.tag,
+            selection.land_source,
+            selection.country,
+            &flag,
+        )?;
+        let actual = read_scanned(
+            &fixture.store,
+            &fixture.key,
+            1,
+            (1, 100_001),
+            (10.0, 11.0, 20),
+            &[10, 11],
+            replay.format,
+            &flag,
+        )?
+        .unwrap();
+        dashboard_base::prepared::observer_tests::assert_reply_parity(
+            &reply(&selection, &actual, Content::default(), Vec::new()),
+            &reply(&selection, &reference, Content::default(), Vec::new()),
+        )?;
+        Ok(work)
+    })?;
+    assert_flat(measured);
+    Ok(())
+}
+
+#[test]
+fn amount_only_drains_keep_their_owner_join_and_serialize_no_unchanged_read_key() -> io::Result<()>
+{
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use std::sync::Arc;
+    const COUNT: u32 = 48;
+    let first = frame(10, COUNT, 100, false);
+    let mut changed = frame(11, COUNT, -50, false);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *changed.tables[TableId::Countries.index()]
+    {
+        for row in rows {
+            row.political_power_raw = Some(123);
+        }
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, changed])])?;
+    let flag = AtomicBool::new(false);
+    let observe = |updates: bool| -> io::Result<_> {
+        let mut prepared = Prepared::new(&replay, 1, 10);
+        let mut tracker = FrameChangeTracker::new();
+        let mut previous = Default::default();
+        let mut serializations = 0;
+        replay.read_block_alone(
+            &replay.index[0],
+            &TableId::ALL,
+            |raw, frame| {
+                let changes = if updates {
+                    tracker.observe_updates(frame, Arc::new(raw), replay.format)
+                } else {
+                    tracker.observe(frame, replay.format)
+                };
+                let before = prepared.work();
+                let before_serializations = prepared.joins.read_serializations;
+                prepared.observe_changes(frame, &replay, &flag, &changes)?;
+                if frame.hour == 11 {
+                    previous = before;
+                    serializations = prepared.joins.read_serializations - before_serializations;
+                }
+                Ok(())
+            },
+            || Ok(()),
+        )?;
+        let work = prepared.work().row_visits - previous.row_visits;
+        assert_eq!(
+            serializations, 0,
+            "the read status did not change with the signed drain"
+        );
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, &flag)?;
+        writer.commit()?;
+        Ok((fixture.payloads(), serde_json::to_value(&prepared)?, work))
+    };
+    let (whole_pages, whole_state, whole_work) = observe(false)?;
+    let (pages, state, work) = observe(true)?;
+    assert_eq!(pages, whole_pages, "published pages");
+    assert_eq!(state, whole_state, "saved continuation");
+    assert_eq!(
+        work, COUNT as usize,
+        "only this hour's signed amounts are consumed"
+    );
+    assert!(
+        whole_work >= work * 3,
+        "whole-table joins visited {whole_work}, row updates {work}"
+    );
+    Ok(())
+}

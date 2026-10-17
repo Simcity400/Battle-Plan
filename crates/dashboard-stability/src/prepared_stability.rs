@@ -328,7 +328,7 @@ impl ExperienceAccumulator {
     /// Hours `first..=last` that follow the last observed, at which none of
     /// the scan's tables changed and banked experience was not read: what
     /// observing each does (country experience's quiet step), with the
-    /// series advanced to each, in constant time per gaining country. False
+    /// series advanced to each, without visiting a country's gain runs. False
     /// when `first` does not follow the last observed hour.
     pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<bool> {
         if self.last.and_then(|hour| hour.checked_add(1)) != Some(first) {

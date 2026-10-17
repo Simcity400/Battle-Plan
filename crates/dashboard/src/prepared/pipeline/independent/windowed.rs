@@ -47,7 +47,7 @@ use dashboard_base::prepared::pages::Pages;
 use replay::{
     container::{QuietHours, Replay, SeekResult, TableFields},
     format::FormatVersion,
-    frame::{DecodedFrame, SharedView},
+    frame::{DecodedFrame, SharedView, ViewIdentity},
     rows::{TableId, tables},
 };
 use std::{
@@ -120,7 +120,11 @@ impl Own for Divisions {
     }
 
     fn gates(&self) -> &'static [&'static str] {
-        &["division-log", "division-log-manifest", "division-log-totals"]
+        &[
+            "division-log",
+            "division-log-manifest",
+            "division-log-totals",
+        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -551,7 +555,9 @@ impl NavalBranch {
                         last,
                         |raw, frame| {
                             let changes = tracker.observe_updates(frame, raw, format);
-                            kept = Some(views(frame));
+                            if frame.hour == last {
+                                kept = Some(views(frame));
+                            }
                             step(frame, &changes, true)
                         },
                         || check(),
@@ -565,12 +571,19 @@ impl NavalBranch {
                 // allocations, and so the change facts and every comparison
                 // of views, are those of one read.
                 read.and_then(|()| {
-                    let mut at_last: Option<Vec<SharedView>> = None;
+                    let mut at_last: Option<Vec<ViewIdentity>> = None;
                     block.read_alone(
                         tables,
                         |raw, frame| {
                             if last.is_some_and(|last| frame.hour <= last) {
-                                at_last = Some(views(frame));
+                                if Some(frame.hour) == last {
+                                    at_last = Some(
+                                        tables
+                                            .iter()
+                                            .map(|table| frame.tables[table.index()].identity())
+                                            .collect(),
+                                    );
+                                }
                                 return Ok(());
                             }
                             let carried;
@@ -578,10 +591,7 @@ impl NavalBranch {
                                 Some((kept, at_last)) => {
                                     let mut handed = frame.clone();
                                     for (at, table) in tables.iter().enumerate() {
-                                        if SharedView::ptr_eq(
-                                            &frame.tables[table.index()],
-                                            &at_last[at],
-                                        ) {
+                                        if at_last[at].is(&frame.tables[table.index()]) {
                                             handed.tables[table.index()] = kept[at].clone();
                                         }
                                     }

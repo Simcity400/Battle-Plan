@@ -72,6 +72,7 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
+replay = { workspace = true, features = ["test-support"] }
 dashboard-air-aces = { workspace = true, features = ["test-support"] }
 dashboard-air-superiority = { workspace = true, features = ["test-support"] }
 dashboard-equipment-losses = { workspace = true, features = ["test-support"] }

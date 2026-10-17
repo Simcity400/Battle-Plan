@@ -1198,6 +1198,42 @@ fn a_large_block_decodes_in_parallel_to_the_frames_it_holds() {
 }
 
 #[test]
+fn parallel_decode_workers_keep_the_callers_job_before_setup() {
+    use job_priority::JobPriority;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    let background = Arc::new(AtomicBool::new(true));
+    JobPriority::run(Arc::clone(&background), || {
+        for expected in [true, false] {
+            background.store(expected, Ordering::Release);
+            let started = AtomicUsize::new(0);
+            let setup = || {
+                assert_eq!(JobPriority::current().background(), expected);
+                started.fetch_add(1, Ordering::Relaxed);
+            };
+            let items: Vec<u32> = (0..128).collect();
+            let result = parallel_map(
+                &items,
+                &Parallel {
+                    workers: 4,
+                    on_worker: &setup,
+                },
+                |item| {
+                    assert_eq!(JobPriority::current().background(), expected);
+                    *item
+                },
+            )
+            .unwrap();
+            assert_eq!(result, items);
+            assert_eq!(started.load(Ordering::Relaxed), 4);
+        }
+    });
+}
+
+#[test]
 fn parallel_map_keeps_input_order() {
     let parallel = Parallel {
         workers: 8,

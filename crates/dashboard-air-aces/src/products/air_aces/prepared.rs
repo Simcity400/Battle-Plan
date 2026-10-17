@@ -340,11 +340,12 @@ impl Prepared {
             }
             _ => store.read(key, "map.resume", 0)?,
         };
-        // Shared pipeline checkpoints contain every table. The smaller selection
-        // applies only to the fallback seek below.
         let baseline = match file {
             Some(file) => {
-                Some(dashboard_base::prepared_map::decode_checkpoint(file, &TableId::ALL)?.frame)
+                let checkpoint = dashboard_base::prepared_map::decode_resume(file)?;
+                checkpoint
+                    .selects(TableId::AirAces)
+                    .then_some(checkpoint.frame)
             }
             None => None,
         };
@@ -865,6 +866,51 @@ mod tests {
                 serde_json::to_value(expected).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn aces_resume_reads_its_baseline_when_the_walk_did_not_select_it() {
+        let fixture = Fixture::new();
+        let live = super::super::tests::frame(10, vec![super::super::tests::ace(1, true)]);
+        let source =
+            source(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![live])]).unwrap());
+        let mut state = Prepared::default();
+        let mut map = dashboard_base::prepared_map::Builder::new(
+            NonZeroU32::new(24).unwrap(),
+            &TableId::ALL,
+            Default::default(),
+        )
+        .unwrap();
+        let mut writer = fixture.writer();
+        publish(&mut state, &mut writer, &mut map, &source, 0);
+        writer.commit().unwrap();
+        let expected =
+            Prepared::resume(&fixture.store, &fixture.key, None, source.replay_ref(), 1).unwrap();
+        let replay::container::SeekResult::Frame(frame) = source
+            .replay_ref()
+            .seek_selected(1, 10, Some(&[TableId::Campaign]))
+            .unwrap()
+        else {
+            panic!("fixture frame");
+        };
+        let mut writer = fixture.writer();
+        map.save_resume(
+            &mut writer,
+            &frame,
+            dashboard_base::prepared_map::Position {
+                block: 0,
+                next_frame: 1,
+            },
+            &[TableId::Campaign],
+        )
+        .unwrap();
+        writer.commit().unwrap();
+        let actual =
+            Prepared::resume(&fixture.store, &fixture.key, None, source.replay_ref(), 1).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
     }
 
     #[test]

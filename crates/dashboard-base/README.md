@@ -116,16 +116,56 @@ behave exactly as this crate's own. Only dev-dependencies enable it.
 
 `production-lines` answers from one scan of every hour of the branch, in order
 on one thread ([products/production_lines.rs](src/products/production_lines.rs)),
-so its cost grows with the recording. Until that scan is held, a request without
-`exact` is answered from the same scan over only the branch's newest blocks: the
-fewest holding one detail window of hours, never more than four. A block holds at
-most one keyframe interval, so this read does not grow with the recording. The
-reply's `approximate` spans cover the branch from its start through the first
-read among those blocks, where the lines listed are taken as begun and their
-appearances are counted from. Further first-view requests reuse the held first
-view. A request with `exact` scans the whole branch (or answers from the held
-scan), and once the whole scan is held every request is answered exactly. Detail
-windows and breakdowns always read the whole scan.
+so its cost grows with the recording. A request without `exact` is answered from
+the same scan over only the branch's newest blocks: the fewest holding one detail
+window of hours, never more than four (the whole scan where they are all of the
+branch). A block holds at most one keyframe interval, so this read does not grow
+with the recording. The reply's `approximate` spans cover the branch from its
+start through the first read among those blocks, where the lines listed are taken
+as begun and their appearances are counted from. Further first-view requests
+reuse the held first view. A request with `exact` scans the whole branch, or
+answers from the held scan. Each reply is a function of its request alone, as the
+history reply cache that keeps replies between sessions requires. Detail windows
+and breakdowns always read the whole scan.
+
+A whole scan is read once at a time: a request finding the scan of its country
+being read waits for it, and takes it over if it fails. A country's whole scan
+can be kept between sessions (`saved_scan`, `write_saved`, in the recording's
+own row encoding for its modifier rows, each shared country row found in one
+lookup) with what it was read with: the branch's last block, whether icon
+content was loaded, whether executable metadata was configured, a digest of the
+icon rule's visual inputs the recorded content's hash does not cover (declared
+and refused sprites, graphic pools, geography, DLC names) and every texture
+path the rule asked about with its answer. A whole-scan request that holds no
+scan reads a kept one, read-only, and answers from it only where it is the scan
+it would make (`hold_saved`, `pictures_hold`): a deleted or added texture, or
+changed sprites, refuse it. The countries a request read whole wait in their
+source's unkept set (`read_whole`, a set) until the source's next preparation
+keeps them; a request writes nothing.
+
+The scan repeats no world-wide work a read did not change. A variant read builds
+a definition's operands again only where its row, modules or upgrades, or the
+countries' keys, links, appearance or lexical tokens changed since the read
+before (`VariantCatalogue::observe_built`, which records the versions `observe`
+does). The input reader lives in `equipment::VariantReads`, shared with prepared
+production's single-read catalogue. Production reuses equal classifications and
+name strings while dating each selected name at the current supplying read;
+non-read and incomplete hours still have an empty single-read catalogue.
+Definitions are stored only where the table changed, and the icon rule's
+country operands are built only at a read with variants to picture. Blocks are
+read and decoded on spare cores (`extract_block`, three ahead), each hour reduced
+to what the fold reads of it, with its frame kept only where the fold reads rows
+(a variant read, a read of the country's lines).
+
+## Country experience
+
+The country-experience scan keeps complete hourly gains as runs of equal signed
+amounts within a native instance. Changed inputs and banked reads visit their
+countries; other countries' open runs hold through the scan's frontier. Daily
+reads sum the last 24 complete intervals with wide arithmetic. Missing or
+ambiguous gains, instance changes and identity gaps break that day. Quiet spans
+advance the frontier without visiting countries. The saved runs and recent
+banked reads resume with the observer; runtime joins rebuild from the first frame.
 
 ## Country identity history
 
@@ -224,9 +264,18 @@ authored-trigger tables. Independent native checkpoints retain decoded rows,
 partial censuses, unavailable fields and supplying hours every 720 accepted
 updates. Each existing Store range uses zstd9 with a checksum. Hourly updates
 remain in the recording; no prepared update pages or packet seeds are written.
-Full-selection `map.resume` state is replaced independently for all preparation
-observers. Progress keeps checkpoint ordinals per branch and the accepted source
-cursor. Appended preparation restores that native resume state.
+`Builder::accept_sparse` accepts an hour after its caller admitted the whole
+source block. It reads rows only when that hour writes a checkpoint, using the
+keyframe sections at a block's first hour and an ordinary selected prefix read
+otherwise. Other hours advance the same progress without reading map rows.
+Checkpoint positions follow accepted frame counts through gaps and short blocks,
+so sparse preparation writes exactly the hourly observer's checkpoint bytes.
+The walk's selected `map.resume` state is replaced independently for its
+preparation observers. Progress keeps checkpoint ordinals per branch and the
+accepted source cursor. Appended preparation restores that native resume state
+with the same selection. `decode_resume` validates a shared page using its stored
+selection; a family restoring its own baseline checks its inputs and hour before
+using it, and reads its baseline from the recording when they are absent.
 
 The shared [Reader](src/prepared_map/reader.rs) serves viewer playback and
 acceptance. It binary-searches checkpoint headers, restores the nearest native

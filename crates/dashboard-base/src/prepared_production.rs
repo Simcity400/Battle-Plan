@@ -5,7 +5,10 @@ use crate::products::equipment::production::{
     CostTotal, Entry, Identity, Named, ProductionSpendingUnknown, RocketProduced, TagHistory,
     Total, variant_types_for,
 };
-use crate::products::equipment::{self, Domain, StockVariantName, Texts, VariantCatalogue};
+use crate::products::equipment::{
+    self, Domain, StockVariantName, Texts, VariantCatalogue, VariantHour, VariantReads,
+    VariantVersion,
+};
 use crate::products::equipment_produced::{
     ProducedCount, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams, ProducedType,
     ScannedProduced, month_before,
@@ -156,6 +159,8 @@ pub struct ProductionAccumulator {
     country_reads: Option<crate::products::territory::CountryReads>,
     #[serde(skip)]
     country_unnamed: usize,
+    #[serde(skip)]
+    variants: ProductionVariants,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
@@ -166,6 +171,40 @@ pub struct ProductionAccumulator {
     rocket_origin: Option<i32>,
     rocket_restart: Option<i32>,
     variant_refusals: crate::catalogue::Refusals,
+}
+
+/// The latest complete variant read, used only at another complete read.
+/// Production takes names from one frame, rather than a catalogue's history: equal
+/// operands keep their strings but every selected name takes this read's date.
+#[derive(Default)]
+struct ProductionVariants {
+    reads: VariantReads,
+    catalogue: VariantCatalogue,
+    classified: HashSet<u64>,
+    #[cfg(test)]
+    classifications: usize,
+}
+
+impl ProductionVariants {
+    fn read(&mut self, frame: &DecodedFrame, refusals: &mut crate::catalogue::Refusals) {
+        for (id, raw) in self.reads.build(frame, false) {
+            for (_, reason) in &raw.refusals {
+                refusals.note(reason, id.to_string());
+            }
+            self.classified.remove(&id);
+            self.catalogue.versions.insert(
+                id,
+                vec![VariantVersion {
+                    first_hour: frame.hour,
+                    raw: Some(raw),
+                }],
+            );
+        }
+        self.catalogue
+            .versions
+            .retain(|id, _| self.reads.contains(*id));
+        self.classified.retain(|id| self.reads.contains(*id));
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -442,6 +481,7 @@ impl ProductionAccumulator {
         self.result.rocket.end_reads();
     }
     fn forget_names(&mut self, hour: i32) {
+        self.variants.classified.clear();
         for kind in self.classifications.values_mut() {
             if kind.names.last().is_some_and(|name| !name.known) {
                 continue;
@@ -1344,17 +1384,18 @@ impl ProductionAccumulator {
             check_cancel(cancelled)?;
             return Ok(None);
         }
-        // Types come exclusively from this frame's recorded definitions and stack.
-        let mut catalogue = VariantCatalogue::default();
-        catalogue.observe(format, frame);
-        for (&variant, versions) in &catalogue.versions {
-            for raw in versions.iter().filter_map(|version| version.raw.as_ref()) {
-                for (_, reason) in &raw.refusals {
-                    self.variant_refusals
-                        .note(reason.as_str(), variant.to_string());
-                }
-            }
+        // A fresh hourly catalogue is empty outside a complete variant read.
+        // At a complete read only changed operands need building again.
+        let complete_names = VariantCatalogue::hour_of(format, frame) == VariantHour::Read;
+        if complete_names {
+            self.variants.read(frame, &mut self.variant_refusals);
         }
+        let empty = VariantCatalogue::default();
+        let catalogue = if complete_names {
+            &self.variants.catalogue
+        } else {
+            &empty
+        };
         let variants = self
             .country_reads
             .as_ref()
@@ -1384,27 +1425,37 @@ impl ProductionAccumulator {
                     }),
             )
             .collect::<BTreeSet<_>>();
-        let missing: Vec<u64> = variants
-            .into_iter()
-            .filter(|variant| {
-                !self.classifications.contains_key(variant) || !catalogue.token(*variant).is_empty()
-            })
-            .collect();
-        let (types, _, _) = variant_types_for(&catalogue, missing, named);
-        for (variant, kind) in types {
+        for variant in variants {
+            let token = catalogue.token(variant);
+            if let Some(kind) = self.classifications.get_mut(&variant) {
+                if token.is_empty() {
+                    continue;
+                }
+                if self.variants.classified.contains(&variant) {
+                    for name in &mut kind.names {
+                        name.first_hour = frame.hour;
+                    }
+                    continue;
+                }
+            }
+            #[cfg(test)]
+            {
+                self.variants.classifications += 1;
+            }
+            let (mut types, reasons, _) = variant_types_for(catalogue, [variant], named);
+            let kind = types
+                .remove(&variant)
+                .expect("classified production variant");
+            let mut names = catalogue.names(variant, named.texts);
+            for name in &mut names {
+                name.first_hour = frame.hour;
+            }
             self.classifications.insert(
                 variant,
                 Classification {
-                    reason: if kind.ordinal.is_none() {
-                        variant_types_for(&catalogue, [variant], named)
-                            .1
-                            .first()
-                            .cloned()
-                    } else {
-                        None
-                    },
+                    reason: reasons.first().cloned(),
                     name: named.type_name(&kind.key),
-                    names: catalogue.names(variant, named.texts),
+                    names,
                     seen: self
                         .classifications
                         .get(&variant)
@@ -1414,6 +1465,9 @@ impl ProductionAccumulator {
                     domain: kind.domain,
                 },
             );
+            if !token.is_empty() {
+                self.variants.classified.insert(variant);
+            }
         }
         for track in self
             .country_reads
@@ -1560,7 +1614,6 @@ impl ProductionAccumulator {
         let diagnostics = ScannedProduced {
             reads: self.result.reads.clone(),
             observations: self.result.observations.clone(),
-            variants: catalogue,
             unattributed: self.result.unattributed,
             inexact: self.result.inexact,
             lost: self.result.lost,
@@ -1579,13 +1632,11 @@ impl ProductionAccumulator {
         };
         let (mut warnings, unnamed_warning_index) =
             crate::products::equipment_produced::recording_warnings_with_unnamed(&diagnostics);
-        let variant_warnings = diagnostics.variants.warnings().len();
         let variant_refusals = self
             .variant_refusals
             .diagnostic_lines("equipment variants with unknown text/design operands");
-        let unnamed_warning_index =
-            unnamed_warning_index - variant_warnings + variant_refusals.len();
-        warnings.splice(..variant_warnings, variant_refusals);
+        let unnamed_warning_index = unnamed_warning_index + variant_refusals.len();
+        warnings.splice(..0, variant_refusals);
         if self.observation > 0 {
             warnings.push(format!("The production output observation restarted {} times in this branch; running totals start again at each.", self.observation));
         }
@@ -2397,9 +2448,10 @@ impl SourceEndpoint {
 
 impl ProductionAccumulator {
     fn endpoint_event(&mut self, key: u64, hour: i32, value: &impl Serialize) -> io::Result<()> {
-        let hash = *blake3::hash(&serde_json::to_vec(value)?).as_bytes();
+        let bytes = serde_json::to_vec(value)?;
+        let hash = *blake3::hash(&bytes).as_bytes();
         if self.endpoint_hashes.get(&key) != Some(&hash) {
-            self.spent.event(key, hour, value)?;
+            self.spent.event_raw(key, hour, bytes)?;
             self.endpoint_hashes.insert(key, hash);
         }
         Ok(())

@@ -301,6 +301,8 @@ when a registered widget has no entry. All requests are in flight at once, as mo
 them, and a pending prepared request is asked again when accepted preparation changes. A reply is
 ready when it is exact or answered beyond accepted coverage by the product's own sampling (flagged
 approximate spans count); a null reply or an event list cut at accepted coverage is pending. JSON
-lines report preparation progress, each request's settle and query time, each widget's ready time
-and gating request, the map, and the overall time, until everything is ready or
-`--readiness-limit` seconds (default 1200) pass.
+lines report preparation progress (each status row's state, counts and text, the newest battle
+windows' rows among them: per branch, the earlier blocks read, every look-back tried with its
+first block, blocks, time and failed check, and the outcome), each request's settle and query
+time, each widget's ready time and gating request, the map, and the overall time, until
+everything is ready or `--readiness-limit` seconds (default 1200) pass.

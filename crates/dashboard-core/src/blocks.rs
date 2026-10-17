@@ -141,6 +141,8 @@ pub fn scan_blocks_by<'a, T: Send, R>(
         catch_unwind(AssertUnwindSafe(|| read_block(blocks[position])))
             .unwrap_or_else(|_| Err(io::Error::other("block read failed")))
     };
+    // Measurement only: the readers' CPU is the scan's family's.
+    let cpu_family = replay::cpu::family();
     thread::scope(|scope| {
         // Install before spawning: a refused worker must wake and join those already running.
         let _stop = Stop(ahead);
@@ -148,6 +150,7 @@ pub fn scan_blocks_by<'a, T: Send, R>(
             let priority = job_priority::JobPriority::current();
             thread::Builder::new().spawn_scoped(scope, || {
                 priority.enter(job_priority::Level::Normal);
+                let _cpu = replay::cpu::scope("scan read-ahead", cpu_family);
                 while let Some(position) = ahead.take(cancelled) {
                     let result = read(position);
                     ahead.lock().reads[position] = Some(result);
@@ -279,6 +282,45 @@ mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, records, source};
     use replay::{frame::FrameEncoder, spool::Record};
+
+    #[test]
+    fn read_ahead_keeps_the_callers_job() {
+        use job_priority::JobPriority;
+        use std::{sync::Arc, time::Duration};
+
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![source(1, 1, None)])]).unwrap();
+        let background = Arc::new(AtomicBool::new(true));
+        JobPriority::run(Arc::clone(&background), || {
+            for expected in [true, false] {
+                background.store(expected, Ordering::Release);
+                let (sent, received) = std::sync::mpsc::channel();
+                let caller = thread::current().id();
+                scan_blocks_by(
+                    vec![&replay.index[0]; 3],
+                    1,
+                    &AtomicBool::new(false),
+                    &|_| {
+                        sent.send((thread::current().id(), JobPriority::current().background()))
+                            .unwrap();
+                        Ok(())
+                    },
+                    |reads| {
+                        // Wait before taking a block: this read must be a worker's.
+                        let (worker, inherited) =
+                            received.recv_timeout(Duration::from_secs(10)).unwrap();
+                        assert_ne!(worker, caller);
+                        assert_eq!(inherited, expected);
+                        for (_, read) in reads {
+                            read?;
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            }
+        });
+    }
 
     #[test]
     fn blocks_arrive_in_their_given_order_and_a_scan_may_stop_early() {

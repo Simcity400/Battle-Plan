@@ -77,7 +77,7 @@ pub fn refusal(
 /// The prepared files' version, raised when their layout or the values
 /// preparation publishes change: a checkpoint of another version is
 /// prepared again, and coverage of another version is refused.
-pub const SCHEMA: u32 = 24;
+pub const SCHEMA: u32 = 25;
 
 /// Accepted extent, distinct from a complete source's timeline and recorded gaps.
 #[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]

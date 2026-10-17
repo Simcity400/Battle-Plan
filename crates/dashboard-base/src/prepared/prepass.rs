@@ -47,6 +47,23 @@ pub struct Family {
     pub start: fn(FormatVersion) -> Box<dyn Extract>,
 }
 
+/// A family's reads for one run, chosen from the content the run binds: the
+/// tables and fields its extract reads in place of [`Family::tables`] and
+/// [`Family::fields`], and the extract that reads them. A family whose
+/// content decides what its observation can read (a trigger kit that only
+/// some content evaluates) names them per run, so each block's read holds
+/// only what this run's observation can reach. Its fold binds the same
+/// content, and its facts say what its extract read.
+pub struct Bound {
+    /// The tables its extract reads.
+    pub tables: Vec<TableId>,
+    /// The fields of those tables its extract reads, as [`Family::fields`]
+    /// gives them; None reads every hour.
+    pub fields: Option<Vec<TableFields>>,
+    /// A fresh extract for one block of this run.
+    pub start: Box<dyn Fn(FormatVersion) -> Box<dyn Extract> + Send + Sync>,
+}
+
 /// One family's work on one block, from the block's keyframe.
 pub trait Extract: Send {
     /// An hour's frame, with the change facts a tracker of the block alone
@@ -60,6 +77,24 @@ pub trait Extract: Send {
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()>;
+    /// [`Self::observe`] of an hour of a block read by its changes whose
+    /// read watches exactly the family's fields, with the watched tables
+    /// the block reader reports changed since the hour before (its
+    /// `BlockChange::Changed` tables, in `TableId` order: each whose watched
+    /// fields, row keys or availability changed, or that is watched when
+    /// read and was read; every watched table at the block's first hour;
+    /// none at an hour built in a quiet span). An extract that would find
+    /// them again from the rows takes them instead.
+    fn observe_reported(
+        &mut self,
+        replay: &Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        reported: &[TableId],
+    ) -> io::Result<()> {
+        let _ = reported;
+        self.observe(replay, frame, changes)
+    }
     /// Called before the block's first hour when the block is read only at
     /// the hours its family's fields change: [`Self::observe`] then gets the
     /// hours [`Family::fields`] names, and [`Self::quiet`] the spans between.
@@ -135,14 +170,7 @@ impl HeldBytes {
         if let Some(frame) = changes.recorded()
             && self.once(std::sync::Arc::as_ptr(frame))
         {
-            self.add(
-                size_of::<replay::frame::Frame>()
-                    + frame
-                        .tables
-                        .iter()
-                        .map(super::query::frames::update_bytes)
-                        .sum::<usize>(),
-            );
+            self.total = self.total.saturating_add(recorded_bytes(frame));
         }
         self
     }
@@ -166,6 +194,19 @@ impl HeldBytes {
     pub fn total(&self) -> u64 {
         self.total
     }
+}
+
+/// What one hour's recorded updates keep alive: the frame and every
+/// update's rows, values and keys at capacity, as a block's facts count
+/// them ([`HeldBytes`]).
+pub fn recorded_bytes(frame: &replay::frame::Frame) -> u64 {
+    let bytes = size_of::<replay::frame::Frame>()
+        + frame
+            .tables
+            .iter()
+            .map(super::query::frames::update_bytes)
+            .sum::<usize>();
+    bytes as u64
 }
 
 /// How a fold completed.

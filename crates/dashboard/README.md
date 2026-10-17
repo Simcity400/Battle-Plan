@@ -30,7 +30,7 @@ prepared files; existing open range readers retain their bytes.
 | [content_check.rs](src/content_check.rs) | Offline preparation and diagnostics for every registered product. |
 | [service.rs](src/service.rs), [service/](src/service/) | Source leases, loader jobs, request admission and the bounded response pump. |
 | [reply_cache.rs](src/reply_cache.rs) | Whole-branch product replies kept on disk between sessions. |
-| [prepared/prepass.rs](src/prepared/prepass.rs) | Block pre-pass: upcoming blocks extracted alone, or read by their changes, on workers for families folded in block order; the shared pool of families prepared on their own. |
+| [prepared/prepass.rs](src/prepared/prepass.rs) | Block pre-pass: upcoming blocks read once for every family reading them, each family's extract handed what its own read of the block alone (every hour or by its changes) hands it, on workers for families folded in block order; the shared pool of families prepared on their own. |
 | [reply_dto.rs](src/reply_dto.rs), [lib.rs](src/lib.rs) | Land-owner and focus reply types (research reply types live in [dashboard-base](../dashboard-base/README.md), recording metadata types in [dashboard-core](../dashboard-core/README.md)), public facade and TypeScript contract assembly. |
 | [bin/dashboard-bridge.rs](src/bin/dashboard-bridge.rs) | Development stdio adapter for browser UI work. |
 | [bin/export-types.rs](src/bin/export-types.rs) | Generates the frontend contract. |
@@ -290,27 +290,34 @@ to the recording reader.
 Whole-product cache entries for held files use the canonical path and opened
 metadata revision.
 
-The pipeline reconstructs accepted selected frames once and feeds
-country balances, stability, stability parts, army size, air force size, supply
-health, territory, regional territory, occupation, land owners, game score, leader
-careers, land battle logs and map checkpoints
-together, with every other family that is not prepared on its own (see below):
-the walk skips those (territory and the event feed, which read the country
-identities in the same frame, and air superiority, which reads the country
-groups, each make their own read).
+The hourly walk prepares map checkpoints, country balances, army size, resource
+balance, land battle logs, game score, autonomy and the land-owner catalogue.
+Its hourly selection is the union of the country balances, land battles, game
+score, autonomy and land-owner inputs, including the shared country-name
+operands (`pipeline::selected`). Army and resource tables join a block's selection
+only when that block's extract could not be folded (`block_selected`); their
+successful folds use their own facts. A change of selection restores the accepted
+stream cursor before reading the next block's self-contained keyframe. Metrics
+and read evidence remain whole. The saved decoder contains the hourly selection.
+Families prepared on their own are skipped. A partial registry returning any of those
+families to the walk keeps the full table selection, as the hourly test oracle
+does, so its content-dependent reads remain available.
+Map progress observes every accepted hour, but map rows are read only at the
+existing checkpoint hours (`prepared_map::Builder::accept_sparse`). A checkpoint
+at its block's first frame reads only the selected keyframe sections; one inside
+a block reads and reconstructs that block through the exact checkpoint hour.
+The main stream admits the whole block before observation. Sparse checkpoint
+reads preserve the same selection, frame ordinal, metrics, sample hours, partial
+rows, refusals and compressed bytes as the hourly map observer. Short blocks,
+gaps, interleaved branches, resume and append retain the accepted-frame stride.
 One replay worker reconstructs a block sequentially through a channel retaining
 one queued frame. For each observed frame, scoped worker lanes borrow disjoint
 family accumulators while the coordinator runs the observations that write the
 store or need another family's output of the same frame, staging writes in their
-original order. The map writes
-through the store writer, so it stays on the coordinator with focus (when the
-walk prepares it) and the land-owner catalogue, whose errors stop preparation. Territory's owned-state observation
-drives the identity history that territory and the event feed read in the same
-frame, and air superiority reads the frame's country groups, so the identity
-history, territory, the event feed, country groups and air superiority stay there
-too. Every other family the walk runs is a lane job, including leaders, the
-politics ledger, air force, navy, land battles, special projects,
-supply health and occupation. A job
+original order. The map writes through the store writer, so it stays on the
+coordinator with the land-owner catalogue, whose errors stop preparation.
+Country balances, game score, autonomy and land battles are lane jobs; resources
+and army are lane jobs when their block extracts fall back. A job
 keeps its coordinator position as its order, so a frame reports the first failing
 call in serial order, and a job's refusal is recorded at the frame's hour, as on
 the coordinator. Every lane finishes before the next frame or any block finalization,
@@ -341,11 +348,15 @@ blocks' recorded raw bytes and the bytes the facts of those extracted hold
 (`Extract::bytes`: each kept frame's views once, recorded calls, and every
 value kept beside them, such as scans, maps, sets, strings and serialized
 publications, at capacity, with each shared allocation once; `Held`).
-Each reconstructs its block alone from the block's
-keyframe with only the tables its families read (`Replay::read_block_alone`),
-takes change facts from a tracker of that block alone (preparation starts every
-block without the facts of the last, so these are the facts observers get), and
-runs every family's extract on each hour. Before observing a block the
+Each reads its block alone from the block's keyframe once for all its
+families (`Replay::read_block_watched`: the tables they read decoded and
+reconstructed once), hands each family's extract exactly what its own read of
+the block alone hands it (every hour of its tables, as `Replay::read_block_alone`
+reconstructs them, or the hours its fields change), with change facts from a
+tracker of that block alone for that family (preparation starts every block
+without the facts of the last, so these are the facts observers get). A family
+whose own read would refuse the block's keyframe observes it hour by hour; when
+the one read fails, each family reads the block alone. Before observing a block the
 coordinator takes its outcomes. A family whose extract refused, failed or
 panicked, or whose block could not be read alone, observes that block hour by
 hour as a lane job, so its refusals and errors are the ordinary ones, in the
@@ -369,7 +380,16 @@ Beside the families prepared on their own, each branch's newest land and naval
 battle windows are published from its last block and a look-back proven to
 hold every fact the page carries, so each family's manifest and that window
 answer before forward preparation reaches them; the land and naval battle logs
-below describe the proofs.
+below describe the proofs. Beside them too, each branch's whole production line
+scan of the player's country, and of every country a request read whole this
+session, is kept under sections of its own, one commit per scan, unless one is
+kept for the branch's current last block (`prepared/pipeline/production_scans.rs`).
+Only the source's preparation keeps them, through its own writer, admission,
+game guard, cancellation and Clear; a request never writes one and queues no
+preparation. Every preparation keeps the player's scan. Another country's scan
+a request read whole after the source's preparation finished is kept the next
+time that source is prepared in the same app session, or is scanned again
+later. A scan that cannot be read is not tried again that session.
 
 Families prepared on their own are prepared before the hourly walk
 (`prepared/pipeline/independent.rs`). Each is a registry entry (`Own`): its
@@ -380,14 +400,19 @@ through, flushing, saving its pages and its continuation) and the sections the
 hourly walk keeps for families that read its state in the same hour, with those
 readers. Every registered family starts at once on one pool of pre-pass workers
 (`prepass::Pool`, sized as the hourly walk's pre-pass and serving every family's
-blocks, the family with the least extract work left first (its blocks not yet
-claimed at the mean extract time of those so far, so cheap families are ready
-before costly ones take the workers), then the family least far ahead, within
-the same read-ahead window and byte budget, which here also counts the facts
-of every block extracted and not yet taken by the bytes its extract reports
-(`Extract::bytes`; a block claimed reserves its family's mean facts so far,
-replaced by its own once extracted)) over the source's one opened recording, so each block's checksums
-are verified once. Each family folds its blocks in order on a thread of its own
+blocks) over the source's one opened recording, so each block's checksums are
+verified once. A worker claims the lowest block some family can claim, for
+every family whose next block it is and within reach (the same read-ahead
+window per family), reads it once for all of them and runs their extracts one
+after another on it, costliest first; a family whose fold lags reads its later
+blocks in tasks of its own. When fewer blocks are coming within reach than
+workers wait (a session's newest block), a block is split between them by the
+families' mean extract time, each part read on its own. The byte budget counts
+each claimed block's recorded raw bytes once however many families claimed it,
+and the facts of every block extracted and not yet taken by the bytes its
+extract reports (`Extract::bytes`; a block claimed reserves its family's mean
+facts so far, replaced by its own once extracted). A measured run times the
+blocks' reads beside the extracts as `prepass.read`. Each family folds its blocks in order on a thread of its own
 and commits by the hourly batch rules (its byte budget counting what it holds
 alone), with its pages, its own coverage page per
 branch (`preparation-family-<name>-<branch>`, with its refusals) and its
@@ -456,29 +481,72 @@ A family whose own thread observes every block hour by hour on the block read
 alone (the politics ledger, occupation, the naval family and the sampled
 families)
 declares the tables it reads (`Own::shared_tables`) and reads each block
-through `Block::read_alone`. Those families read each block once, together
+through `Block::read_alone`. One that keeps nothing of an extract (occupation
+and the sampled families that do not fold) has no pre-pass lane
+(`Own::laned`): the pool reads none of its blocks for it, and its thread
+observes each block as its fold of an extract did. Those families read each block once, together
 ([prepared/pipeline/independent/shared.rs](src/prepared/pipeline/independent/shared.rs)):
-reader threads below normal priority read it ahead of them for every declared
-table (`Replay::read_block_selected`), and each family reconstructs its own
-tables from that read on its own thread with a decoder of its own
-(`Replay::reconstruct_alone`), at its own pace. A selected read decodes each
-table's updates on their own, so a family's frames, their allocation sharing
-(its change facts), availability, sample hours, metrics and recorded updates of
-its tables are its own read's; its other tables stay unreconstructed and
-unavailable. A block whose read fails, or holds a keyframe the decoder's
-all-table check would refuse for another family's table, is read by each family
-alone. No family waits for another: each wants the block it takes next and one
-more read, and a block read stays while a slower family will still take it, so
-it is read once for all of them. Blocks read and kept stay within 512 MiB of
-recorded raw bytes beyond each family's next block; a wanted block that does
-not fit releases the kept block furthest from the family taking it first, which
-is read again when wanted, so families far apart (moving at different speeds or
-resumed from distant blocks) read some blocks again on the readers. A family
-that refused a block's branch wants nothing. `Block::read_through` reconstructs
-tables through an hour from the same read, for a family that reads more of its
-tables at some hours. A measured run times the shared reads as
-`independent.shared_read`; a family's own read rows keep its wait and its
-reconstruction.
+reader threads below normal priority (one per family, no more than the
+machine's hardware threads, each reading one block at a time) read it ahead of
+them for the tables of every family still preparing (`Replay::read_block_kept`),
+and each family reconstructs its own tables from that read on its own thread
+with a decoder of its own (`Replay::reconstruct_alone`), at its own pace. A
+selected read decodes each table's updates on their own, so a family's frames,
+their allocation sharing (its change facts), availability, sample hours,
+metrics and recorded updates of its tables are its own read's; its other
+tables stay unreconstructed and unavailable. A block whose read fails, or
+holds a keyframe the decoder's all-table check would refuse for another
+family's table, is read by each family alone. Each family wants the block it
+takes next and one more, readers read the wanted blocks nearest to a family's
+next first, and a block read stays kept while a slower family will still take
+it, so it is read once for all of them. A reader gives a block up, unkept, as
+soon as no family wants it: it checks before each table section it decodes
+(each hour of an interleaved block). A family that refused a block's branch
+wants nothing. `Block::read_through` reconstructs tables through an hour from
+the same read, for a family that reads more of its tables at some hours.
+
+Only the readers and the pre-pass pool's block tasks read a block for every
+family; a family never does. A family takes a kept block that holds its
+tables; or, while a reader is free to read its next block, waits for it; or
+reads the block itself with its own tables alone (`Replay::read_block_alone`),
+exactly as its own read alone, keeping nothing. Each kept block knows the
+tables it holds (those of the families preparing when it was read), so a
+finished family's tables are left out of later reads, and a family whose
+tables a kept block lacks reads that block alone. The pool's block tasks read
+most blocks before these families take them: a task reading a block one of
+them will take within as many blocks past its next as the budget has shares
+reads their tables in the same read (`Replay::read_block_watched_keeping`) and
+deposits the block's frames before its extracts run (`prepass::Depot`), so the
+readers read only the blocks no task deposited; a task that does not deposit
+an offered block withdraws it. A deposited block's frames hold every table the
+task read, each table's updates its own read's. A task never waits for these
+families. A pool block's own decoded updates live only while its task reads
+it, one block per worker; only the facts its extracts keep outlive it, counted
+by their decoded bytes.
+
+Every block read for every family is charged by the bytes its decoded updates
+hold (as a block's facts count recorded updates; a block's recorded raw bytes
+far undercount a block of predicted changes) from when it is kept until its
+last holder drops it: a block released from those kept, so that no family
+takes it any more, stays charged while a family still reconstructs from it.
+Each read under way reserves one block's share of the 512 MiB budget,
+`budget / (readers + 2)`, and starts only while what is charged and reserved,
+with its own share, fits the budget; before any block was measured only one
+read is under way, which measures the first. Reading for every family stays on
+only while every block measured holds at most a block's share: once one holds
+more, the source is read standalone for the rest of the run (readers and tasks
+read for nobody, every family reads alone, as before the shared reader, and
+kept blocks are released as their holders drop them). The bound, while
+sharing: charged bytes <= budget + (reader threads + busy pool tasks + 1)
+blocks, each at most `budget / (readers + 2)`, where only the reads under way
+when a block first measures beyond its share may exceed it, and that ends
+sharing; in standalone mode, only the families' own reads. Whenever what is
+charged passes the budget, kept blocks are released, furthest from the family
+taking them first, and read again when wanted. A deposit released here may
+still be held by its pool task until the task ends, as that task's own block.
+A measured run times the shared reads as `independent.shared_read` and counts
+the deposited blocks as `independent.shared_deposited`; a family's own read
+rows keep its wait and its reconstruction.
 
 A pre-pass family may declare the fields it reads (`Family::fields`, as
 `replay::TableFields`, a table optionally visited at every read). Its blocks
@@ -495,7 +563,27 @@ frame is built on the last frame observed, with the hour's metrics, sample
 hours and a new allocation of each table its update rebuilt. Each later frame
 the extract is given holds every table so built at that allocation until the
 table's update rebuilds it again, so tables told apart by allocation follow
-hourly preparation's.
+hourly preparation's. Each family's read watches exactly its own fields, so
+the extract is given at each hour read the tables the block reader reports
+changed there for those fields (`Extract::observe_reported`; none at a frame
+built in a quiet span), and need not find them again from the hour before's
+rows.
+
+The pre-pass releases a last-observed frame's replaced table views before
+reconstructing an hour the block reader already knows will visit its watch
+(`BlockWatch::releasing`). Pending quiet hours are delivered first, so their
+frames keep the preceding rows and built allocations; tables carried unchanged
+into the next frame retain their allocation. The shared reader caches recorded
+updates, not reconstructed views. Consumers needing a block's final frame keep
+only that hour, and the naval two-read handoff names the second read's boundary
+allocations through `ViewIdentity`, which keeps no rows alive.
+
+A family prepared on its own whose content decides what its observation can
+read chooses its run's reads from the content the phase binds (`Own::binds`,
+`Own::bound`: a `prepass::Bound` of tables, fields and extract in place of
+the family's declared ones). Its pool lane claims no block until the
+family's own thread has bound them, before its first block, so every block
+of the run is read with them; the family's facts say what its extract read.
 
 Country groups are prepared on their own. Their extract
 ([products/country_groups/prepared.rs](../dashboard-base/src/products/country_groups/prepared.rs)) reads a block by the fields the scan
@@ -1163,7 +1251,7 @@ the existing catalogue keeps their stable keys and output retains known closed
 handles for attribution. Projects awaiting final output remain open continuation.
 
 Construction is prepared on its own (`prepared/pipeline/independent/economy.rs`,
-with the stockpile, production and experience). Its blocks are read by the
+with the stockpile, production, experience and fuel). Its blocks are read by the
 fields the scan reads: building levels, the countries' and provinces' keys (read
 at the queue reads alone), the links, every field of the daily queues and output
 and every rebuild of the dictionary; each queue read hour is visited, and the
@@ -1483,8 +1571,10 @@ Special projects are prepared on their own
 `special-projects` queries wait only for their coverage; the event feed, which
 reads the published completions when asked, refuses from their page. A
 pre-pass worker reads each block by its changes
-(`products::special_projects::prepared::block`) with the observer's tables and
-the trigger kit `triggers::RECORDED_TABLES` a scoped project name evaluates:
+(`products::special_projects::prepared::block`) with the observer's tables and,
+only where the bound content holds a project name key, or a country-prefixed
+variant of one, that needs scope (`block::bound`, chosen as the run starts),
+the trigger kit `triggers::RECORDED_TABLES` such a name evaluates:
 every field of the tables the observer reads of a frame (projects, programs,
 history, characters, portraits, the dictionary and the country links) is
 watched, so each new allocation of the dictionary's view, which the published
@@ -1731,8 +1821,8 @@ identity history and territory.
 
 The sampled families are prepared on their own
 (`prepared/pipeline/independent/sampled.rs`, registry names `air`, `navy`,
-`stability`, `fuel`, `equipment_losses`, `supply`, `parties`, `trade` and
-`territory`): air force and navy size, country stability and its parts, fuel,
+`stability`, `equipment_losses`, `supply`, `parties`, `trade` and
+`territory`): air force and navy size, country stability and its parts,
 equipment losses, supply health, the party history, trade flows and territory. Their widgets answer at open through samplers;
 this is their exact history. Each observer reads tables that move nearly every
 hour in war or production and carries state that decides what the next hour
@@ -1755,16 +1845,19 @@ is written at its flush, before its pages. Continuations are
 (`party-history-<branch>`) is its state, as in the walk, and territory's read
 of the identity history is `territory-identities-<branch>`. Air force size and
 navy size fold their blocks from pre-pass workers instead: a worker steps its
-own census through the block and keeps the census after the first hour and
-each later hour's changed rows; the family observes the first hour on the
-carried state and, when the carried census decides the later hours as the
-worker's did (tracks compared as the next hour extends them; the hour's own
-join flag left out), renumbers navy's ship classes as the carried census
-numbers them, projects those rows through the content (hours apart, on
+own census through the block and keeps the census after the first hour it
+holds nothing a carried census holds from earlier hours (the first hour for
+navy; for air, the first hour the block reads or forgets variant names, which
+hold from the read that gave them) and each later hour's changed rows; the
+family observes the hours through that one on the carried state and, when the
+carried census decides the later hours as the worker's did (tracks compared as
+the next hour extends them; the hour's own join flag and when each variant
+name was first read left out), renumbers navy's ship classes as the carried
+census numbers them, projects those rows through the content (hours apart, on
 several threads), publishes them on the carried series and carries the
 census's tracks and counters; otherwise it observes the rest of the block.
 Air force size, navy
-size, fuel, trade flows and the party history answer from their own coverage,
+size, trade flows and the party history answer from their own coverage,
 stability and its parts by their series kinds; supply health, equipment losses
 and territory with the identity history's (`independent::JOINT`). The scoreboard, which reads them
 with other families, waits for the branch's coverage and, for each column it
@@ -1914,16 +2007,28 @@ preserve carried dates even when a formula is unknown. Experience keys include
 native holders, so aliases and unrelated tag reuse remain separate. The existing
 country-group identity catalogue selects their dated UI membership.
 
-Open scans, recent experience reads and hourly gain queues resume across batches
+Open scans, recent experience reads and complete gain runs resume across batches
 and appended recordings. Current country joins, supplying-read operands and
 numeric inputs are runtime-only and rebuild after restore. Equal country keys
 reuse joins across balance updates. Accepted hours authenticate shared series
-frontiers; native daily reads and complete hourly XP gain queues preserve their
+frontiers; native daily reads and complete hourly XP gain runs preserve their
 own cadence. The country-stability and country-experience families
 answer exact state, clipped width summaries, navigation and provenance event
 pages through the country-measure adapter. Exact windows retain their original
 supplying runs for chart drawing. At-hour stability breakdowns use the registered
 product.
+
+The stability scan and the parts scan read their sliced tables by the hour's
+recorded changes. When an hour continues the previous one and a table changed
+by exactly its recorded rows (`FrameChanges::rows`), only those rows are taken:
+input and command power rows by their keys, the stability input and line read
+hours from SliceReads' changed rows of those two tables (no other table's rows
+are visited), and stability lines grouped again only for the countries the
+changed rows name. A country is observed again only when its rows differ from
+the hour before's, as a comparison of the whole tables finds. Country changes
+to fields no key reads keep the countries' keys without comparing every
+country, and the parts scan holds the hour's SliceReads view instead of a
+copy. Otherwise each changed table is read whole.
 
 Beyond committed coverage, stability, war support and maximum command power
 are read by the shared progressive reader with the observer's production step
@@ -1940,10 +2045,16 @@ hourly. Its blocks are read by the countries' keys, slots and tags, the links
 and every field of banked experience and the hourly gains, whose rows the scan
 compares whole; each banked read hour is visited, and the next one by the clock
 is the extract's deadline. A quiet span is the scan's step with nothing changed
-(`Scan::advance_quiet`): each country whose last gain interval was complete
-gains it again every hour, keeping a day of gains, and one without banked
-experience or an open read leaves the output at the span's first hour, so the
-span ends in constant time per gaining country. It saves its continuation as
+(`Scan::advance_quiet`): complete gains hold as runs until their inputs change,
+so a quiet span advances only the frontier. An observed hour visits countries
+whose inputs changed, or every current country at a banked read; a country's
+last day is summed from its runs, widening each signed amount before multiplying
+by its hours. Missing intervals, ambiguous joins and native-instance changes
+break the complete day. When an observed hour continues the previous one with
+the links unchanged and its gains changed by exactly their recorded rows
+(`FrameChanges::rows`), only the slots of the countries those rows name are
+joined again, each from every row the links resolve to it; country changes to
+no key field keep the countries' keys without comparing every country. It saves its continuation as
 `experience-continuation-<branch>`; its series route by the family kind
 `country-experience`.
 
@@ -1992,6 +2103,25 @@ Current resolved links, holder identities, state-owner operands and raw
 level/capacity operands stay runtime-only and rebuild from the restored frame.
 The stateless progressive sampler and the observer use the same amount projection
 and native slot join.
+
+Fuel is prepared on its own (`prepared/pipeline/independent/economy.rs`, registry
+name `fuel`, with the economy ledgers) and answers from its own coverage. Its
+blocks are read by the fields its scan reads: the countries' keys (id, slot and
+tag), every link, each state's owner, and every field of the fuel table and its
+demand parts at their daily read; the next read by the clock is the extract's
+deadline. The family's thread observes each kept hour as hourly preparation
+does. Each span of hours between is stepped without a frame
+(`Prepared::advance_quiet`): no identity, ownership or open read changes there,
+so the scan carries each current country's ownership proof (its last day of
+hours), identity track and open reads through the span in one pass, and the
+current series advances its accepted hours. Settling a day at such an hour
+decides, retires or ends nothing unless the hour's cutoff is a settling read's
+first or last hour, and otherwise only extends each open day run by that hour,
+so the days are settled at those hours and at the span's last, with the scan
+carried to each first: a constant number of settlements per day, where hourly
+observation settles every hour. A fuel read dated off the clock (another table
+of its slot read at another hour) leaves the rest of the block to hourly
+observation. It saves its continuation as `fuel-continuation-<branch>`.
 
 The fuel day's overlap rule prefers daily-slot reads. The observer therefore
 retains only the final 23 unsettled hours, the open read and the preceding kept
@@ -2099,18 +2229,26 @@ Leaders are prepared on their own
 registry entry in `prepared/pipeline/independent/leaders.rs`, family `leaders`).
 The extract reads a block by the fields the scan reads and, of the shared
 trigger tables, the fields their declared reads read (the row keys of the
-rest). At each hour read it finds what changed since the hour before as the
-block reader does (`BlockTables`, its changed tables made again from the hour
-before's rows), and joins to the quiet hours (`QuietTables`) every hour whose
-combats changed only in operands beside their commanders. It keeps the block's
-first hour whole and every other hour reduced: hourly-moving tables by the
-fields leaders and the declared reads read, tables no declared read reads not
-at all. The fold observes each kept hour on its kept frame with those change
-facts: a verdict is read again there only when every input it recorded reads
-what the whole frame holds, and evaluated there only when everything the
-evaluation read is the whole frame's; otherwise, before any career changes,
-the rest of the block is observed hour by hour on its whole frames, counted as
-`leaders.fallback`. Quiet spans carry the scan through in constant time.
+rest). A run reads only the scan's own tables, the trigger world's core
+(provinces and states) and, where the phase binds a catalogue, the shared
+trigger tables leader visibility's declared reads read (`block::bound`); the
+rest of the trigger kit is not read, and is taken as changed anywhere at every
+hour. At each hour read the extract takes what changed since the hour before
+from the block reader (`BlockTables` of its changed tables; where it is read
+with families watching more, it finds them from the hour before's rows), and
+joins to the quiet hours (`QuietTables`) every hour whose combats changed only
+in operands beside their commanders. It keeps the block's first hour as read
+and every other hour reduced: hourly-moving tables by the fields leaders and
+the declared reads read, reduced again only where those fields changed since
+their rows were last reduced, and tables no declared read reads not at all.
+The fold observes each kept hour on its kept frame with those change facts,
+and each hour kept as read the same way where the run left tables out: a
+verdict is read again there only when every input it recorded reads what the
+whole frame holds, and evaluated there only when everything the evaluation
+read is the whole frame's; otherwise, before any career changes, the rest of
+the block is observed hour by hour on its whole frames, read with the whole
+trigger kit, counted as `leaders.fallback`. Quiet spans carry the scan through
+in constant time.
 The test-only recording oracle executes the native step and every evaluation
 every hour. Shared
 series events hold closed value runs, trait gains, commands, battle observations
@@ -2383,13 +2521,15 @@ country. Such a holder is read from its own rows, gathered by key across its
 links, at that table's next read, and a holder whose variant changed group is
 regrouped that hour. Every other holder's read repeats its last read's dates and
 diagnostic counts, and its values carry. A holder is stepped through the hours it
-was not visited when it is next visited, and publication steps every holder
-through the last accepted hour before sealing. Within a holder only values that
-started, ended or are new to it are observed, series keys are resolved once, and
-every group is totalled in one pass over the members. Keyframes, resumes, gaps,
+was not visited in one span when it is next visited, and publication steps every
+holder through the last accepted hour before sealing. Within a holder only
+values that started, ended or are new to it are observed, series keys are
+resolved once, and every group is totalled in one pass over the members.
+Keyframes, resumes, gaps,
 holder or dictionary changes, and a table becoming or ceasing to be complete read
-the whole tables; a whole-table hour that does not read a table leaves every
-holder's next read of it a full one.
+the whole tables; so does a changed numeric table without recorded row deltas.
+A whole-table hour that does not read a table leaves every holder's next read
+of it a full one.
 
 Observation-time type and domain stock, balance, need and drawability use aggregate
 series. Dated classification intervals include unnamed periods and changed tokens;
@@ -2429,12 +2569,14 @@ keys, slots and tags, the links and every field of its numeric and
 variant-catalogue tables; each stock, logistics and variant read hour is
 visited, and the next one by the clock is the extract's deadline. A quiet span
 advances the series and the catalogue's last hour in constant time
-(`Prepared::advance_quiet`); holders are stepped through it when next visited,
-as hourly. A kept hour carries no recorded rows, so it reads the whole tables,
-which the changed-row path equals; before a loaded branch's first whole-table
-hour has built the row index, the rest of the block is observed hour by hour.
+(`Prepared::advance_quiet`); holders catch up through it in one step when next
+visited, with the same saved frontiers as advancing each hour. A kept hour
+carries no recorded rows, so a changed numeric table reads the whole projection;
+before a loaded branch's first whole-table hour has built the row index,
+the rest of the block is observed hour by hour.
 Its equipment content is bound before the first block it observes. It saves its
-continuation as `stockpile-continuation-<branch>` and answers from its own
+continuation as `stockpile-continuation-<branch>`, buffering JSON before compression
+with the hourly branch writer's shared helper, and answers from its own
 coverage.
 
 ## Prepared equipment losses
@@ -2451,9 +2593,15 @@ Equipment-loss requests use prepared data; the recording scan and its loader
 remain test-only parity oracles.
 
 Shared frame-change facts refresh current native owner joins. The country
-identity projection excludes unrelated balance changes. Changed or supplying
-rows visit their owners; retained holder and design keys carry through one
-authenticated series frontier. Open coverage and uncertainty endpoints extend
+identity projection excludes unrelated balance changes, without comparing the
+whole census when the recorded delta changes no slot or key. Combat Log reads
+select a raw owner's contiguous recorded-key range, including truncated reads;
+no hourly log index is rebuilt when another owner's rows change or are pruned.
+Amount-only destruction deltas with unchanged keys keep their owner join and
+availability operands, while consuming every hour's signed amounts. Each
+country's typed read key is compared before serializing its saved text.
+Changed or supplying rows visit their owners; retained holder and design keys
+carry through one authenticated series frontier. Open coverage and uncertainty endpoints extend
 when touched or published. Equal lend-lease reads advance one supplying frontier,
 and resolved current owners retain deletion witnesses across resume. Disappeared
 holders leave that runtime join; returning holders rejoin from their retained
@@ -2551,6 +2699,15 @@ preparation's flush steps do; the store holds what publishing each page at its
 frame writes. It
 saves its continuation as `production-continuation-<branch>`; selection and
 spending answer from its own coverage.
+
+At a complete variant read, production's single-read catalogue reuses the
+production-line input reader (`equipment::VariantReads`): only changed variant,
+module, upgrade, country or token operands are rebuilt. Each tracked variant is
+classified again only when those operands changed, while its name still takes
+the current read's date. Carried and incomplete reads see an empty catalogue,
+as the hourly frame's catalogue does. Removed definitions, gaps and unread names
+keep their existing unknown-name bounds and accumulated refusal identities.
+Endpoint events serialize their payload once for hashing and publication.
 
 ## Recorded histories
 
@@ -2838,7 +2995,7 @@ in [ui](../../ui/README.md). Documentation-only changes need link and diff check
 
 Occupied-state preparation shares one daily join with occupation trends. Each replay block publishes its standalone state window through the shared reply helpers. Compressed continuation retains the carried state values, supplying read, laws and exact refusal identities. Trends publish fixed5 resistance/compliance, composite context events and rank-position runs through the shared series accumulator. Queries read one window, one reached hour or an aligned width summary; gaps and native holder selection remain explicit.
 
-Occupation is prepared on its own (`prepared/pipeline/independent/evaluated.rs`, registry name `occupation`), gating `occupied-states`, `occupied-states-manifest` and the `occupation-trend` series (whose query also waits for the identity history). Its daily reads decide law eligibility through the trigger world of the read, and its owner and controller projection follows the allocations of the views it holds, so its blocks are not read by their changes. Its own thread observes each block hour by hour, as the hourly walk does, on the block read alone with its tables (states, the daily occupation tables, the countries' keys and links, the dictionary, and the trigger kit `triggers::RECORDED_TABLES` when a bound law has a visible or available trigger) and with the change facts of the block alone. A pre-pass worker reads only each block's campaign identity for it. It binds its content at every block, holds each block's window page and manifest from the block's end and writes them at its next commit, and saves its continuation (`occupation-<branch>`) after its pages, as hourly preparation does. A measured run times its block reads (`occupation.read`) apart from its observation (`occupation.observe`).
+Occupation is prepared on its own (`prepared/pipeline/independent/evaluated.rs`, registry name `occupation`), gating `occupied-states`, `occupied-states-manifest` and the `occupation-trend` series (whose query also waits for the identity history). Its daily reads decide law eligibility through the trigger world of the read, and its owner and controller projection follows the allocations of the views it holds, so its blocks are not read by their changes. Its own thread observes each block hour by hour, as the hourly walk does, on the block read alone with its tables (states, the daily occupation tables, the countries' keys and links, the dictionary, and the trigger kit `triggers::RECORDED_TABLES` when a bound law has a visible or available trigger) and with the change facts of the block alone. It has no pre-pass lane (`Own::laned`): no block is read on the pool for it. It binds its content at every block, holds each block's window page and manifest from the block's end and writes them at its next commit, and saves its continuation (`occupation-<branch>`) after its pages, as hourly preparation does. A measured run times its block reads (`occupation.read`) apart from its observation (`occupation.observe`).
 
 The land-owner observer extends one recording-wide compressed state while preparation visits every branch. The existing ownership step retains one lowest-branch witness per tag and canonical slot; unchanged hours add no state. The query reads the single `land-owners` range and calls its sorted reply builder. Accepted completeness belongs to the whole recording.
 
@@ -2927,9 +3084,11 @@ Each branch's newest land battle window is prepared before forward preparation
 (`prepared/pipeline/newest.rs`, `products/land_battles/newest.rs`), for every
 branch whose last block forward preparation has neither accepted nor refused. A
 look-back observes the branch's blocks from one block through the last, each
-read alone, on a fresh census configured as forward preparation's and observing
-with no change facts, as the recording product does, and builds the last
-window's page as forward preparation's publication of the last block does. The
+read alone (read ahead on spare cores within `scan_blocks_by`'s core budget and
+reconstructed alone, as `Replay::read_block_alone` reads them), on a fresh census
+configured as forward preparation's and observing with no change facts, as the
+recording product does, and builds the last window's page as forward
+preparation's publication of the last block does. The
 page is forward preparation's when the look-back observed every fact the page
 carries; a look-back starting at the branch's first block would be forward
 preparation's walk of the branch, so none is tried and the window is left to
@@ -2944,13 +3103,24 @@ battle it closes is one the look-back saw. Outside a look-back after a gap,
 every loss read dated in the window names a variant whose naming the look-back
 read, or follows an hour whose variant table was not complete, where every name
 is forgotten. Only an available hour inside the look-back proves availability.
-The first look-back starts a block before the last (at the last block after a
-gap). A failed check names the hour the look-back must start by: a battle open
-at its first hour, before its native duration counter began; a result, its
-coverage start; an unproven variant, the hour before. The next look-back starts
-at the block holding that hour (the first block after it in a gap), and from its
-second retry also at least doubles its length; one that would start at the
-branch's first block is not tried. The window's reply carries the
+One look-back is tried, from the block one read of the branch's blocks by their
+changes decides: the last block's by the combat and naming tables' keys and
+every field of the progress, results and event coverage, then each earlier
+block's, from the last back, by the combat and naming tables' keys, each block
+read alone on spare cores (`scan_blocks_by`) and taken in that order until one
+holds every check as far as the changes decide it. The last block alone only
+after a gap; otherwise, the latest block from which each battle on the page
+(every combat the last block holds, those the block before holds at its last
+hour when it adjoins the window, and those present from a window result's
+coverage start) is traced, through its presence in a complete, read census
+across adjoining blocks, to an opening after that block's first hour (or the
+block follows a gap); no result read in the window covers an earlier hour; and
+each variant a progress row or result in the window names was read in a
+complete variant read, or forgotten at an incomplete variant table, before the
+read naming it (or the block follows a gap). A change the keys do not show (a
+handle reused in another province) only moves the start earlier. The checks
+above then decide; a look-back not proven publishes nothing. A start that would
+be the branch's first block is not tried. The window's reply carries the
 branch's content warnings as forward preparation publishes them after its last
 block. The configured and catalogue warnings are the look-back's. The variant
 naming refusals are those of every variant read on the branch: the look-back's
@@ -3026,6 +3196,21 @@ the core budget; neither waits for the other's, nor any family for either. Until
 the manifest and that window answer from these pages while they name the
 branch's current last block; other windows, rankings and details wait for
 coverage.
+
+What each branch's newest land or naval window preparation did is reported
+(`dashboard_base::prepared::newest::Report`): the blocks before the last read by
+their changes, every look-back tried (its first block, the blocks it observed,
+its time, and the check that failed with the hour it names), the earlier blocks
+read for the land window's diagnostics, and the outcome (proven; left to forward
+preparation at the branch's first block, unproven, unavailable, refused by
+variant naming, or unreadable). Measured runs count it in the family's timing
+rows: `newest.land` and `newest.naval` (the family's time), `.earlier`,
+`.look-back` and `.naming` (time, with blocks as calls), and one row per outcome
+(a call per branch). While preparation runs, every accepted status carries a
+row per family trying windows, `land-battles-newest` and `naval-battles-newest`:
+preparing until it has tried every branch, its count the branches proven of
+those tried, its text each branch's report on one line. The readiness probe
+logs every status row's text with its state and counts.
 
 Naval logs, availability, rankings and drawn-row details read prepared pages.
 Preparation shares the native census and retained sinking multiset

@@ -32,7 +32,7 @@ fn read(fixture: &Fixture, family: Value, hour: i32) -> Value {
 
 #[cfg(feature = "slow-tests")]
 #[test]
-fn experience_native_work_is_flat_and_hourly_gain_queues_remain_separate() {
+fn experience_native_work_is_flat_and_gain_runs_visit_only_supplying_reads() {
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker,
         observer_tests::{self, Work},
@@ -81,7 +81,7 @@ fn experience_native_work_is_flat_and_hourly_gain_queues_remain_separate() {
                     emitted: 0,
                     ..native_before
                 };
-                let ticks = data.scan.clock_ticks();
+                let ticks = data.scan.gain_updates();
                 let work = observer_tests::unchanged_frames(
                     before,
                     &frame,
@@ -112,8 +112,12 @@ fn experience_native_work_is_flat_and_hourly_gain_queues_remain_separate() {
                     "native daily supplying reads retain their provenance even when rows are equal"
                 );
                 assert_eq!(
-                    data.scan.clock_ticks() - ticks,
-                    if complete == 1 { 5_000 * hours } else { 0 }
+                    data.scan.gain_updates() - ticks,
+                    if complete == 1 {
+                        5_000 * supplying_reads
+                    } else {
+                        0
+                    }
                 );
                 frame.hour += hours as i32 + 1;
                 let mut tracker = FrameChangeTracker::new();
@@ -1015,4 +1019,266 @@ fn experience_quiet_spans_advance_as_observing_each_hour_does() {
             assert_eq!(own, expected, "{measure} at {hour}");
         }
     }
+}
+
+/// Stability and its parts observed from each hour's recorded changes
+/// (`FrameChanges::rows`) visit only the rows those name: one slice of the
+/// countries' inputs, lines and reads an hour and the command power rows
+/// (which move every hour), and no country key while only balances move.
+/// They publish and save exactly what observing each hour's whole tables
+/// does, across two blocks.
+#[test]
+fn stability_and_parts_observe_an_hours_changed_rows_as_its_whole_tables() {
+    use dashboard_base::{prepared::frame_changes::FrameChangeTracker, test_fixtures};
+    use replay::rows::{CountryCommandPowerRow, CountryStabilityLineRow, SliceReadRow};
+    use std::sync::Arc;
+    const COUNT: u32 = 48;
+    let format = replay::format::FormatVersion::CURRENT;
+    let base = 1000 * 24;
+    // The hour a country's slice was last read by `hour`.
+    let read_of = |index: u32, hour: i32| hour - (hour - (index % 24) as i32).rem_euclid(24);
+    let frame = |hour: i32| {
+        let mut frame = test_fixtures::scale_frame(1, hour, COUNT);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            for row in rows {
+                row.political_power_raw = Some(i64::from(hour));
+            }
+        }
+        let definitions = stability_frame(hour, stability_inputs(), hour, Vec::new());
+        frame.tables[TableId::ModifierDefinitions.index()] =
+            definitions.tables[TableId::ModifierDefinitions.index()].clone();
+        let day = |index: u32| i64::from(read_of(index, hour).div_euclid(24));
+        *frame.tables[TableId::CountryStabilityInputs.index()] =
+            TableView::Complete(TableRows::CountryStabilityInputs(
+                (0..COUNT)
+                    .map(|index| {
+                        let mut row = stability_inputs();
+                        row.country = 100_000 + index;
+                        row.stability_factor = Some(30_000 + 1_000 * (day(index) % 3));
+                        row
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::CountryStabilityLines.index()] =
+            TableView::Complete(TableRows::CountryStabilityLines(
+                (0..COUNT)
+                    .flat_map(|index| {
+                        [(0, 10_000), (1, 5_000 + 1_000 * (day(index) % 2))].map(
+                            |(line, value)| CountryStabilityLineRow {
+                                country: 100_000 + index,
+                                line,
+                                key: 0x8d,
+                                kind: CountryStabilityLineRow::IDEA,
+                                identity: format!("mod/line{line}").into_bytes(),
+                                value,
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect(),
+            ));
+        let mut reads: Vec<SliceReadRow> = [
+            TableId::CountryStabilityInputs,
+            TableId::CountryStabilityLines,
+        ]
+        .into_iter()
+        .flat_map(|table| {
+            (0..COUNT).map(move |index| SliceReadRow {
+                table: table as u32,
+                owner: 100_000 + index,
+                sample_hour: read_of(index, hour),
+            })
+        })
+        .collect();
+        reads.sort_by_key(|row| (row.table, row.owner));
+        *frame.tables[TableId::SliceReads.index()] =
+            TableView::Complete(TableRows::SliceReads(reads));
+        *frame.tables[TableId::CountryCommandPower.index()] =
+            TableView::Complete(TableRows::CountryCommandPower(
+                (0..COUNT)
+                    .map(|index| CountryCommandPowerRow {
+                        canonical_slot: index,
+                        allocated_command_power_raw: i64::from(hour) * 10,
+                        max_command_power: Some(0),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        frame
+    };
+    let frames = |hours: std::ops::Range<i32>| -> Vec<replay::frame::DecodedFrame> {
+        hours.map(|offset| frame(base + offset)).collect()
+    };
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(0..36))]).unwrap();
+    let replay = first
+        .append(&[test_fixtures::continuation_records(
+            &first,
+            1,
+            frames(36..72),
+        )])
+        .unwrap();
+    // Each block read alone, its change facts from a tracker of the block,
+    // as preparation reads it, with or without the hour's recorded updates.
+    let observe = |updates: bool| {
+        let mut accumulator = StabilityAccumulator::default();
+        for index in &replay.index {
+            let mut tracker = FrameChangeTracker::new();
+            replay
+                .read_block_alone(
+                    index,
+                    &TableId::ALL,
+                    |raw, frame| {
+                        let changes = if updates {
+                            tracker.observe_updates(frame, Arc::new(raw), format)
+                        } else {
+                            tracker.observe(frame, format)
+                        };
+                        accumulator.observe_timed(frame, &changes, &mut None)
+                    },
+                    || Ok(()),
+                )
+                .unwrap();
+        }
+        let visits = accumulator.stability.work().row_visits + accumulator.parts.row_visits();
+        let fixture = Fixture::new();
+        publish(&mut accumulator, &fixture);
+        let state = serde_json::to_value(&accumulator).unwrap();
+        (fixture.payloads(), state, visits)
+    };
+    let (whole_pages, whole_state, whole_visits) = observe(false);
+    let (pages, state, visits) = observe(true);
+    assert!(
+        whole_pages.keys().any(|(name, _)| name == "stability-1"),
+        "stability published"
+    );
+    assert_eq!(pages, whole_pages, "pages");
+    assert_eq!(state, whole_state, "saved state");
+    assert!(
+        visits * 4 < whole_visits,
+        "{visits} rows visited from the changes, {whole_visits} from the whole tables"
+    );
+}
+
+/// Experience observed from each hour's recorded changes joins again only the
+/// slots whose gain rows changed (a few countries an hour, one gaining
+/// through two instances at times, one whose row comes and goes) and compares
+/// no country key while only balances move. It publishes and saves exactly
+/// what observing each hour's whole tables does, across two blocks.
+#[test]
+fn experience_observes_an_hours_changed_gains_as_its_whole_tables() {
+    use dashboard_base::{prepared::frame_changes::FrameChangeTracker, test_fixtures};
+    use replay::rows::{CountryExperienceGainRow, CountryExperienceRow};
+    use std::sync::Arc;
+    const COUNT: u32 = 48;
+    let format = replay::format::FormatVersion::CURRENT;
+    let base = 1000 * 24;
+    let frame = |hour: i32| {
+        let mut frame = test_fixtures::scale_frame(1, hour, COUNT);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            for row in rows {
+                row.political_power_raw = Some(i64::from(hour));
+            }
+        }
+        // Banked experience grows at each daily read.
+        let day = i64::from((hour - 17).div_euclid(24));
+        *frame.tables[TableId::CountryExperience.index()] =
+            TableView::Complete(TableRows::CountryExperience(
+                (0..COUNT)
+                    .map(|index| CountryExperienceRow {
+                        country: 100_000 + index,
+                        army_raw: 1_000 * day + i64::from(index),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        let mut gains = Vec::new();
+        for index in 0..COUNT {
+            // The fifth country's gains are recorded half the time.
+            if index == 5 && hour.rem_euclid(10) < 5 {
+                continue;
+            }
+            let country = 100_000 + index;
+            gains.push(CountryExperienceGainRow {
+                country,
+                instance: 1,
+                complete: 1,
+                army_raw: if (hour + index as i32).rem_euclid(12) == 0 {
+                    2
+                } else {
+                    1
+                },
+                ..Default::default()
+            });
+            // The seventh gains through a second instance at times.
+            if index == 7 && hour.rem_euclid(8) < 3 {
+                gains.push(CountryExperienceGainRow {
+                    country,
+                    instance: 2,
+                    complete: 1,
+                    army_raw: 3,
+                    ..Default::default()
+                });
+            }
+        }
+        *frame.tables[TableId::CountryExperienceGains.index()] =
+            TableView::Complete(TableRows::CountryExperienceGains(gains));
+        frame
+    };
+    let frames = |hours: std::ops::Range<i32>| -> Vec<replay::frame::DecodedFrame> {
+        hours.map(|offset| frame(base + offset)).collect()
+    };
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(0..36))]).unwrap();
+    let replay = first
+        .append(&[test_fixtures::continuation_records(
+            &first,
+            1,
+            frames(36..72),
+        )])
+        .unwrap();
+    let observe = |updates: bool| {
+        let mut accumulator = ExperienceAccumulator::default();
+        for index in &replay.index {
+            let mut tracker = FrameChangeTracker::new();
+            replay
+                .read_block_alone(
+                    index,
+                    &TableId::ALL,
+                    |raw, frame| {
+                        let changes = if updates {
+                            tracker.observe_updates(frame, Arc::new(raw), format)
+                        } else {
+                            tracker.observe(frame, format)
+                        };
+                        accumulator.observe_changes(frame, format, &changes)
+                    },
+                    || Ok(()),
+                )
+                .unwrap();
+        }
+        let visits = accumulator.scan.work().row_visits;
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        accumulator
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        writer.commit().unwrap();
+        let state = serde_json::to_value(&accumulator).unwrap();
+        (fixture.payloads(), state, visits)
+    };
+    let (whole_pages, whole_state, whole_visits) = observe(false);
+    let (pages, state, visits) = observe(true);
+    assert!(
+        whole_pages.keys().any(|(name, _)| name == "experience-1"),
+        "experience published"
+    );
+    assert_eq!(pages, whole_pages, "pages");
+    assert_eq!(state, whole_state, "saved state");
+    assert!(
+        visits * 3 < whole_visits,
+        "{visits} rows visited from the changes, {whole_visits} from the whole tables"
+    );
 }

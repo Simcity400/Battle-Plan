@@ -1,23 +1,24 @@
-//! Construction, equipment stockpiles, production and country experience
-//! prepared on their own, before the hourly walk, publish and save exactly
-//! what hourly preparation does, refuse where it refuses, answer their
-//! queries while the hourly walk has accepted nothing, and build no frame for
-//! the quiet hours between their changes and daily reads.
+//! Construction, equipment stockpiles, production, country experience and
+//! fuel prepared on their own, before the hourly walk, publish and save
+//! exactly what hourly preparation does, refuse where it refuses, answer
+//! their queries while the hourly walk has accepted nothing, and build no
+//! frame for the quiet hours between their changes and daily reads.
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
-use independent::economy::{self, CONSTRUCTION, EXPERIENCE, PRODUCTION, STOCKPILE};
+use independent::economy::{self, CONSTRUCTION, EXPERIENCE, FUEL, PRODUCTION, STOCKPILE};
 use replay::rows::{
     BuildingConstructionRow, BuildingRow, ConstructionLineOutputRow, CountryAppearanceRow,
-    CountryExperienceGainRow, CountryExperienceRow, LexicalTokenRow, ProductionLineOutputRow,
-    ProductionLineRow, ProvinceRow, Recorded, StockpileRow, VariantDefinitionRow,
+    CountryExperienceGainRow, CountryExperienceRow, CountryFuelRow, LexicalTokenRow,
+    ProductionLineOutputRow, ProductionLineRow, ProvinceRow, Recorded, StateRow, StockpileRow,
+    VariantDefinitionRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 
 /// Day 1000's first hour: LogisticsEquipment's daily slot. The construction
 /// queues read at +3, stockpiles, lines and output at +8, banked experience
-/// at +17 and variants at +22 of each day.
+/// and fuel at +17 and variants at +22 of each day.
 const BASE: i32 = 1000 * 24;
 /// The first country of `frame`: raw id, canonical slot 0, tag "000".
 const COUNTRY: u32 = 100_000;
@@ -30,15 +31,16 @@ const INFANTRY: u32 = 601;
 
 /// The families, under their status and refusal names, with the prefix of
 /// every section each publishes and its field in the hourly branch state.
-const LEDGERS: [(&str, &str); 4] = [
+const LEDGERS: [(&str, &str); 5] = [
     ("construction", "construction"),
     ("stockpile", "stockpile"),
     ("production", "production"),
     ("experience", "experience"),
+    ("fuel", "fuel"),
 ];
 
-fn ledgers() -> [&'static dyn independent::Own; 4] {
-    [&CONSTRUCTION, &STOCKPILE, &PRODUCTION, &EXPERIENCE]
+fn ledgers() -> [&'static dyn independent::Own; 5] {
+    [&CONSTRUCTION, &STOCKPILE, &PRODUCTION, &EXPERIENCE, &FUEL]
 }
 
 /// The day of `hour` as read at daily slot `slot`: it advances at the slot.
@@ -50,11 +52,13 @@ fn day(hour: i32, slot: i32) -> i64 {
 /// the building's partial health change every hour without being read. The
 /// daily tables change at their reads: the queue's line progresses and its
 /// output grows at +3 until the line completes at the second day's read; the
-/// stock, line efficiency and output at +8; banked experience at +17; a
-/// second variant appears at +22. The building is bombed at +14 (inside a
-/// block) and repaired at the second day's queue read. The first country's
-/// hourly experience award grows at +10 (inside a block) and is otherwise
-/// equal hour after hour.
+/// stock, line efficiency and output at +8; banked experience and fuel at
+/// +17; a second variant appears at +22. The building is bombed at +14
+/// (inside a block) and repaired at the second day's queue read. The first
+/// country's hourly experience award grows at +10 (inside a block) and is
+/// otherwise equal hour after hour. The states' manpower changes every hour
+/// without being read, and the second country's state passes to the first
+/// at +23 (inside a block).
 fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
     let mut observed = frame(branch, hour, 2);
     let set = |observed: &mut DecodedFrame, table: TableId, rows: TableRows| {
@@ -272,19 +276,58 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
             },
         ]),
     );
+    fuel_tables(&mut observed, hour, BASE + 23);
     // Off the clock, a table of each ledger's daily slot is read at +13: the
-    // queues', the lines' and banked experience's slots, though none of the
-    // ledgers' own tables. Their reads are dated there with no frame read.
+    // queues', the lines' and banked experience's and fuel's slots, though
+    // none of the ledgers' own tables. Their reads are dated there with no
+    // frame read.
     if hour == BASE + 13 {
         for table in [
             TableId::StateGarrisons,
             TableId::DeploymentLines,
-            TableId::CountryFuel,
+            TableId::HubMotorization,
         ] {
             observed.metrics.table_ns[table.index()] = 1;
         }
     }
     observed
+}
+
+/// Fuel's tables at `hour`: both countries' fuel, which grows at each daily
+/// read (+17), and no demand parts; each country owns a state, whose manpower
+/// moves every hour without being read, and the second country's state passes
+/// to the first at `ceded`.
+fn fuel_tables(observed: &mut DecodedFrame, hour: i32, ceded: i32) {
+    let fuel_day = day(hour, 17);
+    *observed.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
+        [COUNTRY, OTHER]
+            .into_iter()
+            .enumerate()
+            .map(|(index, country)| CountryFuelRow {
+                country,
+                current_raw: 10_000 + 500 * fuel_day + index as i64,
+                maximum_raw: 50_000,
+                ring_gain_raw: 600 + index as i64,
+                ring_consumed_raw: 100,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *observed.tables[TableId::FuelDemandParts.index()] =
+        TableView::Complete(TableRows::FuelDemandParts(Vec::new()));
+    *observed.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [COUNTRY, OTHER]
+            .into_iter()
+            .enumerate()
+            .map(|(index, owner)| StateRow {
+                id: index as u32 + 1,
+                owner: if hour >= ceded { COUNTRY } else { owner },
+                controller: owner,
+                manpower_available: hour,
+                ..Default::default()
+            })
+            .collect(),
+    ));
 }
 
 /// Branch 1's first `blocks` blocks of five (+18 and +19 are a gap between
@@ -531,6 +574,7 @@ fn economy_ledgers_prepared_on_their_own_refuse_where_hourly_preparation_does() 
         ("stockpile", "equipment-stockpile"),
         ("production", "production-select"),
         ("experience", "country-experience"),
+        ("fuel", "country-fuel"),
     ];
     for (family, product) in products {
         // At a block's first hour, and inside a block's quiet hours.
@@ -645,6 +689,7 @@ fn economy_ledgers_answer_from_their_own_coverage_while_the_hourly_walk_accepts_
                 "production-select",
                 "production-spending",
                 "country-experience",
+                "country-fuel",
             ] {
                 let covered = product_coverage(&source, None, branch, product, &flag)
                     .unwrap()
@@ -781,4 +826,187 @@ fn economy_ledgers_read_by_their_changes_build_no_frame_at_quiet_hours() {
         }
         assert!(seen[1].0 < seen[0].0, "{family}: fewer frames by changes");
     }
+}
+
+/// Fuel's frame at `hour` for its days: the fuel tables alone, with an
+/// off-slot read of the fuel table at +30 (a block's first hour, a day after
+/// +17 and inside a day of +41) and the second country's state ceded at +47
+/// (inside a block).
+fn fuel_frame(branch: u64, hour: i32) -> DecodedFrame {
+    let mut observed = frame(branch, hour, 2);
+    fuel_tables(&mut observed, hour, BASE + 47);
+    if hour == BASE + 30 {
+        observed.metrics.table_ns[TableId::CountryFuel.index()] = 1;
+    }
+    observed
+}
+
+/// Branch 1's blocks of thirty hours (+90 and +91 a gap before the fourth),
+/// then branch 2's one block. A day's read is settled 23 hours after it and
+/// the read before it retires the hour before that, so with daily reads at
+/// +17, +41, +65, +89 and +113, the reads at +17, +30 and +41 are settled or
+/// retired at +52, +53, +63 and +87, inside the second and third blocks'
+/// quiet hours, and +40, +64 and +88 end those blocks' quiet spans.
+fn fuel_scenario() -> Replay {
+    let hours: [Vec<i32>; 4] = [
+        (0..=29).collect(),
+        (30..=59).collect(),
+        (60..=89).collect(),
+        (92..=121).collect(),
+    ];
+    let frames = |hours: &[i32]| -> Vec<DecodedFrame> {
+        hours
+            .iter()
+            .map(|&offset| fuel_frame(1, BASE + offset))
+            .collect()
+    };
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, frames(&hours[0]))]).unwrap();
+    for hours in &hours[1..] {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, frames(hours))])
+            .unwrap();
+    }
+    replay
+        .append(&[records(
+            2,
+            (200..=229)
+                .map(|offset| fuel_frame(2, BASE + offset))
+                .collect(),
+        )])
+        .unwrap()
+}
+
+/// Read by its changes, fuel builds a frame only at its reads, a state's
+/// cession and each block's first hour, and steps every hour between without
+/// one, settling the days that fall due there (a read decided, the read
+/// before it retired, an off-slot read left out by the slot read after it)
+/// at those hours: its pages and continuation are hourly preparation's, run
+/// whole, committed at every block, and reloaded from each commit.
+#[test]
+fn fuel_read_by_its_changes_settles_its_days_inside_quiet_hours_as_hourly_preparation() {
+    let replay = fuel_scenario();
+    let total = hours(&replay);
+    let mut fixture = Fixture::new(&replay);
+    let modes: [(&str, &dyn Fn(&Source), bool); 3] = [
+        ("run", &plain, false),
+        ("measured", &measured, false),
+        ("measured, reloaded", &measured, true),
+    ];
+    let fuel = |payloads: &Payloads| -> Payloads {
+        payloads
+            .iter()
+            .filter(|((name, _), _)| name.starts_with("fuel-") && !mode_specific(name))
+            .map(|(key, bytes)| (key.clone(), bytes.clone()))
+            .collect()
+    };
+    for (mode, prepare, reload) in modes {
+        super::super::RELOAD_FLUSHED.with(|flag| flag.set(reload));
+        let hourly = hourly(&mut fixture, "fuel-days", prepare);
+        let source = fixture.source("fuel-days");
+        let before = economy::counts("fuel");
+        let fallback = prepass::noted("fuel.fallback");
+        // Fuel alone folds on this thread, where it counts.
+        independent::with_test_families(&[&FUEL], || {
+            prepass::with_test_prepass(2, None, || prepare(&source))
+        });
+        super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
+        let after = economy::counts("fuel");
+        let own = payloads(&source, None);
+        clear(source);
+        let (frames, observed, quiet) = (
+            after.frames - before.frames,
+            after.observed - before.observed,
+            after.quiet - before.quiet,
+        );
+        assert!(
+            hourly.keys().any(|(name, _)| name == "fuel-days-1"),
+            "{mode}: days were settled"
+        );
+        assert_payloads_equal(&fuel(&own), &fuel(&hourly), mode);
+        let mut states = 0;
+        for ((name, _), bytes) in &hourly {
+            let Some(branch) = name.strip_prefix("preparation-branch-") else {
+                continue;
+            };
+            let saved = decoded(bytes)["fuel"].clone();
+            assert!(!saved.is_null(), "{mode}: branch {branch}'s hourly fuel");
+            assert_eq!(
+                decoded(&own[&(format!("fuel-continuation-{branch}"), 0)]),
+                saved,
+                "{mode}: branch {branch}'s fuel continuation"
+            );
+            states += 1;
+        }
+        assert!(states >= 2, "{mode}: both branches' states");
+        assert_eq!(observed + quiet, total, "{mode}: every hour folded once");
+        assert!(quiet > total / 2, "{mode}: {quiet} of {total} hours quiet");
+        assert!(frames < total / 2, "{mode}: {frames} frames of {total} hours");
+        assert_eq!(
+            prepass::noted("fuel.fallback"),
+            fallback,
+            "{mode}: no block left to hourly observation"
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: full preparation, resume and append"
+)]
+fn experience_gain_runs_publish_and_save_as_hourly_preparation_across_quiet_hours_and_append() {
+    let frames = |from: i32, to: i32| -> Vec<DecodedFrame> {
+        (from..to)
+            .map(|at| {
+                let mut frame = ledger_frame(1, BASE + at);
+                *frame.tables[TableId::CountryExperienceGains.index()] =
+                    TableView::Complete(TableRows::CountryExperienceGains(
+                        [COUNTRY, OTHER]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, country)| CountryExperienceGainRow {
+                                country,
+                                instance: if index == 0 && at >= 45 { 2 } else { 1 },
+                                complete: u8::from(index != 0 || at != 37),
+                                army_raw: if index == 0 { i64::from(at / 8) } else { 7 },
+                                air_raw: i64::MAX,
+                                ..Default::default()
+                            })
+                            .collect(),
+                    ));
+                frame
+            })
+            .collect()
+    };
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(0, 32))]).unwrap();
+    let grown = first
+        .append(&[continuation_records(&first, 1, frames(32, 64))])
+        .unwrap();
+    let grown = grown
+        .append(&[continuation_records(&grown, 1, frames(64, 96))])
+        .unwrap();
+    let mut fixture = Fixture::new(&first);
+    let both = |fixture: &mut Fixture| {
+        fixture.replace(&first);
+        let source = fixture.source("experience-gain-runs");
+        measured(&source);
+        drop(source);
+        fixture.replace(&grown);
+        let source = fixture.source("experience-gain-runs");
+        measured(&source);
+        let pages = payloads(&source, None);
+        clear(source);
+        pages
+    };
+    let expected = independent::with_test_hourly(|| both(&mut fixture));
+    let actual = independent::with_test_families(&ledgers(), || {
+        prepass::with_test_prepass(3, None, || both(&mut fixture))
+    });
+    assert_same(
+        &actual,
+        &expected,
+        "experience gain runs, resume and append",
+        true,
+    );
 }

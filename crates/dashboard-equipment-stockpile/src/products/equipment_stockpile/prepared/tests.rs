@@ -866,6 +866,89 @@ fn counted_frame(hour: i32, count: u32) -> DecodedFrame {
     frame
 }
 
+#[test]
+fn holder_catch_up_steps_one_span_and_keeps_hourly_saved_state() {
+    let first = slot_hour(TableId::Stockpiles);
+    let frame = stockpile_frame(first, true, &[(10, 100), (20, 0)], Some(&[]));
+    let format = replay::format::FormatVersion::CURRENT;
+    let input = FrameRows::new(&frame);
+    for hours in [10, 1_000] {
+        let mut hourly = ScanState::default();
+        hourly.observe(format, &input, input.identities.get("GER").copied());
+        let mut spans = hourly.clone();
+        for hour in first + 1..=first + hours {
+            hourly.advance(hour);
+        }
+        spans.catch_up(Some(first + hours));
+        hourly.seal();
+        spans.seal();
+        assert_eq!(
+            serde_json::to_vec(&spans).unwrap(),
+            serde_json::to_vec(&hourly).unwrap()
+        );
+        assert_eq!(spans.advances, 1, "a holder steps the entire span once");
+        let mut restored: ScanState =
+            serde_json::from_slice(&serde_json::to_vec(&spans).unwrap()).unwrap();
+        restored.catch_up(Some(first + hours));
+        assert_eq!(restored.advances, 0, "a restored holder is already current");
+    }
+}
+
+#[test]
+fn holder_catch_up_keeps_identity_changes_absence_returns_and_recording_gaps() {
+    let first = slot_hour(TableId::Stockpiles);
+    let mut frame = stockpile_frame(first, true, &[(10, 100), (20, 0)], Some(&[]));
+    let format = replay::format::FormatVersion::CURRENT;
+    let input = FrameRows::new(&frame);
+    let original = input.identities["GER"];
+    let replacement = (original.0, original.1 + 1);
+    let returned = (original.0, original.1 + 2);
+    let mut hourly = ScanState::default();
+    hourly.observe(format, &input, Some(original));
+    let mut spans = hourly.clone();
+    for (through, at, identity, continues) in [
+        (4, 5, Some(replacement), false),
+        (7, 8, Some(replacement), true),
+        (10, 11, None, false),
+        (13, 14, Some(returned), false),
+        (16, 19, Some(returned), false),
+        (21, 22, Some((original.0 + 1, original.1 + 3)), false),
+    ] {
+        if let Some(from) = hourly.advanced {
+            for hour in from + 1..=first + through {
+                hourly.advance(hour);
+            }
+        }
+        spans.catch_up(Some(first + through));
+        for state in [&mut hourly, &mut spans] {
+            state.seal();
+        }
+        assert_eq!(
+            serde_json::to_vec(&hourly).unwrap(),
+            serde_json::to_vec(&spans).unwrap(),
+            "catch-up through {through}"
+        );
+        let mut track = spans.track.clone();
+        assert_eq!(
+            track.step(identity, first + at),
+            continues,
+            "holder at {at}"
+        );
+        frame.hour = first + at;
+        frame.metrics.table_ns.fill(0);
+        let input = FrameRows::new(&frame);
+        for state in [&mut hourly, &mut spans] {
+            state.observe(format, &input, identity);
+            state.seal();
+        }
+        assert_eq!(
+            serde_json::to_vec(&hourly).unwrap(),
+            serde_json::to_vec(&spans).unwrap(),
+            "observation at {at}"
+        );
+    }
+}
+
 fn assert_changed_rows_observe_only_their_holder(count: u32) {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
     let format = replay::format::FormatVersion::CURRENT;

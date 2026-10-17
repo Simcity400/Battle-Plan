@@ -381,8 +381,9 @@ struct Scan {
     native: country_stability::Native,
     #[serde(skip)]
     lines: Option<BTreeMap<u32, Vec<replay::rows::CountryStabilityLineRow>>>,
+    /// The last complete SliceReads read, held as the frame's own view.
     #[serde(skip)]
-    reads: Option<Vec<replay::rows::SliceReadRow>>,
+    reads: Option<SharedView>,
     #[serde(skip)]
     removed: Vec<String>,
     #[serde(skip)]
@@ -400,6 +401,52 @@ struct Scan {
     line_dates: BTreeMap<u32, i32>,
 }
 impl Scan {
+    /// This hour's stability lines from the hour's recorded changes to them
+    /// (`delta`), when the hour before's lines are held: only the countries
+    /// those rows name are grouped again from this hour's rows, and those
+    /// whose lines differ go to `dirty`, as grouping and comparing every
+    /// country's lines finds. False, with nothing changed, when the whole
+    /// table is needed.
+    fn apply_lines(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        delta: Option<country_stability::Delta<'_>>,
+        dirty: &mut BTreeSet<u32>,
+    ) -> bool {
+        let (Some((changed, deleted)), Some(held), Ok(rows)) = (
+            delta,
+            self.lines.as_mut(),
+            decoded.complete::<tables::CountryStabilityLines>(),
+        ) else {
+            return false;
+        };
+        // A line's key leads with its country.
+        let countries: BTreeSet<u32> = changed
+            .iter()
+            .map(|row| row.key)
+            .chain(deleted.iter().copied())
+            .map(|key| (key >> 64) as u32)
+            .collect();
+        for country in countries {
+            let first = rows.partition_point(|row| row.country < country);
+            let last = rows.partition_point(|row| row.country <= country);
+            let next = &rows[first..last];
+            #[cfg(test)]
+            {
+                self.native.work.row_visits += next.len();
+            }
+            if held.get(&country).map_or(&[][..], Vec::as_slice) != next {
+                dirty.insert(country);
+                if next.is_empty() {
+                    held.remove(&country);
+                } else {
+                    held.insert(country, next.to_vec());
+                }
+            }
+        }
+        true
+    }
+
     fn step(
         &mut self,
         decoded: &replay::frame::DecodedFrame,
@@ -431,28 +478,52 @@ impl Scan {
         dirty.extend(self.clock_names.iter().copied());
         let changed =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
+        // The hour's recorded changes of a table, when it continues the hour
+        // before: what is held from that hour then takes only its changed rows.
+        let delta = |table: TableId| changes.and_then(|changes| changes.rows(table));
         if changed(TableId::SliceReads) {
-            self.reads = decoded
-                .complete::<tables::SliceReads>()
-                .ok()
-                .map(|rows| rows.to_vec());
-            let next: BTreeMap<_, _> = self
-                .reads
-                .iter()
-                .flatten()
-                .filter(|row| row.table == TableId::CountryStabilityLines as u32)
-                .map(|row| (row.owner, row.sample_hour))
-                .collect();
-            dirty.extend(
-                self.line_dates
-                    .keys()
-                    .chain(next.keys())
-                    .copied()
-                    .filter(|id| self.line_dates.get(id) != next.get(id)),
-            );
-            self.line_dates = next;
+            let rows = decoded.complete::<tables::SliceReads>().ok();
+            let applied = self.reads.is_some()
+                && match (delta(TableId::SliceReads), rows) {
+                    (Some(delta), Some(rows)) => {
+                        #[cfg(test)]
+                        {
+                            self.native.work.row_visits += delta.0.len();
+                        }
+                        country_stability::apply_reads(
+                            &mut self.line_dates,
+                            rows,
+                            TableId::CountryStabilityLines,
+                            delta,
+                            &mut dirty,
+                        )
+                        .is_some()
+                    }
+                    _ => false,
+                };
+            if !applied {
+                let next: BTreeMap<_, _> = rows
+                    .into_iter()
+                    .flatten()
+                    .filter(|row| row.table == TableId::CountryStabilityLines as u32)
+                    .map(|row| (row.owner, row.sample_hour))
+                    .collect();
+                dirty.extend(
+                    self.line_dates
+                        .keys()
+                        .chain(next.keys())
+                        .copied()
+                        .filter(|id| self.line_dates.get(id) != next.get(id)),
+                );
+                self.line_dates = next;
+            }
+            self.reads = rows
+                .is_some()
+                .then(|| decoded.tables[TableId::SliceReads.index()].clone());
         }
-        if changed(TableId::CountryStabilityLines) {
+        if changed(TableId::CountryStabilityLines)
+            && !self.apply_lines(decoded, delta(TableId::CountryStabilityLines), &mut dirty)
+        {
             let next = decoded
                 .complete::<tables::CountryStabilityLines>()
                 .ok()
@@ -562,7 +633,10 @@ impl Scan {
             }
             self.active = valid;
         }
-        let Some(reads) = self.reads.as_deref() else {
+        let Some(reads) = self.reads.as_deref().and_then(|view| match view {
+            TableView::Complete(rows) => rows.rows::<tables::SliceReads>(),
+            _ => None,
+        }) else {
             return Ok(());
         };
         let mut seen = BTreeSet::new();
@@ -990,6 +1064,11 @@ pub struct Prepared {
     pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
 }
 impl Prepared {
+    /// The table rows its scan visited, counted in tests.
+    #[cfg(test)]
+    pub(crate) fn row_visits(&self) -> usize {
+        self.scan.native.work.row_visits
+    }
     #[cfg(test)]
     pub(crate) fn calculated_reads(&self) -> usize {
         self.scan.calculated_reads

@@ -32,6 +32,18 @@ use std::{
 };
 use ts_rs::TS;
 
+/// Ownership witnesses and the operands used to name their first observation.
+pub(crate) const TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::States,
+    TableId::CountryLinks,
+    TableId::Countries,
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+];
+
 /// Includes positive ownership observations from every recorded branch. Control
 /// and cores do not establish ownership; unavailable intervals add no countries.
 ///
@@ -57,17 +69,7 @@ pub fn land_owners(
         }
     };
     let mut scan = Scan::new(replay);
-    let selected = [
-        TableId::Campaign,
-        TableId::States,
-        TableId::CountryLinks,
-        TableId::Countries,
-        TableId::CountryAppearance,
-        TableId::Politics,
-        TableId::PoliticalParties,
-        TableId::Autonomy,
-    ];
-    crate::blocks::scan_blocks(replay, &replay.index, &selected, cancelled, |blocks| {
+    crate::blocks::scan_blocks(replay, &replay.index, TABLES, cancelled, |blocks| {
         for (_, frames) in blocks {
             check()?;
             let frames = match frames {
@@ -77,7 +79,7 @@ pub fn land_owners(
                     continue;
                 }
             };
-            let mut decoder = FrameDecoder::for_tables(&selected);
+            let mut decoder = FrameDecoder::for_tables(TABLES);
             for frame in frames {
                 check()?;
                 let decoded = match decoder.advance(&frame) {

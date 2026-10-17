@@ -33,8 +33,8 @@
 //! observer reads, with the change facts and recorded updates of the block
 //! alone, which are the walk's at every hour (every block starts at a
 //! keyframe, whose every table is a new allocation in both reads), as does
-//! the projects' where their fold does not continue. Occupation's pre-pass
-//! extract reads each block's campaign identity only and keeps nothing. Each
+//! the projects' where their fold does not continue. Occupation has no
+//! pre-pass lane: no block is read on the pool for it. Each
 //! binds its content at every block, as the walk does, and flushes and saves
 //! where hourly preparation does.
 
@@ -359,6 +359,19 @@ impl Own for Projects {
         &special_projects::prepared::block::FAMILY
     }
 
+    fn binds(&self) -> bool {
+        true
+    }
+
+    /// Without a scoped project name in the bound content, blocks are read
+    /// without the trigger kit, which nothing the observer evaluates then
+    /// reads. Content whose bind fails (cancellation) reads as declared.
+    fn bound(&self, phase: &super::Phase<'_>) -> Option<prepass::Bound> {
+        let mut prepared = special_projects::prepared::Prepared::new(phase.replay, 0);
+        prepared.configure(phase.source, phase.context).ok()?;
+        special_projects::prepared::block::bound(prepared.reads_trigger_world())
+    }
+
     fn timing(&self) -> &'static str {
         "independent.projects"
     }
@@ -575,6 +588,11 @@ impl Own for Occupation {
     /// With the trigger world, whichever its content reads.
     fn shared_tables(&self) -> &'static [TableId] {
         occupation_tables(true)
+    }
+
+    /// Its own thread observes every block; an extract keeps nothing.
+    fn laned(&self) -> bool {
+        false
     }
 
     /// The window pages and manifest, and the trend's series by the family

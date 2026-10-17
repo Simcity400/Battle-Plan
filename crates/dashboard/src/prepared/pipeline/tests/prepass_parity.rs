@@ -423,8 +423,10 @@ fn block_change_facts_alone_equal_the_facts_preparation_observes() {
     });
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("prepass-facts");
-    lanes::with_test_lanes(2, Some(hook), || {
-        run(&source, None, &AtomicBool::new(false), |_| {})
+    independent::with_test_hourly(|| {
+        lanes::with_test_lanes(2, Some(hook), || {
+            run(&source, None, &AtomicBool::new(false), |_| {})
+        })
     })
     .unwrap();
     clear(source);

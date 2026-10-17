@@ -1237,7 +1237,8 @@ fn scan(
     Ok(reply)
 }
 
-const SCORE_TABLES: &[TableId] = &[
+/// Every table the score observer and its naming read.
+pub const SCORE_TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,

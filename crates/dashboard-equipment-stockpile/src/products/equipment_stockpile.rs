@@ -372,19 +372,49 @@ pub(crate) struct ScanState {
     /// identity; none when it is current (restored or new) or has none.
     #[serde(skip)]
     advanced: Option<i32>,
+    #[cfg(test)]
+    #[serde(skip)]
+    advances: usize,
 }
 impl ScanState {
     /// Step the accepted hours after the last one this holder was stepped
     /// through, up to `through`, as if each had been advanced in turn: hours
     /// whose rows left the holder unchanged are not visited when they pass.
     pub(crate) fn catch_up(&mut self, through: Option<i32>) {
-        if let (Some(from), Some(through)) = (self.advanced, through) {
-            for hour in from.saturating_add(1)..=through {
-                self.advance(hour);
+        if let (Some(from), Some(through)) = (self.advanced, through)
+            && from < through
+        {
+            let first = from + 1;
+            self.track.advance(through);
+            for rows in [
+                &mut self.result.stock,
+                &mut self.result.daily,
+                &mut self.result.daily_ic,
+                &mut self.result.cost_low,
+                &mut self.result.cost_high,
+            ] {
+                rows.advance_span(first, through);
+            }
+            for rows in [
+                &mut self.result.balance,
+                &mut self.result.logistics_stock,
+                &mut self.result.available,
+            ] {
+                rows.advance_span(first, through);
+            }
+            self.result.ai.advance_span(first, through);
+            self.advanced = Some(through);
+            #[cfg(test)]
+            {
+                self.advances += 1;
             }
         }
     }
     pub(crate) fn advance(&mut self, hour: i32) {
+        #[cfg(test)]
+        {
+            self.advances += 1;
+        }
         self.advanced = Some(hour);
         self.track.advance(hour);
         for rows in [

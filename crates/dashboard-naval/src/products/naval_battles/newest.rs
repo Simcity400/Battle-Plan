@@ -43,7 +43,11 @@
 //! names of its own, with the bytes forward preparation writes for the
 //! window.
 use super::*;
-use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series};
+use dashboard_base::prepared::{
+    frame_changes::FrameChangeTracker,
+    newest::{Outcome, Report, Tried, Unproven},
+    series,
+};
 use replay::{
     container::{BlockChange, TableFields},
     rows::NavalResultSourceRow,
@@ -453,18 +457,39 @@ fn join(spans: &mut Vec<HourSpan>, span: &HourSpan) {
     }
 }
 
+/// A result on the page was read before the look-back.
+const RESULT_READ: &str = "a result read before the look-back";
+/// A result on the page, or one a source the look-back read names, was named
+/// by an earlier source.
+const RESULT_NAMED: &str = "a result an earlier source named";
+/// A source the look-back read is not after every earlier source.
+const SOURCE_ORDER: &str = "a source not after every earlier source";
+/// A persistent source the look-back read names a combat an earlier
+/// persistent source named.
+const COMBAT_NAMED: &str = "a combat an earlier persistent source named";
+/// A source read at the look-back's first hour dates before the hour
+/// observed before it.
+const SOURCE_DATE: &str = "a source dated before the hour observed before the look-back";
+/// A combat on the page, or one a source the look-back read names, was open
+/// at the hour before the look-back.
+const OPEN_COMBAT: &str = "a combat open at the hour before the look-back";
+
 /// The earliest hour a look-back whose first hour is `first` must start by,
-/// for a fact of its page that `earlier`'s first `from` blocks decide; None
-/// when every such fact is proven.
+/// for a fact of its page that `earlier`'s first `from` blocks decide, with
+/// that fact; None when every such fact is proven.
 fn unproven(
     look: &LookBack,
     reply: &NavalBattlesReply,
     earlier: &Earlier,
     from: usize,
     first: i32,
-) -> Option<i32> {
-    let mut before: Option<i32> = None;
-    let mut back = |hour: i32| before = Some(before.map_or(hour, |earlier| earlier.min(hour)));
+) -> Option<Unproven> {
+    let mut before: Option<Unproven> = None;
+    let mut back = |check: &'static str, hour: i32| {
+        if before.as_ref().is_none_or(|earlier| hour < earlier.hour) {
+            before = Some(Unproven { check, hour });
+        }
+    };
     let read_before = |reference: &u64| {
         earlier
             .results
@@ -506,10 +531,10 @@ fn unproven(
     };
     for episode in page().filter(|episode| episode.kind == Kind::Result) {
         if let Some(hour) = read_before(&episode.reference) {
-            back(hour);
+            back(RESULT_READ, hour);
         }
         if let Some(&hour) = named_results.get(&episode.reference) {
-            back(hour);
+            back(RESULT_NAMED, hour);
         }
     }
     let previous = earlier.last_hour(from);
@@ -521,25 +546,25 @@ fn unproven(
                 .iter()
                 .filter(|source| source.row.id >= row.id || source.row.game_hour > row.game_hour)
             {
-                back(source.hour);
+                back(SOURCE_ORDER, source.hour);
             }
         }
         if !row.transient {
             if let Some(&hour) = named_combats.get(&row.combat) {
-                back(hour);
+                back(COMBAT_NAMED, hour);
             }
             if let Some(&hour) = named_results.get(&row.result) {
-                back(hour);
+                back(RESULT_NAMED, hour);
             }
             if let Some(hour) = read_before(&row.result) {
-                back(hour);
+                back(RESULT_READ, hour);
             }
         }
         if *hour == first
             && let Some(previous) = previous
             && row.game_hour < previous
         {
-            back(previous);
+            back(SOURCE_DATE, previous);
         }
     }
     if previous.and_then(|hour| hour.checked_add(1)) == Some(first) {
@@ -549,7 +574,7 @@ fn unproven(
             .map(|episode| episode.reference);
         for combat in opening.chain(look.sources.iter().map(|(_, row)| row.combat)) {
             if let Some(&opened) = open.get(&combat) {
-                back(opened);
+                back(OPEN_COMBAT, opened);
             }
         }
     }
@@ -560,31 +585,25 @@ fn unproven(
 enum Attempt {
     /// Its page is forward preparation's, with the branch's availability.
     Proven(NavalBattlesReply, bool),
-    /// The look-back must start at or before this hour.
-    Before(i32),
+    /// The look-back must start at or before the hour its failed check
+    /// names.
+    Before(Unproven),
 }
 
 /// One look-back from the branch's block `from` (of `blocks`) through its
-/// last, `ordinal`; the earlier blocks' facts are read once, at the first
-/// look-back that needs them.
+/// last, `ordinal`, against `earlier`, the facts of the blocks before the
+/// last.
 fn attempt(
     replay: &Replay,
     blocks: &[usize],
     from: usize,
     window: &BattleWindow,
-    earlier: &mut Option<Earlier>,
+    earlier: &Earlier,
     cancelled: &AtomicBool,
 ) -> io::Result<Attempt> {
     let ordinal = blocks.len() - 1;
     let mut look = look_back(replay, &blocks[from..], cancelled)?;
-    let facts = if from == 0 {
-        None
-    } else {
-        if earlier.is_none() {
-            *earlier = Some(read_earlier(replay, &blocks[..from], workers(), cancelled)?);
-        }
-        earlier.as_ref()
-    };
+    let facts = (from != 0).then_some(earlier);
     let mut available = look.scan.available;
     if let Some(facts) = facts {
         available |= facts.available[..from].iter().any(|available| *available);
@@ -606,8 +625,8 @@ fn attempt(
         let first = look
             .first_hour
             .unwrap_or(replay.index[blocks[from]].first_hour);
-        if let Some(hour) = unproven(&look, &reply, facts, from, first) {
-            return Ok(Attempt::Before(hour));
+        if let Some(why) = unproven(&look, &reply, facts, from, first) {
+            return Ok(Attempt::Before(why));
         }
     }
     Ok(Attempt::Proven(reply, available))
@@ -618,6 +637,30 @@ fn attempt(
 /// branch's first block, or a block a look-back or the earlier blocks' facts
 /// read cannot be read.
 pub fn prepare(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Option<Newest>> {
+    Ok(prepare_reported(source, branch, cancelled)?.0)
+}
+
+/// [`prepare`], with what it did: the earlier blocks read, every look-back
+/// tried and the outcome.
+pub fn prepare_reported(
+    source: &Source,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<(Option<Newest>, Report)> {
+    let mut report = Report::default();
+    let newest = prepare_into(source, branch, cancelled, &mut report)?;
+    if newest.is_some() {
+        report.outcome = Outcome::Proven;
+    }
+    Ok((newest, report))
+}
+
+fn prepare_into(
+    source: &Source,
+    branch: u64,
+    cancelled: &AtomicBool,
+    report: &mut Report,
+) -> io::Result<Option<Newest>> {
     let replay = source.replay_ref();
     let blocks: Vec<usize> = replay
         .index
@@ -626,6 +669,7 @@ pub fn prepare(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Resu
         .filter(|(_, index)| index.branch == branch)
         .map(|(at, _)| at)
         .collect();
+    report.blocks = blocks.len();
     let Some(last) = blocks.len().checked_sub(1) else {
         return Ok(None);
     };
@@ -635,19 +679,42 @@ pub fn prepare(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Resu
     // From the branch's first block the look-back is forward preparation's
     // walk of the branch: the window is left to it.
     if from == 0 {
+        report.outcome = Outcome::BranchStart(None);
         return Ok(None);
     }
-    let mut earlier = None;
+    // Every look-back starts after the first block, so each needs the
+    // earlier blocks' facts: read once, before the first.
+    let started = std::time::Instant::now();
+    let earlier = match read_earlier(replay, &blocks[..last], workers(), cancelled) {
+        Ok(earlier) => earlier,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+        Err(error) => {
+            report.outcome = Outcome::Unreadable(error.to_string());
+            return Ok(None);
+        }
+    };
+    report.earlier = last;
+    report.earlier_took = started.elapsed();
     #[cfg(any(test, feature = "test-support"))]
     let mut read = 0;
     let mut retries = 0;
     loop {
         check_cancel(cancelled)?;
-        let outcome = attempt(replay, &blocks, from, window, &mut earlier, cancelled);
+        let started = std::time::Instant::now();
+        let outcome = attempt(replay, &blocks, from, window, &earlier, cancelled);
         #[cfg(any(test, feature = "test-support"))]
         {
             read += blocks.len() - from;
         }
+        report.tried.push(Tried {
+            from,
+            blocks: blocks.len() - from,
+            took: started.elapsed(),
+            unproven: match &outcome {
+                Ok(Attempt::Before(why)) => Some(why.clone()),
+                _ => None,
+            },
+        });
         let before = match outcome {
             Ok(Attempt::Proven(reply, available)) => {
                 return Ok(Some(Newest {
@@ -661,15 +728,18 @@ pub fn prepare(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Resu
                     #[cfg(any(test, feature = "test-support"))]
                     blocks_read: read,
                     #[cfg(any(test, feature = "test-support"))]
-                    earlier_blocks: earlier.as_ref().map_or(0, |facts| facts.recorded.len()),
+                    earlier_blocks: earlier.recorded.len(),
                 }));
             }
-            Ok(Attempt::Before(hour)) => hour,
+            Ok(Attempt::Before(why)) => why,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-            Err(_) => return Ok(None),
+            Err(error) => {
+                report.outcome = Outcome::Unreadable(error.to_string());
+                return Ok(None);
+            }
         };
         // The block holding that hour, or the first after the gap holding it.
-        let hinted = blocks.partition_point(|&at| replay.index[at].last_hour < before);
+        let hinted = blocks.partition_point(|&at| replay.index[at].last_hour < before.hour);
         let doubled = blocks.len().saturating_sub(2 * (blocks.len() - from));
         from = if retries == 0 {
             hinted
@@ -678,6 +748,7 @@ pub fn prepare(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Resu
         }
         .min(from - 1);
         if from == 0 {
+            report.outcome = Outcome::BranchStart(Some(before));
             return Ok(None);
         }
         retries += 1;

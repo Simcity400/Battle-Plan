@@ -70,7 +70,7 @@ fn type_model<'a>(equipment: &'a Database, key: &str) -> Result<TypeModel<'a>, S
 }
 
 /// Where an icon's picture comes from.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Icon {
     /// A sprite the content's interface files declare.
     Sprite(String),
@@ -134,6 +134,13 @@ pub struct IconContent {
     sprites: BTreeSet<String>,
     refused_sprites: BTreeMap<String, String>,
     files: Files,
+    /// Every texture path the rule asked about, with the answer: the files it
+    /// found or missed, outside the recorded content's hash.
+    probes: std::sync::Mutex<BTreeMap<String, Result<bool, String>>>,
+    /// A digest of the rule's visual inputs the recorded content's hash does not
+    /// cover: the declared and refused sprites, the graphic pools, the geography
+    /// and the DLC names.
+    visual: String,
 }
 
 impl IconContent {
@@ -201,7 +208,52 @@ impl IconContent {
             }),
             catalogue: Some(catalogue),
             load_warnings: warnings,
-        })
+            probes: Default::default(),
+            visual: String::new(),
+        }
+        .fingerprinted())
+    }
+
+    /// The content with the digest of its visual inputs.
+    fn fingerprinted(mut self) -> Self {
+        let inputs = format!(
+            "{:?}\0{:?}\0{:?}\0{:?}\0{:?}",
+            self.sprites, self.refused_sprites, self.pools, self.geography, self.dlc
+        );
+        self.visual = blake3::hash(inputs.as_bytes()).to_hex().to_string();
+        self
+    }
+
+    /// Whether a texture file exists, recorded with its answer ([`Self::file_probes`]).
+    fn file(&self, path: &str) -> Result<bool, String> {
+        let found = (self.files)(path);
+        self.probes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(path.to_owned(), found.clone());
+        found
+    }
+
+    /// Every texture path asked about so far, with the answer it had.
+    pub fn file_probes(&self) -> BTreeMap<String, Result<bool, String>> {
+        self.probes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Whether every one of `probes` has the answer it had when it was asked.
+    pub fn probes_hold(&self, probes: &BTreeMap<String, Result<bool, String>>) -> bool {
+        probes
+            .iter()
+            .all(|(path, answer)| self.file(path) == *answer)
+    }
+
+    /// The digest of the rule's visual inputs outside the recorded content's
+    /// hash; the rest it reads (the equipment database, the technologies'
+    /// enablers, the map) is game content the recording pins by hash.
+    pub fn visual_inputs(&self) -> &str {
+        &self.visual
     }
 
     /// Content from its parts, for fixtures: no geography, the given sprites and files.
@@ -224,7 +276,10 @@ impl IconContent {
             sprites,
             refused_sprites: BTreeMap::new(),
             files: Box::new(move |path| Ok(files.contains(path))),
+            probes: Default::default(),
+            visual: String::new(),
         }
+        .fingerprinted()
     }
 
     /// What loading counted and skipped (country tag keys the game declares no tag
@@ -352,7 +407,7 @@ impl IconContent {
         if !(name.contains('/') || name.contains('.')) {
             return Ok(None);
         }
-        Ok((self.files)(name)?.then(|| Icon::Path(name.to_owned())))
+        Ok(self.file(name)?.then(|| Icon::Path(name.to_owned())))
     }
 }
 
@@ -480,7 +535,7 @@ pub fn variant_icon(
             let found = if variant.icon_kind == 0 {
                 content.sprite(&entry)?
             } else {
-                (content.files)(&entry)?.then(|| Icon::Path(entry.clone().into_owned()))
+                content.file(&entry)?.then(|| Icon::Path(entry.clone().into_owned()))
             };
             if found.is_some() {
                 return Ok(found);

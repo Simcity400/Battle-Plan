@@ -98,6 +98,7 @@ impl Prepared {
         source: &crate::Source,
         context: &crate::products::LoadContext,
     ) -> io::Result<()> {
+        let _cpu = replay::cpu::scope("groups-read", None);
         let Some((members, wars)) = groups.advance_changed(frame, changes)? else {
             return self.quiet(frame.hour, frame.hour);
         };

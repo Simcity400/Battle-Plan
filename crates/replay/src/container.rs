@@ -28,8 +28,12 @@ const FOOTER_SIZE: usize = 24;
 mod changes;
 mod file_backed;
 mod stream;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_work;
+mod watched;
 pub use changes::{BlockChange, QuietHours, TableFields};
 pub use stream::{ReplayCursor, ReplayStream};
+pub use watched::{BlockWatch, Keep, Watched, Watching};
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
@@ -1380,6 +1384,7 @@ impl Replay {
 
     /// A grouped block's stored bytes; `None` for an interleaved block.
     fn grouped_block(&self, index: &BlockIndex) -> io::Result<Option<Cow<'_, [u8]>>> {
+        let _cpu = crate::cpu::scope("decode", None);
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -2358,6 +2363,7 @@ fn decode_payload(
     selected: Option<&[crate::rows::TableId]>,
     format: FormatVersion,
 ) -> io::Result<Frame> {
+    let _cpu = crate::cpu::scope("decode", None);
     let mut decoder = Decoder::new(payload);
     let frame = Frame::decode_version(&mut decoder, selected, format)?;
     decoder.finish()?;
@@ -2476,16 +2482,21 @@ fn parallel_map<T: Sync, R: Send>(
     let run = items.len().div_ceil(workers);
     let work = &work;
     let on_worker = parallel.on_worker;
+    // Measurement only: the workers' CPU is the caller's family's.
+    let cpu_family = crate::cpu::family();
     std::thread::scope(|scope| {
         let mut handles = engine::allocation::vec(workers)?;
         let mut out = engine::allocation::vec(items.len())?;
         for chunk in items.chunks(run) {
             let priority = job_priority::JobPriority::current();
-            let spawned = std::thread::Builder::new().spawn_scoped(scope, move || {
-                priority.enter(job_priority::Level::Normal);
-                on_worker();
-                engine::allocation::collect_vec(chunk.iter().map(work))
-            });
+            let spawned = std::thread::Builder::new()
+                .name("replay parallel decode".into())
+                .spawn_scoped(scope, move || {
+                    priority.enter(job_priority::Level::Normal);
+                    on_worker();
+                    let _cpu = crate::cpu::scope("decode", cpu_family);
+                    engine::allocation::collect_vec(chunk.iter().map(work))
+                });
             handles.push((chunk, spawned.ok()));
         }
         for (chunk, handle) in handles {

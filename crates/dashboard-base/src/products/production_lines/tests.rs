@@ -1864,13 +1864,16 @@ fn organisation_icon_refuses_unread_token_after_independent_stored_candidate() {
 fn blocks_read<T>(load: impl FnOnce() -> T) -> (T, Vec<u64>) {
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
     let value = load();
-    (value, crate::blocks::SCANNED_BLOCKS.with_borrow(Clone::clone))
+    (
+        value,
+        crate::blocks::SCANNED_BLOCKS.with_borrow(Clone::clone),
+    )
 }
 
 /// The widget's default request reads a fixed number of the branch's newest blocks
 /// however long the recording is, and says which hours it does not answer exactly.
 /// A request with `exact` reads every block once and answers what the whole scan
-/// answers; once that scan is held every request is answered from it, reading nothing.
+/// answers. Each reply is its request's: held scans answer both again, reading nothing.
 #[test]
 fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_length() {
     use crate::{
@@ -1887,8 +1890,7 @@ fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_l
     // Every hour is a read of Germany's lines; line 6 ends halfway.
     let frame = |hour: i32, length: i32| {
         let units = i64::from(hour - FIRST);
-        let (lines, output): (Vec<LineFixture>, Vec<OutputFixture>) = if hour - FIRST < length / 2
-        {
+        let (lines, output): (Vec<LineFixture>, Vec<OutputFixture>) = if hour - FIRST < length / 2 {
             (
                 vec![(5, 70, 8, 0), (6, 71, 2, 0)],
                 vec![(5, 70, units, true, false), (6, 71, units, true, false)],
@@ -1900,18 +1902,12 @@ fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_l
     };
     for length in [2 * bound, 10 * bound] {
         // Each appended segment starts a keyframe, so each hour is its own block.
-        let mut replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(1, vec![frame(FIRST, length)])],
-        )
-        .unwrap();
+        let mut replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(FIRST, length)])])
+                .unwrap();
         for hour in FIRST + 1..FIRST + length {
             replay = replay
-                .append(&[continuation_records(
-                    &replay,
-                    1,
-                    vec![frame(hour, length)],
-                )])
+                .append(&[continuation_records(&replay, 1, vec![frame(hour, length)])])
                 .unwrap();
         }
         assert_eq!(replay.index.len(), length as usize);
@@ -1993,9 +1989,16 @@ fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_l
                 .iter()
                 .any(|warning| warning.starts_with("This first view"))
         );
-        let (held, read) = blocks_read(|| load(None));
+        // A reply is its request's: the default request is still the first view
+        // once the whole scan is held, read from the one held; `exact` reads nothing.
+        let (again, read) = blocks_read(|| load(None));
         assert!(read.is_empty());
-        assert!(held.approximate.is_empty());
+        assert_eq!(
+            (again.approximate, again.lines),
+            (first.approximate.clone(), first.lines.clone())
+        );
+        let (held, read) = blocks_read(|| load(Some(true)));
+        assert!(read.is_empty());
         assert_eq!(held.lines, exact.lines);
     }
 }
@@ -2018,4 +2021,495 @@ fn a_first_view_holds_a_detail_window_of_newest_blocks_within_its_bound() {
     // A short branch is read whole.
     assert_eq!(first_view_blocks(&spans(1, 30)), 1);
     assert_eq!(first_view_blocks(&[]), 0);
+}
+
+/// A scan builds a variant read's operands again only for definitions whose inputs
+/// changed (their row, their modules, or the countries and tokens every name reads),
+/// and its catalogue holds exactly the versions a catalogue observing every hour
+/// records: across a changed module, a renamed variant, a country renamed, an
+/// incomplete read and a gap.
+#[test]
+fn variant_reads_build_only_changed_definitions_and_name_as_every_read_does() {
+    use crate::products::production_lines::scan;
+    use replay::rows::{VariantModuleRow, VariantUpgradeRow};
+    let frame = |hour: i32| {
+        let at = hour - FIRST;
+        let mut frame = production_frame(
+            hour,
+            at % 24 == 0,
+            true,
+            9001,
+            &[(5, 70, 8, 0)],
+            Some(&[(5, 70, i64::from(at), true, false)]),
+        );
+        // Variant 70 has one module, changed at 30.
+        *frame.tables[TableId::VariantModules.index()] =
+            TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
+                variant: 70,
+                slot: 601,
+                definition_token: if at >= 30 { 602 } else { 601 },
+                definition_active: 1,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::VariantUpgrades.index()] =
+            TableView::Complete(TableRows::VariantUpgrades(Vec::<VariantUpgradeRow>::new()));
+        if at >= 50
+            && let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                &mut *frame.tables[TableId::VariantDefinitions.index()]
+        {
+            rows[1].display_name = b"Mauser".to_vec();
+        }
+        // Italy is renamed: every name's countries change, though no name does.
+        if at >= 70
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].tag = b"ITB".to_vec();
+        }
+        if at == 90 {
+            *frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+                reason: "fixture".into(),
+            };
+        }
+        frame
+    };
+    // Hour 100 is missing: a gap.
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            (FIRST..FIRST + 120)
+                .filter(|hour| *hour != FIRST + 100)
+                .map(frame)
+                .collect(),
+        )],
+    )
+    .unwrap();
+    // The catalogue as observing every hour records it.
+    let mut expected = VariantCatalogue::default();
+    let mut tables = vec![TableId::Campaign];
+    tables.extend(VariantCatalogue::TABLES);
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&tables);
+        for frame in replay.read_block_selected(block, &tables).unwrap() {
+            expected.observe(replay.format, decoder.advance(&frame).unwrap());
+        }
+    }
+    VARIANT_BUILDS.with(|builds| builds.set(0));
+    let scanned = scan(&replay, 1, "GER", None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.variants.versions, expected.versions);
+    // Both at the first read; 70 at its new module; 71 at its new name; both when
+    // a country is renamed, after the incomplete read and after the gap.
+    assert_eq!(
+        VARIANT_BUILDS.with(std::cell::Cell::get),
+        2 + 1 + 1 + 2 + 2 + 2
+    );
+    let names: Vec<_> = expected.versions[&71]
+        .iter()
+        .map(|version| {
+            (
+                version.first_hour,
+                version.raw.as_ref().map(|raw| raw.display_name.clone()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (FIRST, Some("Gewehr 98".to_owned())),
+            (FIRST + 50, Some("Mauser".to_owned())),
+            (FIRST + 90, None),
+            (FIRST + 91, Some("Mauser".to_owned())),
+            (FIRST + 100, None),
+            (FIRST + 101, Some("Mauser".to_owned())),
+        ]
+    );
+}
+
+/// A saved scan restores to the scan it saved: every value, its modifier runs'
+/// replay rows through the recording's own encoding, a country row its runs share
+/// still shared once, and the recording's language and content's localisation
+/// given again. A scan saved by another layout is not restored, and one that read
+/// a localisation is not restored without it.
+#[test]
+fn a_saved_scan_restores_the_scan_it_saved() {
+    use crate::products::production_lines::{
+        LineKind, RawOrganisation, RawRun, SavedLines, ScannedLine, ScannedLines,
+        breakdown::RawModifierRun,
+    };
+    use replay::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow};
+    let run = |first_hour: i32| RawRun {
+        first_hour,
+        last_hour: first_hour + 23,
+        variant: 70,
+        active_factories: 8,
+        cost_raw: 500_000,
+        efficiency_raw: 1_000_000,
+        amount: -1,
+        ..RawRun::default()
+    };
+    let line = |handle: u64| ScannedLine {
+        key: format!("{handle}#1"),
+        handle,
+        kind: Some(LineKind::Military),
+        runs: vec![run(0), run(24)],
+        output: Vec::new(),
+        final_output: None,
+        ended_by: Some(48),
+        before_recording: true,
+        between_reads: None,
+        variants: vec![70],
+    };
+    let mut scanned = ScannedLines {
+        lines: vec![line(5), line(6)],
+        reads: vec![0, 24],
+        unknown_kinds: 1,
+        unlinked_rows: 2,
+        ..ScannedLines::default()
+    };
+    scanned
+        .icons
+        .insert(70, vec![(0, Ok(None)), (24, Err("unknown".into()))]);
+    scanned.organisations.insert(
+        79,
+        vec![RawOrganisation {
+            first_hour: 0,
+            token: "GER_mauser_organization".into(),
+            owner_tag: Some("GER".into()),
+            ..RawOrganisation::default()
+        }],
+    );
+    scanned
+        .modifier_layout_refusals
+        .insert("production modifiers refused".into(), 3);
+    let shared = Arc::new(CountryProductionModifiersRow {
+        country: 9001,
+        ..Default::default()
+    });
+    let later = Arc::new(CountryProductionModifiersRow {
+        country: 9001,
+        base_cap: 7,
+        ..Default::default()
+    });
+    for (handle, countries) in [(5, [&shared, &shared]), (6, [&shared, &later])] {
+        let runs = [run(0), run(24)]
+            .into_iter()
+            .zip(countries)
+            .map(|(run, country)| RawModifierRun {
+                first_hour: run.first_hour,
+                last_hour: run.last_hour,
+                country: Arc::clone(country),
+                line: ProductionLineModifiersRow {
+                    line: handle,
+                    country: 9001,
+                    variant: 70,
+                    active_factories: 8,
+                    factory_efficiencies: vec![run.efficiency_raw; 8],
+                    ..Default::default()
+                },
+                run,
+                organisation: Some("Mauser".into()),
+                localisation: None,
+                recorded_language: Arc::from("english"),
+            })
+            .collect();
+        scanned.modifiers.insert(format!("{handle}#1"), runs);
+    }
+    let saved = SavedLines::save(&scanned, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        saved.countries.len(),
+        2,
+        "a shared country row is kept once"
+    );
+    let bytes = serde_json::to_vec(&saved).unwrap();
+    let parsed: SavedLines = serde_json::from_slice(&bytes).unwrap();
+    let restored = parsed
+        .clone()
+        .restore(None, Arc::from("english"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.lines, scanned.lines);
+    assert_eq!(restored.modifiers, scanned.modifiers);
+    assert_eq!(restored.icons, scanned.icons);
+    assert_eq!(restored.organisations, scanned.organisations);
+    assert_eq!(
+        restored.modifier_layout_refusals,
+        scanned.modifier_layout_refusals
+    );
+    assert_eq!(restored.variants.versions, scanned.variants.versions);
+    assert_eq!(
+        (
+            restored.reads.clone(),
+            restored.unknown_kinds,
+            restored.unlinked_rows
+        ),
+        (scanned.reads.clone(), 1, 2)
+    );
+    let runs = &restored.modifiers["5#1"];
+    assert!(Arc::ptr_eq(&runs[0].country, &runs[1].country));
+    assert!(Arc::ptr_eq(
+        &runs[0].country,
+        &restored.modifiers["6#1"][0].country
+    ));
+    // Another layout's scan is scanned again.
+    let mut other = parsed.clone();
+    other.schema += 1;
+    assert!(other.restore(None, Arc::from("english")).unwrap().is_none());
+    // A localised scan needs its content's localisation.
+    let mut localised = parsed;
+    localised.localised = true;
+    assert!(localised.restore(None, Arc::from("english")).is_err());
+}
+
+/// A recording of `length` one-hour blocks, each a read of Germany's two lines.
+fn hourly_blocks(length: i32) -> Replay {
+    use crate::test_fixtures::continuation_records;
+    let frame = |hour: i32| {
+        let units = i64::from(hour - FIRST);
+        production_frame(
+            hour,
+            true,
+            true,
+            9001,
+            &[(5, 70, 8, 0), (6, 71, 2, 0)],
+            Some(&[(5, 70, units, true, false), (6, 71, units, true, false)]),
+        )
+    };
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(FIRST)])]).unwrap();
+    for hour in FIRST + 1..FIRST + length {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, vec![frame(hour)])])
+            .unwrap();
+    }
+    replay
+}
+
+fn memory_source(replay: Replay) -> crate::Source {
+    crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "production".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+fn exact_lines(source: &crate::Source) -> ProductionLinesReply {
+    use crate::products::{LoadContext, Product, production_lines::ProductionLinesParams};
+    ProductionLines::load(
+        source,
+        &ProductionLinesParams {
+            branch_id: "1".into(),
+            tag: "GER".into(),
+            exact: Some(true),
+        },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+/// Requests for one country's whole scan made together read the branch once: a
+/// request finding the scan being read waits for it.
+#[test]
+fn requests_for_a_scan_being_read_wait_for_it() {
+    let source = memory_source(hourly_blocks(40));
+    let start = std::sync::Barrier::new(3);
+    let replies: Vec<ProductionLinesReply> = std::thread::scope(|scope| {
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    exact_lines(&source)
+                })
+            })
+            .collect();
+        readers
+            .into_iter()
+            .map(|reader| reader.join().unwrap())
+            .collect()
+    });
+    assert_eq!(
+        source
+            .state::<WholeScans>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .0,
+        1
+    );
+    assert!(replies.iter().all(|reply| reply.lines == replies[0].lines));
+}
+
+/// A country's scan kept between sessions is held again for a source of the same
+/// recording, which then answers exactly what its own scan would, reading no
+/// block; it is not held once the branch has another last block.
+#[test]
+fn a_kept_scan_answers_as_the_scan_it_kept_while_it_is_current() {
+    use crate::products::{
+        LoadContext,
+        production_lines::{hold_saved, saved_scan},
+    };
+    let context = LoadContext { content: None };
+    let first = memory_source(hourly_blocks(12));
+    let kept = saved_scan(&first, 1, "GER", &context, &AtomicBool::new(false)).unwrap();
+    let expected = exact_lines(&first);
+    assert_eq!(kept.last_block.map(|block| block.1), Some(FIRST + 11));
+    let again = memory_source(hourly_blocks(12));
+    assert!(hold_saved(&again, &context, kept.clone()));
+    let (reply, read) = blocks_read(|| exact_lines(&again));
+    assert!(read.is_empty(), "the kept scan answers without reading");
+    assert_eq!(reply.lines, expected.lines);
+    assert_eq!(reply.reads, expected.reads);
+    assert_eq!(
+        again
+            .state::<WholeScans>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .0,
+        0
+    );
+    // A recording grown by a block is scanned again.
+    let grown = memory_source(hourly_blocks(13));
+    assert!(!hold_saved(&grown, &context, kept));
+    let (_, read) = blocks_read(|| exact_lines(&grown));
+    assert_eq!(read.len(), 13);
+}
+
+/// A kept scan's pictures hold only while what the icon rule chose them by holds:
+/// its visual inputs (sprites declared, graphic pools) and every texture file it
+/// asked about. A mod texture deleted without any change the recording's content
+/// hash sees refuses the scan, whose picture a new scan would not choose.
+#[test]
+fn a_kept_scans_pictures_hold_only_while_their_files_and_visual_inputs_do() {
+    use crate::products::{
+        equipment_icon::{Icon, IconContent, IconHour, variant_icon},
+        production_lines::{SavedLines, SavedScan, pictures_hold},
+    };
+    use replay::rows::VariantDefinitionRow;
+    const TEXTURE: &str = "gfx/models/custom.dds";
+    let content = |files: &[&str], sprites: &[&str]| {
+        IconContent::from_parts(
+            equipment_types(&[b"equipments = { infantry_equipment_1 = { } }"]).unwrap(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            sprites.iter().map(|name| (*name).to_owned()).collect(),
+            files.iter().map(|name| (*name).to_owned()).collect(),
+        )
+    };
+    // An active entry naming a texture file.
+    let definition = VariantDefinitionRow {
+        id: 70,
+        equipment_token: 601,
+        creator_link: 11,
+        icon_active: 1,
+        icon_kind: 1,
+        icon: TEXTURE.as_bytes().to_vec(),
+        ..Default::default()
+    };
+    let frame = production_frame(FIRST, true, true, 9001, &[], Some(&[]));
+    let with = content(&[TEXTURE], &["GFX_fallback"]);
+    let hour = IconHour::read(&frame, &with).unwrap();
+    let chosen = variant_icon(&with, &hour, &definition, "infantry_equipment_1");
+    assert_eq!(chosen, Ok(Some(Icon::Path(TEXTURE.into()))));
+    assert_eq!(with.file_probes().get(TEXTURE), Some(&Ok(true)));
+    let saved = SavedScan {
+        branch: 1,
+        tag: "GER".into(),
+        pictured: true,
+        visual: Some(with.visual_inputs().to_owned()),
+        probes: with.file_probes(),
+        executable: false,
+        last_block: None,
+        scan: SavedLines::save(&ScannedLines::default(), &AtomicBool::new(false)).unwrap(),
+    };
+    assert!(pictures_hold(
+        Some(&content(&[TEXTURE], &["GFX_fallback"])),
+        &saved
+    ));
+    // The texture is deleted: the same visual inputs, another choice.
+    let deleted = content(&[], &["GFX_fallback"]);
+    assert_eq!(deleted.visual_inputs(), with.visual_inputs());
+    let hour = IconHour::read(&frame, &deleted).unwrap();
+    assert_ne!(
+        variant_icon(&deleted, &hour, &definition, "infantry_equipment_1"),
+        chosen
+    );
+    assert!(!pictures_hold(Some(&deleted), &saved));
+    // Sprites declared otherwise, or no icon content, refuse it too.
+    assert!(!pictures_hold(
+        Some(&content(&[TEXTURE], &["GFX_other"])),
+        &saved
+    ));
+    assert!(!pictures_hold(None, &saved));
+    let unpictured = SavedScan {
+        pictured: false,
+        visual: None,
+        probes: Default::default(),
+        ..saved
+    };
+    assert!(pictures_hold(None, &unpictured));
+    assert!(!pictures_hold(Some(&with), &unpictured));
+}
+
+/// Saving a scan looks up each modifier run's country row once, by the
+/// allocation it shares: its work is one step per run however many rows the
+/// runs share, each row is encoded once, and a cancelled save stops.
+#[test]
+fn saving_a_scan_does_one_lookup_per_modifier_run() {
+    use crate::products::production_lines::{
+        RawRun, SavedLines, ScannedLines, breakdown::RawModifierRun,
+    };
+    use replay::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow};
+    let (lines, days) = (50_u64, 200_i32);
+    // The country's row changes at every read; every line shares it.
+    let rows: Vec<Arc<CountryProductionModifiersRow>> = (0..days)
+        .map(|day| {
+            Arc::new(CountryProductionModifiersRow {
+                country: 9001,
+                base_cap: day,
+                ..Default::default()
+            })
+        })
+        .collect();
+    let mut scanned = ScannedLines::default();
+    for handle in 0..lines {
+        let runs = rows
+            .iter()
+            .zip(0..)
+            .map(|(row, day)| RawModifierRun {
+                first_hour: day * 24,
+                last_hour: day * 24 + 23,
+                country: Arc::clone(row),
+                line: ProductionLineModifiersRow {
+                    line: handle,
+                    country: 9001,
+                    ..Default::default()
+                },
+                run: RawRun::default(),
+                organisation: None,
+                localisation: None,
+                recorded_language: Arc::from("english"),
+            })
+            .collect();
+        scanned.modifiers.insert(format!("{handle}#1"), runs);
+    }
+    super::saved::SAVE_WORK.with(|work| work.set((0, 0)));
+    let saved = SavedLines::save(&scanned, &AtomicBool::new(false)).unwrap();
+    let (lookups, encoded) = super::saved::SAVE_WORK.with(std::cell::Cell::get);
+    assert_eq!(
+        lookups,
+        lines as usize * days as usize,
+        "one lookup per run"
+    );
+    assert_eq!(
+        (encoded, saved.countries.len()),
+        (days as usize, days as usize)
+    );
+    let error = SavedLines::save(&scanned, &AtomicBool::new(true)).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
 }

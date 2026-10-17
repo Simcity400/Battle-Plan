@@ -72,7 +72,7 @@ pub struct LandBattlesRanking;
 /// One battle's whole course, for a drill.
 pub struct LandBattleCourses;
 /// Every table the census reads.
-const CENSUS_TABLES: [TableId; 13] = [
+pub const CENSUS_TABLES: [TableId; 13] = [
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,

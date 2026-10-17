@@ -136,28 +136,39 @@ pub trait Family {
     ) -> io::Result<Self::Reply>;
     #[allow(clippy::type_complexity)]
     fn projection(reply: Self::Reply) -> (Vec<Self::Part>, BTreeMap<String, Vec<Option<i64>>>);
-    /// What a block fold keeps of the scan right after the block's first
-    /// hour: what decides its later hours, and its counters then.
+    /// What a block fold keeps of the worker's scan right after the hour it
+    /// takes its tail at: what decides its later hours, and its counters
+    /// then.
     type Tail: Send + Held;
     fn tail(scan: &Self::Scan, hour: i32) -> Self::Tail;
+    /// Whether a worker's scan, started afresh at a block's first hour and
+    /// stepped through the hour it last stepped, holds nothing a scan
+    /// carried over the branch before would hold from earlier hours: then
+    /// the carried scan, where their decisions agree, decides the later
+    /// hours as it does. False while it lacks such state (air's variant
+    /// names before the block reads or forgets them). The worker takes its
+    /// tail at the first hour this holds.
+    fn settled(_scan: &Self::Scan) -> bool {
+        true
+    }
     /// How the extract's scan's own numbers for what it names (navy's ship
     /// classes, numbered in the order a census first sees them) name the
     /// carried scan's, which numbered them over the branch before.
     type Numbering: Send + Sync;
     /// The numbering of `block`'s names in `carried`'s, `carried` having
-    /// observed the block's first hour: a name it knows keeps its number,
-    /// and the others take the next numbers in the order `block` first saw
-    /// them, the order the carried scan would number them in.
+    /// observed the block through the tail's hour: a name it knows keeps its
+    /// number, and the others take the next numbers in the order `block`
+    /// first saw them, the order the carried scan would number them in.
     fn numbering(carried: &Self::Scan, block: &Self::Scan) -> Self::Numbering;
     /// A run of the extract's renumbered as the carried scan numbers it.
     fn renumber(numbering: &Self::Numbering, raw: &mut Self::Raw);
     /// A projection base of the extract's at an hour, renumbered: the
     /// carried scan's names with what it would have added by then.
     fn renumber_base(numbering: &Self::Numbering, base: &mut Self::Scanned);
-    /// Whether `carried`, having observed the block's first hour, decides
-    /// every later hour of the block as the extract's scan did from `tail`,
-    /// which ended the block as `block`, with `block`'s names numbered as
-    /// `numbering` gives them.
+    /// Whether `carried`, having observed the block through the tail's hour,
+    /// decides every later hour of the block as the extract's scan did from
+    /// `tail`, which ended the block as `block`, with `block`'s names
+    /// numbered as `numbering` gives them.
     fn continues(
         carried: &Self::Scan,
         tail: &Self::Tail,

@@ -14,4 +14,8 @@ keeps its dashboard path and names what it uses at the crates that own it
 `dashboard::products::` path, registers it, and prepares and queries it in its
 pipeline.
 
+Ace preparation restores active roster baselines from the shared resume page
+when it contains the ace table at the saved hour. Otherwise it seeks that hour's
+campaign and ace tables from the recording before continuing.
+
 `cargo test -p dashboard-air-aces` builds and runs only this crate's tests.

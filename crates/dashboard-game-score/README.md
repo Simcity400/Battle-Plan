@@ -8,6 +8,8 @@ module keeps its dashboard path, `products::game_score`, and the code names what
 at the crates that own it ([dashboard-base](../dashboard-base/README.md),
 [dashboard-text](../dashboard-text/README.md) and [dashboard-core](../dashboard-core/README.md)).
 It depends on [dashboard-wars](../dashboard-wars/README.md) for the casualty rows it shares with war casualties.
+`SCORE_TABLES` declares the observer's inputs, including its naming operands,
+for the dashboard's shared walk and direct reads.
 The [dashboard](../dashboard/README.md) re-exports it at the old
 `dashboard::` paths, registers it, and prepares and queries it in its pipeline.
 

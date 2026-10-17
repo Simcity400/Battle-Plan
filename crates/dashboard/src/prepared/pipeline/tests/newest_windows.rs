@@ -17,6 +17,7 @@ use replay::rows::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
@@ -559,6 +560,68 @@ fn each_familys_newest_windows_publish_on_their_own() {
         assert!(
             land_battles::newest::published(&store, &key, &replay, branch).unwrap(),
             "branch {branch}: the land window is published in its own commit"
+        );
+    }
+}
+
+/// What each branch's newest window did is counted in the family's timing
+/// rows and reported in a status row of the family's own while preparation
+/// runs: every branch proven, from the block after its gap.
+#[test]
+fn newest_windows_report_their_look_backs_and_outcomes() {
+    let replay = gapped(battles_frame);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("newest-reported");
+    let mut rows = BTreeMap::new();
+    let (_, timings) = run_measured_through(
+        &source,
+        None,
+        &AtomicBool::new(false),
+        true,
+        Duration::ZERO,
+        Some(u64::MAX),
+        |_| Ok(()),
+        |accepted| {
+            for section in &accepted.sections {
+                if section.id.ends_with("-newest") {
+                    rows.insert(section.id.clone(), section.clone());
+                }
+            }
+        },
+    )
+    .unwrap();
+    for id in ["land-battles-newest", "naval-battles-newest"] {
+        let row = rows
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} reported: {rows:?}"));
+        assert_eq!(row.state, State::Ready, "{id}");
+        assert_eq!(
+            (row.done.as_str(), row.total.as_deref()),
+            ("2", Some("2")),
+            "{id}"
+        );
+        let text = row.error.as_deref().unwrap_or_default();
+        for line in [
+            "Branch 1: proven from block 1 of 4",
+            "Branch 2: proven from block 1 of 2",
+        ] {
+            assert!(text.contains(line), "{id}: {text}");
+        }
+    }
+    let families = timings.families.expect("measured timings");
+    for (row, calls) in [("newest.land.proven", 2), ("newest.naval.proven", 2)] {
+        assert_eq!(families.get(row).map(|row| row.calls), Some(calls), "{row}");
+    }
+    assert_eq!(
+        families.get("newest.naval.earlier").map(|row| row.calls),
+        Some(3 + 1),
+        "each branch's blocks before its last, read by their changes"
+    );
+    for row in ["newest.land.look-back", "newest.naval.look-back"] {
+        assert!(
+            families.get(row).is_some_and(|row| row.calls > 0),
+            "{row}: {:?}",
+            families.keys().collect::<Vec<_>>()
         );
     }
 }

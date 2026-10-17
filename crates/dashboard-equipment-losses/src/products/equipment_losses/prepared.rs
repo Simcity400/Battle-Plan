@@ -14,8 +14,8 @@ type Identity = (u32, u32);
 struct CurrentJoins {
     census: Option<Vec<(u32, u32)>>,
     by_slot: BTreeMap<u32, Vec<Identity>>,
-    rows: [BTreeMap<u32, Vec<usize>>; 4],
-    unresolved: [BTreeSet<u32>; 4],
+    rows: [BTreeMap<u32, Vec<usize>>; 3],
+    unresolved: [BTreeSet<u32>; 3],
     pending: [bool; 3],
     lend_owners: BTreeSet<Identity>,
     reads: Option<[bool; 4]>,
@@ -26,6 +26,40 @@ struct CurrentJoins {
     variants_pending: bool,
     /// Whether the last observed hour lacked complete Countries or CountryLinks.
     identities_incomplete: bool,
+    drain_len: Option<usize>,
+    #[cfg(test)]
+    read_serializations: usize,
+}
+
+static COUNTRY_SLOT_FIELD: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    dashboard_base::prepared::frame_changes::field_mask(TableId::Countries, &["canonical_slot"])
+});
+static DESTRUCTION_AMOUNT_FIELD: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    dashboard_base::prepared::frame_changes::field_mask(
+        TableId::EquipmentDestruction,
+        &["amount_raw"],
+    )
+});
+
+fn combat_log(frame: &DecodedFrame) -> &[replay::rows::CombatLogEquipmentRow] {
+    match &*frame.tables[TableId::CombatLogEquipment.index()] {
+        replay::frame::TableView::Complete(rows)
+        | replay::frame::TableView::Truncated { rows, .. } => rows
+            .rows::<tables::CombatLogEquipment>()
+            .unwrap_or_default(),
+        replay::frame::TableView::Unavailable { .. } => &[],
+    }
+}
+
+/// Country is the first component of the log's recorded key. Selecting its
+/// range keeps the recorded order, including when another owner's rows leave.
+fn combat_owner(
+    rows: &[replay::rows::CombatLogEquipmentRow],
+    raw: u32,
+) -> &[replay::rows::CombatLogEquipmentRow] {
+    let first = rows.partition_point(|row| row.country < raw);
+    let last = rows.partition_point(|row| row.country <= raw);
+    &rows[first..last]
 }
 
 fn join_rows(
@@ -59,6 +93,8 @@ struct Country {
     #[serde(with = "dashboard_core::map_pairs")]
     leaves: BTreeMap<LeafKey, u64>,
     last_read: Option<String>,
+    #[serde(skip)]
+    read_key: Option<(Option<Coverage>, Option<String>, u8)>,
 }
 
 /// The existing naming and uncertainty inputs contain changes, not hourly values.
@@ -210,6 +246,22 @@ impl Prepared {
         let different = projection_changed
             && self.joins.census.as_ref().is_none_or(|before| {
                 census.is_none_or(|rows| {
+                    if before.len() == rows.len()
+                        && changes
+                            .rows(TableId::Countries)
+                            .is_some_and(|(changed, deleted)| {
+                                deleted.is_empty()
+                                    && changed
+                                        .iter()
+                                        .all(|row| row.mask & *COUNTRY_SLOT_FIELD == 0)
+                            })
+                    {
+                        return false;
+                    }
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += rows.len();
+                    }
                     before.len() != rows.len()
                         || before
                             .iter()
@@ -250,6 +302,7 @@ impl Prepared {
                                     totals: BTreeMap::new(),
                                     leaves: BTreeMap::new(),
                                     last_read: None,
+                                    read_key: None,
                                 },
                             );
                         }
@@ -379,15 +432,12 @@ impl Prepared {
             TableId::SunkShips,
             TableId::SunkConvoys,
             TableId::LendLeaseEquipment,
-            TableId::CombatLogEquipment,
         ];
         for (record, table) in source_tables.into_iter().enumerate() {
             if !mapping_changed && !changes.rows_changed[table.index()] {
                 continue;
             }
-            if record < 3 {
-                self.joins.pending[record] = true;
-            }
+            self.joins.pending[record] = true;
             let (_visits, by_slot, unresolved) = {
                 let mut by_slot = BTreeMap::new();
                 let mut unresolved = BTreeSet::new();
@@ -423,7 +473,7 @@ impl Prepared {
                         &mut by_slot,
                         &mut unresolved,
                     ),
-                    2 => join_rows(
+                    _ => join_rows(
                         frame
                             .complete::<tables::LendLeaseEquipment>()
                             .ok()
@@ -437,30 +487,6 @@ impl Prepared {
                         &mut by_slot,
                         &mut unresolved,
                     ),
-                    _ => {
-                        let rows = match &*frame.tables[TableId::CombatLogEquipment.index()] {
-                            replay::frame::TableView::Complete(rows)
-                            | replay::frame::TableView::Truncated { rows, .. } => {
-                                rows.rows::<tables::CombatLogEquipment>()
-                            }
-                            replay::frame::TableView::Unavailable { .. } => None,
-                        };
-                        let mut visits = 0;
-                        for (index, row) in rows.into_iter().flatten().enumerate() {
-                            visits += 1;
-                            by_slot
-                                .entry(row.country)
-                                .or_insert_with(Vec::new)
-                                .push(index);
-                            if links
-                                .and_then(|links| link_slot(links, row.country))
-                                .is_none()
-                            {
-                                unresolved.insert(row.country);
-                            }
-                        }
-                        visits
-                    }
                 };
                 (visits, by_slot, unresolved)
             };
@@ -472,17 +498,39 @@ impl Prepared {
             self.joins.unresolved[record] = unresolved;
         }
         if mapping_changed || changes.rows_changed[TableId::EquipmentDestruction.index()] {
-            self.joins.drain = if self.absent_state.destruction_withheld.is_none()
-                && !(absent == TaggedCountry::Absent && self.current.is_empty())
-            {
-                destruction_inputs(frame, links, replay.format)?
-            } else {
-                DestructionInputs::default()
-            };
-            #[cfg(test)]
-            {
-                self.work.row_visits += self.joins.drain.row_visits;
+            // Amount-only changes keep the same rows at the same indices.
+            // Every availability operand and owner join remains the previous
+            // drain's; ingestion still consumes this hour's signed amounts.
+            let drain_len = frame
+                .complete::<tables::EquipmentDestruction>()
+                .ok()
+                .map(|rows| rows.len());
+            let kept = !mapping_changed
+                && *DESTRUCTION_AMOUNT_FIELD != u64::MAX
+                && drain_len.is_some()
+                && drain_len == self.joins.drain_len
+                && changes
+                    .rows(TableId::EquipmentDestruction)
+                    .is_some_and(|(changed, deleted)| {
+                        deleted.is_empty()
+                            && changed
+                                .iter()
+                                .all(|row| row.mask & !*DESTRUCTION_AMOUNT_FIELD == 0)
+                    });
+            if !kept {
+                self.joins.drain = if self.absent_state.destruction_withheld.is_none()
+                    && !(absent == TaggedCountry::Absent && self.current.is_empty())
+                {
+                    destruction_inputs(frame, links, replay.format)?
+                } else {
+                    DestructionInputs::default()
+                };
+                #[cfg(test)]
+                {
+                    self.work.row_visits += self.joins.drain.row_visits;
+                }
             }
+            self.joins.drain_len = drain_len;
             let status = match &*frame.tables[TableId::EquipmentDestruction.index()] {
                 replay::frame::TableView::Complete(_) => "complete".to_owned(),
                 replay::frame::TableView::Truncated { .. } => DESTRUCTION_TRUNCATED.to_owned(),
@@ -558,6 +606,7 @@ impl Prepared {
             }
             self.joins.pending[record] = false;
         }
+        let combat_log = combat_log(frame);
         let mut combat_unresolved = BTreeSet::new();
         let mut combat_owners: BTreeMap<Identity, BTreeSet<u32>> = BTreeMap::new();
         if (mapping_changed
@@ -586,7 +635,7 @@ impl Prepared {
                                 .insert(read.owner);
                         }
                     }
-                } else if self.joins.unresolved[3].contains(&read.owner) {
+                } else if !combat_owner(combat_log, read.owner).is_empty() {
                     combat_unresolved.insert(read.owner);
                 }
             }
@@ -736,52 +785,60 @@ impl Prepared {
                     }
                 }
                 if records[3] {
-                    let rows = match &*frame.tables[TableId::CombatLogEquipment.index()] {
-                        replay::frame::TableView::Complete(rows)
-                        | replay::frame::TableView::Truncated { rows, .. } => {
-                            rows.rows::<tables::CombatLogEquipment>()
+                    for raw in combat_owners.get(&identity).into_iter().flatten() {
+                        let rows = combat_owner(combat_log, *raw);
+                        #[cfg(test)]
+                        {
+                            self.work.row_visits += rows.len();
                         }
-                        replay::frame::TableView::Unavailable { .. } => None,
-                    };
-                    if let Some(rows) = rows {
-                        for raw in combat_owners.get(&identity).into_iter().flatten() {
-                            let indices =
-                                self.joins.rows[3].get(raw).map_or(&[][..], Vec::as_slice);
-                            #[cfg(test)]
-                            {
-                                self.work.row_visits += indices.len();
-                            }
-                            combat_rows(
-                                &mut country.scanned,
-                                &mut country.state,
-                                frame.hour,
-                                indices.iter().map(|&index| &rows[index]),
-                            );
-                        }
+                        combat_rows(
+                            &mut country.scanned,
+                            &mut country.state,
+                            frame.hour,
+                            rows.iter(),
+                        );
                     }
                     country.scanned.combat_unresolved.extend(&combat_unresolved);
                 }
             }
-            let read = serde_json::to_string(&(
-                country.scanned.coverage.last().map(|span| span.coverage),
-                country
-                    .scanned
-                    .destruction_coverage
-                    .last()
-                    .and_then(|span| span.reason.as_deref()),
-                country
-                    .scanned
-                    .unread
-                    .iter()
-                    .filter(|(_, spans)| {
-                        spans
-                            .last()
-                            .is_some_and(|span| span.last_hour == frame.hour)
-                    })
-                    .map(|(record, _)| record)
-                    .collect::<Vec<_>>(),
-            ))?;
-            let changed_read = country.last_read.as_ref() != Some(&read);
+            let coverage = country.scanned.coverage.last().map(|span| span.coverage);
+            let reason = country
+                .scanned
+                .destruction_coverage
+                .last()
+                .and_then(|span| span.reason.as_deref());
+            let unread = country
+                .scanned
+                .unread
+                .iter()
+                .filter(|(_, spans)| {
+                    spans
+                        .last()
+                        .is_some_and(|span| span.last_hour == frame.hour)
+                })
+                .fold(0_u8, |mask, (record, _)| mask | (1 << (*record as u8)));
+            let mut changed_read = false;
+            if country.read_key.as_ref().is_none_or(|held| {
+                held.0 != coverage || held.1.as_deref() != reason || held.2 != unread
+            }) {
+                #[cfg(test)]
+                {
+                    self.joins.read_serializations += 1;
+                }
+                let read = serde_json::to_string(&(
+                    coverage,
+                    reason,
+                    country
+                        .scanned
+                        .unread
+                        .keys()
+                        .filter(|record| unread & (1 << (**record as u8)) != 0)
+                        .collect::<Vec<_>>(),
+                ))?;
+                changed_read = country.last_read.as_ref() != Some(&read);
+                country.last_read = Some(read);
+                country.read_key = Some((coverage, reason.map(str::to_owned), unread));
+            }
             let version = self
                 .values
                 .state(country.actor)
@@ -796,7 +853,6 @@ impl Prepared {
                 self.values
                     .observe(country.actor, frame.hour, Some(version), false);
             }
-            country.last_read = Some(read);
             let mut changed = BTreeSet::new();
             for (leaf, events) in std::mem::take(&mut country.scanned.events) {
                 if let Some(variant) = leaf.1 {

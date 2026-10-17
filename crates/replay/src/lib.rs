@@ -4,6 +4,7 @@ pub mod air_region_derive;
 pub mod attack_derive;
 pub mod branches;
 pub mod container;
+pub mod cpu;
 pub mod directed_war_derive;
 pub mod eta_derive;
 pub mod fixed_layout;

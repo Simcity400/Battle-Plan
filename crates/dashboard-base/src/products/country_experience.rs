@@ -166,7 +166,9 @@ struct Seen {
     native_instance: Option<u32>,
     open: bool,
     recent: VecDeque<(i32, [i64; 3])>,
-    gains: VecDeque<(i32, u32, [i64; 3])>,
+    /// Complete gain runs, dated by their first hour. The last run holds
+    /// through the scan's frontier until an observed change closes it.
+    gains: VecDeque<(i32, [i64; 3])>,
     held: Option<RawRead>,
 }
 
@@ -270,6 +272,12 @@ pub struct Scan {
     pub removed: Vec<(String, (u32, u32))>,
 }
 
+/// The Countries fields a country's keys read besides its id, the row key
+/// ([`crate::metadata::CountryKeys`]).
+static COUNTRY_KEY_FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    crate::prepared::frame_changes::field_mask(TableId::Countries, &["canonical_slot", "tag"])
+});
+
 #[derive(Default)]
 struct Native {
     countries: Option<super::territory::CountryReads>,
@@ -281,16 +289,73 @@ struct Native {
     removed: Vec<(String, (u32, u32))>,
     roster_changed: bool,
     banked_rows: Option<Vec<replay::rows::CountryExperienceRow>>,
-    gain_rows: Option<Vec<replay::rows::CountryExperienceGainRow>>,
+    /// The last complete gains read, held as the frame's own view.
+    gain_rows: Option<replay::frame::SharedView>,
+    /// The raw country ids `links` resolves to each slot.
+    link_countries: BTreeMap<u32, Vec<u32>>,
     banked: Option<BTreeMap<u32, Option<replay::rows::CountryExperienceRow>>>,
     gains: Option<BTreeMap<u32, Option<replay::rows::CountryExperienceGainRow>>>,
-    clock: BTreeSet<u32>,
     #[cfg(any(test, feature = "test-support"))]
     pub work: crate::prepared::observer_tests::Work,
     #[cfg(any(test, feature = "test-support"))]
-    clock_ticks: usize,
+    gain_updates: usize,
 }
 impl Native {
+    /// This hour's gains (`rows`) joined from the hour's recorded changes to
+    /// them, with the links and the hour before's gains held: only the slots
+    /// of the countries the changed and deleted rows name are joined again,
+    /// each from the rows of every country the links resolve to it, as the
+    /// whole join does (one row a slot, none for several). The slots whose
+    /// gains differ, which comparing the whole joins finds.
+    fn apply_gains(
+        &mut self,
+        rows: &[replay::rows::CountryExperienceGainRow],
+        (changed, deleted): (&[replay::rows::DeltaRow], &[u128]),
+    ) -> BTreeSet<u32> {
+        let slots: BTreeSet<u32> = changed
+            .iter()
+            .map(|row| row.key)
+            .chain(deleted.iter().copied())
+            .filter_map(|key| self.links.get(&((key >> 32) as u32)).copied())
+            .collect();
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.work.row_visits += changed.len();
+        }
+        let held = self.gains.as_mut().expect("held gains");
+        let mut dirty = BTreeSet::new();
+        for slot in slots {
+            let mut found = Vec::new();
+            for &raw in self.link_countries.get(&slot).into_iter().flatten() {
+                let first = rows.partition_point(|row| row.country < raw);
+                let last = rows.partition_point(|row| row.country <= raw);
+                found.extend(&rows[first..last]);
+            }
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.work.row_visits += found.len();
+            }
+            let next = match found.as_slice() {
+                [] => None,
+                [row] => Some(Some((*row).clone())),
+                _ => Some(None),
+            };
+            if held.get(&slot) == next.as_ref() {
+                continue;
+            }
+            dirty.insert(slot);
+            match next {
+                Some(row) => {
+                    held.insert(slot, row);
+                }
+                None => {
+                    held.remove(&slot);
+                }
+            }
+        }
+        dirty
+    }
+
     fn refresh(
         &mut self,
         frame: &replay::frame::DecodedFrame,
@@ -310,18 +375,35 @@ impl Native {
             }
             self.links =
                 std::sync::Arc::new(links.map(crate::metadata::link_slots).unwrap_or_default());
+            self.link_countries.clear();
+            for (&raw, &slot) in self.links.iter() {
+                self.link_countries.entry(slot).or_default().push(raw);
+            }
         }
         let mut countries_changed = false;
         if changed(TableId::Countries) {
             let countries = frame.complete::<tables::Countries>().ok();
+            // No country deleted or added and no key field changed: the keys
+            // are the hour before's without comparing every country.
+            let kept = self.keys.is_some()
+                && countries
+                    .zip(self.country_rows.as_ref())
+                    .is_some_and(|(rows, held)| rows.len() == held.len())
+                && changes
+                    .and_then(|changes| changes.rows(TableId::Countries))
+                    .is_some_and(|(changed, deleted)| {
+                        deleted.is_empty()
+                            && changed.iter().all(|row| row.mask & *COUNTRY_KEY_FIELDS == 0)
+                    });
             #[cfg(any(test, feature = "test-support"))]
-            {
+            if !kept {
                 self.work.row_visits += countries.map_or(0, |rows| rows.len());
             }
-            countries_changed = match (&self.keys, countries) {
-                (Some(old), Some(rows)) => !old.same(rows),
-                (old, rows) => old.is_some() != rows.is_some(),
-            };
+            countries_changed = !kept
+                && match (&self.keys, countries) {
+                    (Some(old), Some(rows)) => !old.same(rows),
+                    (old, rows) => old.is_some() != rows.is_some(),
+                };
             if countries_changed {
                 self.keys = countries.map(crate::metadata::CountryKeys::read);
                 self.country_rows = self.keys.as_ref().map(|keys| {
@@ -385,13 +467,30 @@ impl Native {
             self.banked_rows = rows.map(|rows| rows.to_vec());
         }
         let gains_changed = changed(TableId::CountryExperienceGains);
+        let mut gains_applied = false;
         if gains_changed {
             let rows = frame.complete::<tables::CountryExperienceGains>().ok();
-            #[cfg(any(test, feature = "test-support"))]
+            // With the links unchanged and the hour before's gains held, only
+            // the slots of the countries whose rows the hour's recorded
+            // changes name are joined again.
+            if !links_changed
+                && let (Some(rows), Some(changed)) = (
+                    rows,
+                    changes.and_then(|changes| changes.rows(TableId::CountryExperienceGains)),
+                )
+                && self.gains.is_some()
             {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                dirty.extend(self.apply_gains(rows, changed));
+                gains_applied = true;
+            } else {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
             }
-            self.gain_rows = rows.map(|rows| rows.to_vec());
+            self.gain_rows = rows
+                .is_some()
+                .then(|| frame.tables[TableId::CountryExperienceGains.index()].clone());
         }
         if banked_changed || links_changed {
             let next = self.banked_rows.as_ref().map(|rows| {
@@ -414,8 +513,14 @@ impl Native {
             );
             self.banked = next;
         }
-        if gains_changed || links_changed {
-            let next = self.gain_rows.as_ref().map(|rows| {
+        if !gains_applied && (gains_changed || links_changed) {
+            let gain_rows = self.gain_rows.as_deref().and_then(|view| match view {
+                replay::frame::TableView::Complete(rows) => {
+                    rows.rows::<tables::CountryExperienceGains>()
+                }
+                _ => None,
+            });
+            let next = gain_rows.map(|rows| {
                 country_history::unique_by_slots(rows, &self.links, |row| row.country)
                     .rows
                     .into_iter()
@@ -433,13 +538,6 @@ impl Native {
                             != next.as_ref().and_then(|rows| rows.get(slot))
                     }),
             );
-            self.clock = next
-                .iter()
-                .flat_map(|rows| rows.iter())
-                .filter_map(|(slot, row)| {
-                    row.as_ref().filter(|row| row.complete == 1).map(|_| *slot)
-                })
-                .collect();
             self.gains = next;
         }
         dirty
@@ -451,9 +549,10 @@ impl Scan {
         self.native.work
     }
 
+    /// Gain runs visited at changed inputs or banked reads.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn clock_ticks(&self) -> usize {
-        self.native.clock_ticks
+    pub fn gain_updates(&self) -> usize {
+        self.native.gain_updates
     }
 
     pub fn step(
@@ -488,7 +587,6 @@ impl Scan {
         } else {
             dirty
                 .iter()
-                .chain(&self.native.clock)
                 .flat_map(|slot| self.native.slots.get(slot).into_iter().flatten().copied())
                 .collect()
         };
@@ -554,23 +652,19 @@ impl Scan {
             if let Some(gained) = gained {
                 #[cfg(any(test, feature = "test-support"))]
                 {
-                    native.clock_ticks += 1;
+                    native.gain_updates += 1;
                 }
-                if state.gains.back().is_some_and(|(previous, instance, _)| {
-                    previous.checked_add(1) != Some(hour) || *instance != gained.instance
-                }) {
-                    state.gains.clear();
+                let values = [gained.army_raw, gained.navy_raw, gained.air_raw];
+                if state.gains.back().is_none_or(|(_, held)| *held != values) {
+                    state.gains.push_back((hour, values));
                 }
-                while state.gains.front().is_some_and(|(at, _, _)| {
-                    i64::from(hour) - i64::from(*at) >= i64::from(DAY_HOURS)
-                }) {
+                let first = hour.saturating_sub(DAY_HOURS - 1);
+                while state.gains.get(1).is_some_and(|(at, _)| *at <= first) {
                     state.gains.pop_front();
                 }
-                state.gains.push_back((
-                    hour,
-                    gained.instance,
-                    [gained.army_raw, gained.navy_raw, gained.air_raw],
-                ));
+                if let Some((at, _)) = state.gains.front_mut() {
+                    *at = (*at).max(first);
+                }
             } else {
                 state.gains.clear();
             }
@@ -629,17 +723,24 @@ impl Scan {
                 .checked_sub(DAY_HOURS)
                 .and_then(|before| state.recent.iter().find(|(at, _)| *at == before))
                 .map(|(_, previous)| *previous);
-            let gain = (state.gains.len() == DAY_HOURS as usize).then(|| {
-                state
-                    .gains
-                    .iter()
-                    .fold([0_i128; 3], |mut sum, (_, _, values)| {
+            let gain = state
+                .gains
+                .front()
+                .filter(|(first, _)| {
+                    i64::from(hour) - i64::from(*first) + 1 == i64::from(DAY_HOURS)
+                })
+                .map(|_| {
+                    let mut sum = [0_i128; 3];
+                    let mut end = i64::from(hour) + 1;
+                    for &(first, values) in state.gains.iter().rev() {
+                        let hours = end - i64::from(first);
                         for index in 0..3 {
-                            sum[index] += i128::from(values[index]);
+                            sum[index] += i128::from(values[index]) * i128::from(hours);
                         }
-                        sum
-                    })
-            });
+                        end = i64::from(first);
+                    }
+                    sum
+                });
             let held = RawRead {
                 first_hour: hour,
                 last_hour: hour,
@@ -675,154 +776,17 @@ impl Scan {
 }
 
 impl Scan {
-    /// Hours `first..=last` that follow the last stepped hour, at which none
-    /// of the scan's tables changed (country keys, links, banked experience
-    /// and hourly gains, whole rows) and banked experience was not read: what
-    /// [`Self::step`] does at each, with no output. Every country whose last
-    /// gain interval was complete gains it again each hour, and one that no
-    /// longer holds banked experience or an open read leaves the output, at
-    /// `first` ([`Self::removed`]). Each later hour repeats that step with
-    /// nothing changing, so the span ends in constant time per gaining
-    /// country. False when `first` does not follow the last stepped hour.
+    /// Hours `first..=last` following the last stepped hour, with no changed
+    /// inputs or banked read. Open gain runs already hold through these hours;
+    /// the next changed input or read visits their countries.
     pub fn advance_quiet(&mut self, first: i32, last: i32) -> bool {
         if self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) || last < first {
             return false;
         }
-        // The step at `first`: nothing changed, so the native join keeps
-        // every operand, marks nothing dirty and removes no holder. The scan
-        // ends the span at `last`.
         self.hour = Some(last);
         self.removed.clear();
         self.native.removed.clear();
         self.native.roster_changed = false;
-        let gaining: BTreeSet<(u32, u32)> = self
-            .native
-            .clock
-            .iter()
-            .flat_map(|slot| self.native.slots.get(slot).into_iter().flatten().copied())
-            .collect();
-        let Self {
-            seen,
-            native,
-            active,
-            present,
-            removed,
-            ..
-        } = self;
-        for &identity in &gaining {
-            let tag = &native.identities[&identity];
-            let output = (tag.clone(), identity);
-            let state = seen.entry(identity).or_default();
-            if present.contains(&identity) {
-                state.track.advance(first - 1);
-            }
-            let mut continues = state.track.step(Some(identity), first);
-            if !continues {
-                state.native_instance = None;
-            }
-            let observed = native
-                .gains
-                .as_ref()
-                .and_then(|rows| rows.get(&identity.0))
-                .and_then(Option::as_ref);
-            if let Some(row) = observed {
-                continues &= state
-                    .native_instance
-                    .is_none_or(|instance| instance == row.instance);
-                state.native_instance = Some(row.instance);
-            }
-            if !continues {
-                state.gains.clear();
-            }
-            match observed.filter(|row| row.complete == 1) {
-                Some(gained) => {
-                    #[cfg(test)]
-                    {
-                        native.clock_ticks += 1;
-                    }
-                    if state.gains.back().is_some_and(|(previous, instance, _)| {
-                        previous.checked_add(1) != Some(first) || *instance != gained.instance
-                    }) {
-                        state.gains.clear();
-                    }
-                    while state.gains.front().is_some_and(|(at, _, _)| {
-                        i64::from(first) - i64::from(*at) >= i64::from(DAY_HOURS)
-                    }) {
-                        state.gains.pop_front();
-                    }
-                    state.gains.push_back((
-                        first,
-                        gained.instance,
-                        [gained.army_raw, gained.navy_raw, gained.air_raw],
-                    ));
-                }
-                None => state.gains.clear(),
-            }
-            state.open &= continues;
-            if !state.open {
-                state.recent.clear();
-            }
-            let banked = native
-                .banked
-                .as_ref()
-                .and_then(|rows| rows.get(&identity.0))
-                .and_then(Option::as_ref);
-            if banked.is_none() {
-                state.open = false;
-                if active.remove(&output) {
-                    removed.push(output);
-                }
-                continue;
-            }
-            // No read: a held read carries without publishing, as nothing it
-            // reads changed.
-            if state.open && state.held.is_some() {
-                active.insert(output);
-            } else if active.remove(&output) {
-                removed.push(output);
-            }
-        }
-        if last == first {
-            return true;
-        }
-        // Every later hour: each gaining country continues, gains its last
-        // complete interval again and keeps its output; only the last day of
-        // gains is kept.
-        let from = first
-            .saturating_add(1)
-            .max(last.saturating_sub(DAY_HOURS - 1));
-        for &identity in &gaining {
-            let Some(gained) = native
-                .gains
-                .as_ref()
-                .and_then(|rows| rows.get(&identity.0))
-                .and_then(Option::as_ref)
-                .filter(|row| row.complete == 1)
-            else {
-                continue;
-            };
-            let state = seen.entry(identity).or_default();
-            state.track.advance(last - 1);
-            state.track.step(Some(identity), last);
-            #[cfg(test)]
-            {
-                native.clock_ticks += usize::try_from(last - first).unwrap_or(usize::MAX);
-            }
-            for hour in from..=last {
-                state.gains.push_back((
-                    hour,
-                    gained.instance,
-                    [gained.army_raw, gained.navy_raw, gained.air_raw],
-                ));
-            }
-            while state
-                .gains
-                .front()
-                .is_some_and(|(at, _, _)| i64::from(last) - i64::from(*at) >= i64::from(DAY_HOURS))
-            {
-                state.gains.pop_front();
-            }
-        }
         true
     }
 }

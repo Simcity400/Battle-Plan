@@ -14,7 +14,7 @@ use std::{
 use replay::{
     BranchId, Hour,
     codec::Decoder,
-    frame::{DecodedFrame, Frame, TableView},
+    frame::{DecodedFrame, Frame, FrameDecoder, TableView},
     rows::TableId,
 };
 use store::{SourceKey, Store, Writer};
@@ -338,6 +338,66 @@ impl Builder {
         Ok(())
     }
 
+    /// Accept an hour whose block the caller already admitted, reading map
+    /// rows only when this hour writes a checkpoint. A checkpoint on the
+    /// block's first frame reads its keyframe sections alone; any other
+    /// reads and reconstructs the block's prefix through that exact hour.
+    /// Progress between checkpoints needs only the accepted hour and cursor.
+    pub fn accept_sparse(
+        &mut self,
+        writer: &mut Writer,
+        replay: &replay::container::Replay,
+        source: &Frame,
+        frame: &DecodedFrame,
+        position: Position,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        if source.branch != frame.branch || source.hour != frame.hour {
+            return Err(invalid("map update differs from its accepted decoded hour"));
+        }
+        let checkpoint = self
+            .progress
+            .branches
+            .get(&frame.branch)
+            .is_none_or(|branch| {
+                branch.checkpoints == 0 || branch.since_checkpoint >= self.stride.get() - 1
+            });
+        if !checkpoint {
+            return self.accept(writer, source, frame, position);
+        }
+        check()?;
+        let index = replay
+            .index
+            .get(position.block)
+            .filter(|index| {
+                index.branch == frame.branch
+                    && index.first_hour <= frame.hour
+                    && frame.hour <= index.last_hour
+            })
+            .ok_or_else(|| invalid("map checkpoint cursor differs from its accepted hour"))?;
+        let frames = if frame.hour == index.first_hour {
+            vec![replay.read_keyframe_selected(index, &self.selected)?]
+        } else {
+            replay.read_block_selected_through(index, Some(&self.selected), frame.hour, None)?
+        };
+        if frames.len() != position.next_frame {
+            return Err(invalid(
+                "map checkpoint cursor differs from its accepted hour",
+            ));
+        }
+        let mut decoder = FrameDecoder::for_tables(&self.selected);
+        for update in frames {
+            check()?;
+            let decoded = decoder.advance(&update)?;
+            crate::metadata::validate_campaign(decoded, replay)?;
+        }
+        let decoded = decoder
+            .current()
+            .filter(|decoded| decoded.branch == frame.branch && decoded.hour == frame.hour)
+            .ok_or_else(|| invalid("map checkpoint frame is missing"))?;
+        self.accept(writer, source, decoded, position)
+    }
+
     /// Retains precisely the accepted current state, including table freshness,
     /// partial censuses and refusals. Appended preparation starts after it.
     pub fn save_resume(
@@ -504,6 +564,15 @@ fn resume_from(
 pub struct Checkpoint {
     pub frame: DecodedFrame,
     pub position: Position,
+    selected: [bool; TableId::ALL.len()],
+}
+
+impl Checkpoint {
+    /// Whether the producer selected a table, independently of whether its
+    /// recorded read was complete, truncated or unavailable.
+    pub fn selects(&self, table: TableId) -> bool {
+        self.selected[table.index()]
+    }
 }
 
 pub fn section(branch: BranchId) -> String {
@@ -599,7 +668,21 @@ pub fn header(mut input: impl Read) -> io::Result<(BranchId, Hour)> {
     ))
 }
 
-pub fn decode_checkpoint(mut file: impl Read, selected: &[TableId]) -> io::Result<Checkpoint> {
+pub fn decode_checkpoint(file: impl Read, selected: &[TableId]) -> io::Result<Checkpoint> {
+    decode_selected_checkpoint(file, Some(selected))
+}
+
+/// Read a shared resume page with its stored selection. Consumers of a
+/// family's baseline check that the page contains their inputs and hour;
+/// the walk itself restores with its exact selection through `load_resume`.
+pub fn decode_resume(file: impl Read) -> io::Result<Checkpoint> {
+    decode_selected_checkpoint(file, None)
+}
+
+fn decode_selected_checkpoint(
+    mut file: impl Read,
+    expected: Option<&[TableId]>,
+) -> io::Result<Checkpoint> {
     let mut bytes = vec![0; 38 + TableId::ALL.len()];
     file.read_exact(&mut bytes)?;
     bytes.extend_from_slice(&inflate(file)?);
@@ -618,10 +701,13 @@ pub fn decode_checkpoint(mut file: impl Read, selected: &[TableId]) -> io::Resul
     if input.u16()? != replay::FORMAT_VERSION {
         return Err(invalid("map checkpoint row contract differs"));
     }
+    let mut selected = [false; TableId::ALL.len()];
     for table in TableId::ALL {
-        if input.bool()? != selected.contains(&table) {
+        let present = input.bool()?;
+        if expected.is_some_and(|expected| present != expected.contains(&table)) {
             return Err(invalid("map checkpoint table selection differs"));
         }
+        selected[table.index()] = present;
     }
     let frame = DecodedFrame::decode_checkpoint(&mut input)?;
     input.finish()?;
@@ -629,7 +715,7 @@ pub fn decode_checkpoint(mut file: impl Read, selected: &[TableId]) -> io::Resul
         return Err(invalid("map checkpoint identity differs from its header"));
     }
     for table in TableId::ALL {
-        if !selected.contains(&table)
+        if !selected[table.index()]
             && (!matches!(&*frame.tables[table.index()], TableView::Unavailable { reason } if reason == "Table not selected for reconstruction")
                 || frame.tables[table.index()].sampled_at().is_some())
         {
@@ -638,7 +724,11 @@ pub fn decode_checkpoint(mut file: impl Read, selected: &[TableId]) -> io::Resul
     }
     // The native checkpoint decoder has validated typed rows, singleton and
     // partial-census laws and supplying hours. Resume will consume this state.
-    Ok(Checkpoint { frame, position })
+    Ok(Checkpoint {
+        frame,
+        position,
+        selected,
+    })
 }
 
 fn invalid(message: &str) -> io::Error {

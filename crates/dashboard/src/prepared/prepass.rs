@@ -1,23 +1,32 @@
-//! Block pre-pass: workers reconstruct upcoming blocks alone, each from its
-//! keyframe ([`Replay::read_block_alone`]), and run every migrated family's
-//! extract on them. The coordinator folds each family's block facts in block
-//! order instead of observing the family every hour.
+//! Block pre-pass: workers read upcoming blocks alone, each from its keyframe,
+//! once for every family reading it ([`Replay::read_block_watched`]), and run
+//! each family's extract on what its own read of the block alone hands it.
+//! The coordinator folds each family's block facts in block order instead of
+//! observing the family every hour.
 //!
-//! A family that declares the fields it reads ([`Family::fields`]) has its
-//! blocks read only at the hours those fields change
-//! ([`Replay::read_block_changes`]): its extract observes those hours' frames
-//! and is told of the quiet spans between them ([`Extract::quiet`]).
+//! A family that declares the fields it reads ([`Family::fields`]) watches
+//! only the hours those fields change, as [`Replay::read_block_changes`]
+//! visits them: its extract observes those hours' frames, with the tables the
+//! reader reports changed ([`Extract::observe_reported`]), and is told of the
+//! quiet spans between them ([`Extract::quiet`]). Any other family watches
+//! every hour of its tables, as [`Replay::read_block_alone`] reconstructs
+//! them.
 //!
 //! [`PrePass`] serves the hourly walk: every block once, for all its families
 //! together. [`Pool`] serves families prepared on their own: one set of
-//! workers extracts each family's blocks from that family's own first block,
-//! and each family takes its blocks in order on its own.
+//! workers reads each block once for every family whose next block it is and
+//! within reach, from each family's own first block, and each family takes
+//! its blocks in order on its own.
 
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
-pub(crate) use dashboard_base::prepared::prepass::{Extract, Family, Folded};
+pub(crate) use dashboard_base::prepared::prepass::{Bound, Extract, Family, Folded};
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
-    container::{BlockChange, BlockIndex, QuietHours, Replay, TableFields},
+    container::{
+        BlockChange, BlockIndex, BlockWatch, Keep, QuietHours, Replay, TableFields, Watched,
+        Watching,
+    },
+    format::FormatVersion,
     frame::{DecodedFrame, SharedView, TableView},
     rows::TableId,
 };
@@ -27,7 +36,7 @@ use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Condvar, LazyLock, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -112,6 +121,24 @@ impl Knobs {
 
 /// One block's outcome for one family, with the time its extract took.
 pub(crate) type Extracted = (Outcome, Duration);
+
+/// The timing row of a [`Pool`]'s block reads (worker time beside the
+/// extracts), and in tests the count of blocks read.
+pub(crate) const PREPASS_READ: &str = "prepass.read";
+
+/// Where a [`Pool`]'s block tasks deposit a block's frames for readers
+/// whose families observe it hour by hour on threads of their own (the
+/// shared block reader), so those readers do not read it again.
+pub(crate) trait Depot: Send + Sync {
+    /// The tables to read `block` with for the readers, when one of their
+    /// families will take it and they have room for it: the block is then
+    /// being read for them until [`Self::deposit`] or [`Self::withdraw`].
+    fn offer(&self, block: usize) -> Option<Vec<TableId>>;
+    /// The offered block's frames, with every offered table's updates.
+    fn deposit(&self, block: usize, frames: Vec<Arc<replay::frame::Frame>>);
+    /// The offered block was not read for the readers.
+    fn withdraw(&self, block: usize);
+}
 
 /// The bytes of the blocks claimed and not yet taken, past which workers
 /// wait: a commit budget for read-ahead memory, never a limit on blocks,
@@ -334,8 +361,9 @@ fn work(replay: &Replay, alive: Alive, families: &[&'static Family], knobs: &Kno
     let shared = &alive.0;
     while let Some(position) = shared.claim() {
         let index = &replay.index[position];
+        let _cpu = ::replay::cpu::scope("extract", Some("walk pre-pass"));
         let outcomes = catch_unwind(AssertUnwindSafe(|| {
-            extract_block_measured(replay, index, families, &shared.stop, knobs)
+            extract_block_measured(replay, index, families, &shared.stop, knobs).outcomes
         }))
         .unwrap_or_else(|_| {
             sequential(families)
@@ -360,6 +388,11 @@ fn sequential(families: &[&'static Family]) -> Vec<Outcome> {
 /// block, and taken in that order by the family alone.
 struct Lane {
     family: &'static Family,
+    /// The reads its run chose from the bound content, if it chose any.
+    bound: Option<Arc<Bound>>,
+    /// Waiting for its family to choose them ([`Pool::bind`]): no block is
+    /// claimed until it has.
+    binding: bool,
     /// The next block a worker claims, the next the family takes, and the
     /// end of its claims (moved to `next` when the family retires).
     next: usize,
@@ -379,15 +412,9 @@ struct Lane {
 }
 
 impl Lane {
-    /// The extract time of the blocks not yet claimed, at the mean of those
-    /// extracted so far; none measured yet counts as none left, so every
-    /// family's cost is learnt from its first block.
-    fn remaining(&self) -> Duration {
-        let left = u32::try_from(self.end.saturating_sub(self.next)).unwrap_or(u32::MAX);
-        self.spent
-            .checked_div(self.measured)
-            .unwrap_or_default()
-            .saturating_mul(left)
+    /// The mean extract time of its blocks so far; None before the first.
+    fn mean(&self) -> Option<Duration> {
+        self.spent.checked_div(self.measured)
     }
 
     /// The bytes a block's facts are expected to hold: the mean of those
@@ -399,40 +426,135 @@ impl Lane {
     }
 }
 
+/// One block read once for the lanes claiming it together.
+struct Task {
+    block: usize,
+    /// Each member's lane, family and the reads its run chose.
+    members: Vec<(usize, &'static Family, Option<Arc<Bound>>)>,
+}
+
 struct PoolState {
     lanes: Vec<Lane>,
     /// Each lane's blocks are claimed at most this far beyond the one it
     /// takes next.
     ahead: usize,
-    /// Each block's recorded raw bytes, and what every lane's blocks claimed
-    /// and not taken hold: their raw bytes, and once extracted the bytes
-    /// their facts hold.
+    /// Each block's recorded raw bytes, and what the blocks claimed and not
+    /// taken hold: each block's raw bytes once while any lane's claim of it
+    /// is outstanding, and once extracted the bytes each lane's facts hold.
     sizes: Vec<u64>,
     in_flight: u64,
     budget: u64,
     alive: usize,
+    /// The lanes' claims of each block not yet taken or released.
+    holders: BTreeMap<usize, usize>,
+    /// Workers running a block task.
+    busy: usize,
+    /// Worker time of the blocks' reads beside their extracts, and the
+    /// blocks read.
+    read: Duration,
+    reads: u64,
 }
 
 impl PoolState {
-    /// The lane whose next block to claim now: of the lanes with a block
-    /// within reach, the one with the least extract work left, then the one
-    /// least far ahead of its family, then the first. A lane's next block to
-    /// take is always within reach; others while what is claimed and not
-    /// taken, this block's raw bytes and its family's expected facts stay
-    /// within the budget.
-    fn pick(&self) -> Option<usize> {
-        self.lanes
+    /// The raw bytes claiming `block` adds: none while it is held.
+    fn raw(&self, block: usize) -> u64 {
+        if self.holders.contains_key(&block) {
+            0
+        } else {
+            self.sizes[block]
+        }
+    }
+
+    /// Whether `lane`'s next block is within reach: always the one it takes
+    /// next, others while what is claimed and not taken, the block's raw
+    /// bytes and the family's expected facts stay within the budget.
+    fn reaches(&self, lane: &Lane) -> bool {
+        !lane.binding
+            && lane.next < lane.end
+            && lane.next < lane.handed + self.ahead
+            && (lane.next == lane.handed
+                || self.in_flight + self.raw(lane.next) + lane.expected() <= self.budget)
+    }
+
+    /// How many tasks to split a block into: one, unless fewer blocks are
+    /// coming within the lanes' reach than workers wait, so that a few new
+    /// blocks (a session's newest hours) do not run every family on one
+    /// worker while the others idle.
+    fn parts(&self) -> usize {
+        let idle = self.alive.saturating_sub(self.busy).max(1);
+        let mut upcoming = std::collections::BTreeSet::new();
+        for lane in self.lanes.iter().filter(|lane| !lane.retired) {
+            upcoming.extend(lane.next..lane.end.min(lane.handed + self.ahead));
+        }
+        match upcoming.len() {
+            0 => 1,
+            blocks if blocks >= idle => 1,
+            blocks => idle.div_ceil(blocks),
+        }
+    }
+
+    /// The next task: the lowest block some lane can claim now, for every
+    /// lane whose next block it is and that it reaches, costliest first. A
+    /// block split into parts ([`Self::parts`]) takes the lanes of about its
+    /// share of their mean extract time, at least one.
+    fn pick(&self) -> Option<(usize, Vec<usize>)> {
+        let block = self
+            .lanes
             .iter()
-            .enumerate()
-            .filter(|(_, lane)| {
-                lane.next < lane.end
+            .filter(|lane| self.reaches(lane))
+            .map(|lane| lane.next)
+            .min()?;
+        let known: Vec<Duration> = self.lanes.iter().filter_map(Lane::mean).collect();
+        let unknown = u32::try_from(known.len())
+            .ok()
+            .and_then(|count| known.iter().sum::<Duration>().checked_div(count))
+            .unwrap_or(Duration::from_millis(1))
+            .max(Duration::from_micros(1));
+        let cost = |lane: &Lane| lane.mean().unwrap_or(unknown).max(Duration::from_micros(1));
+        let mut wanting: Vec<usize> = (0..self.lanes.len())
+            .filter(|&position| {
+                let lane = &self.lanes[position];
+                !lane.binding
+                    && lane.next == block
+                    && lane.next < lane.end
                     && lane.next < lane.handed + self.ahead
-                    && (lane.next == lane.handed
-                        || self.in_flight + self.sizes[lane.next] + lane.expected()
-                            <= self.budget)
             })
-            .min_by_key(|(_, lane)| (lane.remaining(), lane.next - lane.handed))
-            .map(|(position, _)| position)
+            .collect();
+        wanting.sort_by_key(|&position| std::cmp::Reverse(cost(&self.lanes[position])));
+        let parts = self.parts();
+        let share = wanting
+            .iter()
+            .map(|&position| cost(&self.lanes[position]))
+            .sum::<Duration>()
+            / u32::try_from(parts).unwrap_or(u32::MAX);
+        let mut members = Vec::new();
+        let mut held = self.raw(block);
+        let mut taken = Duration::ZERO;
+        for position in wanting {
+            let lane = &self.lanes[position];
+            if lane.next != lane.handed && self.in_flight + held + lane.expected() > self.budget {
+                continue;
+            }
+            if parts > 1 && !members.is_empty() && taken >= share {
+                break;
+            }
+            held += lane.expected();
+            taken += cost(lane);
+            members.push(position);
+        }
+        (!members.is_empty()).then_some((block, members))
+    }
+
+    /// One lane's claim of `block` ends: its raw bytes stop counting once no
+    /// claim of it is outstanding.
+    fn release(&mut self, block: usize) {
+        if let Some(count) = self.holders.get_mut(&block) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.holders.remove(&block);
+                self.in_flight = self.in_flight.saturating_sub(self.sizes[block]);
+            }
+        }
     }
 }
 
@@ -440,6 +562,9 @@ struct PoolShared {
     state: Mutex<PoolState>,
     changed: Condvar,
     stop: AtomicBool,
+    /// Where block tasks deposit the blocks the shared reader's families
+    /// will take.
+    depot: Option<Arc<dyn Depot>>,
 }
 
 impl PoolShared {
@@ -447,15 +572,12 @@ impl PoolShared {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The next lane, block and family to extract: of the lanes with a block
-    /// within reach, the one with the least extract work left (so the
-    /// cheapest families finish first and most widgets are ready soonest),
-    /// then the one least far ahead of its family, then the first. A lane's
-    /// next block to take is always within reach; others wait for the byte
+    /// The next block to read and the lanes it is read for
+    /// ([`PoolState::pick`]); others wait for their families or the byte
     /// budget. None once every lane's blocks are claimed or the pool stops.
     /// The order of claims changes when a family's pages are ready, never
     /// what it publishes: each family folds its blocks in block order.
-    fn claim(&self) -> Option<(usize, usize, &'static Family)> {
+    fn claim(&self) -> Option<Task> {
         let mut state = self.lock();
         loop {
             if self.stop.load(Ordering::Acquire)
@@ -463,14 +585,24 @@ impl PoolShared {
             {
                 return None;
             }
-            if let Some(position) = state.pick() {
-                let block = state.lanes[position].next;
-                let expected = state.lanes[position].expected();
-                state.in_flight += state.sizes[block] + expected;
-                let lane = &mut state.lanes[position];
-                lane.reserved.insert(block, expected);
-                lane.next += 1;
-                return Some((position, block, lane.family));
+            if let Some((block, members)) = state.pick() {
+                state.in_flight += state.raw(block);
+                *state.holders.entry(block).or_default() += members.len();
+                let mut task = Task {
+                    block,
+                    members: Vec::with_capacity(members.len()),
+                };
+                for position in members {
+                    let expected = state.lanes[position].expected();
+                    state.in_flight += expected;
+                    let lane = &mut state.lanes[position];
+                    lane.reserved.insert(block, expected);
+                    lane.next += 1;
+                    task.members
+                        .push((position, lane.family, lane.bound.clone()));
+                }
+                state.busy += 1;
+                return Some(task);
             }
             state = self
                 .changed
@@ -479,21 +611,29 @@ impl PoolShared {
         }
     }
 
-    /// Block `block` of lane `lane` extracted, its facts holding `bytes`:
-    /// they count against the budget until the family takes them.
-    fn finish(&self, lane: usize, block: usize, extracted: Extracted, bytes: u64) {
+    /// `task`'s block read (`measured`): each member's outcome, its facts
+    /// holding their bytes, counts against the budget until the family takes
+    /// it.
+    fn finish(&self, task: Task, measured: Measured) {
         let mut state = self.lock();
-        let reserved = state.lanes[lane].reserved.remove(&block).unwrap_or(0);
-        state.in_flight = state.in_flight.saturating_sub(reserved);
-        if state.lanes[lane].retired {
-            state.in_flight = state.in_flight.saturating_sub(state.sizes[block]);
-        } else {
-            state.in_flight = state.in_flight.saturating_add(bytes);
-            let lane = &mut state.lanes[lane];
-            lane.spent = lane.spent.saturating_add(extracted.1);
-            lane.measured = lane.measured.saturating_add(1);
-            lane.facts = lane.facts.saturating_add(bytes);
-            lane.done.insert(block, (extracted, bytes));
+        state.busy = state.busy.saturating_sub(1);
+        state.read += measured.read;
+        state.reads += measured.reads;
+        let block = task.block;
+        for ((lane, ..), (outcome, took, bytes)) in task.members.into_iter().zip(measured.outcomes)
+        {
+            let reserved = state.lanes[lane].reserved.remove(&block).unwrap_or(0);
+            state.in_flight = state.in_flight.saturating_sub(reserved);
+            if state.lanes[lane].retired {
+                state.release(block);
+            } else {
+                state.in_flight = state.in_flight.saturating_add(bytes);
+                let lane = &mut state.lanes[lane];
+                lane.spent = lane.spent.saturating_add(took);
+                lane.measured = lane.measured.saturating_add(1);
+                lane.facts = lane.facts.saturating_add(bytes);
+                lane.done.insert(block, ((outcome, took), bytes));
+            }
         }
         drop(state);
         self.changed.notify_all();
@@ -512,28 +652,35 @@ impl Drop for PoolAlive {
 }
 
 /// Several families' upcoming blocks, each family's from its own first
-/// block, extracted alone on one set of workers below normal priority: no
-/// more workers however many families there are. Workers first serve the
-/// family with the least extract work left, by the mean extract time of its
-/// blocks so far, so cheap families are ready before costly ones take the
-/// workers; among equals, the family least far ahead. Each family's blocks claimed and not
-/// taken stay within `workers + 1`, and all families' within [`AHEAD_BYTES`]
-/// (beyond each family's next block) of recorded raw bytes and the bytes
-/// their facts hold ([`Extract::bytes`]): a block claimed reserves its
-/// family's mean facts so far, replaced by its own once extracted. Dropping it
-/// stops the workers within an hour of work and joins them.
+/// block, extracted on one set of workers below normal priority: no more
+/// workers however many families there are. A worker reads a block once for
+/// every family whose next block it is and that it is within reach of
+/// ([`Replay::read_block_watched`]), and runs their extracts one after
+/// another on it, each family handed exactly what its own read of the block
+/// hands it; a family whose fold lags reads its later blocks in tasks of its
+/// own. Each family's blocks claimed and not taken stay within `workers + 1`,
+/// and all families' within [`AHEAD_BYTES`] (beyond each family's next block)
+/// of recorded raw bytes, each block's once however many families claimed
+/// it, and the bytes their facts hold ([`Extract::bytes`]): a block claimed
+/// reserves its family's mean facts so far, replaced by its own once
+/// extracted. Dropping it stops the workers within an hour of work and joins
+/// them.
 pub(crate) struct Pool {
     shared: Arc<PoolShared>,
     workers: Vec<JoinHandle<()>>,
 }
 
 impl Pool {
-    /// `lanes`: each family and the first block it takes.
+    /// `lanes`: each family, the first block it takes and whether it
+    /// chooses its run's reads from the bound content, whose blocks wait for
+    /// them ([`Self::bind`]). A block task reading a block `depot` takes
+    /// reads its tables too and deposits the block's frames there.
     pub(crate) fn start(
         replay: Arc<Replay>,
-        lanes: Vec<(&'static Family, usize)>,
+        lanes: Vec<(&'static Family, usize, bool)>,
         workers: usize,
         knobs: Knobs,
+        depot: Option<Arc<dyn Depot>>,
     ) -> Self {
         let count = workers.max(1);
         let end = replay.index.len();
@@ -541,8 +688,10 @@ impl Pool {
             state: Mutex::new(PoolState {
                 lanes: lanes
                     .into_iter()
-                    .map(|(family, from)| Lane {
+                    .map(|(family, from, binding)| Lane {
                         family,
+                        bound: None,
+                        binding,
                         next: from,
                         handed: from,
                         end,
@@ -559,9 +708,14 @@ impl Pool {
                 in_flight: 0,
                 budget: knobs.budget.unwrap_or(AHEAD_BYTES),
                 alive: 0,
+                holders: BTreeMap::new(),
+                busy: 0,
+                read: Duration::ZERO,
+                reads: 0,
             }),
             changed: Condvar::new(),
             stop: AtomicBool::new(false),
+            depot,
         });
         let mut workers = Vec::with_capacity(count);
         for worker in 0..count {
@@ -599,7 +753,6 @@ impl Pool {
         }
         loop {
             crate::metadata::check_cancel(cancelled)?;
-            let size = state.sizes[position];
             let alive = state.alive;
             let (extracted, claimed) = {
                 let lane = &mut state.lanes[lane];
@@ -615,8 +768,10 @@ impl Pool {
                 (extracted, claimed)
             };
             if let Some((extracted, bytes)) = extracted {
-                let held = if claimed { size } else { 0 };
-                state.in_flight = state.in_flight.saturating_sub(held.saturating_add(bytes));
+                if claimed {
+                    state.release(position);
+                }
+                state.in_flight = state.in_flight.saturating_sub(bytes);
                 drop(state);
                 self.shared.changed.notify_all();
                 return Ok(extracted);
@@ -630,6 +785,18 @@ impl Pool {
         }
     }
 
+    /// Lane `lane`'s reads for this run, chosen from the bound content
+    /// (None reads as its family declares): its blocks are claimed from now
+    /// on, each read so.
+    pub(crate) fn bind(&self, lane: usize, bound: Option<Bound>) {
+        let mut state = self.shared.lock();
+        let lane = &mut state.lanes[lane];
+        lane.bound = bound.map(Arc::new);
+        lane.binding = false;
+        drop(state);
+        self.shared.changed.notify_all();
+    }
+
     /// Lane `lane`'s family takes no more blocks: nothing more of it is
     /// claimed, and what it left extracted is released.
     pub(crate) fn retire(&self, lane: usize) {
@@ -637,6 +804,7 @@ impl Pool {
         let left: Vec<(usize, u64)> = {
             let lane = &mut state.lanes[lane];
             lane.retired = true;
+            lane.binding = false;
             lane.end = lane.next;
             std::mem::take(&mut lane.done)
                 .into_iter()
@@ -644,11 +812,18 @@ impl Pool {
                 .collect()
         };
         for (block, bytes) in left {
-            let held = state.sizes[block].saturating_add(bytes);
-            state.in_flight = state.in_flight.saturating_sub(held);
+            state.release(block);
+            state.in_flight = state.in_flight.saturating_sub(bytes);
         }
         drop(state);
         self.shared.changed.notify_all();
+    }
+
+    /// The worker time the blocks' reads took beside their extracts, and the
+    /// blocks read.
+    pub(crate) fn read_time(&self) -> (Duration, u64) {
+        let state = self.shared.lock();
+        (state.read, state.reads)
     }
 }
 
@@ -668,32 +843,133 @@ impl Drop for Pool {
 
 fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
     let shared = &alive.0;
-    while let Some((lane, position, family)) = shared.claim() {
-        let index = &replay.index[position];
-        let (outcome, took, bytes) = catch_unwind(AssertUnwindSafe(|| {
-            extract_block_measured(replay, index, &[family], &shared.stop, knobs)
+    while let Some(task) = shared.claim() {
+        let index = &replay.index[task.block];
+        let readings: Vec<Reading<'_>> = task
+            .members
+            .iter()
+            .map(|(_, family, bound)| Reading {
+                family,
+                bound: bound.as_deref(),
+            })
+            .collect();
+        let cpu = ::replay::cpu::scope("extract", Some("pre-pass block"));
+        let cpu_started = ::replay::cpu::thread_cycles();
+        // The shared reader's tables too, when its families will take the
+        // block: withdrawn unless the block's frames are deposited.
+        let mut offer = shared.depot.as_deref().and_then(|depot| {
+            depot.offer(task.block).map(|tables| Offer {
+                depot,
+                block: task.block,
+                tables,
+                deposited: false,
+            })
+        });
+        let measured = catch_unwind(AssertUnwindSafe(|| {
+            let kept = offer
+                .as_mut()
+                .map(|offer| std::mem::take(&mut offer.tables));
+            let mut deposit = |frames: &[Arc<replay::frame::Frame>]| {
+                if let Some(offer) = &mut offer {
+                    offer.depot.deposit(offer.block, frames.to_vec());
+                    offer.deposited = true;
+                }
+            };
+            let keep = kept.as_deref().map(|tables| Keep {
+                tables,
+                frames: &mut deposit,
+            });
+            extract_bound(replay, index, &readings, &shared.stop, knobs, keep)
         }))
-        .ok()
-        .and_then(|mut outcomes| outcomes.pop())
-        .unwrap_or((Outcome::Sequential, Duration::ZERO, 0));
-        shared.finish(lane, position, (outcome, took), bytes);
+        .unwrap_or_else(|_| Measured::sequential(readings.len()));
+        for (reading, (outcome, _, _)) in readings.iter().zip(&measured.outcomes) {
+            // Each family's outcome counted; the block task's cycles below.
+            ::replay::cpu::note(
+                if matches!(outcome, Outcome::Sequential) {
+                    "extract-unused"
+                } else {
+                    "extract-facts"
+                },
+                reading.family.name,
+                ::replay::cpu::thread_cycles(),
+            );
+        }
+        ::replay::cpu::note("extract-block", "pre-pass block", cpu_started);
+        drop(cpu);
+        drop(offer);
+        shared.finish(task, measured);
     }
 }
 
-/// Each of `families`' fields, when every one declares them: their blocks
-/// are then read only at the hours those fields change. None reads the
-/// block whole.
-fn changes_fields(families: &[&'static Family], knobs: &Knobs) -> Option<Vec<Vec<TableFields>>> {
+/// A block offered to the shared reader's depot: withdrawn when dropped
+/// without its frames deposited.
+struct Offer<'d> {
+    depot: &'d dyn Depot,
+    block: usize,
+    tables: Vec<TableId>,
+    deposited: bool,
+}
+
+impl Drop for Offer<'_> {
+    fn drop(&mut self) {
+        if !self.deposited {
+            self.depot.withdraw(self.block);
+        }
+    }
+}
+
+/// One family's fields when it declares them: its blocks are then read only
+/// at the hours those fields change. None reads every hour of its tables.
+fn changes_fields(family: &Reading<'_>, knobs: &Knobs) -> Option<Vec<TableFields>> {
     #[cfg(test)]
     if knobs.alone {
         return None;
     }
     #[cfg(not(test))]
     let _ = knobs;
-    families
-        .iter()
-        .map(|family| (family.fields?)().ok())
-        .collect()
+    family.fields()
+}
+
+/// A family as one block's read runs it: its declaration, and the reads its
+/// run chose from the bound content, if it chose any.
+#[derive(Clone, Copy)]
+struct Reading<'a> {
+    family: &'static Family,
+    bound: Option<&'a Bound>,
+}
+
+impl Reading<'_> {
+    fn of(family: &'static Family) -> Self {
+        Self {
+            family,
+            bound: None,
+        }
+    }
+
+    /// The tables its extract reads.
+    fn tables(&self) -> &[TableId] {
+        match self.bound {
+            Some(bound) => &bound.tables,
+            None => self.family.tables,
+        }
+    }
+
+    /// The fields its extract reads, when it declares them and they can be
+    /// made; None reads its blocks whole.
+    fn fields(&self) -> Option<Vec<TableFields>> {
+        match self.bound {
+            Some(bound) => bound.fields.clone(),
+            None => (self.family.fields?)().ok(),
+        }
+    }
+
+    /// A fresh extract for one block.
+    fn start(&self, format: FormatVersion) -> Box<dyn Extract> {
+        match self.bound {
+            Some(bound) => (bound.start)(format),
+            None => (self.family.start)(format),
+        }
+    }
 }
 
 /// What an extract is given: an hour's frame or a quiet span.
@@ -716,6 +992,9 @@ impl At<'_> {
 /// What the pre-pass follows of one extract in a block read by its changes.
 #[derive(Default)]
 struct Follow {
+    /// Whether the read watches exactly its family's fields, so the block
+    /// reader's changed tables are its own ([`Extract::observe_reported`]).
+    reports: bool,
     /// The tables its family watches; those it watches whole; and those
     /// reconstructed for it (Campaign too).
     watched: Vec<TableId>,
@@ -725,6 +1004,11 @@ struct Follow {
     /// built for it at an hour not read and is not rebuilt since.
     last: Option<DecodedFrame>,
     built: Vec<TableId>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RELEASING: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 impl Follow {
@@ -745,6 +1029,23 @@ impl Follow {
             follow.reconstructed.push(TableId::Campaign);
         }
         follow
+    }
+
+    /// The preceding quiet span was delivered, and the next observed frame
+    /// replaces these tables. Only built allocations carried unchanged into
+    /// that frame still need the preceding views.
+    fn release(&mut self, replaced: &[TableId]) {
+        static RELEASED: LazyLock<SharedView> = LazyLock::new(|| {
+            TableView::Unavailable {
+                reason: "View released before replacement".into(),
+            }
+            .into()
+        });
+        if let Some(last) = &mut self.last {
+            for table in replaced {
+                last.tables[table.index()] = RELEASED.clone();
+            }
+        }
     }
 
     /// `frame`, read at an hour that rebuilt `rebuilt`, with each table built
@@ -852,7 +1153,12 @@ impl Follow {
             let changes = FrameChanges::rebuilt(&frame, replay.format, continues, |table| {
                 hours.rebuilt(position, table)
             });
-            extract.observe(replay, &frame, &changes)?;
+            // No watched field changed at a quiet hour.
+            if self.reports {
+                extract.observe_reported(replay, &frame, &changes, &[])?;
+            } else {
+                extract.observe(replay, &frame, &changes)?;
+            }
             for &table in &self.reconstructed {
                 if hours.rebuilt(position, table) && !self.built.contains(&table) {
                     self.built.push(table);
@@ -874,94 +1180,158 @@ struct Running {
     follow: Follow,
 }
 
-/// Give every extract still going one hour or quiet span (`run`); one that
-/// refuses, fails or panics stops, and its family observes the block hour by
-/// hour. An error once none is left, which ends the read.
+/// Give one family's extract, while it goes on, one hour or quiet span
+/// (`run`); one that refuses, fails or panics stops, and its family observes
+/// the block hour by hour. An error once it stopped, which stops its watch.
 fn visit(
-    families: &[&'static Family],
-    extracts: &mut [Running],
+    family: &'static Family,
+    running: &mut Running,
     knobs: &Knobs,
     at: At<'_>,
-    mut run: impl FnMut(&mut Box<dyn Extract>, &mut Follow) -> io::Result<()>,
+    run: impl FnOnce(&mut Box<dyn Extract>, &mut Follow) -> io::Result<()>,
 ) -> io::Result<()> {
     #[cfg(not(test))]
     let _ = (knobs, &at);
-    for (family, running) in families.iter().zip(extracts.iter_mut()) {
-        #[cfg(not(test))]
-        let _ = family;
-        let Running {
-            extract,
-            took,
-            follow,
-        } = running;
-        let Some(current) = extract else {
-            continue;
-        };
-        let started = Instant::now();
-        let observed = catch_unwind(AssertUnwindSafe(|| {
-            #[cfg(test)]
-            if let (Some(hook), At::Hour(frame)) = (&knobs.hook, &at) {
-                match hook(family.name, frame) {
-                    Fault::Continue => {}
-                    Fault::Error => return Err(io::Error::other("Injected extract error")),
-                    Fault::Panic => panic!("Injected extract panic"),
-                }
-            }
-            run(current, follow)
-        }))
-        .unwrap_or_else(|_| Err(io::Error::other("Block extract panicked")));
-        *took += started.elapsed();
+    let Running {
+        extract,
+        took,
+        follow,
+    } = running;
+    let Some(current) = extract else {
+        return Err(io::Error::other("The block extract stopped"));
+    };
+    let started = Instant::now();
+    let cpu = ::replay::cpu::scope("extract", Some(family.name));
+    let observed = catch_unwind(AssertUnwindSafe(|| {
         #[cfg(test)]
-        let observed = observed.and_then(|()| {
-            if knobs
-                .refusals
-                .iter()
-                .any(|&(name, hour)| name == family.name && at.holds(hour))
-            {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Injected refusal",
-                ))
-            } else {
-                Ok(())
+        if let (Some(hook), At::Hour(frame)) = (&knobs.hook, &at) {
+            match hook(family.name, frame) {
+                Fault::Continue => {}
+                Fault::Error => return Err(io::Error::other("Injected extract error")),
+                Fault::Panic => panic!("Injected extract panic"),
             }
-        });
-        if observed.is_err() {
-            *extract = None;
         }
-    }
-    if extracts.iter().all(|running| running.extract.is_none()) {
-        // Nothing left to extract: every family observes hourly.
-        return Err(io::Error::other("Every block extract stopped"));
+        run(current, follow)
+    }))
+    .unwrap_or_else(|_| Err(io::Error::other("Block extract panicked")));
+    *took += started.elapsed();
+    drop(cpu);
+    #[cfg(test)]
+    let observed = observed.and_then(|()| {
+        if knobs
+            .refusals
+            .iter()
+            .any(|&(name, hour)| name == family.name && at.holds(hour))
+        {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Injected refusal",
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    if observed.is_err() {
+        // Nothing left to extract: the family observes the block hourly.
+        *extract = None;
+        return Err(io::Error::other("The block extract stopped"));
     }
     Ok(())
 }
 
-/// Reconstruct one block alone with the tables `families` read and run their
-/// extracts on every hour, with change facts from a tracker of this block
-/// alone: preparation starts every block with no change facts of the block
-/// before, so these are the facts its observers get. When every family
-/// declares its fields, the block is read only at the hours they change, and
-/// each extract observes the hours [`Family::fields`] names with the change
-/// facts that tracker finds there ([`FrameChanges::rebuilt`]), and is told
-/// of the quiet spans between. A family whose extract refuses or fails, or
-/// every family when the block cannot be read, is observed hour by hour
-/// instead. Each family's outcome comes with the bytes its facts hold
-/// ([`Extract::bytes`]; none for a block observed hour by hour).
+/// One block's outcome for each family read together, with the time its
+/// extract took and the bytes its facts hold ([`Extract::bytes`]; none for a
+/// block observed hour by hour); the worker time the block's reads took
+/// beside the extracts, and how many reads it took.
+pub(crate) struct Measured {
+    pub outcomes: Vec<(Outcome, Duration, u64)>,
+    pub read: Duration,
+    pub reads: u64,
+}
+
+impl Measured {
+    /// Each of `families` families observing the block hour by hour.
+    fn sequential(families: usize) -> Self {
+        Self {
+            outcomes: (0..families)
+                .map(|_| (Outcome::Sequential, Duration::ZERO, 0))
+                .collect(),
+            read: Duration::ZERO,
+            reads: 0,
+        }
+    }
+}
+
+/// [`extract_bound`] of families as they declare their reads.
 fn extract_block_measured(
     replay: &Replay,
     index: &BlockIndex,
     families: &[&'static Family],
     stop: &AtomicBool,
     knobs: &Knobs,
-) -> Vec<(Outcome, Duration, u64)> {
+) -> Measured {
+    let readings: Vec<Reading<'_>> = families.iter().copied().map(Reading::of).collect();
+    extract_bound(replay, index, &readings, stop, knobs, None)
+}
+
+/// Read one block once for `families` ([`Replay::read_block_watched`]), each
+/// with the tables, fields and extract its run chose from the bound content
+/// ([`Bound`]) or as it declares them, and
+/// run each family's extract on what its own read of the block alone hands
+/// it, with change facts of this block alone: preparation starts every block
+/// with no change facts of the block before, so these are the facts its
+/// observers get. A family that declares its fields watches the hours they
+/// change: its extract observes the hours [`Family::fields`] names with the
+/// change facts a tracker of the block read alone finds there
+/// ([`FrameChanges::rebuilt`]), and is told of the quiet spans between. Any
+/// other family watches every hour of its tables, with a tracker of its own.
+/// A family whose extract refuses or fails, or whose own read refuses the
+/// block, is observed hour by hour instead. When the one read fails, each
+/// family reads the block alone, as its own read would; when that fails too,
+/// or the read is cancelled, every family is observed hour by hour.
+fn extract_bound(
+    replay: &Replay,
+    index: &BlockIndex,
+    families: &[Reading<'_>],
+    stop: &AtomicBool,
+    knobs: &Knobs,
+    keep: Option<Keep<'_>>,
+) -> Measured {
+    let started = Instant::now();
     let format = replay.format;
+    let fields: Vec<Option<Vec<TableFields>>> = families
+        .iter()
+        .map(|family| changes_fields(family, knobs))
+        .collect();
+    let tables: Vec<Vec<TableId>> = families
+        .iter()
+        .map(|family| {
+            let mut tables = family.tables().to_vec();
+            tables.sort_unstable_by_key(|table| table.index());
+            tables.dedup();
+            tables
+        })
+        .collect();
     let mut extracts: Vec<Running> = families
         .iter()
-        .map(|family| Running {
-            extract: Some((family.start)(format)),
-            took: Duration::ZERO,
-            follow: Follow::default(),
+        .zip(&fields)
+        .map(|(family, fields)| {
+            let mut extract = family.start(format);
+            let follow = match fields {
+                Some(fields) => {
+                    extract.read_by_changes();
+                    // Its own watch: the reader's changed tables are its own.
+                    let mut follow = Follow::new(fields);
+                    follow.reports = true;
+                    follow
+                }
+                None => Follow::default(),
+            };
+            Running {
+                extract: Some(extract),
+                took: Duration::ZERO,
+                follow,
+            }
         })
         .collect();
     let check = || {
@@ -971,112 +1341,154 @@ fn extract_block_measured(
             Ok(())
         }
     };
-    let read = match changes_fields(families, knobs) {
-        Some(lists) => {
-            for (running, fields) in extracts.iter_mut().zip(&lists) {
-                running.follow = Follow::new(fields);
-                if let Some(extract) = &mut running.extract {
-                    extract.read_by_changes();
+    let read = {
+        let mut watches: Vec<BlockWatch<'_>> = Vec::with_capacity(families.len());
+        for (((reading, running), fields), tables) in families
+            .iter()
+            .zip(extracts.iter_mut())
+            .zip(&fields)
+            .zip(&tables)
+        {
+            let family = reading.family;
+            watches.push(match fields {
+                Some(fields) => {
+                    // The last recorded hour read, visited or quiet.
+                    let mut previous: Option<i32> = None;
+                    let watch = BlockWatch::new(Watching::Changes(fields), move |step| {
+                        if let Watched::Replacing(tables) = step {
+                            running.follow.release(tables);
+                            return Ok(());
+                        }
+                        let Watched::Change(change) = step else {
+                            unreachable!("a watch of changes")
+                        };
+                        match change {
+                            BlockChange::Changed {
+                                frame,
+                                tables,
+                                rebuilt,
+                            } => {
+                                let continues = previous.and_then(|hour| hour.checked_add(1))
+                                    == Some(frame.hour);
+                                previous = Some(frame.hour);
+                                let changes =
+                                    FrameChanges::rebuilt(frame, format, continues, |table| {
+                                        rebuilt.contains(&table)
+                                    });
+                                visit(
+                                    family,
+                                    running,
+                                    knobs,
+                                    At::Hour(frame),
+                                    |extract, follow| {
+                                        let carried = follow.carried(frame, rebuilt);
+                                        let frame = carried.unwrap_or_else(|| frame.clone());
+                                        extract
+                                            .observe_reported(replay, &frame, &changes, tables)?;
+                                        follow.last = Some(frame);
+                                        // A table this hour rebuilt is at the
+                                        // allocation a frame of the block read
+                                        // alone holds; every other built one is
+                                        // carried until its table rebuilds.
+                                        follow.built.retain(|table| !rebuilt.contains(table));
+                                        Ok(())
+                                    },
+                                )
+                            }
+                            BlockChange::Quiet(quiet) => {
+                                let before = previous;
+                                previous = Some(quiet.last());
+                                visit(
+                                    family,
+                                    running,
+                                    knobs,
+                                    At::Quiet(quiet),
+                                    |extract, follow| follow.quiet(extract, replay, quiet, before),
+                                )
+                            }
+                        }
+                    });
+                    #[cfg(test)]
+                    let releasing = RELEASING.with(std::cell::Cell::get);
+                    #[cfg(not(test))]
+                    let releasing = true;
+                    if releasing { watch.releasing() } else { watch }
                 }
-            }
-            let fields: Vec<TableFields> = lists.into_iter().flatten().collect();
-            // The last recorded hour read, visited or quiet.
-            let mut previous: Option<i32> = None;
-            replay.read_block_changes(
-                index,
-                &fields,
-                |change| match change {
-                    BlockChange::Changed { frame, rebuilt, .. } => {
-                        let continues =
-                            previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-                        previous = Some(frame.hour);
-                        let changes = FrameChanges::rebuilt(frame, format, continues, |table| {
-                            rebuilt.contains(&table)
-                        });
-                        visit(
-                            families,
-                            &mut extracts,
-                            knobs,
-                            At::Hour(frame),
-                            |extract, follow| {
-                                let carried = follow.carried(frame, rebuilt);
-                                let frame = carried.unwrap_or_else(|| frame.clone());
-                                extract.observe(replay, &frame, &changes)?;
-                                follow.last = Some(frame);
-                                // A table this hour rebuilt is at the
-                                // allocation a frame of the block read alone
-                                // holds; every other built one is carried
-                                // until its table rebuilds.
-                                follow.built.retain(|table| !rebuilt.contains(table));
-                                Ok(())
-                            },
-                        )
-                    }
-                    BlockChange::Quiet(quiet) => {
-                        let before = previous;
-                        previous = Some(quiet.last());
-                        visit(
-                            families,
-                            &mut extracts,
-                            knobs,
-                            At::Quiet(quiet),
-                            |extract, follow| follow.quiet(extract, replay, quiet, before),
-                        )
-                    }
-                },
-                check,
-            )
+                None => {
+                    let mut tracker = FrameChangeTracker::new();
+                    BlockWatch::new(Watching::Every(tables), move |step| {
+                        let Watched::Hour { updates, frame } = step else {
+                            unreachable!("a watch of every hour")
+                        };
+                        let changes = tracker.observe_updates(frame, Arc::clone(updates), format);
+                        visit(family, running, knobs, At::Hour(frame), |extract, _| {
+                            extract.observe(replay, frame, &changes)
+                        })
+                    })
+                }
+            });
         }
-        None => {
-            let mut tables: Vec<TableId> = families
-                .iter()
-                .flat_map(|family| family.tables.iter().copied())
-                .collect();
-            tables.sort_unstable_by_key(|table| table.index());
-            tables.dedup();
-            let mut tracker = FrameChangeTracker::new();
-            replay.read_block_alone(
-                index,
-                &tables,
-                |raw, frame| {
-                    let changes = tracker.observe_updates(frame, Arc::new(raw), format);
-                    visit(
-                        families,
-                        &mut extracts,
-                        knobs,
-                        At::Hour(frame),
-                        |extract, _| extract.observe(replay, frame, &changes),
-                    )
-                },
-                check,
-            )
+        let read = replay.read_block_watched_keeping(index, &mut watches, keep, check);
+        let own: Vec<bool> = watches
+            .into_iter()
+            .map(|watch| watch.finish().is_ok())
+            .collect();
+        read.map(|()| own)
+    };
+    let spent = extracts
+        .iter()
+        .map(|running| running.took)
+        .sum::<Duration>();
+    let read_time = started.elapsed().saturating_sub(spent);
+    let own = match read {
+        Ok(own) => own,
+        Err(error) if families.len() > 1 && error.kind() != io::ErrorKind::Interrupted => {
+            // A table another family reads failed the read: each reads the
+            // block alone, as its own read would.
+            let mut measured = Measured {
+                outcomes: Vec::with_capacity(families.len()),
+                read: read_time,
+                reads: 1,
+            };
+            for family in families {
+                let alone = extract_bound(replay, index, &[*family], stop, knobs, None);
+                measured.outcomes.extend(alone.outcomes);
+                measured.read += alone.read;
+                measured.reads += alone.reads;
+            }
+            return measured;
+        }
+        Err(_) => {
+            return Measured {
+                read: read_time,
+                reads: 1,
+                ..Measured::sequential(families.len())
+            };
         }
     };
-    if read.is_err() {
-        return sequential(families)
+    Measured {
+        outcomes: extracts
             .into_iter()
-            .map(|outcome| (outcome, Duration::ZERO, 0))
-            .collect();
+            .zip(own)
+            .map(|(running, own)| {
+                // A family whose own read refused the block observes it
+                // hour by hour, as it would have.
+                let extract = running.extract.filter(|_| own);
+                let bytes = extract.as_ref().map_or(0, |extract| extract.bytes());
+                let outcome = extract
+                    .and_then(|extract| extract.finish().ok())
+                    .map_or(Outcome::Sequential, Outcome::Facts);
+                let bytes = if matches!(outcome, Outcome::Facts(_)) {
+                    bytes
+                } else {
+                    0
+                };
+                (outcome, running.took, bytes)
+            })
+            .collect(),
+        read: read_time,
+        reads: 1,
     }
-    extracts
-        .into_iter()
-        .map(|running| {
-            let bytes = running
-                .extract
-                .as_ref()
-                .map_or(0, |extract| extract.bytes());
-            let outcome = running
-                .extract
-                .and_then(|extract| extract.finish().ok())
-                .map_or(Outcome::Sequential, Outcome::Facts);
-            let bytes = if matches!(outcome, Outcome::Facts(_)) {
-                bytes
-            } else {
-                0
-            };
-            (outcome, running.took, bytes)
-        })
-        .collect()
 }
 
 #[cfg(test)]

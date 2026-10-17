@@ -1245,3 +1245,147 @@ fn a_conflicting_alias_outside_the_requested_window_keeps_both_histories_refused
     );
     assert!(source.state::<Cache>().lock().unwrap().branches.is_empty());
 }
+
+/// Stepping each span of hours at which nothing fuel reads changed and no
+/// fuel read is dated at once ([`Prepared::advance_quiet`]) publishes and
+/// saves what observing each of those hours does: across four days of daily
+/// reads, with an off-slot read left out by the slot read after it, a state
+/// ceded inside a day and a flush inside a span, the days settled, left out
+/// and retired inside the spans, and the proofs and open reads carried, are
+/// the same. Fewer days are settled than hours observed.
+#[test]
+fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
+    use dashboard_base::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
+    use replay::frame::DecodedFrame;
+    use replay::rows::StateRow;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let slot = fuel_slot(1000);
+    // Germany's fuel grows at each daily slot.
+    let fuel = |hour: i32| {
+        let day = i64::from((hour - slot).div_euclid(24));
+        (655_360_000 + 65_536 * day, 655_360_000 * 2, 1_000_000 + day, 65_536)
+    };
+    let (first, last) = (slot - 5, slot + 100);
+    // A read off the clock (another table of the slot timed), Germany's
+    // state ceded to Italy, and a flush, each inside a day.
+    let (off_slot, ceded, flushed) = (slot + 30, slot + 40, slot + 50);
+    // Each hour's frame shares every table the hour before holds unchanged,
+    // as decoded frames do, so only changed tables are changed facts.
+    let mut frames: Vec<DecodedFrame> = Vec::new();
+    for hour in first..=last {
+        let fresh = fuel_frame(hour, hour == off_slot, 9001, fuel(hour));
+        let frame = match frames.last() {
+            None => fresh,
+            Some(before) => {
+                let mut frame = before.clone();
+                frame.hour = hour;
+                frame.metrics = fresh.metrics.clone();
+                if fuel(hour) != fuel(hour - 1) {
+                    frame.tables[TableId::CountryFuel.index()] =
+                        fresh.tables[TableId::CountryFuel.index()].clone();
+                }
+                if hour == ceded {
+                    let state = |id, owner| StateRow {
+                        id,
+                        owner,
+                        controller: owner,
+                        ..Default::default()
+                    };
+                    *frame.tables[TableId::States.index()] =
+                        TableView::Complete(TableRows::States(vec![state(1, 21), state(2, 21)]));
+                }
+                frame
+            }
+        };
+        frames.push(frame);
+    }
+    let mut tracker = FrameChangeTracker::new();
+    let changes: Vec<FrameChanges> = frames
+        .iter()
+        .map(|frame| tracker.observe(frame, format))
+        .collect();
+    // An hour fuel observes: one whose read is dated or whose watched tables
+    // changed (every one, the first).
+    let watched = [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::States,
+        TableId::CountryFuel,
+        TableId::FuelDemandParts,
+    ];
+    let kept = |index: usize| {
+        let changes = &changes[index];
+        index == 0
+            || changes.slot_read[TableId::CountryFuel.index()]
+            || watched
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+    };
+    let publish = |prepared: &mut Prepared, fixture: &Fixture| {
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, format, &flag).unwrap();
+        writer.commit().unwrap();
+        serde_json::to_value(&*prepared).unwrap()
+    };
+    // Every hour observed.
+    let (hourly_fixture, mut hourly) = (Fixture::new(), Prepared::default());
+    let mut hourly_states = Vec::new();
+    for (frame, changes) in frames.iter().zip(&changes) {
+        hourly
+            .observe_changes(frame, format, changes, &flag)
+            .unwrap();
+        if frame.hour == flushed || frame.hour == last {
+            hourly_states.push(publish(&mut hourly, &hourly_fixture));
+        }
+    }
+    // Kept hours observed, the spans between stepped at once, split where
+    // the flush is.
+    let (fixture, mut stepped) = (Fixture::new(), Prepared::default());
+    let mut states = Vec::new();
+    let mut observed = 0;
+    let mut spans = 0;
+    let mut index = 0;
+    while index < frames.len() {
+        let hour = frames[index].hour;
+        if kept(index) {
+            stepped
+                .observe_changes(&frames[index], format, &changes[index], &flag)
+                .unwrap();
+            observed += 1;
+            index += 1;
+        } else {
+            let mut end = index;
+            while end + 1 < frames.len() && !kept(end + 1) && frames[end].hour != flushed {
+                end += 1;
+            }
+            assert!(
+                stepped
+                    .advance_quiet(hour, frames[end].hour, format)
+                    .unwrap(),
+                "the hours from {hour} step"
+            );
+            spans += 1;
+            index = end + 1;
+        }
+        if frames[index - 1].hour == flushed || frames[index - 1].hour == last {
+            states.push(publish(&mut stepped, &fixture));
+        }
+    }
+    assert_eq!(states, hourly_states, "saved states");
+    assert_eq!(fixture.payloads(), hourly_fixture.payloads(), "pages");
+    assert!(
+        hourly_fixture
+            .payloads()
+            .keys()
+            .any(|(name, _)| name == "fuel-days-1"),
+        "days were settled"
+    );
+    // The first hour, the five slot reads, the off-slot read and the
+    // cession; nine spans between them and the flush.
+    assert_eq!(observed, 8, "hours observed");
+    assert_eq!(spans, 9, "spans stepped");
+    // An off-slot read overlapping the next slot read is left out.
+    let left_out = &stepped.metadata.countries["GER"].left_out;
+    assert!(left_out[0] > 0, "an overlapping day left out: {left_out:?}");
+}

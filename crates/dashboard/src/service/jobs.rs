@@ -1263,6 +1263,17 @@ impl Inner {
                 return;
             }
             let request = job.request().cloned();
+            // Measurement only: the job's CPU by product, when enabled.
+            let _cpu = match &job {
+                LoadJob::Product { body, .. } => {
+                    ::replay::cpu::scope_named("product load", &body.product)
+                }
+                LoadJob::PreparedQuery { body, .. } => {
+                    ::replay::cpu::scope_named("prepared query", &body.product)
+                }
+                LoadJob::Open(_) => ::replay::cpu::scope("service job", Some("open")),
+                _ => ::replay::cpu::scope("service job", Some("other")),
+            };
             let result = request_result(|| {
                 self.run_job(job, lane);
                 Ok(())

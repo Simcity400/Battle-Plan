@@ -1,7 +1,8 @@
 //! Special projects prepared on their own, block by block. A pre-pass worker
-//! reads a block alone with the projects' tables and the trigger kit a
-//! scoped project name evaluates (`triggers::RECORDED_TABLES`), only at the
-//! hours a field the observer or a scoped name's declared reads read changes
+//! reads a block alone with the projects' tables and, only where the bound
+//! content holds a scoped project name ([`bound`]), the trigger kit such a
+//! name evaluates (`triggers::RECORDED_TABLES`), only at the hours a field
+//! the observer or a scoped name's declared reads read changes
 //! ([`FAMILY`]'s fields): every field of the tables the observer reads of a
 //! frame ([`WATCHED_WHOLE`]: projects, programs, history, characters,
 //! portraits, the dictionary and the country links), the countries' keys,
@@ -35,7 +36,7 @@ use super::{Prepared, WATCHED_WHOLE};
 use dashboard_base::prepared::{
     frame_changes::FrameChanges,
     kept::{Observed, consecutive, kept_changes, observe_hours},
-    prepass::{Extract, Family, Folded},
+    prepass::{Bound, Extract, Family, Folded},
 };
 use replay::{
     container::{BlockIndex, QuietHours, Replay, TableFields},
@@ -57,6 +58,10 @@ pub const OBSERVED: &str = "projects.observed";
 /// Each quiet hour its fold observes on the last kept frame, counted in
 /// tests.
 pub const QUIET: &str = "projects.quiet";
+
+/// Each block its fold takes from an extract that read the trigger kit,
+/// counted in tests.
+pub const KIT: &str = "projects.kit";
 
 /// The tables the projects' observer reads: its project, program, history,
 /// character and dictionary tables, the countries' keys and links and their
@@ -89,16 +94,29 @@ pub fn tables(world: bool) -> &'static [TableId] {
 }
 
 /// The family: its block extract reads every table any content's
-/// observation reads, the trigger kit included.
+/// observation reads, the trigger kit included, unless its run reads as the
+/// bound content can ([`bound`]).
 pub static FAMILY: LazyLock<Family> = LazyLock::new(|| Family {
     name: "projects",
     extract: "projects.extract",
     sequential: "projects.sequential",
     fallback: "projects.fallback",
     tables: tables(true),
-    fields: Some(fields),
-    start,
+    fields: Some(|| fields(true)),
+    start: |format| start(format, true),
 });
+
+/// The reads of a run whose bound content holds no scoped project name
+/// (`world` false, [`Prepared::reads_trigger_world`]): the observer's tables
+/// without the trigger kit, which nothing its observation evaluates reads.
+/// None with a scoped name, which reads as [`FAMILY`] declares.
+pub fn bound(world: bool) -> Option<Bound> {
+    (!world).then(|| Bound {
+        tables: tables(false).to_vec(),
+        fields: fields(false).ok(),
+        start: Box::new(|format| start(format, false)),
+    })
+}
 
 /// The fields of the naming and trigger tables the declared reads of scoped
 /// names read (`triggers/world/dependence.rs`, `scope.rs`,
@@ -281,10 +299,11 @@ const DECLARED: &[(TableId, &[&str])] = &[
 /// What a block is read by: every table watched whole that the observer
 /// reads of a frame, the countries' keys, the declared fields of the naming
 /// and trigger tables ([`DECLARED`]) and the row keys of every other table
-/// read but the campaign, which the reader checks on its own.
-fn fields() -> io::Result<Vec<TableFields>> {
+/// read (with `world`, of the trigger kit too) but the campaign, which the
+/// reader checks on its own.
+fn fields(world: bool) -> io::Result<Vec<TableFields>> {
     let mut watched = Vec::new();
-    for &table in tables(true) {
+    for &table in tables(world) {
         if table == TableId::Campaign {
             continue;
         }
@@ -302,15 +321,19 @@ fn fields() -> io::Result<Vec<TableFields>> {
     Ok(watched)
 }
 
-/// [`fields`], once.
-fn watched() -> &'static [TableFields] {
-    static WATCHED: LazyLock<Vec<TableFields>> = LazyLock::new(|| fields().unwrap_or_default());
-    &WATCHED
+/// [`fields`], once each.
+fn watched(world: bool) -> &'static [TableFields] {
+    static OWN: LazyLock<Vec<TableFields>> = LazyLock::new(|| fields(false).unwrap_or_default());
+    static WORLD: LazyLock<Vec<TableFields>> =
+        LazyLock::new(|| fields(true).unwrap_or_default());
+    if world { &WORLD } else { &OWN }
 }
 
-fn start(format: FormatVersion) -> Box<dyn Extract> {
+/// An extract of a block read with the trigger kit (`world`) or without it.
+fn start(format: FormatVersion, world: bool) -> Box<dyn Extract> {
     Box::new(BlockExtract {
         format,
+        world,
         hours: Vec::new(),
         last: None,
         built: Vec::new(),
@@ -358,6 +381,9 @@ enum Hour {
 /// A block's hours as the extract kept them.
 struct BlockFacts {
     hours: Vec<Hour>,
+    /// Whether the block was read with the trigger kit, by its fields
+    /// ([`watched`]).
+    world: bool,
     /// Frames the extract was given or built.
     #[cfg_attr(not(test), allow(dead_code))]
     frames: usize,
@@ -365,6 +391,8 @@ struct BlockFacts {
 
 struct BlockExtract {
     format: FormatVersion,
+    /// Whether the block is read with the trigger kit.
+    world: bool,
     hours: Vec<Hour>,
     /// The last frame observed.
     last: Option<DecodedFrame>,
@@ -389,15 +417,16 @@ impl BlockExtract {
     /// the read's own.
     fn held(&self, frame: &DecodedFrame) -> (Held, Vec<TableId>) {
         // Without a watch list every hour is read whole.
-        let Some(last) = self.last.as_ref().filter(|_| !watched().is_empty()) else {
+        let watched = watched(self.world);
+        let Some(last) = self.last.as_ref().filter(|_| !watched.is_empty()) else {
             return (Held::Whole, Vec::new());
         };
-        let read = watched().iter().any(|watch| {
+        let read = watched.iter().any(|watch| {
             let index = watch.table.index();
             !SharedView::ptr_eq(&last.tables[index], &frame.tables[index])
                 && last.tables[index] != frame.tables[index]
         });
-        let built: Vec<TableId> = tables(true)
+        let built: Vec<TableId> = tables(self.world)
             .iter()
             .copied()
             .filter(|&table| {
@@ -477,7 +506,7 @@ impl Extract for BlockExtract {
     /// tables its update rebuilt (fields no one watches), whose rows in the
     /// last frame are then not the latest hour's.
     fn quiet(&mut self, _: &Replay, hours: &QuietHours, span: Range<usize>) -> io::Result<()> {
-        for &table in tables(true) {
+        for &table in tables(self.world) {
             if !self.built.contains(&table) && span.clone().any(|at| hours.rebuilt(at, table)) {
                 self.built.push(table);
             }
@@ -493,7 +522,7 @@ impl Extract for BlockExtract {
                 TableId::Projects,
                 hours.hours()[position],
             );
-            let rebuilt = tables(true)
+            let rebuilt = tables(self.world)
                 .iter()
                 .copied()
                 .filter(|&table| hours.rebuilt(position, table))
@@ -519,6 +548,7 @@ impl Extract for BlockExtract {
         }
         Ok(Box::new(BlockFacts {
             hours: self.hours,
+            world: self.world,
             frames: self.frames,
         }))
     }
@@ -601,6 +631,11 @@ pub fn fold(
         .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
     #[cfg(any(test, feature = "test-support"))]
     dashboard_base::prepared::kept::note_frames(FAMILY.name, facts.frames);
+    if facts.world {
+        dashboard_base::prepared::prepass::note(KIT);
+    }
+    // The fields the block was read by.
+    let read = watched(facts.world);
     let running = AtomicBool::new(false);
     let mut reached = None;
     let mut last: Option<DecodedFrame> = None;
@@ -619,7 +654,7 @@ pub fn fold(
         // watched field.
         let watched: &[TableFields] = match held {
             Held::Read => &[],
-            Held::Whole | Held::Built => watched(),
+            Held::Whole | Held::Built => read,
         };
         let result = prepared.observe_kept(
             frame,

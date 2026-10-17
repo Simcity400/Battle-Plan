@@ -42,6 +42,10 @@ impl FrameDecoder {
     /// Advance the same decoder without copying its rows into a separate output.
     /// The borrowed hour remains available for validation before the next advance.
     pub fn advance(&mut self, frame: &Frame) -> io::Result<&DecodedFrame> {
+        // Measurement only: each table's reconstruct cycles, when enabled.
+        let _cpu = crate::cpu::scope("reconstruct", None);
+        let measured = crate::cpu::enabled();
+        let mut spent: Vec<(usize, u64)> = Vec::new();
         if self
             .current
             .as_ref()
@@ -79,13 +83,18 @@ impl FrameDecoder {
             {
                 return not_selected();
             }
-            match advance_table(
+            let started = if measured { crate::cpu::stamp() } else { 0 };
+            let advanced = advance_table(
                 table,
                 &frame.tables[index],
                 previous[index].take(),
                 frame.hour,
                 frame.metrics.table_ns[index] != 0,
-            ) {
+            );
+            if measured {
+                spent.push((index, crate::cpu::stamp().wrapping_sub(started)));
+            }
+            match advanced {
                 Ok(view) => view,
                 Err(error) => {
                     allocation_failure = Some(error);
@@ -93,6 +102,9 @@ impl FrameDecoder {
                 }
             }
         });
+        if measured {
+            crate::cpu::reconstructed(frame.hour, &spent);
+        }
         if let Some(error) = allocation_failure {
             return Err(error);
         }
@@ -213,7 +225,13 @@ fn apply_table(
                     }
                     Err(shared) => match &*shared {
                         TableView::Complete(previous_rows) => {
+                            let started = if crate::cpu::enabled() {
+                                crate::cpu::stamp()
+                            } else {
+                                0
+                            };
                             let rows = previous_rows.apply_delta_shared(changed, deleted)?;
+                            crate::cpu::copied(table, previous_rows.len(), started);
                             rows.validate_keys()?;
                             rows
                         }

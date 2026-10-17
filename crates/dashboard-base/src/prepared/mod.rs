@@ -1,12 +1,14 @@
 //! The prepared store's shared pages: published coverage, binary series and
 //! event batches, frame changes, group sums, the hours a family prepared on
 //! its own keeps from a block, and progressive queries. The
-//! dashboard's pipeline writes them; products read them.
+//! dashboard's pipeline writes them; products read them. Products preparing
+//! a newest block window first report what it did ([`newest::Report`]).
 
 pub mod coverage;
 pub mod frame_changes;
 pub mod group_sum;
 pub mod kept;
+pub mod newest;
 pub mod pages;
 #[cfg(any(test, feature = "test-support"))]
 pub mod observer_tests;
