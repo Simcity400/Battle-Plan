@@ -1112,6 +1112,16 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("AgencyOperationBuffers", |report| {
+        intel::compare_operation_buffers(
+            frame,
+            &save.intel,
+            &save.governance,
+            &save.states.keys().copied().collect(),
+            membership.as_ref().copied().map_err(String::as_str),
+            report,
+        )
+    });
     report.attempt("air", |report| {
         air::compare(
             frame,

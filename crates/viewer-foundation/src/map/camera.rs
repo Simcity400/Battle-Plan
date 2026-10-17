@@ -36,6 +36,15 @@ use super::gradient_math::hsv_to_rgb;
 
 pub mod motion;
 
+/// The fixed5 scale, in the single precision the map-icon distance gates divide in.
+const FIXED5_SCALE: f32 = 100_000.0;
+
+/// A stored fixed5 camera-distance define as the map-icon gates compare it with the eye height:
+/// the stored integer converted to `f32` first, then divided by the fixed5 scale in `f32`.
+pub fn fixed5_camera_distance(stored: i64) -> f32 {
+    stored as f32 / FIXED5_SCALE
+}
+
 /// Projected viewport position and sorting depth.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapIconProjection {

@@ -4,7 +4,7 @@ use super::*;
 use crate::country_scale::{raise, rows};
 use collector_extended_support::demand::DemandFailures;
 
-static FAILURES: [DemandFailures; 13] = [const { DemandFailures::new() }; 13];
+static FAILURES: [DemandFailures; 16] = [const { DemandFailures::new() }; 16];
 
 pub fn status() -> impl serde::Serialize {
     crate::status::map(
@@ -22,6 +22,9 @@ pub fn status() -> impl serde::Serialize {
             "operations",
             "operation_tokens",
             "incoming_actions",
+            "operative_missions",
+            "strategic_operatives",
+            "agency_operation_buffers",
         ]
         .into_iter()
         .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
@@ -86,11 +89,29 @@ impl Capacities {
             16,
             cintelligence_agency::walk_captured_operatives(memory, base, state, &mut [])
         );
+        let missions = operative_missions::walk(memory, base, state, &mut [], &mut []);
+        count!(13, 18, missions.outcome);
+        raise(
+            &mut self.operative_mission_bytes,
+            rows(missions.required_bytes, 1),
+        );
         count!(6, 5, ccryptology::walk(memory, base, state, &mut []));
         count!(
             7,
             6,
             ccountry_intel_network::walk(memory, base, state, &mut [])
+        );
+        let buffered = agency_operation_buffers::walk(memory, base, state, &mut [], &mut []);
+        count!(15, 20, buffered.outcome);
+        raise(
+            &mut self.agency_operation_entries,
+            rows(buffered.required_entries, 1),
+        );
+        let strategic = strategic_operatives::walk(memory, base, state, &mut [], &mut []);
+        count!(14, 19, strategic.outcome);
+        raise(
+            &mut self.strategic_operative_entries,
+            rows(strategic.required_entries, 1),
         );
         count!(8, 7, walk_flags(memory, base, state, &mut [], &mut []));
         let variables = cvariables::walk_scopes(memory, base, state, &mut [], &mut [], &mut []);
@@ -100,13 +121,24 @@ impl Capacities {
             rows(variables.required_entries, 1),
         );
         raise(&mut self.variable_names, rows(variables.required_bytes, 1));
-        let operations =
-            ccountry_operation_manager::walk(memory, base, state, &mut [], &mut [], &mut []);
+        let operations = ccountry_operation_manager::walk(
+            memory,
+            base,
+            state,
+            &mut [],
+            &mut [],
+            &mut [],
+            &mut [],
+        );
         count!(10, 9, operations.outcome);
         count!(10, 10, operations.assignments);
         raise(
             &mut self.operation_descriptions,
             rows(operations.required_bytes, 1),
+        );
+        raise(
+            &mut self.operation_parts,
+            rows(operations.required_parts, 1),
         );
         let tokens = ccountry_operation_token_manager::walk(memory, base, state, &mut [], &mut []);
         count!(11, 11, tokens.outcome);

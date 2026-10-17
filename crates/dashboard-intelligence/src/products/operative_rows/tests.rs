@@ -159,15 +159,9 @@ fn agency_feature_and_intel_reads_require_their_recorded_own_inputs() {
     assert!(!membership_read(&frame));
     frame.metrics.table_ns[TableId::OperativeMemberships.index()] = 1;
     assert!(membership_read(&frame));
-    frame.hour = (0..24)
-        .find(|hour| replay::cadence::is_refresh(TableId::Operations, *hour))
-        .unwrap();
+    // Operations is hourly: only its own read in this frame counts, not a
+    // sibling table's.
     assert!(!operations_read(&frame));
-    frame.hour += 1;
-    assert!(!replay::cadence::is_refresh(
-        TableId::Operations,
-        frame.hour
-    ));
     frame.metrics.table_ns[TableId::OperationAssignments.index()] = 1;
     assert!(!operations_read(&frame));
     frame.metrics.table_ns[TableId::Operations.index()] = 1;

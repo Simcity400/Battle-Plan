@@ -43,6 +43,10 @@ pub struct Walk {
     pub bytes_len: usize,
     /// All validated native description lengths, including omitted rows.
     pub required_bytes: usize,
+    pub parts_len: usize,
+    /// Every operation's parts ([`coperation_instance::Part`]), including
+    /// omitted rows.
+    pub required_parts: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +54,7 @@ pub struct Demand {
     pub rows: usize,
     pub assignments: usize,
     pub description_bytes: usize,
+    pub parts: usize,
 }
 
 /// Sizes from the same authenticated occurrence walk without copying payloads.
@@ -59,7 +64,7 @@ pub fn demand(
     base: usize,
     game_state: usize,
 ) -> Result<Demand, &'static str> {
-    let result = walk(memory, base, game_state, &mut [], &mut [], &mut []);
+    let result = walk(memory, base, game_state, &mut [], &mut [], &mut [], &mut []);
     let count = |outcome| match outcome {
         Outcome::Rows { len } => Ok(len),
         Outcome::Truncated { len, unread_rows } => len
@@ -71,15 +76,16 @@ pub fn demand(
         rows: count(result.outcome)?,
         assignments: count(result.assignments)?,
         description_bytes: result.required_bytes,
+        parts: result.required_parts,
     })
 }
 
-/// Reads operation scalars, retained description bytes and assigned slots in
-/// one country pass. Description shortages omit whole primary rows; assignment
-/// storage and payload failures remain independently reported.
-/// Storage is supplied by the caller; no game calls, retries or allocation occur.
-/// Resource/requirement operands and selected phase identities are outside this
-/// minimum field set. Live consistency and fresh-save agreement are unverified.
+/// Reads operation scalars, retained description bytes, parts (selected
+/// phases, requirements and the equipment pool) and assigned slots in one
+/// country pass. Description and part shortages omit whole primary rows;
+/// every omitted row's parts are still read and authenticated. Assignment
+/// storage and payload failures remain independently reported. Storage is
+/// supplied by the caller; no game calls, retries or allocation occur.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -87,6 +93,7 @@ pub fn walk(
     output: &mut [coperation_instance::Row],
     assigned: &mut [operation_assigned_operative::Row],
     descriptions: &mut [u8],
+    parts: &mut [coperation_instance::Part],
 ) -> Walk {
     walk_buffer(
         memory,
@@ -95,6 +102,7 @@ pub fn walk(
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(assigned),
         crate::walk::Buffer::Fixed(descriptions),
+        crate::walk::Buffer::Fixed(parts),
     )
 }
 
@@ -105,6 +113,7 @@ pub fn walk_growing(
     output: &mut Vec<coperation_instance::Row>,
     assigned: &mut Vec<operation_assigned_operative::Row>,
     descriptions: &mut Vec<u8>,
+    parts: &mut Vec<coperation_instance::Part>,
 ) -> Walk {
     walk_buffer(
         memory,
@@ -113,6 +122,7 @@ pub fn walk_growing(
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(assigned),
         crate::walk::Buffer::Growing(descriptions),
+        crate::walk::Buffer::Growing(parts),
     )
 }
 
@@ -123,6 +133,7 @@ pub fn walk_buffer(
     mut output: crate::walk::Buffer<'_, coperation_instance::Row>,
     mut assigned: crate::walk::Buffer<'_, operation_assigned_operative::Row>,
     mut descriptions: crate::walk::Buffer<'_, u8>,
+    mut parts: crate::walk::Buffer<'_, coperation_instance::Part>,
 ) -> Walk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -133,6 +144,7 @@ pub fn walk_buffer(
         let mut assigned_unread = 0_u32;
         let mut assigned_error = None;
         let (mut bytes_len, mut required_bytes) = (0_usize, 0_usize);
+        let (mut parts_len, mut required_parts) = (0_usize, 0_usize);
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -177,9 +189,22 @@ pub fn walk_buffer(
                     .checked_add(operation.effect_description.len)
                     .ok_or("operation description byte demand overflow")?;
                 descriptions.ensure(required_bytes)?;
-                if output.len() == len
-                    || operation.effect_description.len > descriptions.len() - bytes_len
-                {
+                let part_count = operation.row.part_count();
+                required_parts = required_parts
+                    .checked_add(part_count)
+                    .ok_or("operation part demand overflow")?;
+                parts.ensure(required_parts)?;
+                let fits = output.len() != len
+                    && operation.effect_description.len <= descriptions.len() - bytes_len
+                    && part_count <= parts.len() - parts_len;
+                let mut written = 0;
+                operation.parts(memory, base, |part| {
+                    if fits {
+                        parts[parts_len + written] = part;
+                        written += 1;
+                    }
+                })?;
+                if !fits {
                     unread_rows = unread_rows
                         .checked_add(1)
                         .ok_or("operation omitted count overflow")?;
@@ -195,6 +220,8 @@ pub fn walk_buffer(
                         len: operation.effect_description.len,
                     };
                     bytes_len += operation.effect_description.len;
+                    operation.row.parts_start = parts_len;
+                    parts_len += part_count;
                     output[len] = operation.row;
                     len += 1;
                 }
@@ -272,6 +299,8 @@ pub fn walk_buffer(
             assignments,
             bytes_len,
             required_bytes,
+            parts_len,
+            required_parts,
         })
     })();
     result.unwrap_or_else(|reason| Walk {
@@ -279,6 +308,8 @@ pub fn walk_buffer(
         assignments: Outcome::Unavailable { reason },
         bytes_len: 0,
         required_bytes: 0,
+        parts_len: 0,
+        required_parts: 0,
     })
 }
 
@@ -286,6 +317,8 @@ pub fn walk_buffer(
 mod tests {
     use super::*;
     use crate::{cgame_state, coperation, memory::SliceMemory};
+    use coperation_instance::{Equipment, EquipmentTotal, Part, Requirement};
+    use engine_native::{cequipment_type, cequipment_variant, cequipment_variant_pool};
 
     const BASE: usize = 0x140_000_000;
     const GAME: usize = 0x1000;
@@ -295,7 +328,21 @@ mod tests {
     const DEFINITION: usize = 0x5000;
     const ROSTER: usize = 0x7200;
     const ASSIGNED: usize = 0x7400;
+    const PHASES: usize = 0x7600;
+    const PHASE_DEFINITIONS: usize = 0x7700;
+    const EQUIPMENT_TYPE: usize = 0x5400;
+    const VARIANT: usize = 0x5c00;
+    const REQUIREMENTS: usize = 0x5d00;
+    const POOL_ITEMS: usize = 0x5e00;
+    const POOL_TOTALS: usize = 0x5f00;
+    const ARCHETYPE: usize = 0x6000;
     const ID: u64 = 0xfedc_ba98_7654_3210;
+    const VARIANT_HANDLE: u64 = (77 << 32) | cequipment_variant::REFERENCE_TYPE as u64;
+
+    /// A part arena larger than any fixture's demand.
+    fn parts() -> Vec<Part> {
+        vec![Part::default(); 1 << 14]
+    }
 
     fn u32_at(bytes: &mut [u8], at: usize, value: u32) {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -374,7 +421,26 @@ mod tests {
             INSTANCE + coperation_instance::DURATION_DAYS,
             (-2_i32) as u32,
         );
-        u32_at(&mut bytes, INSTANCE + coperation_instance::PHASE_COUNT, 2);
+        array(
+            &mut bytes,
+            INSTANCE + coperation_instance::PHASE_DATA,
+            PHASES,
+            2,
+        );
+        for (index, token) in [0x11_u32, 0x22].into_iter().enumerate() {
+            let definition = PHASE_DEFINITIONS + index * 0x20;
+            u64_at(&mut bytes, PHASES + index * 8, definition as u64);
+            u32_at(
+                &mut bytes,
+                definition + coperation_instance::PHASE_TOKEN,
+                token,
+            );
+        }
+        u64_at(
+            &mut bytes,
+            INSTANCE + coperation_instance::EQUIPMENT_POOL,
+            (BASE + cequipment_variant_pool::VTABLE_RVA) as u64,
+        );
         array(
             &mut bytes,
             INSTANCE + coperation_instance::ASSIGNED_OPERATIVE_DATA,
@@ -435,12 +501,14 @@ mod tests {
             &mut expected_rows,
             &mut expected_assigned,
             &mut [],
+            &mut parts(),
         );
         assert_eq!(expected.outcome, Outcome::Rows { len: COUNT });
         assert_eq!(expected.assignments, Outcome::Rows { len: COUNT * 2 });
         let mut rows = Vec::new();
         let mut assigned = Vec::new();
         let mut descriptions = Vec::new();
+        let mut grown_parts = Vec::new();
         let actual = walk_growing(
             &memory,
             BASE,
@@ -448,6 +516,7 @@ mod tests {
             &mut rows,
             &mut assigned,
             &mut descriptions,
+            &mut grown_parts,
         );
         assert_eq!(actual, expected);
         assert_eq!(&rows[..COUNT], expected_rows.as_slice());
@@ -460,6 +529,7 @@ mod tests {
         let mut rows = Vec::new();
         let mut assigned = Vec::new();
         let mut descriptions = Vec::new();
+        let mut grown_parts = Vec::new();
         for count in [2_usize, 5_000] {
             const ASSIGNMENTS: usize = 0x10000;
             const DESCRIPTION: usize = 0x80000;
@@ -501,6 +571,7 @@ mod tests {
                 &mut expected_rows,
                 &mut expected_assigned,
                 &mut expected_description,
+                &mut parts(),
             );
             assert_eq!(expected.outcome, Outcome::Rows { len: 1 });
             assert_eq!(expected.assignments, Outcome::Rows { len: count });
@@ -511,6 +582,7 @@ mod tests {
                 &mut rows,
                 &mut assigned,
                 &mut descriptions,
+                &mut grown_parts,
             );
             assert_eq!(actual, expected);
             assert_eq!(&rows[..1], &expected_rows);
@@ -534,6 +606,7 @@ mod tests {
             &mut rows,
             &mut assignments,
             &mut [],
+            &mut parts(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(result.assignments, Outcome::Rows { len: 2 });
@@ -564,6 +637,7 @@ mod tests {
                 rows,
                 assignments,
                 &mut [],
+                &mut parts(),
             )
         };
         assert_eq!(
@@ -599,6 +673,7 @@ mod tests {
             &mut rows,
             &mut assignments,
             &mut [],
+            &mut parts(),
         );
         assert_eq!(
             result.outcome,
@@ -635,7 +710,8 @@ mod tests {
             Ok(Demand {
                 rows: 1,
                 assignments: 2,
-                description_bytes: description.len()
+                description_bytes: description.len(),
+                parts: 2,
             })
         );
         let mut rows = [coperation_instance::Row::default(); 1];
@@ -648,6 +724,7 @@ mod tests {
             &mut rows,
             &mut assigned,
             &mut descriptions,
+            &mut parts(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!((result.bytes_len, result.required_bytes), (6, 6));
@@ -664,6 +741,7 @@ mod tests {
             &mut rows,
             &mut assigned,
             &mut descriptions[..5],
+            &mut parts(),
         );
         assert_eq!(
             short.outcome,
@@ -705,6 +783,7 @@ mod tests {
             &mut rows,
             &mut assigned,
             &mut descriptions,
+            &mut parts(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(descriptions, description);
@@ -727,6 +806,7 @@ mod tests {
             &mut rows,
             &mut assigned,
             &mut descriptions,
+            &mut parts(),
         );
         assert_eq!(
             failed.outcome,
@@ -852,7 +932,8 @@ mod tests {
                 Ok(Demand {
                     rows: count,
                     assignments: 2 * count,
-                    description_bytes: 4 * count
+                    description_bytes: 4 * count,
+                    parts: 2 * count,
                 })
             );
             let mut rows = vec![coperation_instance::Row::default(); count];
@@ -865,6 +946,7 @@ mod tests {
                 &mut rows,
                 &mut assigned,
                 &mut descriptions,
+                &mut parts(),
             );
             assert_eq!(result.outcome, Outcome::Rows { len: count });
             assert_eq!(result.assignments, Outcome::Rows { len: 2 * count });
@@ -905,6 +987,7 @@ mod tests {
             &mut rows,
             &mut assignments,
             &mut [],
+            &mut parts(),
         );
         assert_eq!(result.outcome, Outcome::Rows { len: 1 });
         assert_eq!(
@@ -932,6 +1015,7 @@ mod tests {
             &mut rows,
             &mut assignments,
             &mut [],
+            &mut parts(),
         );
         assert_eq!(
             result.outcome,
@@ -951,12 +1035,248 @@ mod tests {
             &mut rows,
             &mut assignments,
             &mut [],
+            &mut parts(),
         );
         assert_eq!(
             result.outcome,
             Outcome::Unavailable {
                 reason: "operation instance owner mismatch"
             }
+        );
+    }
+
+    /// The fixture with a civilian-factory and an equipment requirement, and
+    /// a pool holding two variant entries and one archetype total.
+    fn prepared() -> Vec<u8> {
+        let mut bytes = fixture();
+        let type_vtable = (BASE + cequipment_type::VTABLE_RVA) as u64;
+        u64_at(&mut bytes, EQUIPMENT_TYPE, type_vtable);
+        u64_at(
+            &mut bytes,
+            EQUIPMENT_TYPE + cequipment_type::ARCHETYPE,
+            ARCHETYPE as u64,
+        );
+        u64_at(&mut bytes, ARCHETYPE, type_vtable);
+        u32_at(&mut bytes, ARCHETYPE + cequipment_type::TOKEN, 0x77);
+        u64_at(
+            &mut bytes,
+            VARIANT,
+            (BASE + cequipment_variant::VTABLE_RVA) as u64,
+        );
+        u64_at(&mut bytes, VARIANT + 8, VARIANT_HANDLE);
+        u64_at(
+            &mut bytes,
+            VARIANT + cequipment_variant::DEFINITION,
+            EQUIPMENT_TYPE as u64,
+        );
+        array(
+            &mut bytes,
+            INSTANCE + coperation_instance::REQUIREMENT_DATA,
+            REQUIREMENTS,
+            2,
+        );
+        let factory = REQUIREMENTS;
+        u64_at(
+            &mut bytes,
+            factory + coperation_instance::REQUIREMENT_AMOUNT,
+            250_000,
+        );
+        u32_at(
+            &mut bytes,
+            factory + coperation_instance::REQUIREMENT_DAYS,
+            3,
+        );
+        bytes[factory + coperation_instance::REQUIREMENT_USES_TIME] = 1;
+        let equipment = REQUIREMENTS + coperation_instance::REQUIREMENT_STRIDE;
+        u64_at(
+            &mut bytes,
+            equipment + coperation_instance::REQUIREMENT_AMOUNT,
+            1_000_000,
+        );
+        u64_at(
+            &mut bytes,
+            equipment + coperation_instance::REQUIREMENT_EQUIPMENT,
+            EQUIPMENT_TYPE as u64,
+        );
+        let pool = INSTANCE + coperation_instance::EQUIPMENT_POOL;
+        array(
+            &mut bytes,
+            pool + cequipment_variant_pool::ITEMS,
+            POOL_ITEMS,
+            2,
+        );
+        for (index, amount) in [500_000_i64, 0].into_iter().enumerate() {
+            let entry = POOL_ITEMS + index * engine_native::equipment_entry::STRIDE;
+            u64_at(&mut bytes, entry, VARIANT as u64);
+            u64_at(&mut bytes, entry + 8, amount as u64);
+        }
+        array(
+            &mut bytes,
+            pool + cequipment_variant_pool::ALLOCATIONS,
+            POOL_TOTALS,
+            1,
+        );
+        u64_at(&mut bytes, POOL_TOTALS, ARCHETYPE as u64);
+        u64_at(
+            &mut bytes,
+            POOL_TOTALS + engine_native::allocation_equipment_row::AMOUNT,
+            500_000,
+        );
+        bytes[pool + cequipment_variant_pool::ALLOW_ZERO] = 1;
+        bytes
+    }
+
+    fn walk_parts(bytes: &[u8], parts: &mut [Part]) -> (Walk, coperation_instance::Row) {
+        let mut rows = [coperation_instance::Row::default(); 1];
+        let result = walk(
+            &SliceMemory { base: 0, bytes },
+            BASE,
+            GAME,
+            &mut rows,
+            &mut [operation_assigned_operative::Row::default(); 2],
+            &mut [],
+            parts,
+        );
+        (result, rows[0])
+    }
+
+    #[test]
+    fn phases_requirements_and_the_equipment_pool_follow_native_order() {
+        let bytes = prepared();
+        let mut arena = [Part::default(); 7];
+        let (result, row) = walk_parts(&bytes, &mut arena);
+        assert_eq!(result.outcome, Outcome::Rows { len: 1 });
+        assert_eq!((result.parts_len, result.required_parts), (7, 7));
+        assert_eq!(
+            (
+                row.parts_start,
+                row.phase_count,
+                row.requirement_count,
+                row.equipment_count,
+                row.equipment_total_count,
+                row.equipment_allow_zero
+            ),
+            (0, 2, 2, 2, 1, 1)
+        );
+        assert_eq!(
+            arena,
+            [
+                Part::Phase(0x11),
+                Part::Phase(0x22),
+                Part::Requirement(Requirement {
+                    amount: 250_000,
+                    days: 3,
+                    archetype: 0,
+                    equipment: 0,
+                    uses_time: 1,
+                }),
+                Part::Requirement(Requirement {
+                    amount: 1_000_000,
+                    days: 0,
+                    archetype: 0x77,
+                    equipment: 1,
+                    uses_time: 0,
+                }),
+                Part::Equipment(Equipment {
+                    variant: VARIANT_HANDLE,
+                    archetype: 0x77,
+                    amount: 500_000,
+                }),
+                Part::Equipment(Equipment {
+                    variant: VARIANT_HANDLE,
+                    archetype: 0x77,
+                    amount: 0,
+                }),
+                Part::EquipmentTotal(EquipmentTotal {
+                    archetype: 0x77,
+                    amount: 500_000,
+                }),
+            ]
+        );
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(demand(&memory, BASE, GAME).unwrap().parts, 7);
+    }
+
+    #[test]
+    fn a_part_shortage_omits_the_row_with_exact_demand_and_still_reads_its_parts() {
+        let mut bytes = prepared();
+        let (short, _) = walk_parts(&bytes, &mut [Part::default(); 6]);
+        assert_eq!(
+            short.outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!((short.parts_len, short.required_parts), (0, 7));
+        // An omitted row's parts are authenticated all the same.
+        u64_at(&mut bytes, PHASES + 8, 0);
+        assert_eq!(
+            walk_parts(&bytes, &mut []).0.outcome,
+            Outcome::Unavailable {
+                reason: "operation phase definition unreadable or null"
+            }
+        );
+    }
+
+    #[test]
+    fn part_refusals_are_named() {
+        let check = |change: &dyn Fn(&mut Vec<u8>), reason: &'static str| {
+            let mut bytes = prepared();
+            change(&mut bytes);
+            assert_eq!(
+                walk_parts(&bytes, &mut parts()).0.outcome,
+                Outcome::Unavailable { reason },
+                "{reason}"
+            );
+        };
+        check(
+            &|bytes| u64_at(bytes, INSTANCE + coperation_instance::EQUIPMENT_POOL, 0),
+            "equipment pool vtable mismatch",
+        );
+        check(
+            &|bytes| u64_at(bytes, EQUIPMENT_TYPE, 0),
+            "operation equipment type vtable mismatch",
+        );
+        check(
+            &|bytes| u64_at(bytes, EQUIPMENT_TYPE + cequipment_type::ARCHETYPE, 0),
+            "operation equipment archetype null",
+        );
+        check(
+            &|bytes| u64_at(bytes, VARIANT + 8, 77 << 32),
+            "variant vtable or reference type mismatch",
+        );
+        check(
+            &|bytes| u64_at(bytes, VARIANT + cequipment_variant::DEFINITION, 0),
+            "operation equipment variant definition unreadable or null",
+        );
+        // A null equipment-type placeholder shares the type layout.
+        let mut bytes = prepared();
+        u64_at(
+            &mut bytes,
+            EQUIPMENT_TYPE,
+            (BASE + cequipment_type::NULL_VTABLE_RVA) as u64,
+        );
+        assert_eq!(
+            walk_parts(&bytes, &mut parts()).0.outcome,
+            Outcome::Rows { len: 1 }
+        );
+        check(
+            &|bytes| {
+                u32_at(
+                    bytes,
+                    INSTANCE + coperation_instance::REQUIREMENT_DATA + 12,
+                    u32::MAX,
+                )
+            },
+            "operation requirements unreadable or invalid",
+        );
+        check(
+            &|bytes| u32_at(bytes, INSTANCE + coperation_instance::PHASE_DATA + 8, 1),
+            "operation phases unreadable or invalid",
         );
     }
 }

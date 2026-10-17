@@ -46,6 +46,7 @@ pub fn selected_tables() -> &'static [TableId] {
     static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
         const NATIVE: &[TableId] = &[
             TableId::AceRangeInputs,
+            TableId::AgencyOperationBuffers,
             TableId::ActiveAbilities,
             TableId::AirBaseRegistrations,
             TableId::AirBases,
@@ -72,6 +73,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::CountryCommandPower,
             TableId::CountryIntel,
             TableId::CountryLocalSubunits,
+            TableId::CountryStabilityInputs,
             TableId::CountryTacticUnlocks,
             TableId::CountryVisibility,
             TableId::Cryptology,
@@ -121,6 +123,8 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::NuclearStrikes,
             TableId::OrdersGroupCounterInputs,
             TableId::OrdersGroupMembers,
+            TableId::OperativeMissions,
+            TableId::Operations,
             TableId::Players,
             TableId::ProvinceSupply,
             TableId::ProvinceUnitOrder,
@@ -152,6 +156,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::StationedUnits,
             TableId::StockpileArchetypes,
             TableId::Stockpiles,
+            TableId::StrategicOperatives,
             TableId::SupplyNodes,
             TableId::TaskForceCounterInputs,
             TableId::TaskForceMapMotion,

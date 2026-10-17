@@ -19,6 +19,7 @@ pub struct GuiAssets<'a> {
     pub localisation: &'a installed_content::localisation::Localisation,
     pub flags: Option<GuiFlags<'a>>,
     pub physical_viewport: Option<[i32; 2]>,
+    pub portrait_textures: Option<&'a dyn Fn(&[u8]) -> Option<Texture>>,
 }
 
 /// Flag resolution and the two atlases used by GUI text and shields.
@@ -34,6 +35,14 @@ impl native_gui::Resources for GuiAssets<'_> {
     }
     fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
         self.gui.sprite(name)
+    }
+
+    fn portrait_texture(&self, name: &[u8]) -> Option<Texture> {
+        self.portrait_textures.and_then(|resolve| resolve(name))
+    }
+
+    fn sprite_alpha(&self, name: &[u8]) -> Option<native_gui::AlphaMask> {
+        self.gui.sprite_alpha(name)
     }
 
     fn unloaded_sprite(&self, name: &[u8]) -> bool {

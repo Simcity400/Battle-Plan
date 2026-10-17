@@ -36,7 +36,7 @@ pub mod widgets;
 
 pub use animation::{Animated, AnimationRecord};
 pub use fixed::fixed_window_layout;
-pub use hit::HitGeometry;
+pub use hit::{AlphaMask, HitGeometry};
 
 use super::{
     native_effects::{Blend, Effect, FixtureTechnique, Sampler, Settles, Technique},
@@ -396,6 +396,16 @@ pub trait Resources {
     }
     /// The sprite the content defines under `name`, if any.
     fn sprite(&self, name: &[u8]) -> Option<SpriteInfo>;
+    /// A recorded portrait sprite resolved to its texture, without replacing the icon's mask.
+    fn portrait_texture(&self, _name: &[u8]) -> Option<Texture> {
+        None
+    }
+
+    /// The CPU transparency mask, when the texture loader made one. No mask accepts
+    /// the rectangular hit; a missing texture is separately Hit::Through.
+    fn sprite_alpha(&self, _name: &[u8]) -> Option<AlphaMask> {
+        None
+    }
     /// A declared sprite whose resources the caller has not loaded, distinct from an undefined name.
     fn unloaded_sprite(&self, _name: &[u8]) -> bool {
         false
@@ -944,6 +954,7 @@ pub enum PartKind {
     /// A bound [`Texture`].
     Cell {
         texture: usize,
+        masking: Option<Vec<u8>>,
         uv: [f32; 4],
         geometry: Geometry,
     },
@@ -2541,6 +2552,31 @@ impl Walk<'_> {
                 physical,
                 clip,
             )
+            .with_alpha(
+                (texture.is_none() && info.hit == Hit::Alpha)
+                    .then(|| self.resources.sprite_alpha(&sprite))
+                    .flatten(),
+                scale,
+                {
+                    let own = match frame {
+                        FrameSource::Own(frame) | FrameSource::State(frame) => frame,
+                    };
+                    let selected = if matches!(info.kind, SpriteKind::FrameAnimated { .. }) {
+                        bound_clock
+                            .and_then(|(written, _)| written)
+                            .unwrap_or(bound_frame.unwrap_or(own))
+                    } else {
+                        bound_frame.unwrap_or(own)
+                    };
+                    let index = Self::frame_index(selected, state, &info);
+                    let extent = info.extent();
+                    if info.vertical {
+                        [0, index.wrapping_mul(extent[1])]
+                    } else {
+                        [index.wrapping_mul(extent[0]), 0]
+                    }
+                },
+            )
         });
         let mut color = tint.unwrap_or([1.0; 4]);
         // `Color`'s alpha is the element's times the opacity.
@@ -2565,6 +2601,7 @@ impl Walk<'_> {
                 let kind = match texture {
                     Some(texture) => PartKind::Cell {
                         texture: texture.texture,
+                        masking: info.masked.then(|| sprite.clone()),
                         uv: texture.uv,
                         geometry,
                     },
@@ -5516,10 +5553,24 @@ fn draw_fixture_part(
         }
         PartKind::Cell {
             texture,
+            masking,
             uv,
             geometry,
         } => {
-            let exact = exact(geometry.corners(), corners_uv(*uv));
+            let mut exact = exact(geometry.corners(), corners_uv(*uv));
+            if let Some(sprite) = masking {
+                exact.masking = Some(
+                    sheets
+                        .masking(sprite)
+                        .ok_or_else(|| {
+                            missing(format!(
+                                "sprite {}'s masking texture is not loaded",
+                                lossy(sprite)
+                            ))
+                        })?
+                        .texture,
+                );
+            }
             batch.push(quad(*texture, part.color, exact));
         }
         PartKind::Progress {

@@ -2,6 +2,21 @@
 //! Hit extents and transforms are independent of stretched or cropped draw quads.
 
 use super::{Clip, Hit, Holder, Rect, truncate_f32};
+use std::sync::Arc;
+
+/// One byte per mip-0 texel: nonzero only for alpha-zero pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlphaMask {
+    pub width: i32,
+    pub transparent: Arc<[u8]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AlphaHit {
+    mask: Option<AlphaMask>,
+    scale: f32,
+    offset: [i32; 2],
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HitGeometry {
@@ -15,6 +30,7 @@ pub struct HitGeometry {
     initial: [f32; 2],
     shape: Shape,
     clip: Option<Clip>,
+    alpha: Option<AlphaHit>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +70,7 @@ impl HitGeometry {
                 physical,
             },
             clip,
+            alpha: None,
         }
     }
 
@@ -77,6 +94,7 @@ impl HitGeometry {
                 measured_height,
             },
             clip,
+            alpha: None,
         }
     }
 
@@ -94,7 +112,29 @@ impl HitGeometry {
             initial: [0.0; 2],
             shape: Shape::Rectangle(size),
             clip,
+            alpha: None,
         }
+    }
+
+    /// A plain rectangle's pointer geometry in a viewport, for fixtures of hover consumers.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_rectangle(position: [i32; 2], size: [i32; 2], viewport: [i32; 2]) -> Self {
+        Self::rectangle(position, size, viewport, None)
+    }
+
+    /// The drawable keeps its mask and selected frame separately from its rectangle.
+    pub(super) fn with_alpha(
+        mut self,
+        mask: Option<AlphaMask>,
+        scale: f32,
+        offset: [i32; 2],
+    ) -> Self {
+        self.alpha = Some(AlphaHit {
+            mask,
+            scale,
+            offset,
+        });
+        self
     }
 
     pub(super) fn inherit(&mut self, scale: f32, position: [i32; 2]) {
@@ -124,7 +164,7 @@ impl HitGeometry {
         }
     }
 
-    pub(crate) fn shifted(&self, origin: [i32; 2]) -> Self {
+    pub fn shifted(&self, origin: [i32; 2]) -> Self {
         let mut hit = self.clone();
         hit.translate(origin);
         hit.clip = hit.clip.map(|clip| {
@@ -222,7 +262,7 @@ impl HitGeometry {
     }
 
     /// Conservative diagnostic footprint; dispatch must use contains.
-    pub(crate) fn bounds(&self) -> Option<Rect> {
+    pub fn bounds(&self) -> Option<Rect> {
         let (world, pivot, inherited) = self.world();
         let at = world.map(truncate_f32);
         let size = match self.shape {
@@ -272,7 +312,7 @@ impl HitGeometry {
             point
         };
         let at = world.map(truncate_f32);
-        match self.shape {
+        let inside = match self.shape {
             Shape::Text { size, .. } => {
                 let point = point.map(truncate_f32);
                 (0..2).all(|axis| {
@@ -289,7 +329,33 @@ impl HitGeometry {
                 at[axis] as f32 <= point[axis]
                     && point[axis] < at[axis].wrapping_add(size[axis]) as f32
             }),
+        };
+        if !inside {
+            return false;
         }
+        if self.form != Hit::Alpha {
+            return true;
+        }
+        // Rectangular admission happens first. The mask uses the drawable origin,
+        // truncation before and after f32 division, then the integer frame offset.
+        let Some(AlphaHit {
+            mask: Some(mask),
+            scale,
+            offset,
+        }) = &self.alpha
+        else {
+            return true;
+        };
+        let [x, y] = [0, 1].map(|axis| {
+            truncate_f32(truncate_f32(point[axis] - world[axis]) as f32 / scale)
+                .wrapping_add(offset[axis])
+        });
+        // Only the flattened index is checked: no separate X/Y clamp or Y flip.
+        let index = y.wrapping_mul(mask.width).wrapping_add(x);
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| mask.transparent.get(index))
+            .is_none_or(|&transparent| transparent == 0)
     }
 }
 
@@ -329,6 +395,53 @@ mod tests {
 
     const LOGICAL: [i32; 2] = [1920, 1080];
     const PHYSICAL: [i32; 2] = [2560, 1440];
+
+    #[test]
+    fn alpha_uses_two_truncations_frame_offsets_and_flattened_fallback() {
+        let mask = AlphaMask {
+            width: 12,
+            transparent: Arc::from([
+                1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            ]),
+        };
+        let make = |offset| {
+            HitGeometry::sprite(
+                [20, 20],
+                [5, 1],
+                [5.6, 1.4],
+                Hit::Alpha,
+                LOGICAL,
+                PHYSICAL,
+                None,
+            )
+            .with_alpha(Some(mask.clone()), 0.7, offset)
+        };
+        let hit = make([0, 0]);
+        assert!(!hit.contains([20.0, 20.0]));
+        // trunc(1.99) / 0.7 truncates to 1, not 2. No filtering or half texel.
+        assert!(hit.contains([21.99, 20.0]));
+        assert!(!hit.contains([22.0, 20.0]));
+        // The next row is transparent: there is no Y flip.
+        assert!(!hit.contains([21.99, 21.0]));
+        assert!(!hit.contains([26.0, 20.0]));
+        assert!(!hit.contains([21.0, 22.0]));
+        // Horizontal and vertical frame texel offsets.
+        assert!(make([4, 0]).contains([20.0, 20.0]));
+        assert!(!make([0, 1]).contains([21.99, 20.0]));
+        // Only the flattened index is checked, even if X alone is out of range.
+        assert!(make([12, -1]).contains([21.99, 20.0]));
+        assert!(make([0, 20]).contains([20.0, 20.0]));
+        assert!(make([-50, 0]).contains([20.0, 20.0]));
+        let absent = hit.clone().with_alpha(None, 0.7, [0, 0]);
+        assert!(absent.contains([20.0, 20.0]));
+        assert!(!absent.contains([26.0, 20.0]));
+
+        let mut fractional = hit;
+        fractional.initial = [0.75, 0.75];
+        // Subtract the fractional drawable origin before truncating.
+        assert!(!fractional.contains([21.5, 20.75]));
+        assert!(fractional.contains([22.5, 20.75]));
+    }
 
     #[test]
     fn native_add_then_correction_keeps_rounding_and_incoming_epsilon() {

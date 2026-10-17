@@ -393,6 +393,139 @@ pub fn read_operation_tokens(layers: &ResolvedLayers) -> io::Result<OperationTok
     Ok(result)
 }
 
+/// An operation phase's sprites: its `icon` and its `map_icon`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OperationPhase {
+    pub token: String,
+    pub icon: String,
+    pub map_icon: String,
+}
+
+impl OperationPhase {
+    /// The sprite the Operatives map draws for the phase: its `map_icon`, or its `icon`, which
+    /// the game copies into an empty map sprite once the phases are loaded.
+    pub fn map_sprite(&self) -> &str {
+        if self.map_icon.is_empty() {
+            &self.icon
+        } else {
+            &self.map_icon
+        }
+    }
+}
+
+/// The operation phase definitions of `common/operation_phases/`, keyed by lowered token.
+#[derive(Default)]
+pub struct OperationPhases {
+    pub definitions: BTreeMap<String, OperationPhase>,
+    /// A file whose reading stops can register an earlier token, so no lookup guesses.
+    pub refusals: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl OperationPhases {
+    pub fn phase(&self, token: &str) -> Result<Option<&OperationPhase>, String> {
+        if self.refusals.is_empty() {
+            Ok(self.definitions.get(&token.to_ascii_lowercase()))
+        } else {
+            Err(format!(
+                "operation phase {token}: {}",
+                self.refusals.join("; ")
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PhaseNode {
+    File,
+    Phase,
+}
+
+/// The first definition of a token is registered and a later body skipped. Only the two
+/// sprite fields are projected; every other field is passed over without being read.
+pub fn parse_operation_phases(
+    input: &[u8],
+    names: &KeyNames,
+    earlier: &BTreeSet<String>,
+) -> io::Result<(Vec<OperationPhase>, Vec<String>)> {
+    let mut seen = earlier.clone();
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::Persistent(PhaseNode::File),
+        Some(names),
+        &mut |node, field| match node {
+            PhaseNode::File => {
+                if seen.insert(String::from_utf8_lossy(field.key.c_str()).to_ascii_lowercase()) {
+                    Shape::Object(PhaseNode::Phase)
+                } else {
+                    Shape::Skip
+                }
+            }
+            PhaseNode::Phase => match field.keyword().as_deref() {
+                Some(b"icon" | b"map_icon") => Shape::One,
+                _ => Shape::SkipIfOpen,
+            },
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("operation phase definitions: {cause}")));
+    }
+    let mut projected = earlier.clone();
+    let mut result = Vec::new();
+    for item in read.items {
+        let Some(fields) = item.value.items() else {
+            continue;
+        };
+        let token = token(&item)?;
+        if !projected.insert(token.to_ascii_lowercase()) {
+            continue;
+        }
+        let mut definition = OperationPhase {
+            token,
+            ..OperationPhase::default()
+        };
+        for field in fields {
+            if field.keyword_is("icon") {
+                definition.icon = string(field)?;
+            } else if field.keyword_is("map_icon") {
+                definition.map_icon = string(field)?;
+            }
+        }
+        result.push(definition);
+    }
+    Ok((
+        result,
+        read.misreads
+            .into_iter()
+            .map(|why| why.to_string())
+            .collect(),
+    ))
+}
+
+pub fn read_operation_phases(layers: &ResolvedLayers) -> io::Result<OperationPhases> {
+    let names = layers.key_names()?;
+    let mut result = OperationPhases::default();
+    let mut earlier = BTreeSet::new();
+    for path in script_files::paths(layers, "common/operation_phases/", Some(".txt")) {
+        match parse_operation_phases(&layers.read(&path)?, &names, &earlier) {
+            Ok((definitions, warnings)) => {
+                result
+                    .warnings
+                    .extend(warnings.into_iter().map(|why| format!("{path}: {why}")));
+                for definition in definitions {
+                    let key = definition.token.to_ascii_lowercase();
+                    earlier.insert(key.clone());
+                    result.definitions.entry(key).or_insert(definition);
+                }
+            }
+            Err(why) => result.refusals.push(format!("{path}: {why}")),
+        }
+    }
+    result.warnings.extend(result.refusals.iter().cloned());
+    Ok(result)
+}
+
 /// An agency upgrade's authored identifier is its localisation key;
 /// the reader has no name override.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -604,6 +737,40 @@ mod tests {
         assert_eq!(definitions[0].map_icon, "MAP");
         assert_eq!(definitions[1].name, "OTHER");
         assert!(definitions[1].map_icon.is_empty());
+    }
+
+    #[test]
+    fn operation_phase_map_sprite_falls_back_to_its_icon_and_keeps_the_first_definition() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (definitions, _) = parse_operation_phases(
+            b"steal = { icon = GFX_steal map_icon = GFX_steal_map outcome = { a = b } }
+              STEAL = { icon = GFX_wrong }
+              infiltrate = { name = NAME icon = GFX_infiltrate }",
+            &KeyNames::default(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].map_sprite(), "GFX_steal_map");
+        assert_eq!(definitions[1].token, "infiltrate");
+        assert_eq!(definitions[1].map_sprite(), "GFX_infiltrate");
+        let phases = OperationPhases {
+            definitions: definitions
+                .into_iter()
+                .map(|phase| (phase.token.to_ascii_lowercase(), phase))
+                .collect(),
+            ..OperationPhases::default()
+        };
+        assert_eq!(
+            phases.phase("INFILTRATE").unwrap().unwrap().icon,
+            "GFX_infiltrate"
+        );
+        let refused = OperationPhases {
+            refusals: vec!["common/operation_phases/a.txt: unsettled".into()],
+            ..OperationPhases::default()
+        };
+        assert!(refused.phase("steal").is_err());
     }
 
     #[test]

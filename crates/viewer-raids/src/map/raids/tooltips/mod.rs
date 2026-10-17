@@ -4,7 +4,7 @@
 use viewer_foundation::map::lazy_icons::LazyFlags;
 mod chance;
 pub mod content;
-mod intel;
+pub(crate) mod intel;
 pub mod lane;
 mod names;
 mod recorded;

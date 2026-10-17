@@ -208,6 +208,7 @@ pub mod null_unit_leader_skill;
 pub mod operation_assigned_operative;
 pub mod operative_action;
 pub mod operative_action_implementation;
+pub mod operative_missions;
 pub mod order_execution;
 pub mod portrait_cache;
 pub mod prefetch;

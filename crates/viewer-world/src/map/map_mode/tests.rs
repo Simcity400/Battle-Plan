@@ -577,8 +577,14 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
     assert_eq!(layer.gradient, Some(LEVEL_GRADIENT));
     assert_eq!(layer.thickness, Some(5.0));
     assert_eq!(layer.channel, [0.0, 0.973]);
-    // The unrecorded state and the icons are named.
-    assert_eq!(fill.warnings.len(), 2, "{:?}", fill.warnings);
+    // The unrecorded state is named; the icons are drawn by their own layer.
+    assert_eq!(fill.warnings.len(), 1, "{:?}", fill.warnings);
+    assert!(
+        !fill
+            .warnings
+            .iter()
+            .any(|why| why.contains("icons are not drawn"))
+    );
     // A network at or past 100% takes the high colour; a share below one half blends by
     // half of itself.
     let defines = defines();
@@ -600,7 +606,7 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
         refused.draw.unwrap().channels,
         [Source::Country, Source::Empty]
     );
-    assert_eq!(refused.warnings.len(), 2);
+    assert_eq!(refused.warnings.len(), 1);
     let mut unavailable = frame.clone();
     unavailable.tables[TableId::IntelNetworks.index()] = TableView::Unavailable {
         reason: "not recorded".into(),

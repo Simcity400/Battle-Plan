@@ -35,7 +35,7 @@ pub const HANDLE_TYPE: u32 = 4713;
 pub const NAME: usize = 0x20;
 /// String construction and assignment refuse lengths above the game's maximum;
 /// no smaller name cap is imposed.
-const NAME_MAX_LENGTH: u64 = 0x7fff_ffff_ffff_ffff;
+pub(crate) const NAME_MAX_LENGTH: u64 = 0x7fff_ffff_ffff_ffff;
 /// COperativeLeader duplicate name std::string.
 pub const NAME_DUPLICATE: usize = 0x40;
 /// COperativeLeader portrait gfx std::string.
@@ -65,9 +65,18 @@ pub const NATIONALITIES: usize = 0xf68;
 pub const NATIONALITY_CAPACITY: usize = 0xf70;
 /// Nationality-vector count read as u32; game signedness unresolved.
 pub const NATIONALITY_COUNT: usize = 0xf74;
+/// The operative's own modifier accumulator, whose effective values its
+/// mission getters (root-out-resistance effectiveness) read.
+pub const MODIFIER_ACCUMULATOR: usize = 0x418;
 /// Own packed operation-instance handle, resolved using both words and also
 /// written during reservation.
 pub const OPERATION_REFERENCE: usize = 0xf80;
+/// Inline pending mission, carried while the operative relocates to its
+/// mission and started on arrival; its fields are the `operative_action`
+/// `PENDING_*` offsets.
+pub const PENDING_MISSION: usize = 0xf88;
+/// Pending-mission presence byte; nonzero when a mission is pending.
+pub const PENDING_MISSION_PRESENT: usize = 0xfa8;
 /// COperativeLeader capturer country id.
 pub const CAPTURER_COUNTRY: usize = 0xfb0;
 /// Captured-at raw hour, i32, copied from the current game date.

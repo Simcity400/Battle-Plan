@@ -22,8 +22,16 @@ pub const VTABLE_RVAS: [usize; 8] = [
 /// Country-tag virtual dispatch shared by concrete action implementations.
 /// Authenticate each executable vtable once per walk, retaining failures, while
 /// checking every object's own vtable.
-const COUNTRY_GETTER_SLOT: usize = 0x50;
-const COUNTRY_GETTER_RVA: usize = 0x01a1_dd30;
+pub(crate) const COUNTRY_GETTER_SLOT: usize = 0x50;
+pub(crate) const COUNTRY_GETTER_RVA: usize = 0x01a1_dd30;
+
+/// A mission implementation's stored targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Targets {
+    pub(crate) country: u32,
+    /// Nonnull state pointer of a state-targeted variant.
+    pub(crate) state: Option<usize>,
+}
 
 pub(crate) struct Vtables {
     base: usize,
@@ -47,6 +55,41 @@ impl Vtables {
         mission: usize,
         variant: u32,
     ) -> Result<u32, &'static str> {
+        let pointer = self.implementation(memory, mission, variant)?;
+        target_country(memory, pointer)
+    }
+
+    /// The stored raw country and, for the state-targeted variants, the
+    /// stored state pointer, null as `None`; the implementation pointer and
+    /// its vtable are authenticated once for both.
+    pub(crate) fn targets(
+        &mut self,
+        memory: &impl crate::Memory,
+        mission: usize,
+        variant: u32,
+    ) -> Result<Targets, &'static str> {
+        let pointer = self.implementation(memory, mission, variant)?;
+        let country = target_country(memory, pointer)?;
+        let state = if crate::operative_action::targets_state(variant) {
+            let raw = pointer
+                .checked_add(TARGET_POINTER)
+                .and_then(|at| crate::read::<u64>(memory, at))
+                .ok_or("operative mission target state unreadable")?;
+            Some(usize::try_from(raw).map_err(|_| "operative mission target state overflow")?)
+                .filter(|&state| state != 0)
+        } else {
+            None
+        };
+        Ok(Targets { country, state })
+    }
+
+    /// The authenticated implementation of the mission's variant.
+    fn implementation(
+        &mut self,
+        memory: &impl crate::Memory,
+        mission: usize,
+        variant: u32,
+    ) -> Result<usize, &'static str> {
         let index = variant
             .checked_sub(1)
             .map(|index| index as usize)
@@ -79,9 +122,13 @@ impl Vtables {
             Ok(())
         });
         (*authentication)?;
-        pointer
-            .checked_add(TARGET_COUNTRY)
-            .and_then(|at| crate::read(memory, at))
-            .ok_or("operative mission target country unreadable")
+        Ok(pointer)
     }
+}
+
+fn target_country(memory: &impl crate::Memory, implementation: usize) -> Result<u32, &'static str> {
+    implementation
+        .checked_add(TARGET_COUNTRY)
+        .and_then(|at| crate::read(memory, at))
+        .ok_or("operative mission target country unreadable")
 }

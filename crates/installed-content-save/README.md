@@ -21,6 +21,8 @@ An omitted state owner certifies the native signed nonpositive class and also su
 
 `SaveDocument` projects serializer output: a bare `=fixed5` directly inside any saved `variables` block retains an empty literal key, distinct from an anonymous value or an omitted map. Other tree readers keep their existing grammar. This preserves the writer's state; native text-load recovery consumes that malformed assignment differently and does not round-trip the empty name.
 
+Operatives retain the inherited leader writer's optional nonempty portrait `gfx`; an emitted empty value is refused.
+
 Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
 
 [Saved transfer inputs](src/counter_inputs.rs) keep source province and ordered combat references separate from the target. [Mission cache reads](src/naval_missions/spotting_cache.rs) use recorded lexical keys and the authenticated physical-country projection; omission constrains only the nonpositive writer branch. Air pools require their saved definition token. Orders-group and plan names distinguish an omitted key from emitted empty first-NUL text.

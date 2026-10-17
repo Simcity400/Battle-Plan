@@ -1112,6 +1112,9 @@ MapEvents = 325 => MapEvents(MapEventsRow),
 OwnerTransportSpeeds = 326 => OwnerTransportSpeed(OwnerTransportSpeedRow),
 ReserveModifierTrees = 327 => ReserveModifierTree(ReserveModifierTreeRow),
 BattleSounds = 328 => BattleSound(BattleSoundRow),
+OperativeMissions = 329 => OperativeMission(OperativeMissionRow),
+StrategicOperatives = 330 => StrategicOperative(StrategicOperativeRow),
+AgencyOperationBuffers = 331 => AgencyOperationBuffers(AgencyOperationBuffersRow),
 }
 impl TableId {
     /// Discard only proven field framing. No old row is decoded, validated as

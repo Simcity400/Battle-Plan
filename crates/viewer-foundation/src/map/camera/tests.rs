@@ -543,3 +543,15 @@ fn a_free_pose_with_an_unusable_lens_or_orientation_is_refused() {
     }
     assert!(camera.validate().is_err());
 }
+
+#[test]
+fn fixed5_camera_distances_convert_the_stored_integer_before_dividing_in_single_precision() {
+    // 1,074,218,815 rounds down to 1,074,218,752 as an f32; the quotient of the exact value
+    // rounds up to the next f32 instead, so a double-precision division differs.
+    assert_eq!(fixed5_camera_distance(1_074_218_815), 10742.1875);
+    assert_ne!(
+        fixed5_camera_distance(1_074_218_815),
+        (1_074_218_815_f64 / 100_000.0) as f32
+    );
+    assert_eq!(fixed5_camera_distance(90_000_000), 900.0);
+}

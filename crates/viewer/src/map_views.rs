@@ -152,6 +152,8 @@ pub struct Views {
     pub labels: viewer_world::map::labels::LabelView,
     pub pings: PoolView,
     pub raids: PoolView,
+    /// The Operatives map mode's state containers and their entries.
+    pub intel: viewer_raids::map::intel_icons::IntelView,
     pub bases: [PoolView; viewer_counters::map::counters::BASE_FAMILIES],
     pub land_combats: viewer_counters::map::counters::land_windows::View,
 }
@@ -172,12 +174,13 @@ impl Views {
         let labels = self.labels.take_running();
         let pings = self.pings.take_running();
         let raids = self.raids.take_running();
+        let intel = self.intel.take_running();
         let mut bases = false;
         for view in &mut self.bases {
             bases |= view.take_running();
         }
         let land_combats = self.land_combats.take_running();
-        naval || labels || pings || raids || bases || land_combats
+        naval || labels || pings || raids || intel || bases || land_combats
     }
 }
 
@@ -218,6 +221,8 @@ pub struct CounterView {
     pub settings: CounterSettings,
     pub selected: Arc<BTreeSet<Unit>>,
     pub hovered: Option<Unit>,
+    /// Whether the view shows the Operatives map mode, whose intel icons it then draws.
+    pub operatives: bool,
     pub presentation: Arc<Presentation>,
     /// What the view's map mode shows of the counters, icons and labels.
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
@@ -230,6 +235,7 @@ impl CounterView {
             settings,
             selected: Arc::default(),
             hovered: None,
+            operatives: false,
             presentation: Arc::default(),
             visibility: Default::default(),
         }
@@ -241,6 +247,7 @@ impl PartialEq for CounterView {
         self.settings == other.settings
             && self.selected == other.selected
             && self.hovered == other.hovered
+            && self.operatives == other.operatives
             && Arc::ptr_eq(&self.presentation, &other.presentation)
             && self.visibility == other.visibility
     }

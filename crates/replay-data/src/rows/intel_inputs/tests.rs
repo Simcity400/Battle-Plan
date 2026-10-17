@@ -54,23 +54,19 @@ fn intel_inputs_append_without_reinterpreting_membership_or_operation_prefixes()
     assert_eq!(old.not_recorded_fields(), 0b111111 << 9);
     assert!(old.encode_fields(&mut Vec::new()).is_err());
 
-    let row = OperationRow {
-        id: u64::MAX,
-        owner: 5000,
-        target: 4999,
-        terminal: 0xfe,
-        bonus: Recorded::Value(0xfd),
-        detected: Recorded::Value(0xfc),
-        effect_description: Recorded::Value(vec![0xff, 0, b'x']),
-        ..Default::default()
-    };
-    let old = old_prefix(TableId::Operations, &row);
-    assert_eq!((old.owner, old.target, old.terminal), (5000, 4999, 0xfe));
-    assert_eq!(old.bonus, Recorded::NotRecorded);
-    assert_eq!(old.detected, Recorded::NotRecorded);
-    assert_eq!(old.effect_description, Recorded::NotRecorded);
-    assert_eq!(old.not_recorded_fields(), 0b111 << 13);
-    assert!(old.delta(None).is_err());
+    // The preparation fields changed the Operations layout: an older
+    // recording refuses the table by name.
+    let old = FormatVersion::read(EFFECT_INPUTS_FORMAT).unwrap();
+    assert!(
+        old.table_refusal(TableId::Operations)
+            .unwrap()
+            .starts_with("Operations ")
+    );
+    assert!(
+        FormatVersion::CURRENT
+            .table_refusal(TableId::Operations)
+            .is_none()
+    );
 }
 
 #[test]
@@ -87,7 +83,7 @@ fn intel_tables_do_not_change_existing_captured_roster_or_snapshot_cadences() {
         cadence(TableId::CapturedOperativeReferences),
         Cadence::Daily(16)
     );
-    assert_eq!(cadence(TableId::Operations), Cadence::Daily(23));
+    assert_eq!(cadence(TableId::Operations), Cadence::Hourly);
     assert!(
         old.table_refusal(TableId::CapturedOperativeReferences)
             .is_none()

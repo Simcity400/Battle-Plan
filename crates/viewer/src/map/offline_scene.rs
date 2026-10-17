@@ -165,6 +165,9 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let icons = MapIcons {
         combat: Arc::new(combat),
         raids: Arc::new(raids),
+        intel: Arc::new(viewer_raids::map::intel_icons::IntelAssets::load(
+            layers, &defines,
+        )),
         images,
         fonts,
         counters: Arc::new(counters),

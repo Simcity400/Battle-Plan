@@ -25,6 +25,12 @@ pub const VICTORY_POINT_WINDOW: &str = "victory_point_mapicon";
 pub const CAPITAL_WINDOW: &str = "capital_mapicon";
 pub const RAID_WINDOW: &str = "raid_map_icon";
 pub const FACTION_PING_WINDOW: &str = "faction_ping_map_icon";
+/// The Operatives map mode's per-state intel container and its entry windows.
+pub const INTEL_CONTAINER_WINDOW: &str = "intel_map_mode_map_icon";
+pub const INTEL_SHIELD_WINDOW: &str = "counterintelligence_map_icon_entry";
+pub const INTEL_OPERATIVE_WINDOW: &str = "operative_map_icon_entry";
+pub const INTEL_OPERATION_WINDOW: &str = "operation_map_icon_entry";
+pub const INTEL_MORE_WINDOW: &str = "intel_map_icon_more";
 
 /// Native templates read once per GUI viewport and retained for every window consumer.
 pub struct WindowCache {
@@ -204,6 +210,11 @@ impl NativeWindows {
             NAVAL_HEADQUARTER_WINDOW.as_bytes(),
             FACILITY_WINDOW.as_bytes(),
             LAND_COMBAT_WINDOW.as_bytes(),
+            INTEL_CONTAINER_WINDOW.as_bytes(),
+            INTEL_SHIELD_WINDOW.as_bytes(),
+            INTEL_OPERATIVE_WINDOW.as_bytes(),
+            INTEL_OPERATION_WINDOW.as_bytes(),
+            INTEL_MORE_WINDOW.as_bytes(),
             native_gui::text_sprites::TOOLTIP,
             b"defaultTextBox",
         ] {

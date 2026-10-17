@@ -17,7 +17,7 @@ pub struct Pack {
     /// and each state's absent variables payload separately from an empty one.
     pub state_variables: Option<BTreeMap<u32, Option<Variables>>>,
     /// Global strategic-operative roster; absent root stays None, present root
-    /// maps each numeric index to its networks. Save-root tie to countries unproved.
+    /// maps each numeric index (the manager's country slot) to its object.
     pub strategic_operatives: Option<BTreeMap<u32, StrategicOperative>>,
 }
 
@@ -209,8 +209,9 @@ pub struct Operations {
 /// `date`/`duration` are None when omitted (unset start date / zero duration).
 /// `phases`/`operative_slots`
 /// are None when omitted (signed count 0); a present-but-empty list is refused.
-/// Equipment, resources, civilian_factories/total and other cost payloads have
-/// no proved Row mapping and are not retained.
+/// `civilian_factories` and `total` are the preparation's current and
+/// required values, each omitted when zero. `resources` holds the requirement
+/// records in order with repeats, and `equipment` the inline equipment pool.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OperationInstance {
     pub definition: Vec<u8>,
@@ -221,6 +222,13 @@ pub struct OperationInstance {
     pub duration: Option<i32>,
     pub phases: Option<Vec<Vec<u8>>>,
     pub operative_slots: Option<Vec<OperationSlot>>,
+    pub civilian_factories: Option<Decimal>,
+    pub total: Option<Decimal>,
+    /// None when the `resources` block is omitted.
+    pub resources: Option<Vec<OperationResource>>,
+    /// The pool writer's entries (zero amounts only with
+    /// `allow_zero_entries`); None when the `equipment` block is omitted.
+    pub equipment: Option<super::air::EquipmentPool>,
     /// The instance writer emits each of these flags only when nonzero.
     pub terminal: bool,
     pub bonus: bool,
@@ -228,6 +236,15 @@ pub struct OperationInstance {
     /// Ordinary terminal saves serialize the effect description; checksum
     /// mode omits it. Keep missing separate from the written empty string.
     pub effect_description: Option<Vec<u8>>,
+}
+
+/// One saved requirement record, in `resources` order with repeats.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OperationResource {
+    /// `<archetype>=<fixed5 amount>`.
+    Equipment { archetype: Vec<u8>, amount: Decimal },
+    /// `civilian_factories={ amount=<whole factories> days=<days> }`.
+    Factories { amount: i32, days: i32 },
 }
 
 /// One assigned-operative slot in serialized order; ordinal is positional.
@@ -272,6 +289,16 @@ pub struct OperativeEntry {
     /// mission definition block. The country writer omits non-positive
     /// references.
     pub mission_target: Option<Vec<u8>>,
+    /// The state-targeted missions (build and quiet network, root out
+    /// resistance, boost ideology, propaganda) emit their nonnull target
+    /// state's id as `state` in the same block.
+    pub mission_state: Option<i32>,
+    /// The boost-ideology mission emits its nonnull ideology as `ideology` in
+    /// the same block.
+    pub mission_ideology: Option<Vec<u8>>,
+    /// The inherited leader writer saves the leader's own portrait sprite as
+    /// `gfx`, only when it is nonempty.
+    pub gfx: Option<Vec<u8>>,
     /// The operative writer always delegates the codename to the division-name
     /// writer. Its group key and the leader's separate inherited name are not serialized.
     pub codename: Option<super::units::DivisionName>,
@@ -343,11 +370,31 @@ pub struct SavedSubnetwork {
     pub quiet: bool,
 }
 
-/// One strategic-operative index with its networks; save-root tie unproved.
+/// One strategic-operative index with its networks, activity and influence
+/// maps. The index is the country slot the manager's vector keys it by.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StrategicOperative {
     pub index: u32,
     pub networks: Vec<IntelNetworkEntry>,
+    /// `subversive_activity_level.value`: the mission activity.
+    pub mission_activity: Option<Decimal>,
+    /// `danger_level.value`: the operation activity.
+    pub operation_activity: Option<Decimal>,
+    /// `trade_influence_modifier_of_buyers`, `(country, amount)` in saved
+    /// order; None when the writer omitted the empty map.
+    pub trade_influence: Option<Vec<(Vec<u8>, Decimal)>>,
+    /// `diplomatic_pressure_from_countries` in saved order; None when the
+    /// writer omitted the empty map.
+    pub diplomatic_pressure: Option<Vec<SavedPressure>>,
+}
+
+/// One saved diplomatic-pressure entry: the pressuring country and the raw
+/// Q15 `opinion` (acceptance) and `tension` integers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedPressure {
+    pub country: Vec<u8>,
+    pub opinion: i64,
+    pub tension: i64,
 }
 
 fn date(items: &[Item], key: &[u8]) -> io::Result<Option<GameDate>> {
@@ -486,27 +533,39 @@ fn parse_operative_entry(items: &[Item]) -> io::Result<OperativeEntry> {
             "operative capturer tag and capture date must be emitted together",
         ));
     }
-    let (mission_present, mission_name, mission_target) = match field(items, b"mission")? {
-        None => (false, None, None),
-        Some(value) => {
-            let fields = block(value)?;
-            if fields.len() != 1 {
-                return Err(invalid(
-                    "operative mission must contain exactly one definition",
-                ));
+    let (mission_present, mission_name, mission_target, mission_state, mission_ideology) =
+        match field(items, b"mission")? {
+            None => (false, None, None, None, None),
+            Some(value) => {
+                let fields = block(value)?;
+                if fields.len() != 1 {
+                    return Err(invalid(
+                        "operative mission must contain exactly one definition",
+                    ));
+                }
+                let name = fields[0]
+                    .key
+                    .clone()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| invalid("operative mission lacks its definition name"))?;
+                let definition = block(&fields[0].value)?;
+                let target = bytes(definition, b"target")?;
+                if target.as_ref().is_some_and(|target| target.is_empty()) {
+                    return Err(invalid("operative mission target is empty"));
+                }
+                let state = field(definition, b"state")?
+                    .map(|value| integer(scalar(value)?))
+                    .transpose()?;
+                let ideology = bytes(definition, b"ideology")?;
+                if ideology
+                    .as_ref()
+                    .is_some_and(|ideology| ideology.is_empty())
+                {
+                    return Err(invalid("operative mission ideology is empty"));
+                }
+                (true, Some(name), target, state, ideology)
             }
-            let name = fields[0]
-                .key
-                .clone()
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| invalid("operative mission lacks its definition name"))?;
-            let target = bytes(block(&fields[0].value)?, b"target")?;
-            if target.as_ref().is_some_and(|target| target.is_empty()) {
-                return Err(invalid("operative mission target is empty"));
-            }
-            (true, Some(name), target)
-        }
-    };
+        };
     Ok(OperativeEntry {
         id,
         name: bytes(items, b"name")?,
@@ -527,6 +586,14 @@ fn parse_operative_entry(items: &[Item]) -> io::Result<OperativeEntry> {
         mission_present,
         mission_name,
         mission_target,
+        mission_state,
+        mission_ideology,
+        gfx: match bytes(items, b"gfx")? {
+            Some(gfx) if gfx.is_empty() => {
+                return Err(invalid("the leader writer omits an empty portrait gfx"));
+            }
+            gfx => gfx,
+        },
         codename: field(items, b"codename")?
             .map(|value| super::units::division_name(block(value)?))
             .transpose()?,
@@ -759,7 +826,8 @@ fn parse_strategic_operatives(items: &[Item]) -> io::Result<BTreeMap<u32, Strate
         )?;
         let mut networks = Vec::new();
         let mut seen_targets = std::collections::BTreeSet::new();
-        for entry in block(&item.value)?
+        let fields = block(&item.value)?;
+        for entry in fields
             .iter()
             .filter(|entry| entry.key.as_deref() == Some(b"intel_network"))
         {
@@ -771,14 +839,88 @@ fn parse_strategic_operatives(items: &[Item]) -> io::Result<BTreeMap<u32, Strate
             }
             networks.push(network);
         }
-        if result
-            .insert(index, StrategicOperative { index, networks })
-            .is_some()
-        {
+        let level = |key: &[u8]| {
+            field(fields, key)?
+                .map(|value| {
+                    decimal(block(value)?, b"value")?.ok_or_else(|| {
+                        invalid(format!(
+                            "strategic operative {} lacks its value",
+                            String::from_utf8_lossy(key)
+                        ))
+                    })
+                })
+                .transpose()
+        };
+        let operative = StrategicOperative {
+            index,
+            networks,
+            mission_activity: level(b"subversive_activity_level".as_slice())?,
+            operation_activity: level(b"danger_level".as_slice())?,
+            trade_influence: field(fields, b"trade_influence_modifier_of_buyers")?
+                .map(parse_trade_influence)
+                .transpose()?,
+            diplomatic_pressure: field(fields, b"diplomatic_pressure_from_countries")?
+                .map(parse_diplomatic_pressure)
+                .transpose()?,
+        };
+        if result.insert(index, operative).is_some() {
             return Err(invalid("duplicate strategic operative index"));
         }
     }
     Ok(result)
+}
+
+/// One anonymous influence entry: the country scalar and its payload.
+fn influence_entry<'a>(entry: &'a Item, map: &str) -> io::Result<(Vec<u8>, &'a Value)> {
+    let refuse = || invalid(format!("{map} entry must hold a country and its value"));
+    if entry.key.is_some() {
+        return Err(refuse());
+    }
+    let parts = block(&entry.value)?;
+    let [country, payload] = parts else {
+        return Err(refuse());
+    };
+    if country.key.is_some() || payload.key.is_some() {
+        return Err(refuse());
+    }
+    let country = scalar(&country.value)?.to_vec();
+    if country.is_empty() {
+        return Err(refuse());
+    }
+    Ok((country, &payload.value))
+}
+
+/// The writer omits an empty map, keeping zero entries.
+fn parse_trade_influence(value: &Value) -> io::Result<Vec<(Vec<u8>, Decimal)>> {
+    const MAP: &str = "trade_influence_modifier_of_buyers";
+    let mut entries = Vec::new();
+    for entry in block(value)? {
+        let (country, amount) = influence_entry(entry, MAP)?;
+        entries.push((country, Decimal::parse(scalar(amount)?)?));
+    }
+    if entries.is_empty() {
+        return Err(invalid(format!("native writer omits an empty {MAP}")));
+    }
+    Ok(entries)
+}
+
+/// The writer omits an empty map, keeping zero entries.
+fn parse_diplomatic_pressure(value: &Value) -> io::Result<Vec<SavedPressure>> {
+    const MAP: &str = "diplomatic_pressure_from_countries";
+    let mut entries = Vec::new();
+    for entry in block(value)? {
+        let (country, payload) = influence_entry(entry, MAP)?;
+        let fields = block(payload)?;
+        entries.push(SavedPressure {
+            country,
+            opinion: integer(&required_bytes(fields, b"opinion")?)?,
+            tension: integer(&required_bytes(fields, b"tension")?)?,
+        });
+    }
+    if entries.is_empty() {
+        return Err(invalid(format!("native writer omits an empty {MAP}")));
+    }
+    Ok(entries)
 }
 
 fn parse_subject(owner: &[u8], target: &[u8], items: &[Item]) -> io::Result<Subject> {
@@ -966,6 +1108,71 @@ fn parse_operation_slots(value: &Value) -> io::Result<Vec<OperationSlot>> {
     Ok(slots)
 }
 
+/// The requirement records in saved order: an equipment requirement is its
+/// archetype name with a fixed5 amount, the civilian-factory requirement a
+/// block of whole factories and days.
+fn parse_operation_resources(value: &Value) -> io::Result<Vec<OperationResource>> {
+    let mut resources = Vec::new();
+    for entry in block(value)? {
+        let name = entry
+            .key
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid("operation resource lacks its name"))?;
+        resources.push(match &entry.value {
+            Value::Block(fields) => {
+                if name != b"civilian_factories" {
+                    return Err(invalid(
+                        "operation resource block is not the civilian-factory requirement",
+                    ));
+                }
+                OperationResource::Factories {
+                    amount: integer(&required_bytes(fields, b"amount")?)?,
+                    days: integer(&required_bytes(fields, b"days")?)?,
+                }
+            }
+            value => OperationResource::Equipment {
+                archetype: name.to_vec(),
+                amount: Decimal::parse(scalar(value)?)?,
+            },
+        });
+    }
+    Ok(resources)
+}
+
+/// The inline equipment pool: its allow-zero flag and variant entries.
+fn parse_operation_equipment(value: &Value) -> io::Result<super::air::EquipmentPool> {
+    let fields = block(value)?;
+    let allow_zero = boolean(
+        field(fields, b"allow_zero_entries")?
+            .ok_or_else(|| invalid("operation equipment pool lacks allow_zero_entries"))?,
+    )?;
+    let mut entries = Vec::new();
+    for entry in fields
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"equipment"))
+    {
+        let entry = block(&entry.value)?;
+        entries.push(super::air::Equipment {
+            variant: super::typed_handle(
+                field(entry, b"id")?
+                    .ok_or_else(|| invalid("operation equipment entry lacks its variant"))?,
+            )?,
+            amount: decimal(entry, b"amount")?
+                .ok_or_else(|| invalid("operation equipment entry lacks its amount"))?,
+        });
+    }
+    if !allow_zero && entries.iter().any(|entry| entry.amount.raw == 0) {
+        return Err(invalid(
+            "zero operation equipment entry contradicts the pool writer's omission rule",
+        ));
+    }
+    Ok(super::air::EquipmentPool {
+        entries,
+        allow_zero,
+    })
+}
+
 fn parse_operation_instance(definition: &[u8], items: &[Item]) -> io::Result<OperationInstance> {
     // The instance writer emits target always, date with duration only when
     // duration is nonzero, slots and phases only for nonzero signed counts,
@@ -989,6 +1196,14 @@ fn parse_operation_instance(definition: &[u8], items: &[Item]) -> io::Result<Ope
             .transpose()?,
         operative_slots: field(items, b"operative_slots")?
             .map(parse_operation_slots)
+            .transpose()?,
+        civilian_factories: decimal(items, b"civilian_factories")?,
+        total: decimal(items, b"total")?,
+        resources: field(items, b"resources")?
+            .map(parse_operation_resources)
+            .transpose()?,
+        equipment: field(items, b"equipment")?
+            .map(parse_operation_equipment)
             .transpose()?,
         terminal: field(items, b"completed")?
             .map(boolean)
@@ -2004,6 +2219,32 @@ mod tests {
             Some(b"custom_mission".as_slice())
         );
         assert_eq!(row.mission_target.as_deref(), Some(b"Y".as_slice()));
+        assert_eq!(row.mission_state, Some(123));
+        assert_eq!(row.mission_ideology, None);
+        let pack = parsed(
+            format!(
+                "{prefix}mission={{boost_ideology={{target=Y state=-4 ideology=fascism}}}}{suffix}"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let row = &pack.countries[b"X".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .operatives[0];
+        assert_eq!(row.mission_state, Some(-4));
+        assert_eq!(row.mission_ideology.as_deref(), Some(b"fascism".as_slice()));
+        assert_eq!(row.gfx, None);
+        // The leader writer saves a nonempty portrait as gfx and never an empty one.
+        let pack = parsed(format!("{prefix}gfx=\"GFX_spy\"{suffix}").as_bytes()).unwrap();
+        let row = &pack.countries[b"X".as_slice()]
+            .agency
+            .as_ref()
+            .unwrap()
+            .operatives[0];
+        assert_eq!(row.gfx.as_deref(), Some(b"GFX_spy".as_slice()));
+        assert!(parsed(format!("{prefix}gfx=\"\"{suffix}").as_bytes()).is_err());
         // The country-reference writer omits the tag for a null reference.
         let pack =
             parsed(format!("{prefix}mission={{custom_mission={{}}}}{suffix}").as_bytes()).unwrap();
@@ -2014,12 +2255,21 @@ mod tests {
             .operatives[0];
         assert!(row.mission_present);
         assert_eq!(row.mission_target, None);
+        assert_eq!(
+            (row.mission_state, row.mission_ideology.as_deref()),
+            (None, None)
+        );
         for mission in [
             "mission={}",
             "mission={custom_mission={target=Y target=Z}}",
             "mission={custom_mission={target=\"\"}}",
             "mission={a={target=Y} b={target=Z}}",
             "mission={mission=custom_mission target_country=Y target_state=123}",
+            "mission={custom_mission={target=Y state=1 state=2}}",
+            "mission={custom_mission={target=Y state=north}}",
+            "mission={custom_mission={target=Y state=4294967296}}",
+            "mission={custom_mission={ideology=a ideology=b}}",
+            "mission={custom_mission={ideology=\"\"}}",
         ] {
             assert!(
                 parsed(format!("{prefix}{mission}{suffix}").as_bytes()).is_err(),
@@ -2105,5 +2355,201 @@ mod tests {
                 - entry.cooldown_start_date.unwrap().engine_hour().unwrap(),
             5 * 24 + 12
         );
+    }
+
+    #[test]
+    fn strategic_operatives_keep_activity_and_both_influence_maps_in_saved_order() {
+        let pack = parsed(
+            br#"countries={ENG={} SOV={}}
+            strategic_operatives={ strategic_operative={
+                3={
+                    subversive_activity_level={ value=1.23456 }
+                    danger_level={ value=-0.5 }
+                    trade_influence_modifier_of_buyers={ { "SOV" 2.5 } { "ENG" 0 } { "SOV" 1 } }
+                    diplomatic_pressure_from_countries={ { "SOV" { opinion=32768 tension=-16384 } } }
+                }
+                4={ subversive_activity_level={ value=0 } danger_level={ value=0 } }
+            } }"#,
+        )
+        .unwrap();
+        let operatives = pack.strategic_operatives.as_ref().unwrap();
+        let first = &operatives[&3];
+        assert_eq!(
+            (
+                first.mission_activity.as_ref().map(|value| value.raw),
+                first.operation_activity.as_ref().map(|value| value.raw)
+            ),
+            (Some(123_456), Some(-50_000))
+        );
+        let trade = first.trade_influence.as_ref().unwrap();
+        assert_eq!(
+            trade
+                .iter()
+                .map(|(country, amount)| (country.as_slice(), amount.raw))
+                .collect::<Vec<_>>(),
+            [
+                (b"SOV".as_slice(), 250_000),
+                (b"ENG".as_slice(), 0),
+                (b"SOV".as_slice(), 100_000)
+            ]
+        );
+        assert_eq!(
+            first.diplomatic_pressure.as_deref(),
+            Some(
+                [SavedPressure {
+                    country: b"SOV".to_vec(),
+                    opinion: 32_768,
+                    tension: -16_384,
+                }]
+                .as_slice()
+            )
+        );
+        // An empty map's block is omitted, distinct from an empty one.
+        let second = &operatives[&4];
+        assert_eq!(
+            (&second.trade_influence, &second.diplomatic_pressure),
+            (&None, &None)
+        );
+        assert_eq!(
+            second.mission_activity.as_ref().map(|value| value.raw),
+            Some(0)
+        );
+        // Activity absent from a synthetic block stays absent.
+        let bare =
+            parsed(b"countries={} strategic_operatives={ strategic_operative={ 0={} } }").unwrap();
+        let bare = &bare.strategic_operatives.as_ref().unwrap()[&0];
+        assert_eq!(
+            (&bare.mission_activity, &bare.operation_activity),
+            (&None, &None)
+        );
+        for body in [
+            "trade_influence_modifier_of_buyers={}",
+            "diplomatic_pressure_from_countries={}",
+            "trade_influence_modifier_of_buyers={ { \"SOV\" } }",
+            "trade_influence_modifier_of_buyers={ { \"SOV\" 1 2 } }",
+            "trade_influence_modifier_of_buyers={ { \"\" 1 } }",
+            "trade_influence_modifier_of_buyers={ SOV=1 }",
+            "trade_influence_modifier_of_buyers={ { \"SOV\" many } }",
+            "diplomatic_pressure_from_countries={ { \"SOV\" { opinion=1 } } }",
+            "diplomatic_pressure_from_countries={ { \"SOV\" { opinion=1 tension=0.5 } } }",
+            "diplomatic_pressure_from_countries={ { \"SOV\" 1 } }",
+            "subversive_activity_level={ level=1 }",
+            "danger_level=1",
+        ] {
+            assert!(
+                parsed(
+                    format!(
+                        "countries={{}} strategic_operatives={{ strategic_operative={{ 0={{ {body} }} }} }}"
+                    )
+                    .as_bytes()
+                )
+                .is_err(),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_preparation_resources_and_equipment_pool_keep_saved_order() {
+        let pack = parsed(
+            br#"countries={ENG={operations={ priority=1 running={ operation_x={
+                id={ id=1 type=4713 } target="SOV"
+                civilian_factories=1.5 total=12
+                resources={ infantry_equipment=180 civilian_factories={ amount=2 days=30 } infantry_equipment=0.5 }
+                equipment={ allow_zero_entries=yes
+                    equipment={ id={ id=12 type=70 } amount=100 }
+                    equipment={ id={ id=13 type=70 } amount=0 } }
+            } } }} SOV={}}"#,
+        )
+        .unwrap();
+        let running = &pack.countries[b"ENG".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap()[0];
+        assert_eq!(
+            (
+                running.civilian_factories.as_ref().map(|value| value.raw),
+                running.total.as_ref().map(|value| value.raw)
+            ),
+            (Some(150_000), Some(1_200_000))
+        );
+        assert_eq!(
+            running.resources.as_deref(),
+            Some(
+                [
+                    OperationResource::Equipment {
+                        archetype: b"infantry_equipment".to_vec(),
+                        amount: Decimal::parse(b"180").unwrap(),
+                    },
+                    OperationResource::Factories {
+                        amount: 2,
+                        days: 30
+                    },
+                    OperationResource::Equipment {
+                        archetype: b"infantry_equipment".to_vec(),
+                        amount: Decimal::parse(b"0.5").unwrap(),
+                    },
+                ]
+                .as_slice()
+            )
+        );
+        let pool = running.equipment.as_ref().unwrap();
+        assert!(pool.allow_zero);
+        assert_eq!(
+            pool.entries
+                .iter()
+                .map(|entry| (entry.variant, entry.amount.raw))
+                .collect::<Vec<_>>(),
+            [((12 << 32) | 70, 10_000_000), ((13 << 32) | 70, 0)]
+        );
+        // Omitted preparation, resources and pool stay absent.
+        let omitted = parsed(
+            br#"countries={ENG={operations={ priority=1 running={ operation_x={
+                id={ id=1 type=4713 } target="SOV" } } }} SOV={}}"#,
+        )
+        .unwrap();
+        let running = &omitted.countries[b"ENG".as_slice()]
+            .operations
+            .as_ref()
+            .unwrap()
+            .running
+            .as_ref()
+            .unwrap()[0];
+        assert_eq!(
+            (
+                &running.civilian_factories,
+                &running.total,
+                &running.resources,
+                &running.equipment
+            ),
+            (&None, &None, &None, &None)
+        );
+        for body in [
+            "resources={ infantry_equipment=many }",
+            "resources={ civilian_factories={ amount=2 } }",
+            "resources={ civilian_factories={ amount=1.5 days=3 } }",
+            "resources={ other={ amount=1 days=1 } }",
+            "resources={ 1 }",
+            "equipment={ equipment={ id={ id=12 type=70 } amount=1 } }",
+            "equipment={ allow_zero_entries=no equipment={ id={ id=12 type=70 } amount=0 } }",
+            "equipment={ allow_zero_entries=yes equipment={ amount=1 } }",
+            "equipment={ allow_zero_entries=yes equipment={ id={ id=12 type=70 } } }",
+            "civilian_factories=lots",
+            "total=1 total=2",
+        ] {
+            assert!(
+                parsed(
+                    format!(
+                        "countries={{ENG={{operations={{ priority=1 running={{ operation_x={{ id={{ id=1 type=4713 }} target=\"SOV\" {body} }} }} }}}} SOV={{}}}}"
+                    )
+                    .as_bytes()
+                )
+                .is_err(),
+                "{body}"
+            );
+        }
     }
 }

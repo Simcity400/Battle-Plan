@@ -124,6 +124,8 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
            --counters-json <out.json>, submitted plates with interface rectangles
              (device pixels at --ui-scale 1), sprite frames and text
            --province-hover <id>, print the province's hover text in the dump's map mode
+           --intel-hover <x,y>, print an Operatives map entry's hover (repeatable)
+             under that interface point, or that none takes it
            --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel
              (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1
 Compare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
@@ -194,9 +196,7 @@ fn parse_fly_steer(value: &str) -> io::Result<[f32; 3]> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| invalid(USAGE))?;
     match values.as_slice() {
-        &[turn, climb, throttle]
-            if values.iter().all(|value| (-1.0..=1.0).contains(value)) =>
-        {
+        &[turn, climb, throttle] if values.iter().all(|value| (-1.0..=1.0).contains(value)) => {
             Ok([turn, climb, throttle])
         }
         _ => Err(invalid(USAGE)),
@@ -376,6 +376,8 @@ struct Options {
     /// Dump-only: print this province's hover text in the dump's map mode, its
     /// control codepoints escaped, and its refusals.
     province_hover: Option<u32>,
+    /// Dump-only: print the hover text of the intel entry under this interface point.
+    intel_hover: Vec<[f32; 2]>,
     /// `--ui-scale`: device pixels per interface pixel of the screen-space map
     /// interface. A dump renders at the game's frame size, where the verified
     /// comparison pipeline uses 1.0, so that is the default; the desktop app's
@@ -481,6 +483,19 @@ impl Options {
                 Some("--counters-json") => {
                     options.counters_json =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
+                }
+                Some("--intel-hover") => {
+                    let value = args.next().ok_or_else(|| invalid(USAGE))?;
+                    let value = value.to_string_lossy();
+                    let point: Vec<f32> = value
+                        .split(',')
+                        .map(|part| part.trim().parse::<f32>())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| invalid("--intel-hover needs an interface point x,y"))?;
+                    let &[x, y] = point.as_slice() else {
+                        return Err(invalid("--intel-hover needs an interface point x,y"));
+                    };
+                    options.intel_hover.push([x, y]);
                 }
                 Some("--province-hover") => {
                     let value = args.next().ok_or_else(|| invalid(USAGE))?;
@@ -785,7 +800,9 @@ impl Options {
                 );
             }
             None if walk_keys.is_some() || walk_flying => {
-                return Err(invalid("--walk-keys and --walk-flying hold keys for a --walk"));
+                return Err(invalid(
+                    "--walk-keys and --walk-flying hold keys for a --walk",
+                ));
             }
             None => {}
         }
@@ -810,6 +827,9 @@ impl Options {
         }
         if options.province_hover.is_some() && !options.headless_dump {
             return Err(invalid("--province-hover requires --dump"));
+        }
+        if !options.intel_hover.is_empty() && !options.headless_dump {
+            return Err(invalid("--intel-hover requires --dump"));
         }
         if options.counters_json.is_some() && !options.headless_dump {
             return Err(invalid("--counters-json requires --dump"));
@@ -1284,6 +1304,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             omitted,
             options.counter_settings(document.game_counters),
             visibility,
+            matches!(
+                options.map_mode,
+                viewer_world::map::map_mode::MapMode::Stock(
+                    viewer_world::map::map_mode::Stock::Operatives
+                )
+            ),
         )?;
         let mut combat_warnings = Vec::new();
         if let Some(selector) = options.combat {
@@ -1438,6 +1464,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         for warning in &dump_overlay.settlement_warnings {
             eprintln!("Warning: {warning}");
+        }
+        for warning in dump_overlay.prepared().intel_report().warnings() {
+            eprintln!("Warning: {warning}");
+        }
+        for point in &options.intel_hover {
+            let point = *point;
+            let escaped = |text: &str| {
+                text.chars()
+                    .map(|c| match c {
+                        '\u{11}' => "\\u{11}".to_owned(),
+                        '\u{12}' => "\\u{12}".to_owned(),
+                        c => c.to_string(),
+                    })
+                    .collect::<String>()
+            };
+            let [x, y] = point;
+            match dump_overlay.prepared().intel_at(point) {
+                None => println!("Intel hover at {x},{y}: no intel entry takes the point"),
+                Some(hit) => {
+                    println!("Intel hover at {x},{y}:\n{}", escaped(&hit.tooltip.title));
+                    if !hit.tooltip.body.is_empty() {
+                        println!(
+                            "Intel hover at {x},{y} body:\n{}",
+                            escaped(&hit.tooltip.body)
+                        );
+                    }
+                    for (reason, count) in &hit.tooltip.refused {
+                        println!("Intel hover at {x},{y} refused ({count}): {reason}");
+                    }
+                }
+            }
         }
         let (label_batch, label_report, counter_report, raid_report) = (
             dump_overlay.batch,
@@ -2730,7 +2787,11 @@ mod tests {
         assert_eq!(fly.position, [3000.0, 40.0, 1000.0]);
         assert_eq!(
             fly.attitude,
-            [90f32.to_radians(), (-10f32).to_radians(), 20f32.to_radians()]
+            [
+                90f32.to_radians(),
+                (-10f32).to_radians(),
+                20f32.to_radians()
+            ]
         );
         assert_eq!(fly.view, controls::flight::View::Nose);
         assert_eq!(fly.steer, [0.5, -1.0, 1.0]);

@@ -682,3 +682,44 @@ fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
     let refusals = presentation.read_warnings().overlay_refusals().unwrap();
     assert!(refusals.contains("texture gfx/fonts/j.tga ("), "{refusals}");
 }
+
+#[test]
+fn transparency_masks_keep_mip_zero_alpha_one_and_shared_texture_identity() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut image = tga(4, 1);
+    image[17] = 0x28; // Top-left source rows.
+    for (pixel, alpha) in [0, 1, 128, 255].into_iter().enumerate() {
+        image[18 + pixel * 4 + 3] = alpha;
+    }
+    let (root, layers) = stack(
+        "alpha",
+        &[
+            (
+                "interface/alpha.gfx",
+                br#"spriteTypes = {
+            spriteType = { name = alpha textureFile = "gfx/alpha.tga" transparencecheck = yes }
+            spriteType = { name = alias textureFile = "gfx/alpha.tga" transparencecheck = yes }
+            spriteType = { name = missing textureFile = "gfx/missing.tga" transparencecheck = yes }
+        }"#
+                .to_vec(),
+            ),
+            ("gfx/alpha.tga", image),
+        ],
+    );
+    let assets = Assets {
+        sprites: [b"alpha".to_vec(), b"alias".to_vec(), b"missing".to_vec()].into(),
+        ..Assets::default()
+    };
+    let (resources, _) = loaded(&layers, b"l_english", &assets);
+    let alpha = resources.sprite_alpha(b"alpha").unwrap();
+    assert_eq!(&*alpha.transparent, &[1, 0, 0, 0]);
+    assert_eq!(alpha.width, 4);
+    assert!(Arc::ptr_eq(
+        &alpha.transparent,
+        &resources.sprite_alpha(b"alias").unwrap().transparent
+    ));
+    assert_eq!(resources.sprite(b"missing").unwrap().hit, Hit::Through);
+    assert!(resources.sprite_alpha(b"missing").is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -972,6 +972,17 @@ impl Capacities {
         );
         crate::country_scale::raise(&mut self.intel.rows[4], demand.operative_memberships);
         crate::country_scale::raise(&mut self.intel.operative_names, demand.operative_name_bytes);
+        crate::country_scale::raise(&mut self.intel.rows[18], demand.operative_missions);
+        crate::country_scale::raise(
+            &mut self.intel.operative_mission_bytes,
+            demand.operative_mission_bytes,
+        );
+        crate::country_scale::raise(&mut self.intel.operation_parts, demand.operation_parts);
+        crate::country_scale::raise(&mut self.intel.rows[19], demand.strategic_operatives);
+        crate::country_scale::raise(
+            &mut self.intel.strategic_operative_entries,
+            demand.strategic_operative_entries,
+        );
 
         self.hired_advisors
             .raise_for_character_records(demand.active_characters, demand.retired_characters);

@@ -36,8 +36,8 @@ use installed_content::{
 use super::{
     native_effects::Effect,
     native_gui::{
-        AnimationRecord, Assets, FALLBACK_SPRITE, Hit, RefusalKind, Sheets, SpriteInfo, SpriteKind,
-        Texture, TextureFile, lossy,
+        AlphaMask, AnimationRecord, Assets, FALLBACK_SPRITE, Hit, RefusalKind, Sheets, SpriteInfo,
+        SpriteKind, Texture, TextureFile, lossy,
     },
     native_text::{self, Page},
     sprites::{NO_TEXTURE, SpriteSheet},
@@ -125,6 +125,8 @@ pub struct GuiResources {
     /// The client state every texture decodes under ([`Decode`]).
     decode: Decode,
     sprites: BTreeMap<Vec<u8>, Prepared>,
+    /// Shared CPU masks, built only for textures used by transparency-checked sprites.
+    alpha: BTreeMap<usize, AlphaMask>,
     /// Each loaded font, by the index of the registered font it is.
     fonts: BTreeMap<usize, native_text::Font>,
     /// The registered font each asked name resolves to.
@@ -162,6 +164,7 @@ impl GuiResources {
             touched: Vec::new(),
             decode,
             sprites: BTreeMap::new(),
+            alpha: BTreeMap::new(),
             fonts: BTreeMap::new(),
             font_names: BTreeMap::new(),
             effects: BTreeMap::new(),
@@ -434,6 +437,23 @@ impl GuiResources {
                     ),
                     _ => (self.texture(layers, &plain.texture, images)?, None),
                 };
+                if plain.transparence_check && main.missing.is_none() {
+                    // The game creates a mask only for decoded BGRA8 surfaces. Other
+                    // native formats keep the no-mask rectangular-hit fallback.
+                    if let Some(image) = images.get(main.texture)
+                        && image.format == dds::TextureFormat::Rgba8
+                    {
+                        self.alpha.entry(main.texture).or_insert_with(|| AlphaMask {
+                            width: image.width as i32,
+                            transparent: image
+                                .base()
+                                .data
+                                .chunks_exact(4)
+                                .map(|texel| u8::from(texel[3] == 0))
+                                .collect(),
+                        });
+                    }
+                }
                 let masking = if plain.masking_texture.is_empty() {
                     None
                 } else {
@@ -798,6 +818,13 @@ impl GuiResources {
     /// The sprite the content defines under `name`, as loaded.
     pub fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
         self.sprites.get(name).map(|prepared| prepared.info.clone())
+    }
+
+    /// The texture's mip-0 CPU mask shared by all drawables using it, if it has one.
+    pub fn sprite_alpha(&self, name: &[u8]) -> Option<AlphaMask> {
+        self.alpha
+            .get(&self.sprites.get(name)?.sheet.texture)
+            .cloned()
     }
 
     /// The animation records the sprite `name` draws ([`SpriteInfo::animated`]).

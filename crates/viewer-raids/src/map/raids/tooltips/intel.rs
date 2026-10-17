@@ -16,6 +16,9 @@ pub struct Defines {
     pub base_counter: i64,
     pub operative_base: i64,
     pub stacking: i64,
+    /// `NOperatives.COUNTER_INTELLIGENCE_FOREIGN_AGENT_FACTOR`: each counteroperative's base
+    /// is multiplied by one plus it when it is not zero.
+    pub foreign_agent: i64,
     pub crypto: dashboard_text::cryptology::Defines,
     pub required: i64,
 }
@@ -33,6 +36,7 @@ impl Default for Defines {
             base_counter: 0,
             operative_base: 0,
             stacking: 0,
+            foreign_agent: 0,
             crypto: dashboard_text::cryptology::Defines {
                 base: 0,
                 upgrade: 0,
@@ -61,6 +65,7 @@ impl Defines {
             base_counter: op("BASE_COUNTER_INTELLIGENCE_RATING")?,
             operative_base: op("OPERATIVE_BASE_INTEL_AGENCY_DEFENSE")?,
             stacking: op("COUNTER_INTELLIGENCE_STACKING_FACTOR")?,
+            foreign_agent: op("COUNTER_INTELLIGENCE_FOREIGN_AGENT_FACTOR")?,
             crypto: dashboard_text::cryptology::Defines::read(d)?,
             required: raid("TARGET_DETECTION_INTEL_TRESHOLD")?,
         })
@@ -86,14 +91,35 @@ pub fn air_ratio(friendly: i64, enemy: i64) -> Result<i64, String> {
         .ok_or_else(|| "air superiority signed division overflow".into())
 }
 
-/// Deduplicate objects, sort by signed contribution then (type, id), and
-/// iterate backwards.
-fn stacked(operatives: &[RaidCounterOperative], base: i64, factor: i64) -> Result<i64, String> {
+/// One counteroperative's base before stacking: the operative base plus its defense and
+/// context, then multiplied by one plus the foreign-agent factor when that is not zero.
+pub(crate) fn counteroperative_base(
+    operative: &RaidCounterOperative,
+    base: i64,
+    foreign: i64,
+) -> i64 {
+    let value = base
+        .wrapping_add(operative.defense)
+        .wrapping_add(operative.context);
+    if foreign == 0 {
+        value
+    } else {
+        times(value, 100_000_i64.wrapping_add(foreign))
+    }
+}
+
+/// Each unique counteroperative's weighted contribution, by handle, strongest first:
+/// deduplicate objects, sort by signed base then (type, id), and iterate backwards, the first
+/// weighted one, each later one by the running product of the stacking factor.
+pub(crate) fn contributions(
+    operatives: &[RaidCounterOperative],
+    base: i64,
+    factor: i64,
+    foreign: i64,
+) -> Result<Vec<(u64, i64)>, String> {
     let mut unique = BTreeMap::new();
     for operative in operatives {
-        let value = base
-            .wrapping_add(operative.defense)
-            .wrapping_add(operative.context);
+        let value = counteroperative_base(operative, base, foreign);
         if unique
             .insert(operative.handle, value)
             .is_some_and(|old| old != value)
@@ -103,19 +129,36 @@ fn stacked(operatives: &[RaidCounterOperative], base: i64, factor: i64) -> Resul
     }
     let mut values: Vec<_> = unique
         .into_iter()
-        .map(|(handle, value)| (value, handle as u32, (handle >> 32) as u32))
+        .map(|(handle, value)| (value, handle as u32, (handle >> 32) as u32, handle))
         .collect();
     values.sort_unstable();
-    let mut values = values.into_iter().rev();
-    let Some((mut sum, _, _)) = values.next() else {
-        return Ok(0);
-    };
-    let mut scale = factor;
-    for (value, _, _) in values {
-        sum = sum.wrapping_add(times(value, scale));
-        scale = times(scale, factor);
+    let mut out = Vec::with_capacity(values.len());
+    let mut scale = None;
+    for (value, _, _, handle) in values.into_iter().rev() {
+        match scale {
+            None => {
+                out.push((handle, value));
+                scale = Some(factor);
+            }
+            Some(weight) => {
+                out.push((handle, times(value, weight)));
+                scale = Some(times(weight, factor));
+            }
+        }
     }
-    Ok(sum)
+    Ok(out)
+}
+
+/// The contributions' wrapping sum ([`contributions`]).
+fn stacked(
+    operatives: &[RaidCounterOperative],
+    base: i64,
+    factor: i64,
+    foreign: i64,
+) -> Result<i64, String> {
+    Ok(contributions(operatives, base, factor, foreign)?
+        .into_iter()
+        .fold(0_i64, |sum, (_, value)| sum.wrapping_add(value)))
 }
 
 pub fn defense(row: &RaidIntelInputRow, d: &Defines) -> Result<i64, String> {
@@ -124,7 +167,15 @@ pub fn defense(row: &RaidIntelInputRow, d: &Defines) -> Result<i64, String> {
         1 => Ok(d
             .base_counter
             .wrapping_add(row.country_defense)
-            .wrapping_add(stacked(&row.operatives, d.operative_base, d.stacking)?.max(0))),
+            .wrapping_add(
+                stacked(
+                    &row.operatives,
+                    d.operative_base,
+                    d.stacking,
+                    d.foreign_agent,
+                )?
+                .max(0),
+            )),
         _ => Err("RaidIntelInputs strategic_present is not a boolean".into()),
     }
 }
@@ -313,11 +364,12 @@ mod tests {
             stacked(
                 &[op(1, 99999), op(2, 88888), op(1, 99999), op(3, 77777)],
                 0,
-                33333
+                33333,
+                0
             ),
             Ok(138269)
         );
-        assert!(stacked(&[op(1, 2), op(1, 3)], 0, 33333).is_err());
+        assert!(stacked(&[op(1, 2), op(1, 3)], 0, 33333, 0).is_err());
         let d = Defines {
             base_counter: 100001,
             operative_base: 0,
@@ -336,6 +388,38 @@ mod tests {
         row.strategic_present = 2;
         assert!(defense(&row, &d).is_err());
     }
+    #[test]
+    fn foreign_agent_factor_multiplies_each_base_before_stacking() {
+        let op = |handle, defense| RaidCounterOperative {
+            handle,
+            defense,
+            context: 0,
+        };
+        let operatives = [op(1, 100_000), op(2, 50_000)];
+        // Zero leaves every base as it was.
+        assert_eq!(
+            contributions(&operatives, 0, 50_000, 0),
+            Ok(vec![(1, 100_000), (2, 25_000)])
+        );
+        // One plus a half: 150,000 and 75,000, the second weighted by the stacking factor.
+        assert_eq!(
+            contributions(&operatives, 0, 50_000, 50_000),
+            Ok(vec![(1, 150_000), (2, 37_500)])
+        );
+        let d = Defines {
+            base_counter: 10,
+            stacking: 50_000,
+            foreign_agent: 50_000,
+            ..Default::default()
+        };
+        let row = RaidIntelInputRow {
+            strategic_present: 1,
+            operatives: operatives.to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(defense(&row, &d), Ok(187_510));
+    }
+
     #[test]
     fn decryption_bonus_and_rounding_threshold_are_distinct() {
         let d = Defines {

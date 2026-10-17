@@ -7,6 +7,7 @@ use engine_native::{
     memory, operation_assigned_operative, read, read_slice, slot_set, walk,
 };
 
+pub mod agency_operation_buffers;
 pub mod ccountry_collaboration_data;
 pub mod ccountry_collaboration_status;
 pub mod ccountry_intel_network;
@@ -21,3 +22,4 @@ pub mod intel_network_graph_row;
 pub mod intel_network_graph_vertex;
 pub mod operation_token_map;
 pub mod operation_token_target_entry;
+pub mod strategic_operatives;

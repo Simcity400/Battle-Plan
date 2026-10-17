@@ -78,6 +78,7 @@ fn the_native_windows_load_and_lay_out_without_the_legacy_readers() {
         localisation: &localisation,
         flags: None,
         physical_viewport: Some(VIEWPORT),
+        portrait_textures: None,
     };
     let mut instance = Instance::construct(windows.navy(), VIEWPORT, &resources).unwrap();
     instance.gui_show(windows.navy(), windows.navy()).unwrap();

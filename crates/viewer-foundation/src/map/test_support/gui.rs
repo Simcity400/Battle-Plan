@@ -30,9 +30,29 @@ pub struct Fixture {
     pub(crate) text: Option<Effect>,
     /// `gfx/FX/buttonstate.shader`, when a test replaces the synthetic one.
     pub(crate) buttonstate: Option<Effect>,
+    /// The physical viewport sprite hit geometry needs; none by default, so a fixture's
+    /// sprites have no pointer geometry unless a hover test asks for it.
+    pub physical: Option<[i32; 2]>,
+    pub alpha: HashMap<&'static str, AlphaMask>,
 }
 
 impl Resources for Fixture {
+    fn physical_viewport(&self) -> Option<[i32; 2]> {
+        self.physical
+    }
+    fn portrait_texture(&self, name: &[u8]) -> Option<Texture> {
+        let sheet = self.sheet(name)?;
+        Some(Texture {
+            texture: sheet.texture,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            size: sheet.size.map(|n| n as i32),
+        })
+    }
+
+    fn sprite_alpha(&self, name: &[u8]) -> Option<AlphaMask> {
+        self.alpha.get(std::str::from_utf8(name).ok()?).cloned()
+    }
+
     fn unloaded_sprite(&self, name: &[u8]) -> bool {
         name == b"GFX_unpreloaded"
     }
@@ -350,6 +370,8 @@ pub fn fixture() -> Fixture {
         animations: HashMap::new(),
         text: None,
         buttonstate: None,
+        physical: None,
+        alpha: HashMap::new(),
     };
     for (&name, info) in &fixture.sprites {
         fixture.sheets.insert(

@@ -985,10 +985,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
         Stock::States => over_countries(states(inputs, &mut warnings)?),
         Stock::Resistance => over_countries(occupation(false, inputs, &mut warnings)?),
         Stock::Compliance => over_countries(occupation(true, inputs, &mut warnings)?),
-        Stock::Operatives => {
-            warnings.push(unbuilt(stock).to_owned());
-            over_countries(operatives(inputs, &mut warnings)?)
-        }
+        Stock::Operatives => over_countries(operatives(inputs, &mut warnings)?),
         Stock::Diplomacy => {
             let layer = diplomacy(inputs, &mut warnings)?;
             Draw {
@@ -1070,9 +1067,6 @@ fn unbuilt(stock: Stock) -> &'static str {
         }
         Stock::Resources => {
             "Resources map mode: the countries show without the state resource icons, which are not drawn"
-        }
-        Stock::Operatives => {
-            "Operatives map mode: the operative, operation and counterintelligence icons are not drawn; operative locations and missions are not recorded"
         }
         _ => "This map mode's layer is not drawn",
     }

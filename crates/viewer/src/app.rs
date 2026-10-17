@@ -542,11 +542,15 @@ struct OverlayKey {
     hovered: Option<Unit>,
     /// The map mode's visibility, which a still camera must lay out again for.
     visibility: viewer_foundation::map::mode_visibility::Visibility,
+    /// The Operatives map mode, whose intel icons the overlay then lays out.
+    operatives: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapHit {
     Raid,
+    /// An intel entry of the Operatives map mode: its tooltip replaces the province's.
+    Intel,
     Combat(usize),
     NavalObserver(usize),
     PortTooltip(usize),
@@ -578,6 +582,7 @@ fn top_map_hit(
     report: &viewer_counters::map::counters::CounterReport,
     raids: &[viewer_raids::map::raids::tooltips::Hit],
     looks: Option<&free_icons::Looks>,
+    intel: Option<&viewer_raids::map::intel_icons::IntelHit>,
 ) -> Option<MapHit> {
     use free_icons::IconFamily;
     // Where the pointer falls in the layout of the icon of `family` keyed `layer`, and that
@@ -623,6 +628,17 @@ fn top_map_hit(
                 },
             );
         }
+    }
+    // Intel quads carry no world anchor, so a free eye leaves them as laid out,
+    // above every icon it re-presents. Each child's CPU alpha test already ran.
+    if let Some(hit) = intel.filter(|hit| hit.contains(point)) {
+        offer(
+            if looks.is_some() { u32::MAX } else { 0 },
+            hit.layer,
+            2,
+            1,
+            MapHit::Intel,
+        );
     }
     for (index, hit) in report.unit_hits.iter().enumerate() {
         if let Some((point, rank)) = seen(unit_family(hit), hit.layer)
@@ -1718,6 +1734,7 @@ impl Viewer {
         // camera, the counters' (with the naval mission icons' gaps) as last drawn.
         if let Some(overlay) = &self.prepared_overlay {
             warnings.extend(overlay.raid_report().warnings());
+            warnings.extend(overlay.intel_report().warnings());
         }
         warnings.extend(self.counter_report.warnings());
         if let Some(scene) = &self.scene {
@@ -2345,6 +2362,9 @@ impl Viewer {
                 .as_ref()
                 .map_or(&[], |map| map.raid_hits()),
             self.looks.as_ref(),
+            self.prepared_overlay
+                .as_ref()
+                .and_then(|map| map.intel_at(point)),
         )
     }
 
@@ -2353,7 +2373,7 @@ impl Viewer {
         use free_icons::IconFamily;
         let report = &self.counter_report;
         match target {
-            MapHit::Raid => None,
+            MapHit::Raid | MapHit::Intel => None,
             MapHit::Combat(index) => report
                 .combat_hits
                 .get(index)
@@ -2526,6 +2546,19 @@ impl Viewer {
     ) -> Option<(Arc<Tooltip>, [f32; 4], Option<u32>)> {
         let point = point?;
         let target = self.map_hit(point);
+        // An intel entry takes the hover even when its text is empty: the province's is not
+        // asked for.
+        if matches!(target, Some(MapHit::Intel)) {
+            let hit = self
+                .prepared_overlay
+                .as_ref()
+                .and_then(|map| map.intel_at(point))?;
+            let [x, y, w, h] = hit.bounds();
+            let empty = hit.tooltip.title.is_empty()
+                && hit.tooltip.body.is_empty()
+                && hit.tooltip.refused.is_empty();
+            return (!empty).then(|| (Arc::clone(&hit.tooltip), [x, y, w, h], None));
+        }
         let layer = target.and_then(|target| self.hit_layer(target));
         // The pointer in the hit icon's own layout, as its hover shapes are laid out.
         let local = self.local_point(layer, point);
@@ -3388,7 +3421,14 @@ impl Viewer {
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
         self.counter_view.visibility = viewer_world::map::map_mode::visibility::of(&self.map_mode);
+        self.counter_view.operatives = matches!(
+            self.map_mode,
+            viewer_world::map::map_mode::MapMode::Stock(
+                viewer_world::map::map_mode::Stock::Operatives
+            )
+        );
         let overlay_key = OverlayKey {
+            operatives: self.counter_view.operatives,
             branch: document.playback.branch(),
             hour: document.playback.hour(),
             camera: overlay_camera,
@@ -4612,23 +4652,23 @@ pub(crate) mod tests {
         });
         let point = [8., 24.];
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Unit(0))
         );
         report.base_hits.push(Blocker {
             rect: [0., 0., 40., 40.],
             layer: layer(11, 0, 0),
         });
-        assert_eq!(top_map_hit(point, &report, &[], None), Some(MapHit::Base));
+        assert_eq!(top_map_hit(point, &report, &[], None, None), Some(MapHit::Base));
         report.base_hits.clear();
         report.task_force_hovers[0].supported = false;
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Blocked)
         );
         // A stale/mismatched ordinal cannot dispatch to another class's plate.
         report.unit_hits[0].kind = Kind::Division;
-        assert_eq!(top_map_hit(point, &report, &[], None), None);
+        assert_eq!(top_map_hit(point, &report, &[], None, None), None);
 
         // An opaque unbound port child stops the native walk; its authored
         // tooltip can still be shown without selecting the plate underneath.
@@ -4654,7 +4694,7 @@ pub(crate) mod tests {
             },
         });
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Blocked)
         );
         let gui = installed_content::gui::native::read(
@@ -4668,7 +4708,7 @@ pub(crate) mod tests {
                 false,
             );
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::PortTooltip(0))
         );
     }
@@ -4704,13 +4744,13 @@ pub(crate) mod tests {
                 layer: layer(-3, 0, 0),
             });
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Unit(0))
         );
         report.base_hits[0].layer = layer(4, 0, 0);
-        assert_eq!(top_map_hit(point, &report, &[], None), Some(MapHit::Base));
+        assert_eq!(top_map_hit(point, &report, &[], None, None), Some(MapHit::Base));
         report.faction_pin_hovers[0].layer = layer(5, 0, 0);
-        assert_eq!(top_map_hit(point, &report, &[], None), Some(MapHit::Pin(0)));
+        assert_eq!(top_map_hit(point, &report, &[], None, None), Some(MapHit::Pin(0)));
         report.faction_pin_hovers.clear();
         let raid = viewer_raids::map::raids::tooltips::Hit {
             origin: [0.0, 0.0],
@@ -4724,23 +4764,23 @@ pub(crate) mod tests {
             supported: true,
         };
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
             Some(MapHit::Base)
         );
         report.base_hits.clear();
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
             Some(MapHit::Raid)
         );
         let mut same_layer_raid = raid.clone();
         same_layer_raid.layer = report.unit_hits[0].layer;
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None, None),
             Some(MapHit::Unit(0))
         );
         report.unit_hits[0].port = true;
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&same_layer_raid), None, None),
             Some(MapHit::Raid)
         );
         report.unit_hits[0].port = false;
@@ -4752,12 +4792,12 @@ pub(crate) mod tests {
             supported: true,
         });
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
             Some(MapHit::Combat(0))
         );
         report.combat_hits[0].layer = layer(-4, 0, 0);
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
             Some(MapHit::Raid)
         );
         report.combat_hits[0] = CombatHit {
@@ -4771,12 +4811,12 @@ pub(crate) mod tests {
         observer.order = 2;
         report.naval_marker_hovers.push(observer);
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::NavalObserver(0))
         );
         report.combat_hits[0].order = 2;
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Combat(0))
         );
         report.combat_hits[0].supported = false;
@@ -4789,13 +4829,13 @@ pub(crate) mod tests {
                 layer: layer(4, 0, 0),
             });
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Blocked)
         );
         report.combat_hits[0].supported = true;
         report.naval_marker_hovers[0].supported = true;
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Combat(0))
         );
         report.faction_pin_hovers.clear();
@@ -4804,13 +4844,37 @@ pub(crate) mod tests {
         let mut refused_raid = raid.clone();
         refused_raid.supported = false;
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&refused_raid), None),
+            top_map_hit(point, &report, std::slice::from_ref(&refused_raid), None, None),
             Some(MapHit::Blocked)
         );
         assert_eq!(
-            top_map_hit([20.0, 5.0], &report, std::slice::from_ref(&raid), None),
+            top_map_hit([20.0, 5.0], &report, std::slice::from_ref(&raid), None, None),
             None
         );
+        // An intel entry takes the point at its higher layer. A missing CPU mask
+        // accepts the child's rectangular hit, including its tooltip.
+        let viewport = [2048, 1152];
+        let mut intel = viewer_raids::map::intel_icons::IntelHit {
+            shapes: vec![
+                viewer_foundation::map::native_gui::HitGeometry::test_rectangle(
+                    [0, 0],
+                    [20, 20],
+                    viewport,
+                ),
+            ],
+            layer: layer(6, 0, 0),
+            tooltip: Arc::new(Tooltip::default()),
+        };
+        assert_eq!(
+            top_map_hit(point, &report, &[], None, Some(&intel)),
+            Some(MapHit::Intel)
+        );
+        intel.shapes[0].form = viewer_foundation::map::native_gui::Hit::Alpha;
+        assert_eq!(
+            top_map_hit(point, &report, &[], None, Some(&intel)),
+            Some(MapHit::Intel)
+        );
+        assert_eq!(top_map_hit([30.0, 30.0], &report, &[], None, Some(&intel)), None);
     }
 
     #[test]
@@ -4837,7 +4901,7 @@ pub(crate) mod tests {
         let point = [15.0, 5.0];
         // As laid out, the counter's higher priority wins.
         assert_eq!(
-            top_map_hit(point, &report, &[], None),
+            top_map_hit(point, &report, &[], None, None),
             Some(MapHit::Unit(0))
         );
         // A free eye with the base nearer: the base wins whatever its priority.
@@ -4851,7 +4915,7 @@ pub(crate) mod tests {
         looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 1.0));
         assert_eq!(
-            top_map_hit(point, &report, &[], Some(&looks)),
+            top_map_hit(point, &report, &[], Some(&looks), None),
             Some(MapHit::Base)
         );
         // Shrunk to half about its anchor, the base no longer reaches the pointer; the counter does.
@@ -4859,17 +4923,17 @@ pub(crate) mod tests {
         looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 0.5, 1.0));
         assert_eq!(
-            top_map_hit([18.0, 3.0], &report, &[], Some(&looks)),
+            top_map_hit([18.0, 3.0], &report, &[], Some(&looks), None),
             Some(MapHit::Unit(0))
         );
         // A faint base and an undrawn counter take no hits.
         let mut looks = Looks::default();
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 0.2));
-        assert_eq!(top_map_hit(point, &report, &[], Some(&looks)), None);
+        assert_eq!(top_map_hit(point, &report, &[], Some(&looks), None), None);
         // The counter's layer key shown for another family leaves the counter itself unshown.
         let mut looks = Looks::default();
         looks.show(IconFamily::Combats, layer(10, 0, 0), at(0, 1.0, 1.0));
-        assert_eq!(top_map_hit(point, &report, &[], Some(&looks)), None);
+        assert_eq!(top_map_hit(point, &report, &[], Some(&looks), None), None);
     }
 
     #[test]

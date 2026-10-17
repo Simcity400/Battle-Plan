@@ -6,12 +6,12 @@ Every recorded table on the Hourly cadence in [cadence.rs](src/cadence.rs) (a re
 
 | Class | Meaning | Tables |
 |---|---|---|
-| hourly tick | At least one writer runs on the hourly tick (game-state updates, the pre-hourly stage, AI, unit, combat, supply and movement updates), so the value can change in any hour. | 117 |
-| any hour | No hourly-tick writer, but effects, commands, actions or the console write it, so it can change in any hour; daily writers may also exist. | 67 |
+| hourly tick | At least one writer runs on the hourly tick (game-state updates, the pre-hourly stage, AI, unit, combat, supply and movement updates), so the value can change in any hour. | 118 |
+| any hour | No hourly-tick writer, but effects, commands, actions or the console write it, so it can change in any hour; daily writers may also exist. | 71 |
 | hook log | A collector hook log drained at the hourly boundary; each hour holds that interval's native events. | 17 |
 | load | Written only while a game state is loaded or reset; read as part of an hourly walk another hourly table needs. | 2 |
 | recorder | Recorder bookkeeping written with each hour's reads. | 1 |
-| total | | 204 |
+| total | | 209 |
 
 No hourly table is written only by the daily tick or slower: each has an hourly-tick writer, an any-hour writer, or is a hook log. The daily-only tables (`CountryIntel` and `LogisticsEquipment`, written inside the daily game-state update) already read on daily slot 0.
 
@@ -36,6 +36,7 @@ Several tables share one native walk; moving one of them saves none of that walk
 | ActiveIdeas | any hour; carried under party_changes | Add, remove and swap idea effects and idea commands all pass through the idea change helper. A row is its slot's idea token, fixed by the idea database; the status, idea array header and every idea pointer are read every hour. |
 | AdvisorRoles | hourly tick; carried under advisor_changes, character_changes | Definitions: the advisor-map sites. The role's modifier cache and tooltip keys: only the hooked cache rebuild, reached hourly through trait upgrades from combat experience and by trait effects; carried per role. |
 | AdvisorTokens | any hour; carried under advisor_pool_changes | Only the token update helper, reached by advisor-status updates, advisor-role removal and the save reader; clear, construction and destruction; all hooked. The manager and table header are read every hour. |
+| AgencyOperationBuffers | any hour | Shared client UI buckets are replaced on agency open, runtime load and daily refresh; country switches can leave stale membership. The map reads the retained lists; unchanged snapshots delta-carry. |
 | AgencyUpgradeLevels | any hour | Upgrade addition from the daily agency update and upgrade effects. |
 | AirBaseRegistrations | hourly tick | Base transfers from the hourly base tick; fuel updates. Membership and capacity change only through country-container creation, country-access removal, pool registration and erasure, pool-capacity setting (daily for every container), base destruction, and wing addition, removal, destruction, splitting and pool destruction. Plane counts change only through the wing_changes sites, but carrier inputs keep the table hourly: every container's fuel demand is zeroed and re-summed each hour in the strategic-air hourly worker stage; allocated fuel is written each hour through the pre-hourly country fuel update. Current and maximum fuel are computed from the region forecast, mission state and modifier accumulators that no writer names. A base's occupied container slots are read only at the slot words its dense container list names, since country-container creation and country-access removal, the only run-time writers of the container slots, write both lists in the same call; fuel words ride in each container's span. |
 | AirBases | any hour | Building-level change notifications from level setters; carrier-base creation from ship-creation effects. |
@@ -152,7 +153,10 @@ Several tables share one native walk; moving one of them saves none of that walk
 | NewDivisionEquipment | any hour | Deployment and unit-creation effects. |
 | NuclearStrikes | hook log | Impact from pending refresh in the pre-hourly serial country loop, hooked; its outcome is closed at notification before authored on_nuke_drop effects. |
 | Nukes | hourly tick | Launch readiness recounts every hour from the pre-hourly update; nuke-addition effects. |
+| OperationAssignments | any hour | The Operations walk; operatives are assigned to and released from an operation's slots by commands at any hour. |
 | OperationCompletions | hook log | operation_outcomes log. |
+| Operations | any hour | Operation creation and cancellation are commands outside the daily tick; preparation fills the instance's equipment pool and requirements, and the map icons read the operations and their preparation every hour. One walk with OperationAssignments. |
+| OperativeMissions | hourly tick | Commands, recruitment, capture and operations change assignments and missions between daily ticks, and the Operatives map reads them every hour; OperativeMemberships keeps the daily census of every holding vector. |
 | OrdersGroupCounterInputs | hourly tick | Leader en-route days are computed from the date the hourly update advances; the hourly orders-group update stores -1 to the invasion source distance every hour; the HQ distance follows HQ order distance and province lookup when an HQ unit moves. Changes in 710 of 763 late-war hours. |
 | OrdersGroupMembers | hourly tick | Unit addition, ungrouping (unit movement through theatre unit addition and border-war rounds) and member removal (the hourly deletion queue); AI order commands. |
 | OrdersGroupPlans | hourly tick | Root-list writers from commands and the occupation bundle's theatre rebuild; colour and name setters. |
@@ -212,6 +216,7 @@ Several tables share one native walk; moving one of them saves none of that walk
 | StateVisibility | hourly tick | Controller setting on the hourly path; state visibility effects. |
 | States | hourly tick; carried under territory_changes | Manpower: reinforcement withdrawal from the hourly army update every hour, spread over every controlled state; returns from aircraft loss removal, ship sinking and unit deletion. Population beside it, from the manpower effects and the state manpower writers. Category from loading and the category effect. All three are read every hour with every slot pointer and state identity, in one record, so no writer needs a hook; each distinct category definition is authenticated and named once per hour. Owner and owner name from owner setting, controller from controller setting, custom name from state-name effects; all three and province links from reset and reading; all hooked. Continent: the state template's continent, from template database loading through the state template pointer set at construction. Infrastructure terms follow the infrastructure building (building_changes sites) and loader-written operands compared every hour. StateFlags stays hourly. |
 | StationedUnits | any hour | Theatre unit addition from set-theatre commands. |
+| StrategicOperatives | any hour | Mission and operation activity, control-trade influence and diplomatic pressure: operative missions started and stopped by commands at any hour, operations and their outcomes, and the daily mission updates; the Operatives map reads them every hour. |
 | StockpileArchetypes | hourly tick | Equipment quantity additions from production, reinforcement, lend-lease, capture and scripts change the archetype totals returned by quantity lookup; too hot to hook. Essential archetypes and caps come from each raid type's essential-equipment map, read every hour. |
 | Subjects | any hour | Autonomy writers from commands and actions; peace and release effects. |
 | TaskForceCounterInputs | hourly tick | Naval counters change every hour. |
@@ -235,3 +240,4 @@ Several tables share one native walk; moving one of them saves none of that walk
 | WeatherRegions | hourly tick; records outside the pass window carried under weather_changes | The same pass writes region records in its rotating region window (regions_per_update) through region weather updates, the only hourly caller of modifier rebuilding; the hooked writers above write the rest, so other region records and combat modifier entries carry while none ran. |
 | WingEquipment | hourly tick; carried under wing_changes | Aircraft loss removal from hourly strategic-air updates and land, naval and raid combat; over-capacity trimming; daily aircraft addition and plane return; aircraft addition, removal and split commands; destruction; all hooked, aircraft loss removal through the equipment-destruction detour that owns its entry. The wing census is read every hour. |
 | WorldTension | any hour; carried under world_input_changes | The clamped world-threat total is stored only by total updates and aggregate rebuilding, which source writers (creation, updates and daily passes) end in; hooked. Manager construction runs at game-state construction and reset. |
+

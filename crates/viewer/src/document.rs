@@ -86,6 +86,7 @@ use {
 };
 use {viewer_world::map::sprawl, viewer_world::map::sprawl::Sprawl};
 // names
+use viewer_raids::map::intel_icons;
 use viewer_raids::map::raids;
 use {
     viewer_foundation::map::camera::Camera, viewer_foundation::map::name_draw::Placements,
@@ -458,6 +459,12 @@ pub struct PreparedOverlay {
     icons: counters::PreparedCounters,
     label_report: LabelReport,
     raid_report: raids::RaidReport,
+    /// The Operatives map mode's state containers, their quads, hover shapes and report as
+    /// of the last draw.
+    native_intel: intel_icons::PreparedIntel,
+    intel: Batch,
+    intel_hits: Vec<intel_icons::IntelHit>,
+    intel_report: intel_icons::IntelReport,
     /// [`crate::map::lazy_icons::LazyTextures::version`] when it was laid out; a
     /// newer version may have decoded a flag or portrait it left out.
     lazy_version: u64,
@@ -526,6 +533,11 @@ impl DumpOverlay<'_> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retries()
+    }
+
+    /// The overlay as of the last presented frame: its intel icons' report and hover shapes.
+    pub fn prepared(&self) -> &PreparedOverlay {
+        &self.prepared
     }
 
     pub(crate) fn refuse_settlement(&mut self, retries: Vec<Retry>) {
@@ -643,6 +655,7 @@ impl PreparedOverlay {
         batch: &mut Batch,
         report: &mut CounterReport,
     ) -> io::Result<()> {
+        let display = &layers.counters;
         let (labels, label_report, raid_quads) = hour.with_gui_context(
             gui_resources_viewport(viewport, ui_scale),
             Some(time),
@@ -661,7 +674,7 @@ impl PreparedOverlay {
                     movement: hour.movement.as_deref(),
                     heights: hour.heights(),
                     settings: self.counter_view.settings,
-                    display: &layers.counters,
+                    display,
                     selected: &self.counter_view.selected,
                     hovered: self.counter_view.hovered,
                     schedule: self.counter_view.presentation.schedule(),
@@ -712,11 +725,14 @@ impl PreparedOverlay {
                     &mut labels,
                 );
                 let raids = hour.raid_quads(context, &self.native_raids, &mut views.raids);
-                (labels, report, raids)
+                let intel = hour.intel_quads(context, &self.native_intel, &mut views.intel);
+                (labels, report, (raids, intel))
             },
         )?;
         self.label_report = label_report;
+        let (raid_quads, intel_quads) = raid_quads;
         (self.raids, self.raid_hits, self.raid_report) = raid_quads;
+        (self.intel, self.intel_hits, self.intel_report) = intel_quads;
         let (counters, counter_report) = self.icons.drawn();
         report.assign(counter_report);
         self.raid_range = compose(
@@ -725,6 +741,7 @@ impl PreparedOverlay {
                 pings: &self.icons.fixed.pings.quads,
                 bases: &self.icons.fixed.bases.quads,
                 raids: &self.raids.quads,
+                intel: &self.intel.quads,
                 labels: &labels.quads,
                 counters: &counters.quads,
                 combats: &self.icons.fixed.combats.quads,
@@ -754,6 +771,16 @@ impl PreparedOverlay {
         } else {
             &[]
         }
+    }
+
+    /// The intel icons' report, as of the last draw.
+    pub fn intel_report(&self) -> &intel_icons::IntelReport {
+        &self.intel_report
+    }
+
+    /// The topmost intel entry the last draw submitted under `point`, if any.
+    pub fn intel_at(&self, point: [f32; 2]) -> Option<&intel_icons::IntelHit> {
+        intel_icons::hit_at(&self.intel_hits, point)
     }
 
     /// ToolTip draws after the map and combat window, with this hour's native flag atlases.
@@ -846,6 +873,8 @@ struct OverlayParts<'a> {
     pings: &'a [Quad],
     bases: &'a [Quad],
     raids: &'a [Quad],
+    /// The Operatives map mode's state containers.
+    intel: &'a [Quad],
     labels: &'a [Quad],
     counters: &'a [Quad],
     combats: &'a [Quad],
@@ -874,6 +903,7 @@ fn compose(
         batch.quads.extend_from_slice(parts.raids);
         raids = Some(start..batch.quads.len());
     }
+    batch.quads.extend_from_slice(parts.intel);
     if layers.labels {
         batch.quads.extend_from_slice(parts.labels);
     }
@@ -2053,9 +2083,22 @@ impl Document {
                 },
             )?)
         };
+        // The intel icons' content, and the sprites their code sets that no template names.
+        let intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
+        warnings.extend(intel_assets.warnings.iter().cloned());
+        let mut counter_assets = counter_assets;
+        let mut icon_images = icon_images;
+        let intel_sprites = intel_assets.gui_assets(counter_assets.gui.registry());
+        counter_assets
+            .gui
+            .load(&content.layers, &intel_sprites, &mut icon_images)?;
+        if icon_images.len() >= viewer_foundation::map::lazy_icons::DYNAMIC_BASE {
+            return Err(invalid("more static icon pages than texture ids"));
+        }
         let icons = MapIcons {
             combat: Arc::new(combat_assets),
             raids: Arc::new(raid_assets),
+            intel: Arc::new(intel_assets),
             images: icon_images,
             fonts: icon_fonts,
             counters: Arc::new(counter_assets),
@@ -2472,6 +2515,7 @@ impl Document {
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
         visibility: viewer_foundation::map::mode_visibility::Visibility,
+        operatives: bool,
     ) -> io::Result<DumpOverlay<'_>> {
         self.hour()?.dump_overlay(
             camera,
@@ -2481,6 +2525,7 @@ impl Document {
             omitted,
             counter_settings,
             visibility,
+            operatives,
         )
     }
 
@@ -2520,6 +2565,8 @@ pub(crate) struct OverlayTables {
     /// Built with the rest on the hour builders only: raid offer evaluation
     /// runs path searches and must never land on the frame path.
     raids: Arc<raids::RaidIcons>,
+    /// The Operatives map mode's intel icons for the viewing country.
+    intel: Arc<intel_icons::IntelIcons>,
     /// The branch, hour and canonical viewing country the tables are for.
     built_for: (replay::BranchId, replay::Hour, u32),
 }
@@ -3429,6 +3476,14 @@ impl<'a> Hour<'a> {
             )?,
             labels,
             raids: raids::RaidIcons::carried(raids, self.frame.branch, self.frame.hour, ours),
+            intel: Arc::new(intel_icons::icons(
+                &self.icons.intel,
+                &self.icons.raids,
+                self.frame,
+                ours,
+                &self.names.localisation,
+                &self.raid_hover.recorded_language,
+            )),
             built_for: (self.frame.branch, self.frame.hour, ours),
         })
     }
@@ -3511,6 +3566,19 @@ impl<'a> Hour<'a> {
             &tables.labels,
         )?;
         let label_report = labels.report.clone();
+        let label_anchor = |province| self.labels.anchors.get(&province).copied();
+        let native_intel = intel_icons::prepare(
+            &self.icons.intel,
+            &intel_icons::IntelInputs {
+                anchor: &label_anchor,
+                camera,
+                viewport,
+                ui_scale,
+                operatives: view.operatives,
+            },
+            &tables.intel,
+        );
+        let intel_report = native_intel.report.clone();
         Ok(PreparedOverlay {
             lazy_version,
             engaged_covered: tables.engaged_covered,
@@ -3524,6 +3592,10 @@ impl<'a> Hour<'a> {
             icons,
             label_report,
             raid_report,
+            native_intel,
+            intel: Batch::default(),
+            intel_hits: Vec::new(),
+            intel_report,
         })
     }
 
@@ -3566,6 +3638,7 @@ impl<'a> Hour<'a> {
             .window_cache
             .at(viewport.map(|value| value as u32))?;
         let flags = prepare(&windows)?;
+        let portrait_textures = |name: &[u8]| self.icons.counters.operative_portrait_texture(name);
         let resources = GuiAssets {
             gui: &self.icons.counters.gui,
             windows: &windows,
@@ -3575,7 +3648,8 @@ impl<'a> Hour<'a> {
                 small: flags.small,
                 large: flags.large,
             }),
-            physical_viewport: None,
+            physical_viewport: Some(viewport),
+            portrait_textures: Some(&portrait_textures),
         };
         Ok(draw(&Context {
             resources: &resources,
@@ -3606,6 +3680,28 @@ impl<'a> Hour<'a> {
         (batch, hits, report)
     }
 
+    /// Draws the prepared intel containers through the view's retained windows.
+    fn intel_quads(
+        &self,
+        context: &Context<'_, GuiAssets<'_>>,
+        intel: &intel_icons::PreparedIntel,
+        view: &mut intel_icons::IntelView,
+    ) -> (Batch, Vec<intel_icons::IntelHit>, intel_icons::IntelReport) {
+        let mut batch = Batch::default();
+        let mut hits = Vec::new();
+        let mut report = intel.report.clone();
+        intel.draw(
+            &self.icons.intel,
+            context,
+            self.icons.raids.priority,
+            view,
+            &mut batch,
+            &mut hits,
+            &mut report,
+        );
+        (batch, hits, report)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn dump_overlay(
         self,
@@ -3616,11 +3712,13 @@ impl<'a> Hour<'a> {
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
         visibility: viewer_foundation::map::mode_visibility::Visibility,
+        operatives: bool,
     ) -> io::Result<DumpOverlay<'a>> {
         let layers = OverlayLayers::omitting(omitted);
         let tables = self.hour_tables(perspective, None)?;
         let mut view = CounterView::new(counter_settings);
         view.visibility = visibility;
+        view.operatives = operatives;
         let prepared = self.prepare_overlay_cached(camera, viewport, ui_scale, &tables, &view)?;
         Ok(DumpOverlay {
             hour: self,
@@ -4244,6 +4342,7 @@ mod tests {
                     pings: &fixed[0],
                     bases: &fixed[1],
                     raids,
+                    intel: &[],
                     labels: &fixed[2],
                     counters: &fixed[3],
                     combats: &fixed[4],
@@ -4296,6 +4395,7 @@ mod tests {
             pings: &groups[0],
             bases: &groups[1],
             raids: &groups[2],
+            intel: &[],
             labels: &groups[3],
             counters: &groups[4],
             combats: &groups[5],

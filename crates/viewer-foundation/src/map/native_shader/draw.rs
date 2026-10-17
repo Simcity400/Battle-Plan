@@ -301,6 +301,7 @@ pub fn emit(
         // The target is supplied at upload, so no source sprite texture is required.
         let replacement = PartKind::Cell {
             texture: sprites::NO_TEXTURE,
+            masking: None,
             geometry: *geometry,
             uv: *uv,
         };
@@ -568,17 +569,35 @@ pub fn emit(
         }
         PartKind::Cell {
             texture,
+            masking,
             uv: coordinates,
             geometry: g,
         } => {
             let (positions, matrix) = geometry(g);
+            let mut textures = vec![(0, Some(*texture))];
+            if let Some(sprite) = masking {
+                textures.push((
+                    5,
+                    Some(
+                        sheets
+                            .masking(sprite)
+                            .ok_or_else(|| {
+                                missing(format!(
+                                    "sprite {:?}'s masking texture is not loaded",
+                                    native_gui::lossy(sprite)
+                                ))
+                            })?
+                            .texture,
+                    ),
+                ));
+            }
             push(
                 positions,
                 uv(*coordinates),
                 matrix,
                 sprite_tail([0.; 4]),
                 None,
-                vec![(0, Some(*texture))],
+                textures,
                 SPRITE_STRIP,
             );
         }

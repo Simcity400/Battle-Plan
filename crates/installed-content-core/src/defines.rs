@@ -285,6 +285,29 @@ impl Defines {
             .collect()
     }
 
+    /// A table of number tables (such as a list of colours), each in Lua iteration order.
+    pub fn number_lists(&self, section: &str, name: &str) -> io::Result<Vec<Vec<f64>>> {
+        let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
+        let Value::Table(table) = self.value(section, name)? else {
+            return Err(refuse("is not a table"));
+        };
+        table
+            .pairs::<Value, Value>()
+            .map(|pair| {
+                let Value::Table(inner) = pair.map_err(lua_error)?.1 else {
+                    return Err(refuse("holds a non-table"));
+                };
+                inner
+                    .pairs::<Value, Value>()
+                    .map(|pair| {
+                        number(pair.map_err(lua_error)?.1)
+                            .ok_or_else(|| refuse("holds a non-number"))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// String-vector define entries in Lua iteration order.
     pub fn strings(&self, section: &str, name: &str) -> io::Result<Vec<String>> {
         let refuse = |what: &str| invalid(format!("NDefines.{section}.{name} {what}"));
@@ -660,6 +683,23 @@ mod tests {
         assert_eq!(graphics.number("NGraphics", "A").unwrap(), 2.0);
         assert_eq!(graphics.number("NMilitary", "SPEED").unwrap(), 4.0);
         assert!(graphics.number("NGraphics", "extra").is_err());
+    }
+
+    #[test]
+    fn number_lists_read_each_inner_table_and_refuse_a_flat_one() {
+        let defines = super::Defines::new().unwrap();
+        defines
+            .load(
+                "test",
+                b"NDefines={S={Colors={{0.1,0.9,0.2,1.0},{1,0.5,0,1}},Flat={1,2}}}",
+            )
+            .unwrap();
+        assert_eq!(
+            defines.number_lists("S", "Colors").unwrap(),
+            [vec![0.1, 0.9, 0.2, 1.0], vec![1.0, 0.5, 0.0, 1.0]]
+        );
+        assert!(defines.numbers("S", "Colors").is_err());
+        assert!(defines.number_lists("S", "Flat").is_err());
     }
 
     #[test]

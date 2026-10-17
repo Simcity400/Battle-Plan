@@ -978,3 +978,180 @@ fn appended_source_restores_accepted_prefix_and_prepares_only_new_blocks() {
 }
 
 mod measurement;
+
+#[test]
+fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icons() {
+    use replay::frame::FrameEncoder;
+    use replay::rows::*;
+    use viewer_raids::map::{
+        intel_icons::*,
+        raids::test_support::{self, put},
+    };
+    let selected = dashboard_base::prepared_map::selected_tables();
+    let mut records = crate::playback::tests::records(1, &[100]);
+    records.retain(|record| !matches!(record, Record::Frame(_)));
+    let mut encoder = FrameEncoder::new();
+    for hour in 100..=102 {
+        let mut frame = test_support::positive_frame();
+        frame.branch = 1;
+        frame.hour = hour;
+        put::<tables::Campaign>(
+            &mut frame,
+            vec![CampaignRow {
+                id: b"campaign".to_vec(),
+            }],
+        );
+        put::<tables::Clock>(
+            &mut frame,
+            vec![ClockRow {
+                hour,
+                ..Default::default()
+            }],
+        );
+        put::<tables::Politics>(
+            &mut frame,
+            vec![
+                PoliticsRow {
+                    country: 10,
+                    capital: 10,
+                    ..Default::default()
+                },
+                PoliticsRow {
+                    country: 11,
+                    capital: 20,
+                    ..Default::default()
+                },
+            ],
+        );
+        put::<tables::OperativeMissions>(
+            &mut frame,
+            [6, 8]
+                .into_iter()
+                .enumerate()
+                .map(|(i, variant)| OperativeMissionRow {
+                    id: i as u64 + 10,
+                    ordinal: i as u32,
+                    owner_country: 10,
+                    roster_country: 10,
+                    assignment: 3,
+                    variant: Some(variant),
+                    target_country: Some(11),
+                    target_state: Some(20),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        put::<tables::StrategicOperatives>(
+            &mut frame,
+            vec![StrategicOperativeRow {
+                country: 11,
+                slot: 1,
+                trade_influence: vec![TradeInfluence {
+                    owner: 10,
+                    value: 50_000,
+                }],
+                ..Default::default()
+            }],
+        );
+        put::<tables::CountryStabilityInputs>(
+            &mut frame,
+            vec![CountryStabilityInputRow {
+                country: 11,
+                propaganda_stability_q15: 16_384,
+                propaganda_war_support_q15: 8_192,
+                ..Default::default()
+            }],
+        );
+        put::<tables::Operations>(
+            &mut frame,
+            vec![OperationRow {
+                id: 1,
+                owner: 10,
+                target: 11,
+                start_hour: 100,
+                duration_days: 1,
+                ..Default::default()
+            }],
+        );
+        put::<tables::AgencyOperationBuffers>(
+            &mut frame,
+            vec![AgencyOperationBuffersRow {
+                running: vec![AgencyBufferedOperation {
+                    operation: 1,
+                    state: Some(20),
+                }],
+                ..Default::default()
+            }],
+        );
+        records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+    }
+    let replay = Arc::new(Replay::from_records(b"campaign".to_vec(), &[records]).unwrap());
+    let fixture = Fixture::new(&replay);
+    let progress = prepare(&fixture, &replay, 2, selected);
+    let mut prepared = fixture.reader(progress, Arc::clone(&replay), selected);
+    let assets = IntelAssets::test(
+        IntelDefines {
+            cutoff: 100_000_000,
+            offset: [0, 0],
+            max_stack: 3,
+            priorities: OperationPriorities {
+                can_start: 1,
+                completed: 2,
+                in_progress: 3,
+                prepared: 4,
+                default: 5,
+            },
+            counter: Err("synthetic shield operands absent".into()),
+            activity: Err("synthetic colours absent".into()),
+            root_out: Ok([0, 0]),
+            control_trade_max: Ok(100_000),
+            diplomatic_max: Ok(100_000),
+            propaganda_max: Ok([100_000, 100_000]),
+        },
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    let raids = test_support::assets();
+    let loc = installed_content::localisation::Localisation::default();
+    let build = |frame: &DecodedFrame| icons(&assets, &raids, frame, 2, &loc, "english");
+    for hour in [102, 100, 101] {
+        let SeekResult::Frame(ordinary) = replay.seek(1, hour).unwrap() else {
+            panic!("ordinary hour missing")
+        };
+        let Some(Current::Frame(actual)) = prepared.seek(1, hour).unwrap() else {
+            panic!("prepared hour missing")
+        };
+        let expected = build(&ordinary);
+        let actual = build(&actual);
+        let entries: Vec<_> = expected
+            .states
+            .iter()
+            .flat_map(|state| &state.entries)
+            .collect();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::Operative)
+                .count(),
+            2
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::Operation)
+                .count(),
+            1
+        );
+        for progress in ["50%", "25%"] {
+            assert!(
+                entries
+                    .iter()
+                    .flat_map(|entry| &entry.writes)
+                    .any(|write| matches!(write, Write::Text(_, text) if text.contains(progress)))
+            );
+        }
+        assert_eq!(actual.states, expected.states, "hour {hour}");
+        assert_eq!(actual.report, expected.report, "hour {hour}");
+    }
+}

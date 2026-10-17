@@ -226,6 +226,18 @@ mod tests {
             if version < crate::rows::compatibility::BATTLE_SOUNDS_FORMAT {
                 expected.push(TableId::BattleSounds);
             }
+            if version < crate::rows::compatibility::OPERATIVE_MISSIONS_FORMAT {
+                expected.push(TableId::OperativeMissions);
+            }
+            if version < crate::rows::compatibility::AGENCY_OPERATION_BUFFERS_FORMAT {
+                expected.push(TableId::AgencyOperationBuffers);
+            }
+            if version < crate::rows::compatibility::STRATEGIC_OPERATIVES_FORMAT {
+                expected.push(TableId::StrategicOperatives);
+            }
+            if version < crate::rows::compatibility::OPERATION_PREPARATION_FORMAT {
+                expected.push(TableId::Operations);
+            }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
                 expected.push(TableId::DivisionRetreatBans);
             }

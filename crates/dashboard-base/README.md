@@ -241,3 +241,5 @@ passed-hour callbacks, and reads never extend beyond accepted branch progress.
 No recording format, directory, index or setting is added.
 Changed gaps become interval records with reasons in original occurrence order,
 including repeats and overlaps. Readers binary-search gap records on disk.
+
+Prepared map selection retains the Operatives map's mission, operation, agency-buffer, strategic-operative and stability inputs alongside the shared map and trigger operands.

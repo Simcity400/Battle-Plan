@@ -320,7 +320,10 @@ sample_struct!(CommanderMovementStats { terrain: Vec<i64> });
 sample_struct!(CountryAttackModifiers { land_night_attack: Option<i64>, land_bunker_effectiveness_factor: Option<i64> });
 sample_struct!(CountryMovementModifiers { army_speed_factor: Option<i64>, army_armor_speed_factor: Option<i64>, attrition: Option<i64>, winter_attrition_factor: Option<i64>, heat_attrition_factor: Option<i64>, out_of_supply_factor: Option<i64>, special_forces_out_of_supply_factor: Option<i64>, army_attack_speed_factor: Option<i64>, army_retreat_speed_factor: Option<i64> });
 sample_struct!(RegionCombatWeather { army_attack_factor: Option<i64>, breakthrough_factor: Option<i64>, army_speed_factor: Option<i64>, army_attack_speed_factor: Option<i64> });
-sample_struct!(ProvinceModifierEntry { key: u32, value: i64 });
+sample_struct!(ProvinceModifierEntry {
+    key: u32,
+    value: i64
+});
 sample_struct!(ProvinceWeatherModifiers { entries: Vec<ProvinceModifierEntry> });
 impl Sample for PoliticalRuntimeScalars {
     fn sample(tick: usize) -> Self {
@@ -1115,6 +1118,19 @@ fixture!(SubjectRow, |key| {overlord: (key >> 32) as u32, subject: key as u32}, 
 fixture!(AutonomyRow, |key| {subject: key as u32}, {score: i64, lower_score: i64, upper_score: i64, last_modified_bits: u32, state: Vec<u8>, previous: Option<Vec<u8>>, next: Option<Vec<u8>>});
 fixture!(IntelligenceAgencyRow, |key| {country: key as u32}, {upgrade_progress_raw: i64, defense_raw: i64, active_count: i32, admission_ceiling: i32, unknown_f0: u32, name: Vec<u8>, created: u8});
 fixture!(OperativeMembershipRow, |key| {id: (key >> 40) as u64, roster_country: (key >> 8) as u32, roster_kind: key as u8}, {owner_country: u32, legacy_description_length: u8, assignment: u32, experience_raw: i64, skill: Option<i32>, capturer_country: u32, captured_hour: i32, action_variant: Option<u32>, ordinal: Recorded<u32>, target_country: Recorded<Option<u32>>, operation: Recorded<Option<u64>>, name: Recorded<Vec<u8>>, cooldown_kind: Recorded<Option<u32>>, cooldown_start_hour: Recorded<Option<i32>>, cooldown_end_hour: Recorded<Option<i32>>});
+fixture!(OperativeMissionRow, |key| {roster_country: (key >> 64) as u32, id: key as u64}, {ordinal: u32, owner_country: u32, assignment: u32, cooldown_kind: Option<u32>, cooldown_start_hour: Option<i32>, cooldown_end_hour: Option<i32>, variant: Option<u32>, target_country: Option<u32>, target_state: Option<i32>, ideology: Vec<u8>, pending_variant: Option<u32>, pending_country: Option<u32>, pending_state: Option<i32>, pending_ideology: Vec<u8>, portrait: Vec<u8>, root_out_country_factor: Option<i64>, root_out_operative_factor: Option<i64>, root_out_nationality: Option<u8>});
+sample_struct!(TradeInfluence {
+    owner: u32,
+    value: i64
+});
+sample_struct!(DiplomaticPressure {
+    owner: u32,
+    acceptance: i64,
+    tension: i64
+});
+sample_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
+fixture!(AgencyOperationBuffersRow, |key| {snapshot: key as u8}, {completed: Vec<AgencyBufferedOperation>, running: Vec<AgencyBufferedOperation>, ready: Vec<AgencyBufferedOperation>, unready: Vec<AgencyBufferedOperation>});
+fixture!(StrategicOperativeRow, |key| {country: key as u32}, {slot: u32, mission_activity: i64, operation_activity: i64, trade_influence: Vec<TradeInfluence>, diplomatic_pressure: Vec<DiplomaticPressure>});
 fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8});
 fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64, gain_raw: i64, gain_from_operatives_raw: i64, gain_from_adjacency_raw: i64, local_quiet: u8, gain_factor_raw: Option<i64>, strength_target_raw: Option<i64>, target_from_operatives_raw: Option<i64>, target_from_counterintelligence_raw: Option<i64>, subnetwork_quiet: u8});
 fixture!(ScriptFlagRow, |key| {scope_kind: (key >> 64) as u8, scope_id: (key >> 32) as u32, token: key as u32}, {set_hour: i32, value: i16, remaining_days: i16});
@@ -1276,7 +1292,23 @@ impl Fixture for GlobalSavedEventTargetRow {
     }
 }
 fixture!(ScriptVariablesRow, |key| {scope_kind: (key >> 32) as u8, scope_id: key as u32}, {entries: Vec<ScriptVariableEntry>, seed: Recorded<Option<u32>>});
-fixture!(OperationRow, |key| {id: key as u64}, {owner: u32, target: u32, target_province: Option<u32>, definition_token: u32, preparation_current: i64, preparation_required: i64, flag_40: u8, auto_repeat: u8, terminal: u8, start_hour: i32, duration_days: i32, phase_count: u32, assigned_slots: u32, bonus: Recorded<u8>, detected: Recorded<u8>, effect_description: Recorded<Vec<u8>>});
+sample_struct!(OperationRequirement {
+    amount: i64,
+    days: i32,
+    archetype: u32,
+    equipment: u8,
+    uses_time: u8
+});
+sample_struct!(OperationEquipment {
+    variant: u64,
+    archetype: u32,
+    amount: i64
+});
+sample_struct!(OperationEquipmentTotal {
+    archetype: u32,
+    amount: i64
+});
+fixture!(OperationRow, |key| {id: key as u64}, {owner: u32, target: u32, target_province: Option<u32>, definition_token: u32, preparation_current: i64, preparation_required: i64, flag_40: u8, auto_repeat: u8, terminal: u8, start_hour: i32, duration_days: i32, phase_count: u32, assigned_slots: u32, bonus: Recorded<u8>, detected: Recorded<u8>, effect_description: Recorded<Vec<u8>>, phases: Vec<u32>, requirements: Vec<OperationRequirement>, equipment: Vec<OperationEquipment>, equipment_totals: Vec<OperationEquipmentTotal>, equipment_allow_zero: u8});
 fixture!(OperationAssignmentRow, |key| {operation: (key >> 32) as u64, ordinal: key as u32}, {operative: u64, selection: u32});
 fixture!(WingEquipmentRow, |key| {wing: (key >> 32) as u64, ordinal: key as u32}, {variant: u64, amount_raw: i64});
 sample_struct!(AirBaseCountryOccurrence {
@@ -2868,6 +2900,15 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
         TableId::ReserveModifierTrees => {
             TableRows::ReserveModifierTrees(rows::<ReserveModifierTreeRow>(tick))
         }
+        TableId::OperativeMissions => {
+            TableRows::OperativeMissions(rows::<OperativeMissionRow>(tick))
+        }
+        TableId::AgencyOperationBuffers => {
+            TableRows::AgencyOperationBuffers(rows::<AgencyOperationBuffersRow>(tick))
+        }
+        TableId::StrategicOperatives => {
+            TableRows::StrategicOperatives(rows::<StrategicOperativeRow>(tick))
+        }
         TableId::DivisionLandInputs => {
             TableRows::DivisionLandInputs(rows::<DivisionLandInputsRow>(tick))
         }
@@ -4200,11 +4241,17 @@ fn operations_record_native_definition_and_independent_progress_fields() {
         preparation_required: i64::MAX,
         ..OperationRow::default()
     };
-    assert_eq!(TableId::Operations.field_count(), 16);
+    assert_eq!(TableId::Operations.field_count(), 21);
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();
-    assert_eq!(bytes.len(), 55);
-    assert_eq!(&bytes[49..], &[0; 6]);
+    assert_eq!(bytes.len(), 84);
+    // Flags, an empty description and an empty phase list.
+    assert_eq!(&bytes[49..59], &[0; 10]);
+    // Three empty structured lists, each a byte length and a zero count.
+    for list in bytes[59..83].chunks(8) {
+        assert_eq!(list, &[4, 0, 0, 0, 0, 0, 0, 0]);
+    }
+    assert_eq!(bytes[83], 0);
     assert_eq!(
         &bytes[..14],
         &[7, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0x78, 0x56, 0x34, 0x12]
@@ -4999,6 +5046,9 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<MapEventsRow>(TableId::MapEvents);
     check_table::<OwnerTransportSpeedRow>(TableId::OwnerTransportSpeeds);
     check_table::<ReserveModifierTreeRow>(TableId::ReserveModifierTrees);
+    check_table::<OperativeMissionRow>(TableId::OperativeMissions);
+    check_table::<StrategicOperativeRow>(TableId::StrategicOperatives);
+    check_table::<AgencyOperationBuffersRow>(TableId::AgencyOperationBuffers);
     check_table::<NavalCombatDetailsRow>(TableId::NavalCombatDetails);
     check_table::<NavalCombatShipRow>(TableId::NavalCombatShips);
     check_table::<NavalCombatResultDetailsRow>(TableId::NavalCombatResultDetails);

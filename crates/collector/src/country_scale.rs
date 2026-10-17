@@ -593,8 +593,13 @@ pub struct PoliticsDemand {
     pub operation_rows: usize,
     pub operation_assignments: usize,
     pub operation_description_bytes: usize,
+    pub operation_parts: usize,
     pub operative_memberships: usize,
     pub operative_name_bytes: usize,
+    pub operative_missions: usize,
+    pub operative_mission_bytes: usize,
+    pub strategic_operatives: usize,
+    pub strategic_operative_entries: usize,
     pub available_advisors: usize,
     pub available_advisor_bytes: usize,
     pub advisor_modifiers: engine::cadvisor::ModifierDemand,
@@ -631,8 +636,13 @@ impl PoliticsDemand {
             || self.operation_rows > seen.operation_rows
             || self.operation_assignments > seen.operation_assignments
             || self.operation_description_bytes > seen.operation_description_bytes
+            || self.operation_parts > seen.operation_parts
             || self.operative_memberships > seen.operative_memberships
             || self.operative_name_bytes > seen.operative_name_bytes
+            || self.operative_missions > seen.operative_missions
+            || self.operative_mission_bytes > seen.operative_mission_bytes
+            || self.strategic_operatives > seen.strategic_operatives
+            || self.strategic_operative_entries > seen.strategic_operative_entries
             || self.war_overview.relations > seen.war_overview.relations
             || self.war_overview.owned > seen.war_overview.owned
             || self.war_overview.goals > seen.war_overview.goals
@@ -689,8 +699,17 @@ impl PoliticsDemand {
             operation_description_bytes: self
                 .operation_description_bytes
                 .max(other.operation_description_bytes),
+            operation_parts: self.operation_parts.max(other.operation_parts),
             operative_memberships: self.operative_memberships.max(other.operative_memberships),
             operative_name_bytes: self.operative_name_bytes.max(other.operative_name_bytes),
+            operative_missions: self.operative_missions.max(other.operative_missions),
+            operative_mission_bytes: self
+                .operative_mission_bytes
+                .max(other.operative_mission_bytes),
+            strategic_operatives: self.strategic_operatives.max(other.strategic_operatives),
+            strategic_operative_entries: self
+                .strategic_operative_entries
+                .max(other.strategic_operative_entries),
             available_advisors: self.available_advisors.max(other.available_advisors),
             available_advisor_bytes: self
                 .available_advisor_bytes
@@ -811,6 +830,10 @@ fn observe_politics_with_failures(
     let operative_memberships = demand(operatives.outcome)?
         .checked_sub(operatives.refused_rows as usize)
         .ok_or("operative refusal count exceeds demand")?;
+    let missions = engine::operative_missions::walk(memory, base, state, &mut [], &mut []);
+    let operative_missions = demand(missions.outcome)?;
+    let strategic = engine::strategic_operatives::walk(memory, base, state, &mut [], &mut []);
+    let strategic_operatives = demand(strategic.outcome)?;
     let (available_advisors, available_advisor_bytes) =
         engine::ccountry_characters::demand_available(memory, base, state)?;
     let advisor_modifiers = extended::characters::advisors::live_modifier_demand();
@@ -861,8 +884,13 @@ fn observe_politics_with_failures(
         operation_rows: operations.rows,
         operation_assignments: operations.assignments,
         operation_description_bytes: operations.description_bytes,
+        operation_parts: operations.parts,
         operative_memberships,
         operative_name_bytes: operatives.required_bytes,
+        operative_missions,
+        operative_mission_bytes: missions.required_bytes,
+        strategic_operatives,
+        strategic_operative_entries: strategic.required_entries,
         available_advisors,
         available_advisor_bytes,
         advisor_modifiers,
@@ -1187,6 +1215,11 @@ mod tests {
             operation_rows: 5_000 * 3,
             operation_assignments: 5_000 * 7,
             operation_description_bytes: 5_000 * 400,
+            operative_missions: 5_000 * 4,
+            operative_mission_bytes: 5_000 * 4 * 24,
+            operation_parts: 5_000 * 3 * 12,
+            strategic_operatives: 5_000,
+            strategic_operative_entries: 5_000 * 40,
             ..Default::default()
         };
         assert!(intel.exceeds(&PoliticsDemand::default()));
@@ -1199,6 +1232,13 @@ mod tests {
         assert!(sizing.extended.intel.rows[9] >= intel.operation_rows);
         assert!(sizing.extended.intel.rows[10] >= intel.operation_assignments);
         assert!(sizing.extended.intel.operation_descriptions >= intel.operation_description_bytes);
+        assert!(sizing.extended.intel.rows[18] >= intel.operative_missions);
+        assert!(sizing.extended.intel.operative_mission_bytes >= intel.operative_mission_bytes);
+        assert!(sizing.extended.intel.operation_parts >= intel.operation_parts);
+        assert!(sizing.extended.intel.rows[19] >= intel.strategic_operatives);
+        assert!(
+            sizing.extended.intel.strategic_operative_entries >= intel.strategic_operative_entries
+        );
         let before = sizing.extended;
         sizing
             .extended

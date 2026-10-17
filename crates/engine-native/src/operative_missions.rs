@@ -1,0 +1,551 @@
+//! Every intelligence agency's active operatives as the Operatives map reads
+//! them: each leader's assignment and cooldown, its active mission and that
+//! mission's targets, the mission it carries while relocating, and its own
+//! portrait sprite. A root-out-resistance mission also carries the operands
+//! of its effectiveness: the `root_out_resistance_effectiveness_factor`
+//! values in the owner's and the operative's own modifier accumulators, and
+//! whether the operative's nationalities contain the mission's context
+//! country. The recruitment holding vectors are not walked.
+
+use crate::{
+    Memory,
+    ccharacter::Literal,
+    ccountry, cideology_group, cintelligence_agency,
+    coperative_leader::{
+        ACTION, ASSIGNMENT, COOLDOWN_ASSIGNMENT, COOLDOWN_END_HOUR, COOLDOWN_KIND,
+        COOLDOWN_START_HOUR, IDENTITY, MODIFIER_ACCUMULATOR, NAME_MAX_LENGTH, NATIONALITIES,
+        OWNER_COUNTRY, PENDING_MISSION, PENDING_MISSION_PRESENT, PORTRAIT_GFX, VTABLE_RVA,
+    },
+    cpdx_array::Array,
+    cstate,
+    csubject_relation::{Name, NameWalk},
+    memory::Raw,
+    modifier_accumulator, modifier_definition, operative_action, operative_action_implementation,
+    read,
+    walk::Outcome,
+};
+
+/// Script name of the modifier whose effective values scale a
+/// root-out-resistance mission. Its key is resolved by name once per walk
+/// that meets such a mission.
+pub const ROOT_OUT_FACTOR: &[u8] = b"root_out_resistance_effectiveness_factor";
+/// The embedded state resistance's raw country link, relative to
+/// `cstate::RESISTANCE` (engine-occupation's `cresistance::COUNTRY`).
+pub const RESISTANCE_COUNTRY: usize = 0x50;
+/// The embedded state resistance's active byte, relative to
+/// `cstate::RESISTANCE` (engine-occupation's `cresistance::ACTIVE`).
+pub const RESISTANCE_ACTIVE: usize = 0x208;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    /// The agency's country id.
+    pub roster_country: u32,
+    pub id: u64,
+    /// Position in the agency's active roster.
+    pub ordinal: u32,
+    pub owner_country: u32,
+    pub assignment: u32,
+    /// Cooldown operands, read only for the cooldown assignment.
+    pub cooldown_kind: Option<u32>,
+    pub cooldown_start_hour: Option<i32>,
+    pub cooldown_end_hour: Option<i32>,
+    /// Nonzero active mission variant, whatever the assignment.
+    pub variant: Option<u32>,
+    /// The active mission's raw stored country, present with the variant.
+    pub target_country: Option<u32>,
+    /// The state-targeted variants' state id; `None` for a null state.
+    pub target_state: Option<i32>,
+    /// The boost-ideology mission's ideology group name in the byte arena.
+    pub ideology: Name,
+    /// The pending mission's variant; `None` when no mission is pending.
+    pub pending_variant: Option<u32>,
+    pub pending_country: Option<u32>,
+    pub pending_state: Option<i32>,
+    /// The pending mission's ideology group name in the byte arena.
+    pub pending_ideology: Name,
+    /// The leader's own portrait sprite name in the byte arena.
+    pub portrait: Name,
+    /// Root-out-resistance operands, present only for that active variant:
+    /// the effective `root_out_resistance_effectiveness_factor` of the owner
+    /// country's and of the operative's own modifier accumulator, and 1 when
+    /// the operative's nationalities contain the mission's context country
+    /// (the target state's active resistance country when positive, else the
+    /// target country), else 0.
+    pub root_out_country_factor: Option<i64>,
+    pub root_out_operative_factor: Option<i64>,
+    pub root_out_nationality: Option<u8>,
+}
+
+pub struct Walk {
+    pub outcome: Outcome,
+    pub bytes_len: usize,
+    /// All native portrait lengths, including rows omitted for either capacity.
+    pub required_bytes: usize,
+    /// First authenticated operative, with its roster country, whose read
+    /// failed. The whole table is unavailable.
+    pub failed_operative: Option<(u64, u32)>,
+}
+
+/// Reads every operative of each agency's active roster in roster order. The
+/// portrait is copied in the same walk.
+pub fn walk(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut [Row],
+    bytes: &mut [u8],
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(bytes),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(bytes),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+    bytes: crate::walk::Buffer<'_, u8>,
+) -> Walk {
+    let mut resolved = None;
+    walk_keyed(memory, base, game_state, output, bytes, &mut || {
+        *resolved.get_or_insert_with(|| root_out_key(memory, base))
+    })
+}
+
+/// The root-out factor's key, resolved by its script name.
+fn root_out_key(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
+    match modifier_definition::keys_by_names_at(memory, base, &[ROOT_OUT_FACTOR])?.0 {
+        [Some(key)] => Ok(key),
+        [None] => Err("root out resistance factor modifier is not registered"),
+    }
+}
+
+/// [`walk_buffer`] with the root-out factor's key supplied by `root_out`,
+/// asked only when a root-out-resistance mission is read.
+fn walk_keyed(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut bytes: crate::walk::Buffer<'_, u8>,
+    root_out: &mut impl FnMut() -> Result<u32, &'static str>,
+) -> Walk {
+    let mut failed_operative = None;
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let mut mission_vtables = operative_action_implementation::Vtables::new(base);
+        let expected = base
+            .checked_add(VTABLE_RVA)
+            .ok_or("operative vtable address overflow")?;
+        let mut len = 0_usize;
+        let mut unread_rows = 0_u32;
+        let (mut bytes_len, mut required_bytes) = (0_usize, 0_usize);
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            let Some(agency) = cintelligence_agency::root(memory, base, country)? else {
+                continue;
+            };
+            let array = Array::read(memory, at(agency, cintelligence_agency::OPERATIVES)?, 8)
+                .ok_or("operative roster unreadable or invalid")?;
+            output.ensure(
+                len.checked_add(array.count as usize)
+                    .ok_or("operative mission row demand overflow")?,
+            )?;
+            let roster_start = len;
+            for index in 0..array.count {
+                let pointer = array
+                    .element(index, 8)
+                    .and_then(|p| read::<u64>(memory, p))
+                    .and_then(|p| usize::try_from(p).ok())
+                    .filter(|&p| p != 0)
+                    .ok_or("operative roster pointer unreadable or null")?;
+                if read::<u64>(memory, pointer) != Some(expected as u64) {
+                    return Err("operative vtable mismatch");
+                }
+                let id = field::<u64>(memory, pointer, IDENTITY)?;
+                if id == 0 {
+                    return Err("operative has a null handle");
+                }
+                failed_operative = Some((id, country.id));
+                let portrait = literal(memory, at(pointer, PORTRAIT_GFX)?, PORTRAIT_REFUSALS)?;
+                // Read even in sizing-only walks, so a refused field fails the
+                // census rather than passing as a capacity shortage.
+                let (mut row, ideologies) = read_row(
+                    memory,
+                    base,
+                    &countries,
+                    pointer,
+                    (id, country.id),
+                    &mut mission_vtables,
+                    &mut *root_out,
+                )?;
+                let [active, pending] = ideologies;
+                let strings = [active, pending, Some(portrait)];
+                let row_bytes = strings
+                    .iter()
+                    .flatten()
+                    .try_fold(0_usize, |sum, string| sum.checked_add(string.len))
+                    .ok_or("operative mission string size overflow")?;
+                required_bytes = required_bytes
+                    .checked_add(row_bytes)
+                    .ok_or("operative mission string size overflow")?;
+                bytes.ensure(required_bytes)?;
+                if len == output.len() || row_bytes > bytes.len() - bytes_len {
+                    unread_rows = unread_rows
+                        .checked_add(1)
+                        .ok_or("operative mission row count overflow")?;
+                    failed_operative = None;
+                    continue;
+                }
+                row.ordinal = index;
+                if output[roster_start..len].iter().any(|old| old.id == row.id) {
+                    return Err("duplicate operative handle within active roster");
+                }
+                let mut spans = [Name::default(); 3];
+                for (span, string) in spans.iter_mut().zip(&strings) {
+                    let Some(string) = string else {
+                        continue;
+                    };
+                    Literal::copy_all(
+                        memory,
+                        [string],
+                        &mut bytes[bytes_len..bytes_len + string.len],
+                    )
+                    .map_err(|_| "operative mission string bytes unreadable")?;
+                    *span = Name {
+                        start: bytes_len,
+                        len: string.len,
+                    };
+                    bytes_len += string.len;
+                }
+                [row.ideology, row.pending_ideology, row.portrait] = spans;
+                output[len] = row;
+                len += 1;
+                failed_operative = None;
+            }
+        }
+        Ok(NameWalk {
+            outcome: if unread_rows == 0 {
+                Outcome::Rows { len }
+            } else {
+                Outcome::Truncated { len, unread_rows }
+            },
+            bytes_len,
+            required_bytes,
+        })
+    })();
+    let read = result.unwrap_or_else(crate::csubject_relation::unavailable);
+    Walk {
+        outcome: read.outcome,
+        bytes_len: read.bytes_len,
+        required_bytes: read.required_bytes,
+        failed_operative,
+    }
+}
+
+/// A string's refusals: header unreadable, length past the native maximum,
+/// header invalid, terminator unreadable or invalid.
+type Refusals = [&'static str; 4];
+const PORTRAIT_REFUSALS: Refusals = [
+    "operative portrait header unreadable",
+    "operative portrait exceeds native string maximum",
+    "operative portrait unreadable or invalid",
+    "operative portrait terminator unreadable or invalid",
+];
+const IDEOLOGY_REFUSALS: Refusals = [
+    "operative mission ideology header unreadable",
+    "operative mission ideology exceeds native string maximum",
+    "operative mission ideology unreadable or invalid",
+    "operative mission ideology terminator unreadable or invalid",
+];
+
+/// A native string at `address`, through the same header limits, terminator
+/// validation and copy as the operative's saved name.
+fn literal(
+    memory: &impl Memory,
+    address: usize,
+    refusals: Refusals,
+) -> Result<Literal, &'static str> {
+    let header = read::<[u8; 32]>(memory, address).ok_or(refusals[0])?;
+    if u64::from_le_bytes(header[16..24].try_into().unwrap()) > NAME_MAX_LENGTH
+        || u64::from_le_bytes(header[24..32].try_into().unwrap()) > NAME_MAX_LENGTH
+    {
+        return Err(refusals[1]);
+    }
+    let string = Literal::from_header(address, header).map_err(|_| refusals[2])?;
+    Literal::validate(memory, [&string]).map_err(|_| refusals[3])?;
+    Ok(string)
+}
+
+/// A mission's ideology group, authenticated, and its name as the save
+/// writes it; none for a null pointer.
+fn ideology(
+    memory: &impl Memory,
+    base: usize,
+    group: u64,
+) -> Result<Option<Literal>, &'static str> {
+    let group = usize::try_from(group).map_err(|_| "operative mission ideology overflow")?;
+    if group == 0 {
+        return Ok(None);
+    }
+    let expected = base
+        .checked_add(cideology_group::VTABLE_RVA)
+        .ok_or("operative mission ideology vtable overflow")?;
+    if read::<u64>(memory, group) != Some(expected as u64) {
+        return Err("operative mission ideology vtable mismatch");
+    }
+    literal(
+        memory,
+        at(group, cideology_group::TOKEN)?,
+        IDEOLOGY_REFUSALS,
+    )
+    .map(Some)
+}
+
+fn read_row<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    pointer: usize,
+    (id, roster_country): (u64, u32),
+    mission_vtables: &mut operative_action_implementation::Vtables,
+    root_out: &mut impl FnMut() -> Result<u32, &'static str>,
+) -> Result<(Row, [Option<Literal>; 2]), &'static str> {
+    let owner_country = field::<u32>(memory, pointer, OWNER_COUNTRY)?;
+    let assignment = field::<u32>(memory, pointer, ASSIGNMENT)?;
+    // Cooldown status is reached only for the cooldown assignment.
+    let (cooldown_kind, cooldown_start_hour, cooldown_end_hour) =
+        if assignment == COOLDOWN_ASSIGNMENT {
+            (
+                Some(field(memory, pointer, COOLDOWN_KIND)?),
+                Some(field(memory, pointer, COOLDOWN_START_HOUR)?),
+                Some(field(memory, pointer, COOLDOWN_END_HOUR)?),
+            )
+        } else {
+            (None, None, None)
+        };
+    let mission = at(pointer, ACTION)?;
+    let variant = field::<u32>(memory, mission, operative_action::VARIANT)?;
+    let variant = (variant != 0).then_some(variant);
+    let mut root_out_operands = None;
+    let (target_country, target_state, active_ideology) = match variant {
+        Some(variant) => {
+            let targets = mission_vtables.targets(memory, mission, variant)?;
+            let target_state = targets
+                .state
+                .map(|state| state_id(memory, base, state))
+                .transpose()?;
+            if variant == operative_action::ROOT_OUT_RESISTANCE {
+                root_out_operands = Some(root_out_operands_of(
+                    memory,
+                    base,
+                    countries,
+                    pointer,
+                    owner_country,
+                    targets,
+                    root_out()?,
+                )?);
+            }
+            // Only the boost-ideology implementation holds an ideology group.
+            let group = if variant == operative_action::BOOST_IDEOLOGY {
+                let implementation = usize::try_from(field::<u64>(
+                    memory,
+                    mission,
+                    operative_action::IMPLEMENTATION,
+                )?)
+                .map_err(|_| "operative mission implementation overflow")?;
+                ideology(
+                    memory,
+                    base,
+                    field(
+                        memory,
+                        implementation,
+                        operative_action_implementation::BOOST_IDEOLOGY,
+                    )?,
+                )?
+            } else {
+                None
+            };
+            (Some(targets.country), target_state, group)
+        }
+        None => (None, None, None),
+    };
+    let (pending_variant, pending_country, pending_state, pending_ideology) =
+        if field::<u8>(memory, pointer, PENDING_MISSION_PRESENT)? != 0 {
+            let pending = at(pointer, PENDING_MISSION)?;
+            let state = usize::try_from(field::<u64>(
+                memory,
+                pending,
+                operative_action::PENDING_TARGET_STATE,
+            )?)
+            .map_err(|_| "operative pending mission state overflow")?;
+            (
+                Some(field(memory, pending, operative_action::PENDING_VARIANT)?),
+                Some(field(
+                    memory,
+                    pending,
+                    operative_action::PENDING_TARGET_COUNTRY,
+                )?),
+                (state != 0)
+                    .then(|| state_id(memory, base, state))
+                    .transpose()?,
+                ideology(
+                    memory,
+                    base,
+                    field(memory, pending, operative_action::PENDING_IDEOLOGY)?,
+                )?,
+            )
+        } else {
+            (None, None, None, None)
+        };
+    let row = Row {
+        roster_country,
+        id,
+        ordinal: 0,
+        owner_country,
+        assignment,
+        cooldown_kind,
+        cooldown_start_hour,
+        cooldown_end_hour,
+        variant,
+        target_country,
+        target_state,
+        ideology: Name::default(),
+        pending_variant,
+        pending_country,
+        pending_state,
+        pending_ideology: Name::default(),
+        portrait: Name::default(),
+        root_out_country_factor: root_out_operands.map(|operands| operands.0),
+        root_out_operative_factor: root_out_operands.map(|operands| operands.1),
+        root_out_nationality: root_out_operands.map(|operands| operands.2),
+    };
+    Ok((row, [active_ideology, pending_ideology]))
+}
+
+/// A root-out-resistance mission's operands: the factor's effective value
+/// in the owner's and in the operative's accumulator, and whether the
+/// operative's nationalities contain the mission's context country.
+fn root_out_operands_of<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    operative: usize,
+    owner: u32,
+    targets: operative_action_implementation::Targets,
+    key: u32,
+) -> Result<(i64, i64, u8), &'static str> {
+    let owner = countries.resolve(owner)?;
+    let factor = |accumulator| {
+        modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)
+            .map(|value| value.effective)
+    };
+    let country_factor = factor(at(owner.pointer, ccountry::MODIFIER_ACCUMULATOR)?)?;
+    let operative_factor = factor(at(operative, MODIFIER_ACCUMULATOR)?)?;
+    // The target state's resistance names the context country while it is
+    // active with a positive country; otherwise the target country does.
+    let mut context = targets.country;
+    if let Some(state) = targets.state {
+        let resistance = at(state, cstate::RESISTANCE)?;
+        let active = field::<u8>(memory, resistance, RESISTANCE_ACTIVE)?;
+        let country = field::<u32>(memory, resistance, RESISTANCE_COUNTRY)?;
+        if active != 0 && (country as i32) > 0 {
+            context = country;
+        }
+    }
+    let nationality = has_nationality(memory, countries, operative, context)?;
+    Ok((country_factor, operative_factor, u8::from(nationality)))
+}
+
+/// Whether the operative's sorted nationalities contain `raw`, by the native
+/// lower bound over country-link equivalence: a raw match, or an entry that
+/// resolves to the same canonical country, with the null tag as itself. An
+/// empty vector compares nothing.
+fn has_nationality<M: Memory>(
+    memory: &M,
+    countries: &ccountry::Reader<'_, M>,
+    operative: usize,
+    raw: u32,
+) -> Result<bool, &'static str> {
+    let values = Array::read(memory, at(operative, NATIONALITIES)?, 4)
+        .ok_or("operative nationalities unreadable or invalid")?;
+    if values.count == 0 {
+        return Ok(false);
+    }
+    let canonical = |id: u32| {
+        if id == 0 {
+            Ok(0)
+        } else {
+            countries.resolve(id).map(|country| country.canonical_slot)
+        }
+    };
+    let entry = |index: u32| {
+        values
+            .element(index, 4)
+            .and_then(|address| read::<u32>(memory, address))
+            .ok_or("operative nationality unreadable")
+    };
+    let target = canonical(raw)?;
+    let mut first = 0;
+    let mut count = values.count;
+    while count != 0 {
+        let half = count / 2;
+        let id = entry(first + half)?;
+        if id != raw && canonical(id)? < target {
+            first += half + count % 2;
+        }
+        count = half;
+    }
+    if first == values.count {
+        return Ok(false);
+    }
+    let id = entry(first)?;
+    Ok(id == raw || canonical(id)? <= target)
+}
+
+/// A mission's nonnull target state, authenticated, and its id.
+fn state_id(memory: &impl Memory, base: usize, state: usize) -> Result<i32, &'static str> {
+    let expected = base
+        .checked_add(cstate::VTABLE_RVA)
+        .ok_or("operative mission state vtable overflow")?;
+    if read::<u64>(memory, state) != Some(expected as u64) {
+        return Err("operative mission state vtable mismatch");
+    }
+    field(memory, state, cstate::ID)
+}
+
+fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("operative address overflow")
+}
+
+fn field<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<T, &'static str> {
+    read(memory, at(pointer, offset)?).ok_or("operative field unreadable")
+}
+
+#[cfg(test)]
+mod tests;

@@ -268,6 +268,7 @@ fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
         (
             PartKind::Cell {
                 texture: 7,
+                masking: None,
                 uv: [0., 0., 1., 1.],
                 geometry,
             },
@@ -418,4 +419,49 @@ fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
         assert_eq!(*ranges, known, "typed {typed}");
         assert_eq!((draw.constants.len() * 4, draw.known), (0x100, 104));
     }
+}
+
+#[test]
+fn bound_portrait_texture_keeps_the_icons_mask_sampler() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let sheets = Sheets(sprites::SpriteSheet {
+        name: "mask".into(),
+        texture: 7,
+        frames: 1,
+        size: [16, 16],
+    });
+    let asset = effect(
+        "PixelShader = { Samplers = { T = { Index = 0 } M = { Index = 5 } } MainCode P [[ ]] }\nEffect Down { PixelShader = P }\n",
+    );
+    let geometry = gui::Geometry {
+        rect: [0., 0., 16., 16.],
+        local: [0., 0., 16., 16.],
+        pivot: [0., 16.],
+        rotation: 0.,
+    };
+    let mut batch = sprites::Batch::default();
+    emit(
+        &part(
+            PartKind::Cell {
+                texture: 42,
+                masking: Some(b"circle".to_vec()),
+                geometry,
+                uv: [0., 0., 1., 1.],
+            },
+            asset,
+        ),
+        [0, 0],
+        &sheets,
+        &mut batch,
+    )
+    .unwrap();
+    let draw = batch.quads[0]
+        .exact
+        .as_ref()
+        .unwrap()
+        .native
+        .as_ref()
+        .unwrap();
+    assert_eq!(draw.textures, [(0, Some(42)), (5, Some(7))]);
 }

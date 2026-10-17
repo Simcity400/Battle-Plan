@@ -70,7 +70,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // pending `refresh` and `dirty` recalculations and reassigns constructions.
         // The factory widget ranks hourly beside States and StateBuildings. One
         // scatter per country; unchanged rows encode as no change.
-        TableId::AgencyUpgradeLevels | TableId::OperationCompletions => Hourly,
+        TableId::AgencyOperationBuffers | TableId::AgencyUpgradeLevels | TableId::OperationCompletions => Hourly,
         TableId::CountryFactories => Cadence::Hourly,
         // Live end-screen getters read these operands without a periodic cache.
         TableId::CountryGameScoreInputs
@@ -444,10 +444,11 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::AvailableEquipmentVariants => Daily(22),
         // Lend-lease totals grow at deliveries and sinkings; the exchange is
         // deleted, with its totals, when the lend-lease ends.
-        TableId::Operations
-        | TableId::OperationAssignments
-        | TableId::SunkConvoys
-        | TableId::LendLeaseEquipment => Daily(23),
+        TableId::SunkConvoys | TableId::LendLeaseEquipment => Daily(23),
+        // Operations and their assigned slots are one walk. Operation
+        // creation and cancellation are commands outside the daily tick, and
+        // the map icons read the operations and their preparation every hour.
+        TableId::Operations | TableId::OperationAssignments => Hourly,
         // RadarCoverage is hourly because a controller change edits radar
         // groups at any hour. Cost over 25 hours on a vanilla map:
         // 0.11 ms p50 / 0.16 ms p95 read on the game thread, a 0.12 ms/h raw
@@ -696,6 +697,10 @@ mod tests {
             TableId::UnitLeaderTraits,
             TableId::Scientists,
             TableId::ScientistSkills,
+            // The operations the map icons read, created and cancelled by
+            // commands at any hour.
+            TableId::Operations,
+            TableId::OperationAssignments,
             // Their other character-scope inputs: every role's traits, the
             // operative link and the retired records.
             TableId::CharacterRoleTraits,

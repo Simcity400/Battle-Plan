@@ -2601,6 +2601,7 @@ fn a_bound_texture_replaces_the_frame() {
         texture: page,
         uv,
         geometry,
+        ..
     } = layout.parts[0].kind
     else {
         panic!("not a cell");
@@ -8319,4 +8320,40 @@ fn a_root_is_built_in_the_viewport() {
     instance.tick(window, &resources, dt(0.0)).unwrap();
     let laid = instance.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(laid.size, [400, 20]);
+}
+
+#[test]
+fn alpha_hover_keeps_an_out_of_range_selected_frame_offset() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut resources = fixture();
+    resources.physical = Some([800, 600]);
+    resources.add_sprite("strip", [8, 4], 2);
+    resources.sprites.get_mut("strip").unwrap().hit = Hit::Alpha;
+    resources.alpha.insert(
+        "strip",
+        AlphaMask {
+            width: 8,
+            transparent: vec![1; 32].into(),
+        },
+    );
+    let gui = gui("iconType = { name = a spriteType = strip position = { x = 10 y = 20 } }");
+    let root = gui.template("w").unwrap();
+    let icon = root.find(Kind::Icon, "a").unwrap();
+    let mut instance = Instance::construct(root, [800, 600], &resources).unwrap();
+    instance.gui_show(root, root).unwrap();
+    instance.set_frame(root, icon, 10).unwrap();
+    let laid = instance
+        .layout_with_regions(root, &resources, None, true)
+        .unwrap()
+        .unwrap();
+    let hit = laid
+        .regions
+        .iter()
+        .find(|region| region.path == icon.path)
+        .unwrap()
+        .hit
+        .as_ref()
+        .unwrap();
+    assert!(hit.contains([10.2, 20.2]));
 }

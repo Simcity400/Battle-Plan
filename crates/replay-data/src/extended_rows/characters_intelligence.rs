@@ -263,6 +263,110 @@ pub struct OperativeMembershipRow {
 typed_codec!(OperativeMembershipRow, 104, |row| (row.id as u128) << 40 | (row.roster_country as u128) << 8 | row.roster_kind as u128, |key| Self { id: (key >> 40) as u64, roster_country: (key >> 8) as u32, roster_kind: key as u8, owner_country: Default::default(), legacy_description_length: Default::default(), assignment: Default::default(), experience_raw: Default::default(), skill: Default::default(), capturer_country: Default::default(), captured_hour: Default::default(), action_variant: Default::default(), ordinal: Default::default(), target_country: Default::default(), operation: Default::default(), name: Default::default(), cooldown_kind: Default::default(), cooldown_start_hour: Default::default(), cooldown_end_hour: Default::default() },
  { 0 => (owner_country): U32, 1 => (legacy_description_length): U8, 2 => (assignment): U32, 3 => (experience_raw): I64, 4 => (skill): OptionalI32, 5 => (capturer_country): U32, 6 => (captured_hour): I32, 7 => (action_variant): OptionalU32, 8 => (ordinal): U32, 9 => (target_country): OptionalU32, 10 => (operation): OptionalU64, 11 => (name): Bytes, 12 => (cooldown_kind): OptionalU32, 13 => (cooldown_start_hour): OptionalI32, 14 => (cooldown_end_hour): OptionalI32 }, |_row| Ok(()));
 
+/// OperativeMissions: key roster_country:id (96 bits), 18 payload mask bits.
+///
+/// Hourly: every operative in each agency's active roster, in roster order,
+/// with what the Operatives map's icons read: the assignment and its
+/// cooldown, the active mission and its targets, the mission an operative
+/// relocating carries until it arrives, the leader's own portrait, and a
+/// root-out-resistance mission's effectiveness operands. Commands,
+/// recruitment, capture and operations change these between daily ticks;
+/// OperativeMemberships keeps the daily census of every holding vector.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OperativeMissionRow {
+    pub roster_country: u32,
+    pub id: u64,
+    /// Native active-roster position.
+    pub ordinal: u32,
+    pub owner_country: u32,
+    pub assignment: u32,
+    /// Cooldown operands, read only for the cooldown assignment.
+    pub cooldown_kind: Option<u32>,
+    pub cooldown_start_hour: Option<i32>,
+    pub cooldown_end_hour: Option<i32>,
+    /// The active mission's nonzero variant (1..8), whatever the assignment.
+    pub variant: Option<u32>,
+    /// The active mission's raw target country reference, present with the
+    /// variant; the save omits a nonpositive one.
+    pub target_country: Option<u32>,
+    /// The state-targeted missions' target state id; absent for a null state
+    /// and for the country-targeted variants.
+    pub target_state: Option<i32>,
+    /// The boost-ideology mission's ideology, as the save writes it; empty
+    /// for none.
+    pub ideology: Vec<u8>,
+    /// The pending mission's variant; absent when no mission is pending.
+    pub pending_variant: Option<u32>,
+    pub pending_country: Option<u32>,
+    pub pending_state: Option<i32>,
+    pub pending_ideology: Vec<u8>,
+    /// The leader's own portrait sprite name, shown when it has no character.
+    pub portrait: Vec<u8>,
+    /// Root-out-resistance operands, present only for that variant (4): the
+    /// effective `root_out_resistance_effectiveness_factor` (fixed5) of the
+    /// owner country's and of the operative's own modifier accumulator, and
+    /// 1 when the operative's nationalities contain the mission's context
+    /// country (the target state's active resistance country when positive,
+    /// else the target country), else 0. Runtime-only: the save writes none.
+    pub root_out_country_factor: Option<i64>,
+    pub root_out_operative_factor: Option<i64>,
+    pub root_out_nationality: Option<u8>,
+}
+typed_codec!(OperativeMissionRow, 96, |row| (row.roster_country as u128) << 64 | row.id as u128, |key| Self { roster_country: (key >> 64) as u32, id: key as u64, ..Default::default() },
+ { 0 => (ordinal): U32, 1 => (owner_country): U32, 2 => (assignment): U32, 3 => (cooldown_kind): OptionalU32, 4 => (cooldown_start_hour): OptionalI32, 5 => (cooldown_end_hour): OptionalI32, 6 => (variant): OptionalU32, 7 => (target_country): OptionalU32, 8 => (target_state): OptionalI32, 9 => (ideology): Bytes, 10 => (pending_variant): OptionalU32, 11 => (pending_country): OptionalU32, 12 => (pending_state): OptionalI32, 13 => (pending_ideology): Bytes, 14 => (portrait): Bytes, 15 => (root_out_country_factor): OptionalI64, 16 => (root_out_operative_factor): OptionalI64, 17 => (root_out_nationality): Opaque }, |_row| Ok(()));
+
+/// StrategicOperatives: key country (32 bits), 5 payload mask bits.
+///
+/// Hourly: each country's strategic operative, keyed by its raw owner, with
+/// its index in the manager's vector (the country slot the save keys it by),
+/// the mission and operation activity raised against the country (saved
+/// `subversive_activity_level` and `danger_level`, fixed5), and the
+/// control-trade influence and diplomatic pressure other countries hold over
+/// it, keyed by the influencing country, in native table order. Missions,
+/// operations and their daily decay change them, and the Operatives map
+/// reads them every hour.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StrategicOperativeRow {
+    pub country: u32,
+    pub slot: u32,
+    pub mission_activity: i64,
+    pub operation_activity: i64,
+    pub trade_influence: Vec<TradeInfluence>,
+    pub diplomatic_pressure: Vec<DiplomaticPressure>,
+}
+typed_codec!(StrategicOperativeRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
+ { 0 => (slot): U32, 1 => (mission_activity): I64, 2 => (operation_activity): I64, 3 => (trade_influence): Opaque, 4 => (diplomatic_pressure): Opaque }, |_row| Ok(()));
+
+/// One control-trade influence entry: the influencing country's raw
+/// reference and its fixed5 influence, saved under
+/// `trade_influence_modifier_of_buyers`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TradeInfluence {
+    pub owner: u32,
+    pub value: i64,
+}
+value_struct!(TradeInfluence {
+    owner: u32,
+    value: i64
+});
+opaque_value!(Vec<TradeInfluence>);
+
+/// One diplomatic-pressure entry: the pressuring country's raw reference
+/// and the raw Q15 acceptance and tension words, saved as `opinion` and
+/// `tension` under `diplomatic_pressure_from_countries`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DiplomaticPressure {
+    pub owner: u32,
+    pub acceptance: i64,
+    pub tension: i64,
+}
+value_struct!(DiplomaticPressure {
+    owner: u32,
+    acceptance: i64,
+    tension: i64
+});
+opaque_value!(Vec<DiplomaticPressure>);
+
 /// Cryptology: key owner_country:target_country (64 bits), 4 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CryptologyRow {
@@ -314,13 +418,24 @@ pub struct IntelNetworkRow {
 typed_codec!(IntelNetworkRow, 96, |row| (row.owner_country as u128) << 64 | (row.target_country as u128) << 32 | row.state_id as u32 as u128, |key| Self { owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32, ..Default::default() },
  { 0 => (strength_raw): OptionalI64, 1 => (subnetwork_selector): I32, 2 => (local_strength_raw): I64, 3 => (gain_raw): I64, 4 => (gain_from_operatives_raw): I64, 5 => (gain_from_adjacency_raw): I64, 6 => (local_quiet): U8, 7 => (gain_factor_raw): OptionalI64, 8 => (strength_target_raw): OptionalI64, 9 => (target_from_operatives_raw): OptionalI64, 10 => (target_from_counterintelligence_raw): OptionalI64, 11 => (subnetwork_quiet): U8 }, |_row| Ok(()));
 
-/// Operations: key id (64 bits), 16 payload mask bits.
+/// Operations: key id (64 bits), 21 payload mask bits.
 ///
-/// Visible outcomes are snapshots. OperationCompletions supplies the events.
+/// Hourly: operation creation and cancellation are commands outside the
+/// daily tick, and the map icons read the preparation every hour. Visible
+/// outcomes are snapshots. OperationCompletions supplies the events.
 /// The daily manager can destroy an AI owner's instance in the same call
 /// that completes it. Other instances can be deleted by command or
 /// invalidation. There is no fixed minimum completed lifetime, and even
 /// hourly snapshots cannot guarantee every outcome.
+///
+/// `preparation_current` and `preparation_required` are saved as
+/// `civilian_factories` and `total`, each omitted when zero. `phases` are the
+/// selected phase definitions' lexer tokens in order with repeats (saved
+/// `phases`). `requirements` are the requirement records in order with
+/// repeats (saved `resources`). `equipment` is the inline equipment pool's
+/// variant entries (saved `equipment`, zero amounts only with
+/// `allow_zero_entries`) and `equipment_totals` its per-archetype totals,
+/// which the requirements are checked against and the save does not write.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OperationRow {
     pub id: u64,
@@ -347,9 +462,68 @@ pub struct OperationRow {
     /// displayed in the recording client's language. They are not
     /// re-localisation inputs.
     pub effect_description: Recorded<Vec<u8>>,
+    pub phases: Vec<u32>,
+    pub requirements: Vec<OperationRequirement>,
+    pub equipment: Vec<OperationEquipment>,
+    pub equipment_totals: Vec<OperationEquipmentTotal>,
+    /// The equipment pool's raw allow-zero byte (`allow_zero_entries`).
+    pub equipment_allow_zero: u8,
 }
-typed_codec!(OperationRow, 64, |row| row.id as u128, |key| Self { id: key as u64, owner: Default::default(), target: Default::default(), target_province: Default::default(), definition_token: Default::default(), preparation_current: Default::default(), preparation_required: Default::default(), flag_40: Default::default(), auto_repeat: Default::default(), terminal: Default::default(), start_hour: Default::default(), duration_days: Default::default(), phase_count: Default::default(), assigned_slots: Default::default(), bonus: Default::default(), detected: Default::default(), effect_description: Default::default() },
- { 0 => (owner): U32, 1 => (target): U32, 2 => (target_province): OptionalU32, 3 => (definition_token): U32, 4 => (preparation_current): I64, 5 => (preparation_required): I64, 6 => (flag_40): U8, 7 => (auto_repeat): U8, 8 => (terminal): U8, 9 => (start_hour): I32, 10 => (duration_days): I32, 11 => (phase_count): U32, 12 => (assigned_slots): U32, 13 => (bonus): U8, 14 => (detected): U8, 15 => (effect_description): Bytes }, |_row| Ok(()));
+typed_codec!(OperationRow, 64, |row| row.id as u128, |key| Self { id: key as u64, ..Default::default() },
+ { 0 => (owner): U32, 1 => (target): U32, 2 => (target_province): OptionalU32, 3 => (definition_token): U32, 4 => (preparation_current): I64, 5 => (preparation_required): I64, 6 => (flag_40): U8, 7 => (auto_repeat): U8, 8 => (terminal): U8, 9 => (start_hour): I32, 10 => (duration_days): I32, 11 => (phase_count): U32, 12 => (assigned_slots): U32, 13 => (bonus): U8, 14 => (detected): U8, 15 => (effect_description): Bytes, 16 => (phases): U32List, 17 => (requirements): Opaque, 18 => (equipment): Opaque, 19 => (equipment_totals): Opaque, 20 => (equipment_allow_zero): U8 }, |_row| Ok(()));
+
+/// One operation requirement record. An equipment requirement names its
+/// equipment type's archetype by lexer token and is saved as
+/// `<archetype>=<amount>`; the civilian-factory requirement has no type
+/// (`equipment` and `archetype` zero) and is saved as
+/// `civilian_factories={ amount days }` with its amount truncated to whole
+/// factories. `days` is saved only for the factory requirement, and
+/// `uses_time` (the raw uses-preparation-time byte) never.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OperationRequirement {
+    pub amount: i64,
+    pub days: i32,
+    pub archetype: u32,
+    pub equipment: u8,
+    pub uses_time: u8,
+}
+value_struct!(OperationRequirement {
+    amount: i64,
+    days: i32,
+    archetype: u32,
+    equipment: u8,
+    uses_time: u8
+});
+opaque_value!(Vec<OperationRequirement>);
+
+/// One equipment pool variant entry: the full variant reference, the lexer
+/// token of its equipment type's archetype and its fixed5 amount, in pool
+/// order. The save writes the variant and amount.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OperationEquipment {
+    pub variant: u64,
+    pub archetype: u32,
+    pub amount: i64,
+}
+value_struct!(OperationEquipment {
+    variant: u64,
+    archetype: u32,
+    amount: i64
+});
+opaque_value!(Vec<OperationEquipment>);
+
+/// One equipment pool archetype total: the archetype's lexer token and the
+/// stored fixed5 total, in native order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OperationEquipmentTotal {
+    pub archetype: u32,
+    pub amount: i64,
+}
+value_struct!(OperationEquipmentTotal {
+    archetype: u32,
+    amount: i64
+});
+opaque_value!(Vec<OperationEquipmentTotal>);
 
 /// Completion observations keyed by raw owner:sequence (96 bits).
 ///
@@ -755,3 +929,28 @@ pub struct AvailableAdvisorRow {
 typed_codec!(AvailableAdvisorRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (character): U32, 1 => (idea): Bytes }, |_row| Ok(()));
+
+/// Shared client agency UI buffers in the order state icons consume them. One row
+/// with snapshot key zero also represents four observed empty lists. These are
+/// retained UI membership, never reconstructed from saved operation instances or
+/// filtered to a newly selected perspective. A tag switch may leave them stale.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AgencyOperationBuffersRow {
+    pub snapshot: u8,
+    pub completed: Vec<AgencyBufferedOperation>,
+    pub running: Vec<AgencyBufferedOperation>,
+    pub ready: Vec<AgencyBufferedOperation>,
+    pub unready: Vec<AgencyBufferedOperation>,
+}
+typed_codec!(AgencyOperationBuffersRow, 8, |row| row.snapshot as u128, |key| Self { snapshot: key as u8, ..Default::default() },
+ { 0 => (completed): Opaque, 1 => (running): Opaque, 2 => (ready): Opaque, 3 => (unready): Opaque }, |_row| Ok(()));
+
+/// A raw buffered reference and the state getter result at this sample. A stale
+/// or null reference is None; a resolved operation with no state is Some(0).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AgencyBufferedOperation {
+    pub operation: u64,
+    pub state: Option<u32>,
+}
+value_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
+opaque_value!(Vec<AgencyBufferedOperation>);

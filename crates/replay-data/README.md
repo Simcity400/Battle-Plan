@@ -33,3 +33,5 @@ display steps, historical prefixes, delta ownership, malformed input and wide
 country lists. The replay host owns tests requiring frames, recovery and complete
 recordings. Run `cargo test -p replay-data` for the data contract and
 `cargo test -p replay -p replay-data --features slow-tests` for both suites.
+
+`AgencyOperationBuffers` holds one observed shared-client snapshot: completed, running, ready-preparation and unready-preparation references in native order, with each reference's resolved target state. Empty lists are recorded; unavailable acquisition remains a table refusal. UI membership is runtime state, independent of saved operation-roster membership.

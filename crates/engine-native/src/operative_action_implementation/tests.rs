@@ -90,3 +90,55 @@ fn failed_country_getter_authentication_is_not_retried_or_carried_to_another_wal
     assert_eq!(Vtables::new(0).country(&memory, 0x300, 1), Ok(8));
     assert_eq!(memory.getter_reads.get(), 2);
 }
+
+#[test]
+fn targets_read_a_state_only_for_state_variants_and_authenticate_once() {
+    let mut memory = fixture();
+    memory
+        .fields
+        .insert(0x200 + TARGET_POINTER, 0x900_u64.to_le_bytes().to_vec());
+    let mut vtables = Vtables::new(0);
+    assert_eq!(
+        vtables.targets(&memory, 0x100, 1),
+        Ok(Targets {
+            country: 7,
+            state: Some(0x900)
+        })
+    );
+    memory
+        .fields
+        .insert(0x200 + TARGET_POINTER, 0_u64.to_le_bytes().to_vec());
+    assert_eq!(
+        vtables.targets(&memory, 0x100, 1),
+        Ok(Targets {
+            country: 7,
+            state: None
+        })
+    );
+    assert_eq!(vtables.country(&memory, 0x100, 1), Ok(7));
+    assert_eq!(memory.getter_reads.get(), 1);
+    memory.fields.remove(&(0x200 + TARGET_POINTER));
+    assert_eq!(
+        vtables.targets(&memory, 0x100, 1),
+        Err("operative mission target state unreadable")
+    );
+    // A country variant's implementation has no state field to read.
+    memory
+        .fields
+        .insert(0x400, (VTABLE_RVAS[2] as u64).to_le_bytes().to_vec());
+    memory.fields.insert(
+        VTABLE_RVAS[2] + COUNTRY_GETTER_SLOT,
+        (COUNTRY_GETTER_RVA as u64).to_le_bytes().to_vec(),
+    );
+    assert_eq!(
+        vtables.targets(
+            &memory,
+            0x300,
+            crate::operative_action::COUNTER_INTELLIGENCE
+        ),
+        Ok(Targets {
+            country: 8,
+            state: None
+        })
+    );
+}

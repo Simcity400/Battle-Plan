@@ -623,6 +623,7 @@ impl Viewer {
             selected: counter_view.selected,
             hovered: counter_view.hovered,
             visibility: counter_view.visibility,
+            operatives: counter_view.operatives,
         });
         self.overlay_fraction = None;
         let shown = ShownHour {

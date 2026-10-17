@@ -532,6 +532,7 @@ fn compiled_parts_fan_animation_and_text_bake() {
     let second = models::part(
         gui::PartKind::Cell {
             texture: 1,
+            masking: None,
             geometry: models::geometry(),
             uv: [0., 0., 1., 1.],
         },

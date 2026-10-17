@@ -5,10 +5,14 @@
 //! than reconstructed effects or a universal success state. Serialization writes
 //! true bonus/detection flags and writes the description only for terminal
 //! operations outside checksum mode.
+//!
+//! The map icons' preparation display reads the selected phases, the
+//! requirement records and the inline equipment pool the preparation checks
+//! fill ([`Instance::parts`]).
 
 use crate::{
-    Memory, ccharacter::Literal, coperation, cpdx_array::Array, cprovince, csubject_relation::Name,
-    read,
+    Memory, ccharacter::Literal, cequipment_type, cequipment_variant_pool, coperation,
+    cpdx_array::Array, cprovince, csubject_relation::Name, read,
 };
 
 /// Primary vtable at subobject offset zero.
@@ -60,17 +64,36 @@ pub const ASSIGNED_OPERATIVE_DATA: usize = 0xe0;
 pub const ASSIGNED_OPERATIVE_CAPACITY: usize = 0xe8;
 /// Signed assigned-slot count, including slots with unassigned handles.
 pub const ASSIGNED_OPERATIVE_COUNT: usize = 0xec;
-/// Selected-phase array data containing the chosen definition pointers.
+/// Selected-phase array data containing the chosen definition pointers, with
+/// its capacity and count after it as a CPdxArray header.
 pub const PHASE_DATA: usize = 0xf8;
 /// Signed phase-array count; definition pointers are serialized in this order.
 pub const PHASE_COUNT: usize = 0x104;
-/// Inline operation resource map rooted here, used by preparation checks.
-pub const RESOURCE_MAP: usize = 0x110;
-/// Requirement-record array pointer. Preparation checks read it with 0x20-byte records.
+/// Phase definition pointer width.
+pub const PHASE_STRIDE: usize = 8;
+/// A phase definition's u32 lexer token, saved as its `phases` spelling.
+pub const PHASE_TOKEN: usize = 0x08;
+/// Inline equipment pool (`cequipment_variant_pool`) the preparation checks
+/// fill: its variant entries are saved as `equipment` and its per-archetype
+/// totals are what the requirements are checked against.
+pub const EQUIPMENT_POOL: usize = 0x110;
+/// Requirement-record array pointer, with its capacity and signed count after
+/// it as a CPdxArray header. Preparation checks read it with 0x20-byte records.
 pub const REQUIREMENT_DATA: usize = 0x158;
 /// Requirement-record count, u32. Preparation checks read it before walking optional and required
 /// resources.
 pub const REQUIREMENT_COUNT: usize = 0x164;
+/// Requirement-record stride.
+pub const REQUIREMENT_STRIDE: usize = 0x20;
+/// Requirement amount, signed i64 fixed5.
+pub const REQUIREMENT_AMOUNT: usize = 0x00;
+/// Requirement preparation days, i32.
+pub const REQUIREMENT_DAYS: usize = 0x08;
+/// Requirement equipment-type pointer; null for the civilian-factory
+/// requirement. The type's archetype (`cequipment_type::ARCHETYPE`) names it.
+pub const REQUIREMENT_EQUIPMENT: usize = 0x10;
+/// Requirement byte: nonzero when the requirement uses preparation time.
+pub const REQUIREMENT_USES_TIME: usize = 0x18;
 /// Operation-instance serializer.
 pub const SAVE_RVA: usize = 0x013e_f710;
 /// Operation-instance loader.
@@ -96,6 +119,69 @@ pub struct Row {
     pub duration_days: i32,
     pub phase_count: u32,
     pub assigned_slots: u32,
+    /// The operation's parts in the caller's part arena from `parts_start`:
+    /// `phase_count` phases, then `requirement_count` requirements,
+    /// `equipment_count` pool variant entries and `equipment_total_count`
+    /// pool archetype totals, each in native order with repeats.
+    pub parts_start: usize,
+    pub requirement_count: u32,
+    pub equipment_count: u32,
+    pub equipment_total_count: u32,
+    /// The equipment pool's raw allow-zero byte (`allow_zero_entries`).
+    pub equipment_allow_zero: u8,
+}
+
+impl Row {
+    /// The parts this row holds in the part arena.
+    pub fn part_count(&self) -> usize {
+        self.phase_count as usize
+            + self.requirement_count as usize
+            + self.equipment_count as usize
+            + self.equipment_total_count as usize
+    }
+}
+
+/// One requirement record. The civilian-factory requirement has no
+/// equipment type: `equipment` and `archetype` are zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Requirement {
+    pub amount: i64,
+    pub days: i32,
+    /// The equipment type's archetype lexer token.
+    pub archetype: u32,
+    /// 1 for an equipment requirement, 0 for the civilian-factory one.
+    pub equipment: u8,
+    /// The raw uses-preparation-time byte.
+    pub uses_time: u8,
+}
+
+/// One equipment pool variant entry: its full variant reference, the lexer
+/// token of its equipment type's archetype, and its amount.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Equipment {
+    pub variant: u64,
+    pub archetype: u32,
+    pub amount: i64,
+}
+
+/// One equipment pool archetype total: the archetype's lexer token and the
+/// stored total the requirements are checked against.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EquipmentTotal {
+    pub archetype: u32,
+    pub amount: i64,
+}
+
+/// One entry of an operation's parts ([`Row::parts_start`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    #[default]
+    Empty,
+    /// A selected phase definition's lexer token.
+    Phase(u32),
+    Requirement(Requirement),
+    Equipment(Equipment),
+    EquipmentTotal(EquipmentTotal),
 }
 
 pub struct Instance {
@@ -103,6 +189,151 @@ pub struct Instance {
     pub owner_pointer: usize,
     pub assigned: Array,
     pub effect_description: Literal,
+    pub phases: Array,
+    pub requirements: Array,
+    /// The pool's variant entries and its archetype totals.
+    pub equipment: Array,
+    pub equipment_totals: Array,
+}
+
+impl Instance {
+    /// Every part in arena order, each read and authenticated: phase tokens,
+    /// requirement records (an equipment requirement's type and archetype
+    /// authenticated), pool variant entries and pool archetype totals.
+    pub fn parts(
+        &self,
+        memory: &impl Memory,
+        base: usize,
+        mut each: impl FnMut(Part),
+    ) -> Result<(), &'static str> {
+        for index in 0..self.phases.count {
+            let definition = self
+                .phases
+                .element(index, PHASE_STRIDE)
+                .and_then(|address| read::<u64>(memory, address))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .filter(|&pointer| pointer != 0)
+                .ok_or("operation phase definition unreadable or null")?;
+            let token = definition
+                .checked_add(PHASE_TOKEN)
+                .and_then(|address| read::<u32>(memory, address))
+                .ok_or("operation phase token unreadable")?;
+            each(Part::Phase(token));
+        }
+        for index in 0..self.requirements.count {
+            let record = self
+                .requirements
+                .element(index, REQUIREMENT_STRIDE)
+                .and_then(|address| read::<[u8; REQUIREMENT_STRIDE]>(memory, address))
+                .ok_or("operation requirement unreadable")?;
+            let equipment = usize::try_from(u64::from_le_bytes(
+                record[REQUIREMENT_EQUIPMENT..REQUIREMENT_EQUIPMENT + 8]
+                    .try_into()
+                    .unwrap(),
+            ))
+            .map_err(|_| "operation requirement equipment pointer overflow")?;
+            let archetype = if equipment == 0 {
+                None
+            } else {
+                authenticate_type(memory, base, equipment)?;
+                let archetype = equipment
+                    .checked_add(cequipment_type::ARCHETYPE)
+                    .and_then(|address| read::<u64>(memory, address))
+                    .and_then(|pointer| usize::try_from(pointer).ok())
+                    .ok_or("operation requirement archetype unreadable")?;
+                Some(archetype_token(memory, base, archetype)?)
+            };
+            each(Part::Requirement(Requirement {
+                amount: i64::from_le_bytes(
+                    record[REQUIREMENT_AMOUNT..REQUIREMENT_AMOUNT + 8]
+                        .try_into()
+                        .unwrap(),
+                ),
+                days: i32::from_le_bytes(
+                    record[REQUIREMENT_DAYS..REQUIREMENT_DAYS + 4]
+                        .try_into()
+                        .unwrap(),
+                ),
+                archetype: archetype.unwrap_or(0),
+                equipment: u8::from(archetype.is_some()),
+                uses_time: record[REQUIREMENT_USES_TIME],
+            }));
+        }
+        for ordinal in 0..self.equipment.count {
+            let address = self
+                .equipment
+                .element(ordinal, crate::equipment_entry::STRIDE)
+                .ok_or("operation equipment entry address overflow")?;
+            let entry = crate::equipment_entry::read(memory, base, address, ordinal)?;
+            let equipment = entry
+                .variant_pointer
+                .checked_add(crate::cequipment_variant::DEFINITION)
+                .and_then(|address| read::<u64>(memory, address))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .filter(|&pointer| pointer != 0)
+                .ok_or("operation equipment variant definition unreadable or null")?;
+            authenticate_type(memory, base, equipment)?;
+            let archetype = equipment
+                .checked_add(cequipment_type::ARCHETYPE)
+                .and_then(|address| read::<u64>(memory, address))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .ok_or("operation equipment archetype unreadable")?;
+            each(Part::Equipment(Equipment {
+                variant: entry.variant_handle,
+                archetype: archetype_token(memory, base, archetype)?,
+                amount: entry.amount_raw,
+            }));
+        }
+        for ordinal in 0..self.equipment_totals.count {
+            let address = self
+                .equipment_totals
+                .element(ordinal, crate::allocation_equipment_row::STRIDE)
+                .ok_or("operation equipment total address overflow")?;
+            let total = crate::allocation_equipment_row::read(memory, base, address, ordinal)?;
+            each(Part::EquipmentTotal(EquipmentTotal {
+                archetype: archetype_token(memory, base, total.archetype_pointer)?,
+                amount: total.amount_raw,
+            }));
+        }
+        Ok(())
+    }
+}
+
+/// An equipment type, archetype or null placeholder: each shares the
+/// complete type layout.
+fn authenticate_type(
+    memory: &impl Memory,
+    base: usize,
+    equipment: usize,
+) -> Result<(), &'static str> {
+    let vtable = |rva: usize| {
+        base.checked_add(rva)
+            .map(|address| address as u64)
+            .ok_or("operation equipment type vtable overflow")
+    };
+    let actual = read::<u64>(memory, equipment);
+    if actual != Some(vtable(cequipment_type::VTABLE_RVA)?)
+        && actual != Some(vtable(cequipment_type::NULL_VTABLE_RVA)?)
+    {
+        return Err("operation equipment type vtable mismatch");
+    }
+    Ok(())
+}
+
+/// An authenticated archetype's lexer token.
+fn archetype_token(
+    memory: &impl Memory,
+    base: usize,
+    archetype: usize,
+) -> Result<u32, &'static str> {
+    if archetype == 0 {
+        return Err("operation equipment archetype null");
+    }
+    authenticate_type(memory, base, archetype)?;
+    archetype
+        .checked_add(cequipment_type::TOKEN)
+        .and_then(|address| read::<u32>(memory, address))
+        .ok_or("operation equipment archetype token unreadable")
 }
 
 pub fn instance(
@@ -213,6 +444,20 @@ pub fn instance(
         crate::operation_assigned_operative::STRIDE,
     )
     .ok_or("operation assigned slots unreadable or invalid")?;
+    let phases = Array::read(memory, at(PHASE_DATA)?, PHASE_STRIDE)
+        .ok_or("operation phases unreadable or invalid")?;
+    if phases.count != phase_count as u32 {
+        return Err("operation phase count changed during read");
+    }
+    let requirements = Array::read(memory, at(REQUIREMENT_DATA)?, REQUIREMENT_STRIDE)
+        .ok_or("operation requirements unreadable or invalid")?;
+    let pool = at(EQUIPMENT_POOL)?;
+    let equipment = cequipment_variant_pool::entries(memory, base, pool)?;
+    let equipment_totals = cequipment_variant_pool::allocation_entries(memory, base, pool)?;
+    let equipment_allow_zero = pool
+        .checked_add(cequipment_variant_pool::ALLOW_ZERO)
+        .and_then(|address| read::<u8>(memory, address))
+        .ok_or("operation equipment allow-zero byte unreadable")?;
     Ok(Instance {
         row: Row {
             id,
@@ -230,11 +475,19 @@ pub fn instance(
             duration_days: i32::from_le_bytes(duration_days),
             phase_count: phase_count as u32,
             assigned_slots: assigned.count,
+            requirement_count: requirements.count,
+            equipment_count: equipment.count,
+            equipment_total_count: equipment_totals.count,
+            equipment_allow_zero,
             ..Row::default()
         },
         owner_pointer,
         assigned,
         effect_description,
+        phases,
+        requirements,
+        equipment,
+        equipment_totals,
     })
 }
 

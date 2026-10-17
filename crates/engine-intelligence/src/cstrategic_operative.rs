@@ -19,3 +19,16 @@ pub const NETWORKS_COUNT: usize = 0x1c;
 pub const NETWORKS_ALLOCATOR: usize = 0x20;
 /// Network-pointer width.
 pub const NETWORK_STRIDE: usize = 8;
+/// Control-trade influence map on the target country's object, keyed by the
+/// influencing country (`strategic_operatives::TRADE_*` entries). Saved as
+/// `trade_influence_modifier_of_buyers`.
+pub const TRADE_INFLUENCE: usize = 0xd0;
+/// Diplomatic-pressure map on the target country's object, keyed by the
+/// pressuring country (`strategic_operatives::PRESSURE_*` entries). Saved as
+/// `diplomatic_pressure_from_countries`.
+pub const DIPLOMATIC_PRESSURE: usize = 0x110;
+/// Mission activity, signed i64 fixed5, saved as
+/// `subversive_activity_level.value`.
+pub const MISSION_ACTIVITY: usize = 0x170;
+/// Operation activity, signed i64 fixed5, saved as `danger_level.value`.
+pub const OPERATION_ACTIVITY: usize = 0x1a8;

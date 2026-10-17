@@ -105,6 +105,14 @@ pub enum Resolved {
 }
 
 impl Portraits {
+    /// A descriptor sprite name, independent of the naming convention used by its mod.
+    pub fn sprite(&self, name: &str) -> Resolved {
+        self.declared
+            .get(name)
+            .and_then(|sprite| self.sheet(sprite))
+            .unwrap_or(Resolved::Unresolved)
+    }
+
     /// The sheet an [`identity_key`] resolves to.
     pub fn resolve(&self, key: &str) -> Resolved {
         if key.starts_with("GFX_") {

@@ -358,6 +358,35 @@ pub const RESERVE_MODIFIER_TREES_FORMAT: u16 = FORMAT_VERSION;
 /// number but not the table set, so their blocks read as malformed; no
 /// published build wrote them.
 pub const BATTLE_SOUNDS_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: OperativeMissions holds every agency's active
+/// operatives hourly with what the Operatives map's icons read: assignment and
+/// cooldown, the active and pending missions with their targets, and the
+/// leader's own portrait. Older recordings refuse only that table, by name.
+/// Format-102 captures written before this change share the version number
+/// but not the table set, so their blocks read as malformed; no published
+/// build wrote them.
+pub const OPERATIVE_MISSIONS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: StrategicOperatives holds each country's strategic
+/// operative hourly with what the Operatives map's icons read: the mission
+/// and operation activity against the country and the control-trade
+/// influence and diplomatic pressure other countries hold over it. Older
+/// recordings refuse only that table, by name. Format-102 captures written
+/// before this change share the version number but not the table set, so
+/// their blocks read as malformed; no published build wrote them.
+pub const STRATEGIC_OPERATIVES_FORMAT: u16 = FORMAT_VERSION;
+
+/// Current-format client agency UI buffer membership and native bucket order.
+pub const AGENCY_OPERATION_BUFFERS_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: Operations rows carry the selected phases, the
+/// requirement records and the inline equipment pool (fields 16 to 20),
+/// which the map icons' preparation display reads, and the table is read
+/// every hour. Older recordings refuse the table by name. Format-102
+/// captures written before this change share the version number but not the
+/// table's field count, so their blocks read as malformed; no published
+/// build wrote them.
+pub const OPERATION_PREPARATION_FORMAT: u16 = FORMAT_VERSION;
 
 /// A row field whose capture ended at `retired`. A whole field keeps its
 /// Opaque framing as a [`super::Retired`] tombstone; a nested name
@@ -1468,27 +1497,10 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
-    history[TableId::Operations.index()] = appended_at(
+    history[TableId::Operations.index()] = table(
         TableId::Operations,
-        INTEL_INPUTS_FORMAT,
-        "intel-native-union",
-        &[
-            AppendedField {
-                index: 13,
-                name: "bonus",
-                introduced: INTEL_INPUTS_FORMAT,
-            },
-            AppendedField {
-                index: 14,
-                name: "detected",
-                introduced: INTEL_INPUTS_FORMAT,
-            },
-            AppendedField {
-                index: 15,
-                name: "effect_description",
-                introduced: INTEL_INPUTS_FORMAT,
-            },
-        ],
+        OPERATION_PREPARATION_FORMAT,
+        "pol/mapmode-operative-icons",
     );
     let intel = [TableId::AgencyUpgradeLevels, TableId::OperationCompletions];
     let mut i = 0;
@@ -2195,6 +2207,30 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             TableId::BattleSounds,
             BATTLE_SOUNDS_FORMAT,
             "pol/finish-audio",
+        )
+    };
+    history[TableId::OperativeMissions.index()] = LastChange {
+        introduced: OPERATIVE_MISSIONS_FORMAT,
+        ..table(
+            TableId::OperativeMissions,
+            OPERATIVE_MISSIONS_FORMAT,
+            "pol/mapmode-operative-icons",
+        )
+    };
+    history[TableId::AgencyOperationBuffers.index()] = LastChange {
+        introduced: AGENCY_OPERATION_BUFFERS_FORMAT,
+        ..table(
+            TableId::AgencyOperationBuffers,
+            AGENCY_OPERATION_BUFFERS_FORMAT,
+            "pol/mapmode-operative-icons",
+        )
+    };
+    history[TableId::StrategicOperatives.index()] = LastChange {
+        introduced: STRATEGIC_OPERATIVES_FORMAT,
+        ..table(
+            TableId::StrategicOperatives,
+            STRATEGIC_OPERATIVES_FORMAT,
+            "pol/mapmode-operative-icons",
         )
     };
     history[TableId::VariantDefinitions.index()] = appended(

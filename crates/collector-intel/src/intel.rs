@@ -12,15 +12,15 @@ use crate::{
 };
 use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine::{
-    Memory, agency_upgrade_levels, ccharacter, ccharacter_manager, ccountry, ccountry_intel,
-    ccountry_intel_network, ccountry_operation_manager, ccountry_operation_token_manager,
-    ccryptology, ccurrent_autonomy_status, cdiplomacy_status, cflag_manager, cgame_state,
-    cintelligence_agency, coperation_instance, coperative_leader,
+    Memory, agency_operation_buffers, agency_upgrade_levels, ccharacter, ccharacter_manager,
+    ccountry, ccountry_intel, ccountry_intel_network, ccountry_operation_manager,
+    ccountry_operation_token_manager, ccryptology, ccurrent_autonomy_status, cdiplomacy_status,
+    cflag_manager, cgame_state, cintelligence_agency, coperation_instance, coperative_leader,
     cpdx_array::Array,
     crelation_status, cscript_flag, cstate,
     csubject_relation::{self, Name},
     cvariables, cwar_relation, incoming_diplomatic_action_queue, operation_assigned_operative,
-    read, read_slice,
+    operative_missions, read, read_slice, strategic_operatives,
     walk::Outcome,
 };
 use replay::{
@@ -152,7 +152,7 @@ pub use flag_store::{FlagReuse, FlagStore};
 mod variable_store;
 pub use variable_store::{VariableReuse, VariableStore};
 
-pub const N: usize = 18;
+pub const N: usize = 21;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -172,6 +172,9 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryIntel,
     TableId::CapturedOperativeReferences,
     TableId::AgencyUpgradeLevels,
+    TableId::OperativeMissions,
+    TableId::StrategicOperatives,
+    TableId::AgencyOperationBuffers,
 ];
 
 const UNCAPTURED: Outcome = Outcome::Unavailable {
@@ -263,6 +266,13 @@ pub struct Capacities {
     pub agency_upgrade_definitions: usize,
     pub operation_descriptions: usize,
     pub operative_names: usize,
+    /// OperativeMissions' portrait and ideology bytes.
+    pub operative_mission_bytes: usize,
+    /// Operations' phases, requirements and equipment pool entries.
+    pub operation_parts: usize,
+    /// StrategicOperatives' control-trade and diplomatic-pressure entries.
+    pub strategic_operative_entries: usize,
+    pub agency_operation_entries: usize,
     pub variable_entries: usize,
     pub variable_names: usize,
     pub tokens: usize,
@@ -526,6 +536,10 @@ pub struct Captured {
     operative_failure: Option<(u64, u32, u8)>,
     operative_refused_rows: u32,
     operative_first_refused: Option<coperative_leader::Refusal>,
+    operative_missions: CaptureRows<operative_missions::Row>,
+    operative_mission_failure: Option<(u64, u32)>,
+    strategic_operatives: CaptureRows<strategic_operatives::Row>,
+    agency_operation_buffers: CaptureRows<agency_operation_buffers::Row>,
     cryptology: CaptureRows<ccryptology::Row>,
     networks: CaptureRows<ccountry_intel_network::Row>,
     flags: CaptureRows<ScopedFlag>,
@@ -552,7 +566,11 @@ pub struct Captured {
     autonomy_names: Arena<u8>,
     agency_names: Arena<u8>,
     operative_names: Arena<u8>,
+    operative_mission_bytes: Arena<u8>,
+    strategic_operative_entries: Arena<strategic_operatives::Entry>,
+    agency_operation_entries: Arena<agency_operation_buffers::Entry>,
     operation_descriptions: Arena<u8>,
+    operation_parts: Arena<coperation_instance::Part>,
     variable_entries: Arena<cvariables::Row>,
     variable_names: Arena<u8>,
     tokens: Arena<u32>,
@@ -594,6 +612,10 @@ impl Captured {
                 agency_upgrade_definitions: 0,
                 operation_descriptions: 0,
                 operative_names: 0,
+                operative_mission_bytes: 0,
+                operation_parts: 0,
+                strategic_operative_entries: 0,
+                agency_operation_entries: 0,
                 variable_entries: 0,
                 variable_names: 0,
                 tokens: 0,
@@ -655,6 +677,10 @@ impl Captured {
             operative_failure: None,
             operative_refused_rows: 0,
             operative_first_refused: None,
+            operative_missions: CaptureRows::new(capacity.rows[18]),
+            operative_mission_failure: None,
+            strategic_operatives: CaptureRows::new(capacity.rows[19]),
+            agency_operation_buffers: CaptureRows::new(capacity.rows[20]),
             cryptology: CaptureRows::new(capacity.rows[5]),
             networks: CaptureRows::new(capacity.rows[6]),
             flags: CaptureRows::new(capacity.rows[7]),
@@ -674,7 +700,11 @@ impl Captured {
             autonomy_names: Arena::new(capacity.autonomy_names),
             agency_names: Arena::new(capacity.agency_names),
             operative_names: Arena::new(capacity.operative_names),
+            operative_mission_bytes: Arena::new(capacity.operative_mission_bytes),
+            strategic_operative_entries: Arena::new(capacity.strategic_operative_entries),
+            agency_operation_entries: Arena::new(capacity.agency_operation_entries),
             operation_descriptions: Arena::new(capacity.operation_descriptions),
+            operation_parts: Arena::new(capacity.operation_parts),
             variable_entries: Arena::new(capacity.variable_entries),
             variable_names: Arena::new(capacity.variable_names),
             tokens: Arena::new(capacity.tokens),
@@ -794,6 +824,10 @@ impl Captured {
         self.operative_failure = None;
         self.operative_refused_rows = 0;
         self.operative_first_refused = None;
+        self.operative_missions.reset();
+        self.operative_mission_failure = None;
+        self.strategic_operatives.reset();
+        self.agency_operation_buffers.reset();
         self.cryptology.reset();
         self.networks.reset();
         self.flags.reset();
@@ -809,7 +843,11 @@ impl Captured {
         self.autonomy_names.reset();
         self.agency_names.reset();
         self.operative_names.reset();
+        self.operative_mission_bytes.reset();
+        self.strategic_operative_entries.reset();
+        self.agency_operation_entries.reset();
         self.operation_descriptions.reset();
+        self.operation_parts.reset();
         self.variable_entries.reset();
         self.variable_names.reset();
         self.tokens.reset();
@@ -825,6 +863,9 @@ impl Captured {
             + self.agency_upgrade_catalog.allocated_bytes()
             + self.operatives.allocated_bytes()
             + self.captured_operatives.allocated_bytes()
+            + self.operative_missions.allocated_bytes()
+            + self.strategic_operatives.allocated_bytes()
+            + self.agency_operation_buffers.allocated_bytes()
             + self.cryptology.allocated_bytes()
             + self.networks.allocated_bytes()
             + self.flags.allocated_bytes()
@@ -841,7 +882,11 @@ impl Captured {
             + self.autonomy_names.allocated_bytes()
             + self.agency_names.allocated_bytes()
             + self.operative_names.allocated_bytes()
+            + self.operative_mission_bytes.allocated_bytes()
+            + self.strategic_operative_entries.allocated_bytes()
+            + self.agency_operation_entries.allocated_bytes()
             + self.operation_descriptions.allocated_bytes()
+            + self.operation_parts.allocated_bytes()
             + self.variable_entries.allocated_bytes()
             + self.variable_names.allocated_bytes()
             + self.tokens.allocated_bytes()
@@ -869,6 +914,11 @@ impl Captured {
         self.operatives.grow(&mut capacity.rows[4]);
         self.captured_operatives.grow(&mut capacity.rows[16]);
         self.operatives.outcome = operative_outcome;
+        self.operative_missions.grow(&mut capacity.rows[18]);
+        self.agency_operation_entries
+            .grow(&mut capacity.agency_operation_entries);
+        self.strategic_operatives.grow(&mut capacity.rows[19]);
+        self.agency_operation_buffers.grow(&mut capacity.rows[20]);
         self.cryptology.grow(&mut capacity.rows[5]);
         self.networks.grow(&mut capacity.rows[6]);
         self.flags.grow(&mut capacity.rows[7]);
@@ -904,8 +954,13 @@ impl Captured {
         self.autonomy_names.grow(&mut capacity.autonomy_names);
         self.agency_names.grow(&mut capacity.agency_names);
         self.operative_names.grow(&mut capacity.operative_names);
+        self.operative_mission_bytes
+            .grow(&mut capacity.operative_mission_bytes);
+        self.strategic_operative_entries
+            .grow(&mut capacity.strategic_operative_entries);
         self.operation_descriptions
             .grow(&mut capacity.operation_descriptions);
+        self.operation_parts.grow(&mut capacity.operation_parts);
         self.variable_entries.grow(&mut capacity.variable_entries);
         self.variable_names.grow(&mut capacity.variable_names);
         self.tokens.grow(&mut capacity.tokens);
@@ -1019,6 +1074,9 @@ impl Captured {
             12 => incoming_actions,
             16 => captured_operatives,
             17 => agency_upgrades,
+            18 => operative_missions,
+            19 => strategic_operatives,
+            20 => agency_operation_buffers,
         );
         self.country_intel_outcome = Outcome::Unavailable {
             reason: if intel_due {
@@ -1097,6 +1155,9 @@ impl Captured {
                 incoming_actions = 12,
                 captured_operatives = 16,
                 agency_upgrades = 17,
+                operative_missions = 18,
+                strategic_operatives = 19,
+                agency_operation_buffers = 20,
             );
         }
         if include_delegated {
@@ -1218,10 +1279,66 @@ impl Captured {
                 captured_operatives,
                 cintelligence_agency::walk_captured_operatives_growing
             );
+            if active[18] {
+                let begin = qpc();
+                capture_named(
+                    &mut self.operative_missions,
+                    &mut self.operative_mission_bytes,
+                    |rows, bytes| {
+                        let _reads = read_accounting::table(TABLES[18]);
+                        let read =
+                            operative_missions::walk_growing(memory, base, state, rows, bytes);
+                        self.operative_mission_failure = read.failed_operative;
+                        ArenaRead {
+                            outcome: read.outcome,
+                            len: read.bytes_len,
+                            required: read.required_bytes,
+                        }
+                    },
+                );
+                ticks[18] = elapsed(begin);
+            }
             plain!(5, cryptology, ccryptology::walk_growing);
             plain!(6, networks, ccountry_intel_network::walk_growing);
             if let (Some(resets), Outcome::Rows { .. }) = (resets, self.networks.outcome) {
                 NETWORK_RESETS.store(resets, std::sync::atomic::Ordering::SeqCst);
+            }
+            if active[20] {
+                let begin = qpc();
+                capture_named(
+                    &mut self.agency_operation_buffers,
+                    &mut self.agency_operation_entries,
+                    |rows, entries| {
+                        let _reads = read_accounting::table(TABLES[20]);
+                        let read = agency_operation_buffers::walk_growing(
+                            memory, base, state, rows, entries,
+                        );
+                        ArenaRead {
+                            outcome: read.outcome,
+                            len: read.entries_len,
+                            required: read.required_entries,
+                        }
+                    },
+                );
+                ticks[20] = elapsed(begin);
+            }
+            if active[19] {
+                let begin = qpc();
+                capture_named(
+                    &mut self.strategic_operatives,
+                    &mut self.strategic_operative_entries,
+                    |rows, entries| {
+                        let _reads = read_accounting::table(TABLES[19]);
+                        let read =
+                            strategic_operatives::walk_growing(memory, base, state, rows, entries);
+                        ArenaRead {
+                            outcome: read.outcome,
+                            len: read.entries_len,
+                            required: read.required_entries,
+                        }
+                    },
+                );
+                ticks[19] = elapsed(begin);
             }
             if active[7] {
                 let begin = qpc();
@@ -1303,6 +1420,7 @@ impl Captured {
                         &mut self.operations.rows,
                         &mut self.assignments.rows,
                         &mut self.operation_descriptions.first,
+                        &mut self.operation_parts.first,
                     )
                 });
                 first_named(
@@ -1314,6 +1432,20 @@ impl Captured {
                         required: result.required_bytes,
                     },
                 );
+                // The parts arena certifies the same rows.
+                self.operation_parts.len = result.parts_len;
+                self.operation_parts.required = result.required_parts;
+                if !valid_arena(
+                    self.operations.outcome,
+                    &self.operations.rows,
+                    &self.operation_parts.first,
+                    result.parts_len,
+                    result.required_parts,
+                ) {
+                    self.operations.outcome = Outcome::Unavailable {
+                        reason: "captured arena range invalid",
+                    };
+                }
                 self.assignments.outcome = bounded(result.assignments, self.assignments.rows.len());
                 ticks[9] = elapsed(begin);
             }
@@ -1438,6 +1570,9 @@ impl Captured {
             self.country_intel_outcome,
             self.captured_operatives.outcome,
             self.agency_upgrades.outcome,
+            self.operative_missions.outcome,
+            self.strategic_operatives.outcome,
+            self.agency_operation_buffers.outcome,
         ]
     }
 
@@ -1589,6 +1724,9 @@ impl Captured {
                 },
             )),
             sample(self.agency_upgrades_table(outcomes[17])),
+            sample(self.operative_missions_table(outcomes[18])),
+            sample(self.strategic_operatives_table(outcomes[19])),
+            sample(self.agency_operation_buffers_table(outcomes[20])),
         ]
     }
 }
@@ -1676,6 +1814,129 @@ impl Captured {
                 cooldown_kind: rows::Recorded::Value(r.cooldown_kind),
                 cooldown_start_hour: rows::Recorded::Value(r.cooldown_start_hour),
                 cooldown_end_hour: rows::Recorded::Value(r.cooldown_end_hour),
+            }
+        })
+    }
+
+    fn operative_missions_table(&self, outcome: Outcome) -> TableView {
+        if let Outcome::Unavailable { reason } = outcome
+            && let Some((id, roster)) = self.operative_mission_failure
+        {
+            let mut detail = String::new();
+            if crate::roster::add_reason(
+                &mut detail,
+                format_args!("{reason}; operative={id} roster={roster} refused_reads=1"),
+            )
+            .is_err()
+            {
+                return unavailable("operative mission refusal description allocation failed");
+            }
+            return TableView::Unavailable { reason: detail };
+        }
+        if !valid_arena(
+            outcome,
+            &self.operative_missions.rows,
+            &self.operative_mission_bytes.first,
+            self.operative_mission_bytes.len,
+            self.operative_mission_bytes.required,
+        ) {
+            return unavailable("operative mission bytes lie outside captured arena");
+        }
+        let bytes = &self.operative_mission_bytes.first;
+        table::<tables::OperativeMissions, _>(outcome, &self.operative_missions.rows, |r| {
+            rows::OperativeMissionRow {
+                roster_country: r.roster_country,
+                id: r.id,
+                ordinal: r.ordinal,
+                owner_country: r.owner_country,
+                assignment: r.assignment,
+                cooldown_kind: r.cooldown_kind,
+                cooldown_start_hour: r.cooldown_start_hour,
+                cooldown_end_hour: r.cooldown_end_hour,
+                variant: r.variant,
+                target_country: r.target_country,
+                target_state: r.target_state,
+                ideology: owned_vec(copy_vec(literal(bytes, r.ideology))),
+                pending_variant: r.pending_variant,
+                pending_country: r.pending_country,
+                pending_state: r.pending_state,
+                pending_ideology: owned_vec(copy_vec(literal(bytes, r.pending_ideology))),
+                portrait: owned_vec(copy_vec(literal(bytes, r.portrait))),
+                root_out_country_factor: r.root_out_country_factor,
+                root_out_operative_factor: r.root_out_operative_factor,
+                root_out_nationality: r.root_out_nationality,
+            }
+        })
+    }
+
+    fn agency_operation_buffers_table(&self, outcome: Outcome) -> TableView {
+        if !valid_arena(
+            outcome,
+            &self.agency_operation_buffers.rows,
+            &self.agency_operation_entries.first,
+            self.agency_operation_entries.len,
+            self.agency_operation_entries.required,
+        ) {
+            return unavailable("agency operation buffer entries lie outside captured arena");
+        }
+        let entries = &self.agency_operation_entries.first;
+        table::<tables::AgencyOperationBuffers, _>(
+            outcome,
+            &self.agency_operation_buffers.rows,
+            |r| {
+                let mut start = r.entries_start;
+                let mut list = |count: usize| {
+                    let part = &entries[start..start + count];
+                    start += count;
+                    owned_vec(map_slice(part, |entry| rows::AgencyBufferedOperation {
+                        operation: entry.operation,
+                        state: entry.state,
+                    }))
+                };
+                rows::AgencyOperationBuffersRow {
+                    snapshot: 0,
+                    completed: list(r.counts[0]),
+                    running: list(r.counts[1]),
+                    ready: list(r.counts[2]),
+                    unready: list(r.counts[3]),
+                }
+            },
+        )
+    }
+
+    fn strategic_operatives_table(&self, outcome: Outcome) -> TableView {
+        if !valid_arena(
+            outcome,
+            &self.strategic_operatives.rows,
+            &self.strategic_operative_entries.first,
+            self.strategic_operative_entries.len,
+            self.strategic_operative_entries.required,
+        ) {
+            return unavailable("strategic operative entries lie outside captured arena");
+        }
+        let entries = &self.strategic_operative_entries.first;
+        table::<tables::StrategicOperatives, _>(outcome, &self.strategic_operatives.rows, |r| {
+            let trade_end = r.entries_start + r.trade_len;
+            rows::StrategicOperativeRow {
+                country: r.country,
+                slot: r.slot,
+                mission_activity: r.mission_activity,
+                operation_activity: r.operation_activity,
+                trade_influence: owned_vec(map_slice(
+                    &entries[r.entries_start..trade_end],
+                    |entry| rows::TradeInfluence {
+                        owner: entry.owner,
+                        value: entry.value,
+                    },
+                )),
+                diplomatic_pressure: owned_vec(map_slice(
+                    &entries[trade_end..trade_end + r.pressure_len],
+                    |entry| rows::DiplomaticPressure {
+                        owner: entry.owner,
+                        acceptance: entry.value,
+                        tension: entry.tension,
+                    },
+                )),
             }
         })
     }
@@ -1910,27 +2171,81 @@ impl Captured {
         ) {
             return unavailable("operation description lies outside captured arena");
         }
-        table::<tables::Operations, _>(outcome, &self.operations.rows, |r| rows::OperationRow {
-            id: r.id,
-            owner: r.owner,
-            target: r.target,
-            target_province: r.target_province,
-            definition_token: r.definition_token,
-            preparation_current: r.preparation_current,
-            preparation_required: r.preparation_required,
-            flag_40: r.flag_40,
-            auto_repeat: r.auto_repeat,
-            terminal: r.terminal,
-            start_hour: r.start_hour,
-            duration_days: r.duration_days,
-            phase_count: r.phase_count,
-            assigned_slots: r.assigned_slots,
-            bonus: rows::Recorded::Value(r.bonus),
-            detected: rows::Recorded::Value(r.detected),
-            effect_description: rows::Recorded::Value(owned_vec(copy_vec(literal(
-                &self.operation_descriptions.first,
-                r.effect_description,
-            )))),
+        let parts = &self.operation_parts.first;
+        let in_order =
+            |r: &coperation_instance::Row| operation_parts(r, parts, self.operation_parts.len);
+        if !valid_arena(
+            outcome,
+            &self.operations.rows,
+            parts,
+            self.operation_parts.len,
+            self.operation_parts.required,
+        ) || !self
+            .operations
+            .rows
+            .get(..outcome.len())
+            .is_some_and(|rows| rows.iter().all(|r| in_order(r).is_some()))
+        {
+            return unavailable("operation parts lie outside captured arena or out of order");
+        }
+        table::<tables::Operations, _>(outcome, &self.operations.rows, |r| {
+            let [phases, requirements, equipment, totals] = in_order(r).unwrap_or_default();
+            rows::OperationRow {
+                id: r.id,
+                owner: r.owner,
+                target: r.target,
+                target_province: r.target_province,
+                definition_token: r.definition_token,
+                preparation_current: r.preparation_current,
+                preparation_required: r.preparation_required,
+                flag_40: r.flag_40,
+                auto_repeat: r.auto_repeat,
+                terminal: r.terminal,
+                start_hour: r.start_hour,
+                duration_days: r.duration_days,
+                phase_count: r.phase_count,
+                assigned_slots: r.assigned_slots,
+                bonus: rows::Recorded::Value(r.bonus),
+                detected: rows::Recorded::Value(r.detected),
+                effect_description: rows::Recorded::Value(owned_vec(copy_vec(literal(
+                    &self.operation_descriptions.first,
+                    r.effect_description,
+                )))),
+                phases: owned_vec(map_slice(phases, |part| match part {
+                    coperation_instance::Part::Phase(token) => *token,
+                    _ => 0,
+                })),
+                requirements: owned_vec(map_slice(requirements, |part| match part {
+                    coperation_instance::Part::Requirement(requirement) => {
+                        rows::OperationRequirement {
+                            amount: requirement.amount,
+                            days: requirement.days,
+                            archetype: requirement.archetype,
+                            equipment: requirement.equipment,
+                            uses_time: requirement.uses_time,
+                        }
+                    }
+                    _ => Default::default(),
+                })),
+                equipment: owned_vec(map_slice(equipment, |part| match part {
+                    coperation_instance::Part::Equipment(entry) => rows::OperationEquipment {
+                        variant: entry.variant,
+                        archetype: entry.archetype,
+                        amount: entry.amount,
+                    },
+                    _ => Default::default(),
+                })),
+                equipment_totals: owned_vec(map_slice(totals, |part| match part {
+                    coperation_instance::Part::EquipmentTotal(total) => {
+                        rows::OperationEquipmentTotal {
+                            archetype: total.archetype,
+                            amount: total.amount,
+                        }
+                    }
+                    _ => Default::default(),
+                })),
+                equipment_allow_zero: r.equipment_allow_zero,
+            }
         })
     }
 
@@ -2036,6 +2351,68 @@ impl ArenaRow<u8> for coperation_instance::Row {
     }
 }
 
+impl ArenaRow<coperation_instance::Part> for coperation_instance::Row {
+    fn valid(&self, len: usize) -> bool {
+        fits(self.parts_start, self.part_count(), len)
+    }
+}
+
+/// A row's parts split into its phases, requirements, pool variant entries
+/// and pool archetype totals; `None` outside the captured arena or when a
+/// part is not of its span's kind.
+fn operation_parts<'a>(
+    row: &coperation_instance::Row,
+    parts: &'a [coperation_instance::Part],
+    len: usize,
+) -> Option<[&'a [coperation_instance::Part]; 4]> {
+    use coperation_instance::Part;
+    let counts = [
+        row.phase_count,
+        row.requirement_count,
+        row.equipment_count,
+        row.equipment_total_count,
+    ];
+    let mut spans: [&[Part]; 4] = [&[]; 4];
+    let mut start = row.parts_start;
+    for (kind, (span, count)) in spans.iter_mut().zip(counts).enumerate() {
+        let end = start
+            .checked_add(count as usize)
+            .filter(|&end| end <= len)?;
+        let slice = parts.get(start..end)?;
+        if !slice.iter().all(|part| {
+            matches!(
+                (kind, part),
+                (0, Part::Phase(_))
+                    | (1, Part::Requirement(_))
+                    | (2, Part::Equipment(_))
+                    | (3, Part::EquipmentTotal(_))
+            )
+        }) {
+            return None;
+        }
+        *span = slice;
+        start = end;
+    }
+    Some(spans)
+}
+
+impl ArenaRow<agency_operation_buffers::Entry> for agency_operation_buffers::Row {
+    fn valid(&self, len: usize) -> bool {
+        self.counts
+            .iter()
+            .try_fold(0usize, |sum, n| sum.checked_add(*n))
+            .is_some_and(|count| fits(self.entries_start, count, len))
+    }
+}
+
+impl ArenaRow<strategic_operatives::Entry> for strategic_operatives::Row {
+    fn valid(&self, len: usize) -> bool {
+        self.trade_len
+            .checked_add(self.pressure_len)
+            .is_some_and(|count| fits(self.entries_start, count, len))
+    }
+}
+
 impl ArenaRow<u8> for cintelligence_agency::Row {
     fn valid(&self, len: usize) -> bool {
         name_fits(self.name, len)
@@ -2045,6 +2422,14 @@ impl ArenaRow<u8> for cintelligence_agency::Row {
 impl ArenaRow<u8> for coperative_leader::Row {
     fn valid(&self, len: usize) -> bool {
         name_fits(self.name, len)
+    }
+}
+
+impl ArenaRow<u8> for operative_missions::Row {
+    fn valid(&self, len: usize) -> bool {
+        name_fits(self.ideology, len)
+            && name_fits(self.pending_ideology, len)
+            && name_fits(self.portrait, len)
     }
 }
 
@@ -3515,8 +3900,7 @@ fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals:
         return;
     };
     for ordinal in 0..goals.count {
-        let Some(start) = capspan(log, memory, goals.element(ordinal, 8), 8, M_CAPITULATION)
-        else {
+        let Some(start) = capspan(log, memory, goals.element(ordinal, 8), 8, M_CAPITULATION) else {
             return;
         };
         let Some(goal) = usize::try_from(cap_pool_u64(log, start))
@@ -3576,7 +3960,11 @@ impl Captured {
                 .and_then(|end| self.war_goal_recipients.get(row.war_goals_start..end))
                 .map(Some),
         };
-        let rows = self.capitulation.rows.get(..outcome.len()).unwrap_or_default();
+        let rows = self
+            .capitulation
+            .rows
+            .get(..outcome.len())
+            .unwrap_or_default();
         if !rows.iter().all(|row| goals(row).is_some()) {
             return unavailable("war goal recipients outside the captured list");
         }
@@ -3586,9 +3974,7 @@ impl Captured {
                 capitulated: r.capitulated,
                 capitulated_hour: r.capitulated_hour,
                 war_goal_recipients: rows::Recorded::Value(
-                    goals(r)
-                        .unwrap()
-                        .map(|list| owned_vec(copy_vec(list))),
+                    goals(r).unwrap().map(|list| owned_vec(copy_vec(list))),
                 ),
                 ..Default::default()
             }
@@ -3914,6 +4300,10 @@ pub fn intel_shadow_fixture(value: i64) -> Captured {
         agency_upgrade_definitions: 0,
         operation_descriptions: 0,
         operative_names: 0,
+        operative_mission_bytes: 0,
+        operation_parts: 0,
+        strategic_operative_entries: 0,
+        agency_operation_entries: 0,
         variable_entries: 0,
         variable_names: 0,
         tokens: 0,
@@ -4064,6 +4454,10 @@ mod tests {
             agency_upgrade_definitions: 0,
             operation_descriptions: 0,
             operative_names: 0,
+            operative_mission_bytes: 0,
+            operation_parts: 0,
+            strategic_operative_entries: 0,
+            agency_operation_entries: 0,
             variable_entries: 0,
             variable_names: 0,
             tokens: 0,
@@ -4091,7 +4485,7 @@ mod tests {
             }
             let report = captured.fail_residual_capture(context, "residual worker failed");
             assert_eq!(report.ticks, [0; N]);
-            for slot in (1..=12).chain(std::iter::once(15)) {
+            for slot in (1..=12).chain(15..N) {
                 assert_eq!(
                     captured.outcomes()[slot],
                     Outcome::Unavailable {
@@ -4434,6 +4828,10 @@ mod tests {
             agency_upgrade_definitions: 0,
             operation_descriptions: 0,
             operative_names: 0,
+            operative_mission_bytes: 0,
+            operation_parts: 0,
+            strategic_operative_entries: 0,
+            agency_operation_entries: 0,
             variable_entries: 4,
             variable_names: 8,
             tokens: 8,
@@ -5028,6 +5426,242 @@ mod tests {
         assert_eq!(operative.cooldown_kind, rows::Recorded::Value(None));
         assert_eq!(operative.cooldown_start_hour, rows::Recorded::Value(None));
         assert_eq!(operative.cooldown_end_hour, rows::Recorded::Value(None));
+    }
+
+    #[test]
+    fn operative_missions_convert_every_field_and_name_their_refusals() {
+        let (_, mut capture) = small();
+        capture.operative_missions.outcome = Outcome::Rows { len: 1 };
+        capture.operative_missions.rows[0] = operative_missions::Row {
+            roster_country: u32::MAX,
+            id: u64::MAX,
+            ordinal: 2,
+            owner_country: 7,
+            assignment: 1,
+            cooldown_kind: Some(3),
+            cooldown_start_hour: Some(i32::MIN),
+            cooldown_end_hour: Some(i32::MAX),
+            variant: Some(5),
+            target_country: Some(u32::MAX),
+            target_state: Some(-1),
+            ideology: Name { start: 0, len: 2 },
+            pending_variant: Some(1),
+            pending_country: Some(0),
+            pending_state: None,
+            pending_ideology: Name { start: 2, len: 1 },
+            portrait: Name { start: 3, len: 3 },
+            root_out_country_factor: Some(i64::MIN),
+            root_out_operative_factor: Some(i64::MAX),
+            root_out_nationality: Some(1),
+        };
+        capture.operative_mission_bytes.first = vec![b'f', b'a', b'c', b'G', 0, b'x'];
+        capture.operative_mission_bytes.len = 6;
+        capture.operative_mission_bytes.required = 6;
+        let views = capture.tables();
+        assert_eq!(
+            complete::<tables::OperativeMissions>(&views[18]),
+            [rows::OperativeMissionRow {
+                roster_country: u32::MAX,
+                id: u64::MAX,
+                ordinal: 2,
+                owner_country: 7,
+                assignment: 1,
+                cooldown_kind: Some(3),
+                cooldown_start_hour: Some(i32::MIN),
+                cooldown_end_hour: Some(i32::MAX),
+                variant: Some(5),
+                target_country: Some(u32::MAX),
+                target_state: Some(-1),
+                ideology: b"fa".to_vec(),
+                pending_variant: Some(1),
+                pending_country: Some(0),
+                pending_state: None,
+                pending_ideology: b"c".to_vec(),
+                portrait: vec![b'G', 0, b'x'],
+                root_out_country_factor: Some(i64::MIN),
+                root_out_operative_factor: Some(i64::MAX),
+                root_out_nationality: Some(1),
+            }]
+        );
+        // A span outside the arena makes the table unavailable, never empty.
+        capture.operative_missions.rows[0].portrait = Name { start: 5, len: 2 };
+        assert!(matches!(
+            capture.tables()[18],
+            TableView::Unavailable { .. }
+        ));
+        capture.operative_mission_failure = Some((99, 7));
+        capture.operative_missions.outcome = Outcome::Unavailable {
+            reason: "operative portrait unreadable or invalid",
+        };
+        let TableView::Unavailable { reason } = &capture.tables()[18] else {
+            panic!()
+        };
+        assert!(reason.contains("operative=99 roster=7 refused_reads=1"));
+        capture.operative_mission_failure = None;
+        capture.operative_mission_bytes.required = 40_000;
+        let mut capacity = Capacities::default();
+        capture.grow(&mut capacity);
+        assert!(capacity.operative_mission_bytes >= 40_000);
+    }
+
+    #[test]
+    fn strategic_operatives_convert_both_maps_from_their_entry_spans() {
+        let (_, mut capture) = small();
+        capture.strategic_operatives.outcome = Outcome::Rows { len: 2 };
+        capture.strategic_operatives.rows[0] = strategic_operatives::Row {
+            country: u32::MAX,
+            slot: 7,
+            mission_activity: i64::MIN,
+            operation_activity: i64::MAX,
+            entries_start: 0,
+            trade_len: 2,
+            pressure_len: 1,
+        };
+        capture.strategic_operatives.rows[1] = strategic_operatives::Row {
+            country: 2,
+            slot: 2,
+            entries_start: 3,
+            ..Default::default()
+        };
+        capture.strategic_operative_entries.first = vec![
+            strategic_operatives::Entry {
+                owner: 2,
+                value: 250_000,
+                tension: 0,
+            },
+            strategic_operatives::Entry {
+                owner: 3,
+                value: 0,
+                tension: 0,
+            },
+            strategic_operatives::Entry {
+                owner: 2,
+                value: 32_768,
+                tension: -16_384,
+            },
+        ];
+        capture.strategic_operative_entries.len = 3;
+        capture.strategic_operative_entries.required = 3;
+        let views = capture.tables();
+        assert_eq!(
+            complete::<tables::StrategicOperatives>(&views[19]),
+            [
+                rows::StrategicOperativeRow {
+                    country: 2,
+                    slot: 2,
+                    ..Default::default()
+                },
+                rows::StrategicOperativeRow {
+                    country: u32::MAX,
+                    slot: 7,
+                    mission_activity: i64::MIN,
+                    operation_activity: i64::MAX,
+                    trade_influence: vec![
+                        rows::TradeInfluence {
+                            owner: 2,
+                            value: 250_000,
+                        },
+                        rows::TradeInfluence { owner: 3, value: 0 },
+                    ],
+                    diplomatic_pressure: vec![rows::DiplomaticPressure {
+                        owner: 2,
+                        acceptance: 32_768,
+                        tension: -16_384,
+                    }],
+                },
+            ]
+        );
+        // A span outside the arena makes the table unavailable, never empty.
+        capture.strategic_operatives.rows[0].pressure_len = 2;
+        assert!(matches!(
+            capture.tables()[19],
+            TableView::Unavailable { .. }
+        ));
+        capture.strategic_operative_entries.required = 40_000;
+        let mut capacity = Capacities::default();
+        capture.grow(&mut capacity);
+        assert!(capacity.strategic_operative_entries >= 40_000);
+    }
+
+    #[test]
+    fn operations_convert_their_parts_by_kind_and_refuse_spans_out_of_order() {
+        use coperation_instance::{Equipment, EquipmentTotal, Part, Requirement};
+        let (_, mut capture) = small();
+        capture.operations.outcome = Outcome::Rows { len: 1 };
+        capture.operations.rows[0] = coperation_instance::Row {
+            id: 9,
+            phase_count: 2,
+            requirement_count: 1,
+            equipment_count: 1,
+            equipment_total_count: 1,
+            equipment_allow_zero: 1,
+            parts_start: 1,
+            ..Default::default()
+        };
+        capture.operation_parts.first = vec![
+            Part::Empty,
+            Part::Phase(0x11),
+            Part::Phase(0x11),
+            Part::Requirement(Requirement {
+                amount: 250_000,
+                days: 3,
+                archetype: 0,
+                equipment: 0,
+                uses_time: 1,
+            }),
+            Part::Equipment(Equipment {
+                variant: u64::MAX,
+                archetype: 0x77,
+                amount: i64::MIN,
+            }),
+            Part::EquipmentTotal(EquipmentTotal {
+                archetype: 0x77,
+                amount: i64::MAX,
+            }),
+        ];
+        capture.operation_parts.len = 6;
+        capture.operation_parts.required = 6;
+        let views = capture.tables();
+        let operation = &complete::<tables::Operations>(&views[9])[0];
+        assert_eq!(
+            (
+                &operation.phases,
+                &operation.requirements,
+                &operation.equipment,
+                &operation.equipment_totals,
+                operation.equipment_allow_zero
+            ),
+            (
+                &vec![0x11_u32, 0x11],
+                &vec![rows::OperationRequirement {
+                    amount: 250_000,
+                    days: 3,
+                    archetype: 0,
+                    equipment: 0,
+                    uses_time: 1,
+                }],
+                &vec![rows::OperationEquipment {
+                    variant: u64::MAX,
+                    archetype: 0x77,
+                    amount: i64::MIN,
+                }],
+                &vec![rows::OperationEquipmentTotal {
+                    archetype: 0x77,
+                    amount: i64::MAX,
+                }],
+                1_u8
+            )
+        );
+        // A span holding another kind, or reaching past the arena, refuses
+        // the table.
+        capture.operations.rows[0].parts_start = 0;
+        assert!(matches!(capture.tables()[9], TableView::Unavailable { .. }));
+        capture.operations.rows[0].parts_start = 2;
+        assert!(matches!(capture.tables()[9], TableView::Unavailable { .. }));
+        capture.operation_parts.required = 40_000;
+        let mut capacity = Capacities::default();
+        capture.grow(&mut capacity);
+        assert!(capacity.operation_parts >= 40_000);
     }
 
     #[test]
@@ -6924,6 +7558,10 @@ mod tests {
             agency_upgrade_definitions: 0,
             operation_descriptions: 0,
             operative_names: 0,
+            operative_mission_bytes: 0,
+            operation_parts: 0,
+            strategic_operative_entries: 0,
+            agency_operation_entries: 0,
             variable_entries: 4,
             variable_names: 8,
             tokens: 8,
@@ -7029,7 +7667,8 @@ mod tests {
             0x4400,
             2,
         );
-        for (index, (goal, recipient)) in [(0x4500_usize, 7_u32), (0x4600, 9)].into_iter().enumerate()
+        for (index, (goal, recipient)) in
+            [(0x4500_usize, 7_u32), (0x4600, 9)].into_iter().enumerate()
         {
             cap_put(&mut bytes, 0x4400 + index * 8, &(goal as u64).to_le_bytes());
             cap_put(
@@ -7065,10 +7704,14 @@ mod tests {
             assert_eq!(split.capitulation.outcome, direct);
             assert_eq!(split.capitulation.rows[0], rows[0]);
             let table = split.capitulation_table(split.capitulation.outcome);
-            let TableView::Complete(replay::rows::TableRows::Capitulation(converted)) = table else {
+            let TableView::Complete(replay::rows::TableRows::Capitulation(converted)) = table
+            else {
                 panic!("complete capitulation table");
             };
-            assert_eq!(converted[0].war_goal_recipients, rows::Recorded::Value(expected));
+            assert_eq!(
+                converted[0].war_goal_recipients,
+                rows::Recorded::Value(expected)
+            );
         }
     }
 

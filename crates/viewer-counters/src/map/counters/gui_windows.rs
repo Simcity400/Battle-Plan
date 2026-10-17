@@ -114,6 +114,7 @@ pub(super) fn gui_assets<'a>(
             small: flags.small,
             large: flags.large,
         }),
+        portrait_textures: None,
         physical_viewport: width
             .ok()
             .zip(height.ok())

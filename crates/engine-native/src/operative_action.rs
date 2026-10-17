@@ -20,6 +20,21 @@ pub const CONTROL_TRADE: u32 = 6;
 pub const DIPLOMATIC_PRESSURE: u32 = 7;
 /// Propaganda action discriminator.
 pub const PROPAGANDA: u32 = 8;
+/// Whether the variant's implementation targets a state as well as a country.
+pub const fn targets_state(variant: u32) -> bool {
+    matches!(
+        variant,
+        BUILD_NETWORK | QUIET_NETWORK | ROOT_OUT_RESISTANCE | BOOST_IDEOLOGY | PROPAGANDA
+    )
+}
+/// Pending mission's u32 variant, relative to the leader's pending mission.
+pub const PENDING_VARIANT: usize = 0x08;
+/// Pending mission's raw target country reference, u32.
+pub const PENDING_TARGET_COUNTRY: usize = 0x0c;
+/// Pending mission's target state pointer; null for none.
+pub const PENDING_TARGET_STATE: usize = 0x10;
+/// Pending mission's ideology pointer; null for none.
+pub const PENDING_IDEOLOGY: usize = 0x18;
 /// Definition tokens selected by action variant; spellings come from recorded LexicalTokens.
 pub const SAVE_TOKENS: [u32; 8] = [
     0x3d1a, 0x4b20, 0x3d1b, 0x4b21, 0x4b1c, 0x4b1d, 0x4b1e, 0x4b1f,

@@ -130,3 +130,35 @@ fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
     assert_eq!(layout.size, [66, 33]);
     assert!(part(&layout, "count_bg").is_some());
 }
+
+/// The Operatives map mode's intel container and entry windows load their authored sprites
+/// with the other map-icon windows, so their backgrounds and glyphs draw.
+#[test]
+fn intel_icon_windows_load_their_authored_sprites() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut source = SYNTHETIC_NAVY_GUI.to_owned();
+    for (window, sprite) in [
+        (INTEL_CONTAINER_WINDOW, "GFX_intel_container"),
+        (INTEL_SHIELD_WINDOW, "GFX_intel_shield"),
+        (INTEL_OPERATIVE_WINDOW, "GFX_intel_operative"),
+        (INTEL_OPERATION_WINDOW, "GFX_intel_operation"),
+        (INTEL_MORE_WINDOW, "GFX_intel_more"),
+    ] {
+        source.push_str(&format!(
+            "\nguiTypes = {{ containerWindowType = {{ name = \"{window}\" \
+             iconType = {{ name = \"icon\" spriteType = \"{sprite}\" }} }} }}"
+        ));
+    }
+    let windows = NativeWindows::read(source.as_bytes(), VIEWPORT).unwrap();
+    let assets = windows.assets(&Default::default());
+    for sprite in [
+        "GFX_intel_container",
+        "GFX_intel_shield",
+        "GFX_intel_operative",
+        "GFX_intel_operation",
+        "GFX_intel_more",
+    ] {
+        assert!(assets.sprites.contains(sprite.as_bytes()), "{sprite}");
+    }
+}

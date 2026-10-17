@@ -199,7 +199,6 @@ use viewer_foundation::map::unit_rules::STANDSTILL;
 /// into every medium cell; the small and full sets get none.
 pub const MEDIUM_FLAG_OVERLAY: &str = "gfx/interface/small_flag_overlay.tga";
 
-
 /// A stack the perspective cannot see shows `?` in its count box instead of the formatted number.
 pub const UNKNOWN_COUNT: &str = "?";
 
@@ -299,7 +298,7 @@ impl CounterDefines {
         let fixed = |name| {
             defines
                 .fixed5("NGraphics", name)
-                .map(|value| (value as f64 / 100_000.0) as f32)
+                .map(viewer_foundation::map::camera::fixed5_camera_distance)
         };
         let int = |name| defines.int32("NGraphics", name).map(|value| value as f32);
         Ok(Self {
@@ -979,6 +978,25 @@ impl CounterAssets {
             })
             .chain(self.gui.uncovered_note("Map-icon windows"))
             .collect())
+    }
+
+    /// The recorded operative sprite's first texture frame, keeping the map icon's own mask.
+    pub fn operative_portrait_texture(
+        &self,
+        name: &[u8],
+    ) -> Option<viewer_foundation::map::native_gui::Texture> {
+        let name = std::str::from_utf8(name).ok()?;
+        let counter_portraits::Resolved::Sheet(sheet) = self.portraits.sprite(name) else {
+            return None;
+        };
+        Some(viewer_foundation::map::native_gui::Texture {
+            texture: sheet.texture,
+            uv: [0.0, 0.0, 1.0 / sheet.frames.max(1) as f32, 1.0],
+            size: [
+                (sheet.size[0] / sheet.frames.max(1)) as i32,
+                sheet.size[1] as i32,
+            ],
+        })
     }
 
     /// The sheet a headquarters portrait resolves to, or `None` when it names nothing loaded or a
