@@ -557,7 +557,7 @@ impl Scan {
             .frontier
             .is_some_and(|at| at.checked_add(1) == Some(hour));
         let read = slot_read(format, &decoded.metrics, TableId::CountryFactories, hour);
-        let joined = self.countries.update(decoded);
+        let joined = self.countries.update_changed(decoded, changes);
         self.joined = joined.is_ok();
         let changed = !continuous
             || self.read != Some(read)

@@ -25,3 +25,15 @@ Hourly signed trade integrals still consume every active flow's terms.
 
 `cargo test -p dashboard-resource-balance` builds and runs only this crate's
 tests.
+
+Trade retains its current published catalogue text and compressed ranges
+between flushes, applying the shared patch and compaction rules without
+rereading its own publication. Restoration validates the chain again. Numeric
+trade channels pass one explicit payload table through a flush, with
+the same separate per-key payloads and saved continuation.
+
+Catalogue reuse checks every live range's immutable identity and the next
+empty/missing slot in the current writer. A second publisher, store
+replacement or abandoned writes invalidate the cache; an unchanged append
+can retain it. The shared publication rules are in
+[dashboard-base](../dashboard-base/README.md#prepared-series).

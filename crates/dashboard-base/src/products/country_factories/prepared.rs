@@ -186,6 +186,8 @@ pub fn channel(top: &FactoryTop) -> usize {
 }
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
     scan: Scan,
     keys: BTreeMap<String, u64>,
     values: [Accumulator; 21],
@@ -329,6 +331,7 @@ impl Prepared {
         let Some(first) = self.first.take() else {
             return Ok(());
         };
+        let mut payloads = series::Payloads::default();
         self.scan.seal();
         let runs: BTreeMap<_, _> = self
             .scan
@@ -341,20 +344,19 @@ impl Prepared {
                         .runs
                         .iter()
                         .filter(|run| run.last_hour >= first)
-                        .map(|run| FactoryRun {
-                            first_hour: run.first_hour.max(first),
-                            ..run.clone()
-                        })
                         .collect::<Vec<_>>(),
                 )
             })
             .collect();
+        let rank_plan = crate::ranking::RankPlan::new(
+            &runs,
+            |run| (run.first_hour.max(first), run.last_hour),
+            cancelled,
+        )?;
         for index in 0..21 {
             let top = rank_selection(index);
             self.ranks[index].through(first);
-            crate::ranking::rank_positions(
-                &runs,
-                |run| (run.first_hour, run.last_hour),
+            rank_plan.runs(
                 |run| Some(i128::from(count_for(&run.values, &top))),
                 cancelled,
                 |position, tag, from, to| {
@@ -369,25 +371,42 @@ impl Prepared {
                 },
             )?;
             self.ranks[index].through(self.last);
-            self.ranks[index].flush(
+            self.ranks[index].flush_with_payloads(
                 writer,
                 &format!("factories-ranks-{branch}-{index}"),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
-            self.values[index].flush(
+            self.values[index].flush_with_payloads(
                 writer,
                 &format!("factories-values-{branch}-{index}"),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
         }
-        self.parts
-            .flush(writer, &format!("factories-parts-{branch}"), 0, cancelled)?;
-        self.mixes
-            .flush(writer, &format!("factories-mixes-{branch}"), 0, cancelled)?;
-        self.reads
-            .flush(writer, &format!("factories-reads-{branch}"), 0, cancelled)?;
+        self.parts.flush_with_payloads(
+            writer,
+            &format!("factories-parts-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.mixes.flush_with_payloads(
+            writer,
+            &format!("factories-mixes-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.reads.flush_with_payloads(
+            writer,
+            &format!("factories-reads-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
         for track in self.scan.tracks.values_mut() {
             if track.runs.len() > 1 {
                 track.runs.drain(..track.runs.len() - 1);
@@ -399,7 +418,8 @@ impl Prepared {
                 track.reads.drain(..track.reads.len() - 1);
             }
         }
-        series::write_catalogue(writer, "factories", branch, &self.keys, &self.scan.result)
+        self.catalogue_writer
+            .write(writer, "factories", branch, &self.keys, &self.scan.result)
     }
 }
 pub fn query(

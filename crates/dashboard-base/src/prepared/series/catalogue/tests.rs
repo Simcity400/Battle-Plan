@@ -279,3 +279,147 @@ fn a_reader_refuses_patches_that_do_not_reproduce_their_text() {
             .is_err()
     );
 }
+
+#[test]
+fn owned_catalogue_checks_identities_without_rereading_current_payloads() {
+    use crate::prepared::pages::Pages;
+    struct Counted<'a> {
+        writer: &'a mut store::Writer,
+        reads: usize,
+    }
+    impl Pages for Counted<'_> {
+        fn write_at(&mut self, section: &str, range: u64, data: &[u8]) -> io::Result<()> {
+            Pages::write_at(self.writer, section, range, data)
+        }
+        fn write(&mut self, section: &str, data: &[u8]) -> io::Result<u64> {
+            Pages::write(self.writer, section, data)
+        }
+        fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
+            self.reads += 1;
+            Pages::read_at(self.writer, section, range)
+        }
+        fn range_ids(
+            &mut self,
+            section: &str,
+            count: u64,
+        ) -> io::Result<Option<Vec<Option<store::RangeId>>>> {
+            Pages::range_ids(self.writer, section, count)
+        }
+    }
+    let mut fixtures = [Fixture::new(), Fixture::new()];
+    let mut cached = series::CatalogueWriter::default();
+    let (mut keys, mut metadata) = (BTreeMap::new(), BTreeMap::new());
+    add(&mut keys, &mut metadata, 128);
+    for step in 0..16 {
+        if step % 3 == 0 {
+            add(&mut keys, &mut metadata, 3);
+        }
+        if step % 3 == 1 {
+            let name = metadata.keys().next().unwrap().clone();
+            metadata.get_mut(&name).unwrap()["label"] = json!(format!("renamed {step}"));
+        }
+        if step == 8 {
+            cached = Default::default();
+        }
+        for (index, fixture) in fixtures.iter_mut().enumerate() {
+            let mut writer = if step == 12 {
+                fixture.append_writer()
+            } else {
+                fixture.writer()
+            };
+            let mut pages = Counted {
+                writer: &mut writer,
+                reads: 0,
+            };
+            if index == 0 {
+                series::write_catalogue(&mut pages, "owned", 1, &keys, &metadata).unwrap();
+            } else {
+                let current = match cached.0.0.as_ref() {
+                    Some(held) => {
+                        pages
+                            .range_ids("owned-1-catalogue", held.stored.len() as u64 + 1)
+                            .unwrap()
+                            == held.ids
+                    }
+                    None => false,
+                };
+                cached
+                    .write(&mut pages, "owned", 1, &keys, &metadata)
+                    .unwrap();
+                if current {
+                    assert_eq!(pages.reads, 0, "step {step} reread an owned chain");
+                } else {
+                    assert!(pages.reads > 0, "cold/resumed publication reads its chain");
+                }
+            }
+            writer.commit().unwrap();
+        }
+        assert_eq!(
+            fixtures[0].payloads(),
+            fixtures[1].payloads(),
+            "step {step}"
+        );
+        assert_eq!(
+            published(&fixtures[1], "owned-1-catalogue"),
+            serde_json::to_vec(&(&keys, &metadata)).unwrap()
+        );
+    }
+}
+
+#[test]
+fn catalogue_revalidates_other_publishers_replacement_clear_and_abandoned_writes() {
+    let mut fixtures = [Fixture::new(), Fixture::new()];
+    let mut cache = series::CatalogueWriter::default();
+    let (mut keys, mut metadata) = (BTreeMap::new(), BTreeMap::new());
+    add(&mut keys, &mut metadata, 128);
+    let mut other = metadata.clone();
+    let name = other.keys().next().unwrap().clone();
+    other.get_mut(&name).unwrap()["label"] = json!("another Prepared for this family and branch");
+    for event in [
+        "initial",
+        "other publisher",
+        "replace",
+        "abandon",
+        "clear",
+        "append",
+    ] {
+        for (index, fixture) in fixtures.iter_mut().enumerate() {
+            if event == "abandon" {
+                let mut writer = fixture.writer();
+                if index == 0 {
+                    series::write_catalogue(&mut writer, "current", 1, &keys, &other).unwrap();
+                } else {
+                    cache
+                        .write(&mut writer, "current", 1, &keys, &other)
+                        .unwrap();
+                }
+                // Dropped without commit: the cache must not trust its staged ranges.
+            }
+            if event == "clear" {
+                fixture.store.clear().unwrap();
+            }
+            let mut writer = match event {
+                "replace" => fixture.store.replace(fixture.key.clone()).unwrap(),
+                "append" => fixture.append_writer(),
+                _ => fixture.writer(),
+            };
+            if event == "other publisher" {
+                series::write_catalogue(&mut writer, "current", 1, &keys, &other).unwrap();
+            }
+            if index == 0 {
+                series::write_catalogue(&mut writer, "current", 1, &keys, &metadata).unwrap();
+            } else {
+                cache
+                    .write(&mut writer, "current", 1, &keys, &metadata)
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        assert_eq!(fixtures[0].payloads(), fixtures[1].payloads(), "{event}");
+        assert_eq!(
+            published(&fixtures[1], "current-1-catalogue"),
+            serde_json::to_vec(&(&keys, &metadata)).unwrap(),
+            "{event}"
+        );
+    }
+}

@@ -2365,3 +2365,131 @@ fn reused_numeric_payloads_keep_batch_bytes_and_restored_summaries() {
     };
     assert_eq!(prepare(false), prepare(true));
 }
+
+#[test]
+fn explicit_payload_table_reuses_series_payloads_with_identical_bytes() {
+    let run = |cached: bool| {
+        let fixture = Fixture::new();
+        let mut accumulators = [Accumulator::default(), Accumulator::default()];
+        let flag = AtomicBool::new(false);
+        let before = PAYLOAD_WORK.with(std::cell::Cell::get);
+        let mut snapshots = Vec::new();
+        for (first, last) in [(-7, 20), (21, 45), (47, 71)] {
+            for accumulator in &mut accumulators {
+                for hour in first..=last {
+                    accumulator.advance(hour).unwrap();
+                    for key in 0..16 {
+                        accumulator.observe(
+                            key,
+                            hour,
+                            (hour % 11 != 0).then_some(i128::from(key % 3)),
+                            hour % 13 == 0,
+                        );
+                    }
+                }
+            }
+            let mut payloads = Payloads::default();
+            let mut writer = fixture.writer();
+            for (index, accumulator) in accumulators.iter_mut().enumerate() {
+                if cached {
+                    accumulator
+                        .flush_with_payloads(
+                            &mut writer,
+                            &format!("channel-{index}"),
+                            0,
+                            &flag,
+                            &mut payloads,
+                        )
+                        .unwrap();
+                } else {
+                    accumulator
+                        .flush(&mut writer, &format!("channel-{index}"), 0, &flag)
+                        .unwrap();
+                }
+            }
+            writer.commit().unwrap();
+            let saved = accumulators
+                .each_ref()
+                .map(|state| serde_json::to_vec(state).unwrap());
+            snapshots.push((fixture.payloads(), saved.clone()));
+            accumulators = saved.map(|state| serde_json::from_slice(&state).unwrap());
+        }
+        (snapshots, PAYLOAD_WORK.with(std::cell::Cell::get) - before)
+    };
+    let (reference, full_work) = run(false);
+    let (cached, work) = run(true);
+    assert_eq!(cached, reference);
+    assert_eq!(work * 2, full_work, "the second channel builds no payloads");
+    assert!(work > 0);
+}
+
+#[test]
+fn shared_encoding_distinguishes_batch_bounds_and_decimal_scale() {
+    let run = |cached: bool| {
+        let fixture = Fixture::new();
+        let mut payloads = Payloads::default();
+        let mut writer = fixture.writer();
+        for (index, (first, last, decimals)) in [(0, 7, 0), (-1, 7, 0), (0, 8, 0), (0, 7, 5)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut accumulator = Accumulator::default();
+            accumulator.through(first);
+            accumulator.push(0, Run::new(0, 7, 123456, false));
+            accumulator.through(last);
+            if cached {
+                accumulator
+                    .flush_with_payloads(
+                        &mut writer,
+                        &format!("channel-{index}"),
+                        decimals,
+                        &AtomicBool::new(false),
+                        &mut payloads,
+                    )
+                    .unwrap();
+            } else {
+                accumulator
+                    .flush(
+                        &mut writer,
+                        &format!("channel-{index}"),
+                        decimals,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+            }
+        }
+        writer.commit().unwrap();
+        fixture.payloads()
+    };
+    assert_eq!(run(true), run(false));
+}
+
+#[test]
+fn payload_tables_share_only_the_flushes_explicitly_given_the_same_table() {
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    let flag = AtomicBool::new(false);
+    let (mut first, mut other) = (Payloads::default(), Payloads::default());
+    for index in 0..4 {
+        let table = match index {
+            0 | 3 => Some(&mut first),
+            2 => Some(&mut other),
+            _ => None,
+        };
+        let mut accumulator = Accumulator::default();
+        accumulator.push(0, Run::new(0, 7, 123, false));
+        let before = PAYLOAD_WORK.with(std::cell::Cell::get);
+        match table {
+            Some(table) => accumulator
+                .flush_with_payloads(&mut writer, &format!("channel-{index}"), 0, &flag, table)
+                .unwrap(),
+            None => accumulator
+                .flush(&mut writer, &format!("channel-{index}"), 0, &flag)
+                .unwrap(),
+        }
+        assert_eq!(
+            PAYLOAD_WORK.with(std::cell::Cell::get) - before,
+            usize::from(index != 3)
+        );
+    }
+}

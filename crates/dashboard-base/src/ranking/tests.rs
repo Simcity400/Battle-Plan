@@ -330,6 +330,7 @@ fn ranking_event_walk_matches_hourly_reference_with_gaps_unknowns_and_ties() {
                     include_unknown,
                     &AtomicBool::new(false),
                     None,
+                    false,
                 )
                 .unwrap();
                 assert_eq!(
@@ -609,4 +610,172 @@ fn the_top_n_change_where_any_value_changes_and_unknown_values_are_not_ranked() 
     // Unknown at 0..=2 is not ranked, so BBB holds second place until CCC is known.
     assert_eq!(spans("BBB"), [(0, 2), (5, 9)]);
     assert_eq!(spans("CCC"), [(3, 4)]);
+}
+
+#[test]
+fn rank_runs_publish_only_changed_positions() {
+    let count = if cfg!(feature = "slow-tests") {
+        5000
+    } else {
+        128
+    };
+    let series: BTreeMap<_, _> = (0..count)
+        .map(|index| {
+            (
+                format!("mod/{index:04}"),
+                (0..24)
+                    .map(|hour| (hour, hour, Some(i128::from(index + hour))))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let mut calls = 0;
+    rank_runs(
+        &series,
+        |run| (run.0, run.1),
+        |run| run.2,
+        &AtomicBool::new(false),
+        |_, _, first, last| {
+            calls += 1;
+            assert_eq!((first, last), (0, 23));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        calls, count,
+        "one span per country despite 24 input boundaries"
+    );
+}
+
+#[test]
+fn coalesced_rank_pages_and_continuations_match_boundary_callbacks() {
+    use crate::prepared::series::{Accumulator, Run, tests::Fixture};
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut accumulators = [Accumulator::default(), Accumulator::default()];
+    let flag = AtomicBool::new(false);
+    for (first, last) in [(-7, 15), (16, 35), (37, 59)] {
+        let series: BTreeMap<_, _> = (0..9)
+            .map(|index| {
+                let runs = (first..=last)
+                    .filter_map(|hour| {
+                        if (hour + index) % 17 == 0 {
+                            return None;
+                        }
+                        let value = match index {
+                            0 => Some(i128::MAX),
+                            1 => Some(i128::MIN),
+                            2 => None,
+                            _ => Some(i128::from((hour / 4 + index) % 5)),
+                        };
+                        Some((hour, hour, value))
+                    })
+                    .collect::<Vec<_>>();
+                (format!("mod/{index}"), runs)
+            })
+            .collect();
+        let keys: BTreeMap<_, _> = series
+            .keys()
+            .cloned()
+            .enumerate()
+            .map(|(index, tag)| (tag, index as u64))
+            .collect();
+        for (mode, accumulator) in accumulators.iter_mut().enumerate() {
+            accumulator.through(first);
+            let mut publish = |rank, tag: &str, from, to| {
+                let key = keys[tag];
+                accumulator.push(rank as u64 * 2, Run::new(from, to, i128::from(key), false));
+                accumulator.push(key * 2 + 1, Run::new(from, to, rank as i128 + 1, false));
+                Ok(())
+            };
+            if mode == 0 {
+                rank_positions(
+                    &series,
+                    |run| (run.0, run.1),
+                    |run| run.2,
+                    &flag,
+                    &mut publish,
+                )
+                .unwrap();
+            } else {
+                rank_runs(
+                    &series,
+                    |run| (run.0, run.1),
+                    |run| run.2,
+                    &flag,
+                    &mut publish,
+                )
+                .unwrap();
+            }
+            accumulator.through(last);
+            let mut writer = fixtures[mode].writer();
+            accumulator.flush(&mut writer, "ranks", 0, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        assert_eq!(fixtures[0].payloads(), fixtures[1].payloads());
+        let saved = accumulators
+            .each_ref()
+            .map(|state| serde_json::to_vec(state).unwrap());
+        assert_eq!(saved[0], saved[1]);
+        accumulators = saved.map(|state| serde_json::from_slice(&state).unwrap());
+    }
+}
+
+#[test]
+fn one_rank_plan_reads_boundaries_once_for_all_channels() {
+    let series: BTreeMap<_, _> = (0..16)
+        .map(|country| {
+            (
+                format!("mod/{country}"),
+                (0..24)
+                    .filter(|hour| (hour + country) % 13 != 0)
+                    .map(|hour| (hour, hour, country + hour / 3))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let reads = Cell::new(0);
+    let flag = AtomicBool::new(false);
+    let plan = RankPlan::new(
+        &series,
+        |run| {
+            reads.set(reads.get() + 1);
+            (run.0, run.1)
+        },
+        &flag,
+    )
+    .unwrap();
+    let count = series.values().map(Vec::len).sum::<usize>();
+    for channel in 0..4 {
+        let value = |run: &(i32, i32, i32)| {
+            ((run.2 + channel) % 7 != 0).then_some(i128::from((run.2 + channel) % 5))
+        };
+        let (mut actual, mut expected) = (BTreeMap::new(), BTreeMap::new());
+        plan.runs(value, &flag, |rank, tag, first, last| {
+            for hour in first..=last {
+                actual.insert((hour, rank), tag.to_owned());
+            }
+            Ok(())
+        })
+        .unwrap();
+        rank_positions(
+            &series,
+            |run| (run.0, run.1),
+            value,
+            &flag,
+            |rank, tag, first, last| {
+                for hour in first..=last {
+                    expected.insert((hour, rank), tag.to_owned());
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+    assert_eq!(
+        reads.get(),
+        count,
+        "all four channels share one boundary walk and sort"
+    );
 }

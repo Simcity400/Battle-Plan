@@ -19,6 +19,16 @@ pub trait Pages {
     fn write(&mut self, section: &str, data: &[u8]) -> io::Result<u64>;
     /// The latest bytes of `range` of `section`, written or committed.
     fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>>;
+    /// Immutable identities of the first `count` slots, including missing
+    /// ones. None disables publication reuse for a page writer that cannot
+    /// authenticate its current ranges without reading their payloads.
+    fn range_ids(
+        &mut self,
+        _section: &str,
+        _count: u64,
+    ) -> io::Result<Option<Vec<Option<store::RangeId>>>> {
+        Ok(None)
+    }
 }
 
 impl Pages for store::Writer {
@@ -38,6 +48,16 @@ impl Pages for store::Writer {
                 Ok(bytes)
             })
             .transpose()
+    }
+    fn range_ids(
+        &mut self,
+        section: &str,
+        count: u64,
+    ) -> io::Result<Option<Vec<Option<store::RangeId>>>> {
+        (0..count)
+            .map(|range| self.range_id(section, range))
+            .collect::<io::Result<Vec<_>>>()
+            .map(Some)
     }
 }
 

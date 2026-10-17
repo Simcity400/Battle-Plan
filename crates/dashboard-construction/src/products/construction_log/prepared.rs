@@ -27,6 +27,10 @@ enum Fact {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
+    #[serde(skip)]
+    spending_catalogue_writer: series::CatalogueWriter,
     scan: Scan,
     facts: Accumulator,
     queues: Accumulator,
@@ -489,6 +493,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let mut payloads = series::Payloads::default();
         self.scan.seal();
         if let Some(hour) = self.scan.last {
             self.project_facts(hour, block_windows)?;
@@ -496,35 +501,40 @@ impl Prepared {
         // That projection repeats the hour the block's end already published:
         // its touched keys belong to that block's window, not the next one.
         self.touched.clear();
-        self.facts.flush(
+        self.facts.flush_with_payloads(
             writer,
             &format!("construction-facts-{branch}"),
             0,
             cancelled,
+            &mut payloads,
         )?;
-        self.queues.flush(
+        self.queues.flush_with_payloads(
             writer,
             &format!("construction-queues-{branch}"),
             0,
             cancelled,
+            &mut payloads,
         )?;
-        self.members.flush(
+        self.members.flush_with_payloads(
             writer,
             &format!("construction-members-{branch}"),
             0,
             cancelled,
+            &mut payloads,
         )?;
-        self.reads.flush(
+        self.reads.flush_with_payloads(
             writer,
             &format!("construction-reads-{branch}"),
             0,
             cancelled,
+            &mut payloads,
         )?;
-        self.spending.flush(
+        self.spending.flush_with_payloads(
             writer,
             &format!("construction-spending-{branch}"),
             5,
             cancelled,
+            &mut payloads,
         )?;
         let mut warnings = Vec::new();
         let names = names.names(branch, &self.scan.log, cancelled, &mut warnings)?;
@@ -538,7 +548,7 @@ impl Prepared {
             repair_icon: names.repair_icon.clone(),
             warnings: warnings.clone(),
         };
-        series::write_catalogue(
+        self.catalogue_writer.write(
             writer,
             "construction",
             branch,
@@ -600,7 +610,7 @@ impl Prepared {
             );
             replies.insert(tag, reply);
         }
-        series::write_catalogue(
+        self.spending_catalogue_writer.write(
             writer,
             "construction-spending",
             branch,

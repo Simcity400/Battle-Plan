@@ -18,6 +18,8 @@ type TaggedIdentity = (Vec<u8>, Option<Identity>);
 #[derive(Default)]
 pub struct Countries {
     from: Option<(ViewIdentity, ViewIdentity)>,
+    at: Option<(replay::BranchId, replay::Hour)>,
+    rows: usize,
     pub tags: Vec<TaggedIdentity>,
     owners: HashMap<u32, u32>,
     keys: Option<CountryKeys>,
@@ -27,7 +29,49 @@ pub struct Countries {
 }
 
 impl Countries {
+    /// Balance-only deltas preserve every country key. Exact row evidence,
+    /// adjacency and unchanged links prove the existing join still applies;
+    /// insertions, removals, snapshots and unavailable reads use the ordinary
+    /// key comparison instead.
+    pub fn update_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<bool> {
+        static FIELDS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let fields = *FIELDS.get_or_init(|| {
+            crate::prepared::frame_changes::field_mask(
+                TableId::Countries,
+                &["canonical_slot", "tag"],
+            )
+        });
+        if self.at.is_some_and(|(branch, hour)| {
+            branch == frame.branch && hour.checked_add(1) == Some(frame.hour)
+        }) && self
+            .from
+            .as_ref()
+            .is_some_and(|(_, links)| links.is(&frame.tables[TableId::CountryLinks.index()]))
+            && frame
+                .complete::<tables::Countries>()
+                .is_ok_and(|rows| rows.len() == self.rows)
+            && changes
+                .and_then(|changes| changes.rows(TableId::Countries))
+                .is_some_and(|(changed, deleted)| {
+                    deleted.is_empty() && changed.iter().all(|row| row.mask & fields == 0)
+                })
+        {
+            self.from = Some((
+                frame.tables[TableId::Countries.index()].identity(),
+                frame.tables[TableId::CountryLinks.index()].identity(),
+            ));
+            self.at = Some((frame.branch, frame.hour));
+            return Ok(false);
+        }
+        self.update(frame)
+    }
+
     pub fn update(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
+        self.at = Some((frame.branch, frame.hour));
         let countries = match frame.complete::<tables::Countries>() {
             Ok(rows) => rows,
             Err(error) => {
@@ -95,6 +139,7 @@ impl Countries {
         self.tags = tags;
         self.owners = owners;
         self.from = Some((views.0.identity(), views.1.identity()));
+        self.rows = countries.len();
         self.keys = Some(CountryKeys::read(countries));
         Ok(changed)
     }
@@ -177,5 +222,88 @@ pub fn changed_ids(
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{prepared::frame_changes::FrameChangeTracker, test_fixtures::scale_frame};
+    use replay::{
+        format::FormatVersion,
+        frame::{FrameDecoder, FrameEncoder, TableView},
+        rows::TableRows,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn balance_deltas_skip_country_key_walks_and_other_boundaries_keep_the_join() {
+        let count = if cfg!(feature = "slow-tests") {
+            5000
+        } else {
+            128
+        };
+        let mut input = scale_frame(1, 100, count);
+        let mut encoder = FrameEncoder::default();
+        let mut decoder = FrameDecoder::default();
+        let mut tracker = FrameChangeTracker::new();
+        let (mut sparse, mut whole) = (Countries::default(), Countries::default());
+        for step in 0..10 {
+            input.hour = 100 + step;
+            if step == 6 {
+                input.hour += 1;
+            }
+            if step >= 7 {
+                input.hour += 1;
+                input.branch = 2;
+            }
+            if step == 9 {
+                input = scale_frame(2, 110, count);
+            }
+            if step == 8 {
+                *input.tables[TableId::Countries.index()] = TableView::Unavailable {
+                    reason: "synthetic missing census".into(),
+                };
+            } else if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *input.tables[TableId::Countries.index()]
+            {
+                for row in rows.iter_mut() {
+                    row.political_power_raw = Some(i64::from(step));
+                }
+                match step {
+                    2 => rows[0].tag = b"mod new tag".to_vec(),
+                    3 => rows[0].canonical_slot = 999,
+                    4 => {
+                        rows.pop();
+                    }
+                    _ => {}
+                }
+            }
+            let raw = Arc::new(
+                encoder
+                    .encode(input.clone(), [0, 5, 7].contains(&step))
+                    .unwrap(),
+            );
+            let frame = decoder.advance(&raw).unwrap();
+            let changes = tracker.observe_updates(frame, Arc::clone(&raw), FormatVersion::CURRENT);
+            let held_keys = sparse.keys.clone();
+            let before = held_keys.as_ref().map_or(0, CountryKeys::row_visits);
+            let a = sparse.update_changed(frame, Some(&changes));
+            let b = whole.update(frame);
+            assert_eq!(a.as_ref().ok(), b.as_ref().ok(), "step {step}");
+            assert_eq!(a.is_err(), b.is_err());
+            assert_eq!(sparse.tags, whole.tags);
+            assert_eq!(sparse.owners, whole.owners);
+            assert_eq!(sparse.slots, whole.slots);
+            assert_eq!(sparse.tags_valid, whole.tags_valid);
+            if step == 1 {
+                assert_eq!(
+                    held_keys.as_ref().unwrap().row_visits(),
+                    before,
+                    "balance-only deltas walk no keys"
+                );
+                assert!(whole.keys.as_ref().unwrap().row_visits() >= count as usize);
+            }
+        }
     }
 }

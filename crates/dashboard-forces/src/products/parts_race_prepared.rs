@@ -192,6 +192,8 @@ pub trait Family {
     deserialize = "F::Scan: DeserializeOwned, F::Part: DeserializeOwned"
 ))]
 pub struct Prepared<F: Family> {
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
     scan: F::Scan,
     keys: BTreeMap<String, u64>,
     values: [Accumulator; 4],
@@ -214,6 +216,7 @@ pub struct Prepared<F: Family> {
 impl<F: Family> Default for Prepared<F> {
     fn default() -> Self {
         Self {
+            catalogue_writer: Default::default(),
             scan: Default::default(),
             keys: Default::default(),
             values: Default::default(),
@@ -763,6 +766,7 @@ impl<F: Family> Prepared<F> {
         let Some(first) = self.first.take() else {
             return Ok(());
         };
+        let mut payloads = series::Payloads::default();
         F::finish_hour(&mut self.scan);
         for index in 0..4 {
             let runs: BTreeMap<_, _> = F::runs(&self.scan, index)
@@ -784,7 +788,7 @@ impl<F: Family> Prepared<F> {
                 })
                 .collect();
             self.ranks[index].through(first);
-            dashboard_base::ranking::rank_positions(
+            dashboard_base::ranking::rank_runs(
                 &runs,
                 |run| {
                     let (first, last, _) = F::bounds(run);
@@ -804,40 +808,50 @@ impl<F: Family> Prepared<F> {
                 },
             )?;
             self.ranks[index].through(self.last);
-            self.ranks[index].flush(
+            self.ranks[index].flush_with_payloads(
                 writer,
                 &format!("{}-ranks-{branch}-{index}", F::NAME),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
-            self.values[index].flush(
+            self.values[index].flush_with_payloads(
                 writer,
                 &format!("{}-values-{branch}-{index}", F::NAME),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
         }
         for (index, parts) in self.parts.iter_mut().enumerate() {
-            parts.flush(
+            parts.flush_with_payloads(
                 writer,
                 &format!("{}-parts-{branch}-{index}", F::NAME),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
         }
         for (index, maximum) in self.maximum.iter_mut().enumerate() {
-            maximum.flush(
+            maximum.flush_with_payloads(
                 writer,
                 &format!("{}-maximum-{branch}-{index}", F::NAME),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
         }
         for (index, mixes) in self.mixes.iter_mut().enumerate() {
-            mixes.flush(writer, &mix_section::<F>(branch, index), 0, cancelled)?;
+            mixes.flush_with_payloads(
+                writer,
+                &mix_section::<F>(branch, index),
+                0,
+                cancelled,
+                &mut payloads,
+            )?;
         }
         F::prune(&mut self.scan);
-        series::write_catalogue(
+        self.catalogue_writer.write(
             writer,
             F::NAME,
             branch,

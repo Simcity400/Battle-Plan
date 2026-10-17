@@ -543,3 +543,55 @@ current inputs are unavailable. Those slots have no current state or fabricated
 read coverage, so the active view shows them as unavailable.
 
 Prepared map selection retains the Operatives map's mission, operation, agency-buffer, strategic-operative and stability inputs alongside the shared map and trigger operands.
+
+Factory and territory rank publication coalesces adjacent spans whose country
+and position agree before calling the series accumulators. The rank sweep
+still compares every input boundary; only redundant publications disappear.
+Factories and army prepare and sort one rank-boundary plan per flush and
+reuse it across their channels, borrowing the native runs. Numeric families
+own an explicit `series::Payloads` table in each flush and pass it to the
+accumulators that share construction. The lookup includes batch bounds,
+decimal scale, runs and incoming summaries; ordinary `flush` calls and other
+tables share nothing. The table is released when the family's flush returns.
+
+Factory, territory, force-size, trade and construction catalogue owners retain
+the last published text and compressed chain between flushes. Reuse checks
+all live range identities and the terminating slot in the current writer;
+unchanged identities need no payload reads. Unchanged text writes nothing.
+A changed catalogue uses the same patch
+and compaction rules, reconstructing an older prefix only when merging
+patches. Restoration starts this transient cache empty and validates the
+published chain once. Its memory follows the current catalogue text and live
+compressed ranges; it holds no earlier catalogue versions.
+
+Force censuses use exact country field deltas to carry country joins across
+balance-only changes. This requires consecutive hours on the same branch,
+unchanged links, the same row count and no deleted or edited identity keys.
+Snapshots, gaps and incomplete reads take the ordinary key comparison.
+
+Catalogue writes go through `series::write_catalogue` or a prepared family's
+`CatalogueWriter`; both use the same base/patch publication. The cached
+families are factories, army, air/navy size, territory, trade, construction
+and construction spending. Their lifetimes follow these rules:
+
+- A refusal prevents subsequent flushes and saves; changing the held branch or
+  reloading a flushed branch drops its prepared state. A new default state has
+  no cached catalogue. Gaps close native runs without changing stored pages.
+- Snapshot reconstruction and block extracts change native observations,
+  not the published catalogue. Only a family flush writes its catalogue; an
+  extractor's local prepared state does not publish one.
+- Restoring a continuation creates an empty cache (`serde(skip)`). An append
+  restores against the accepted prefix, then the first flush reads the chain.
+- Clear cancels and waits for preparation before taking the store lock.
+  Content rebinding replaces preparation and drops its branch state. Store
+  epochs invalidate restored status; an active cache proves its ranges in the
+  actual locked writer. A schema rebuild starts with default branch state and
+  a replacement writer. None relies on preserving a catalogue owner's memory.
+- Every cache also checks range identities in its actual writer. Another
+  prepared instance or a direct range write, replacement, Clear, abandoned
+  writes, or pack compaction invalidates changed identities. An unchanged
+  append can keep them. The empty/missing terminating slot detects a newly
+  appended patch. Writers unable to supply identities disable reuse.
+- A fork records identity checks as reads, so another adoption changing a
+  checked range refuses the fork's publication. Identity checks open no pack
+  and flush no staged payload bytes.

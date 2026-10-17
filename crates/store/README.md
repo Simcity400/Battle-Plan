@@ -56,6 +56,10 @@ manifest entry at commit; held readers retain the old bytes. A transaction
 keeps replacement entries only for changed pages; unchanged entries stay where
 they are.
 `payload_bytes_change` subtracts superseded payloads from newly written bytes.
+`Writer::range_id` returns the current staged or published range identity
+without opening its pack or flushing buffered bytes. A fork records this as a
+read dependency, so adoption validates identity-based reuse just as it
+validates payload reads.
 `Writer::read_at` opens the latest staged or published range in its transaction,
 writing out the buffer first when it still holds the range, allowing producers
 to evict and resume partial page buffers before commit.

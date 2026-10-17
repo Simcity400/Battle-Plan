@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
     scan: Scan,
     keys: BTreeMap<String, u64>,
     facts: Accumulator,
@@ -428,6 +430,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let mut payloads = series::Payloads::default();
         self.scan.seal();
         if let Some(hour) = self.scan.last_hour {
             // Cumulative endpoints carry their value over unknown observations
@@ -463,37 +466,51 @@ impl Prepared {
                 cumulative(&mut self.coverage[1], 0, hour, last.value);
             }
         }
-        self.facts
-            .flush(writer, &format!("trade-facts-{branch}"), 0, cancelled)?;
-        self.values.flush(
+        self.facts.flush_with_payloads(
+            writer,
+            &format!("trade-facts-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.values.flush_with_payloads(
             writer,
             &format!("trade-values-{branch}"),
             RESOURCE_DECIMALS,
             cancelled,
+            &mut payloads,
         )?;
         for (index, values) in self.totals.iter_mut().enumerate() {
-            values.flush(
+            values.flush_with_payloads(
                 writer,
                 &format!("trade-totals-{branch}-{index}"),
                 if index == 0 { RESOURCE_DECIMALS } else { 0 },
                 cancelled,
+                &mut payloads,
             )?;
         }
         for (index, values) in self.coverage.iter_mut().enumerate() {
-            values.flush(
+            values.flush_with_payloads(
                 writer,
                 &format!("trade-coverage-{branch}-{index}"),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
         }
-        self.refusal_counts
-            .flush(writer, &format!("trade-refusals-{branch}"), 0, cancelled)?;
-        self.pattern_totals.flush(
+        self.refusal_counts.flush_with_payloads(
+            writer,
+            &format!("trade-refusals-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.pattern_totals.flush_with_payloads(
             writer,
             &format!("trade-partial-hours-{branch}"),
             0,
             cancelled,
+            &mut payloads,
         )?;
         let mut reply = super::reply_named(
             naming,
@@ -535,7 +552,7 @@ impl Prepared {
             .iter()
             .map(|(name, &id)| Ok((id, serde_json::from_str(name)?)))
             .collect::<io::Result<_>>()?;
-        series::write_catalogue(
+        self.catalogue_writer.write(
             writer,
             "trade-flows",
             branch,

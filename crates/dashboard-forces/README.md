@@ -46,3 +46,20 @@ An air or navy block extract steps every hour's census, but makes output rows
 and projection bases only after its scan settles and its fold will keep them.
 The first hour and air's hours before its variant names settle keep only the
 scan step and boundary state; their fold observes those hours itself.
+
+Army, air and navy rank publication coalesces adjacent unchanged positions
+before writing accumulator runs. Their channels share numeric payload
+construction within a flush, while retaining each section's ordinary bytes
+and continuation. Each family also retains its current published catalogue
+text and compressed ranges, avoiding a reread at the next flush; restoration
+validates that chain again. Air and navy country joins follow recorded
+balance-only field deltas without comparing every country's identity again.
+
+Catalogue reuse checks every live range's immutable identity and the next
+empty/missing slot in the current writer. A second publisher, store
+replacement or abandoned writes invalidate the cache; an unchanged append
+can retain it. The shared publication rules are in
+[dashboard-base](../dashboard-base/README.md#prepared-series).
+
+Factories and army share a sorted rank-boundary plan across their channels;
+army borrows the native run operands while clipping only their rank intervals.

@@ -601,6 +601,28 @@ impl Accumulator {
         decimals: u8,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.flush_inner(writer, section, decimals, cancelled, None)
+    }
+    /// Flush with the payload table this family's caller owns. Equal numeric
+    /// inputs in earlier channels reuse their bytes and next partial summaries.
+    pub fn flush_with_payloads<W: super::pages::Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        section: &str,
+        decimals: u8,
+        cancelled: &AtomicBool,
+        payloads: &mut Payloads,
+    ) -> io::Result<()> {
+        self.flush_inner(writer, section, decimals, cancelled, Some(payloads))
+    }
+    fn flush_inner<W: super::pages::Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        section: &str,
+        decimals: u8,
+        cancelled: &AtomicBool,
+        payloads: Option<&mut Payloads>,
+    ) -> io::Result<()> {
         self.seal();
         if self.batch.first.is_none() {
             return Ok(());
@@ -608,8 +630,8 @@ impl Accumulator {
         for (&key, state) in &self.states {
             self.batch.register(key, state);
         }
-        self.states =
-            std::mem::take(&mut self.batch).write(writer, section, decimals, cancelled)?;
+        self.states = std::mem::take(&mut self.batch)
+            .write_inner(writer, section, decimals, cancelled, payloads)?;
         Ok(())
     }
 }
@@ -902,6 +924,29 @@ pub fn write_catalogue<W: super::pages::Pages + ?Sized>(
         &serde_json::to_vec(&(keys, metadata))?,
     )
 }
+/// A family's catalogue publisher, retaining its last successful text and
+/// chain so the next flush does not read and reconstruct them again.
+/// Every reuse checks the writer's live range identities and terminating
+/// slot. This cache is never serialized.
+#[derive(Default)]
+pub struct CatalogueWriter(catalogue::Cached);
+impl CatalogueWriter {
+    pub fn write<W: super::pages::Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        family: &str,
+        branch: u64,
+        keys: &BTreeMap<String, u64>,
+        metadata: &impl Serialize,
+    ) -> io::Result<()> {
+        self.0.write(
+            writer,
+            &catalogue_section(family, branch),
+            &serde_json::to_vec(&(keys, metadata))?,
+        )
+    }
+}
+
 /// The prepared prefix of `section` a query waiting for `coverage` reads.
 /// When the section holds batches committed beyond a coverage that is not
 /// complete (a family prepared on its own ahead of another its replies read
@@ -1059,6 +1104,15 @@ pub fn navigate(
     }
     Ok(result.or_else(|| navigation.from.map(|hour| hour.clamp(first, last))))
 }
+type PayloadIdentity = (i32, i32, u8, [u8; 32]);
+/// An explicit table owned by one family's flush. Only accumulators passed
+/// this table share numeric payload construction; each key still writes its
+/// ordinary directory, separate payload bytes and continuation.
+#[derive(Default)]
+pub struct Payloads {
+    encoded: HashMap<PayloadIdentity, (Vec<u8>, [Option<Partial>; 4])>,
+}
+
 impl Batch {
     pub fn through(&mut self, hour: i32) {
         self.first.get_or_insert(hour);
@@ -1147,6 +1201,16 @@ impl Batch {
         decimals: u8,
         cancelled: &AtomicBool,
     ) -> io::Result<BTreeMap<u64, KeyState>> {
+        self.write_inner(writer, section, decimals, cancelled, None)
+    }
+    fn write_inner<W: super::pages::Pages + ?Sized>(
+        self,
+        writer: &mut W,
+        section: &str,
+        decimals: u8,
+        cancelled: &AtomicBool,
+        mut shared: Option<&mut Payloads>,
+    ) -> io::Result<BTreeMap<u64, KeyState>> {
         let Some(first) = self.first else {
             return Ok(BTreeMap::new());
         };
@@ -1200,6 +1264,22 @@ impl Batch {
                 put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
                 put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
                 rows.state.partial = partial;
+                states.insert(key, rows.state);
+                continue;
+            }
+            let identity = input.map(|input| (first, self.last, decimals, input));
+            if let Some((payload, partial)) =
+                identity.and_then(|identity| shared.as_ref()?.encoded.get(&identity))
+            {
+                let offset = bytes.len();
+                bytes.extend_from_slice(payload);
+                put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                put(&mut bytes, at + 16, &(payload.len() as u64).to_le_bytes());
+                payloads.insert(
+                    input.expect("numeric payload identity"),
+                    (offset, payload.len(), *partial),
+                );
+                rows.state.partial = *partial;
                 states.insert(key, rows.state);
                 continue;
             }
@@ -1297,6 +1377,11 @@ impl Batch {
             blob(&mut bytes, at + 8, raw, &mut blobs)?;
             if let Some(input) = input {
                 payloads.insert(input, (offset, bytes.len() - offset, rows.state.partial));
+            }
+            if let Some((identity, shared)) = identity.zip(shared.as_mut()) {
+                shared
+                    .encoded
+                    .insert(identity, (bytes[offset..].to_vec(), rows.state.partial));
             }
             states.insert(key, rows.state);
         }

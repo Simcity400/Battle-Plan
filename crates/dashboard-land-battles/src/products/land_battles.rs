@@ -861,6 +861,16 @@ impl Census {
             ));
         }
         let mut opened = Vec::new();
+        static ROSTER_FIELDS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let roster_fields = *ROSTER_FIELDS.get_or_init(|| {
+            dashboard_base::prepared::frame_changes::field_mask(
+                TableId::LandCombats,
+                &["attackers", "defenders"],
+            )
+        });
+        let roster_changes = adjacent
+            .then(|| changes.and_then(|changes| changes.rows(TableId::LandCombats)))
+            .flatten();
         for row in rows {
             let side = self
                 .live_sides
@@ -877,7 +887,29 @@ impl Census {
                 u32::try_from(handles.iter().collect::<HashSet<_>>().len())
                     .map_err(|_| io::Error::other("Recorded roster exceeds its native count"))
             };
-            let counts = [distinct(&row.attackers)?, distinct(&row.defenders)?];
+            // Duration and other combat fields move hourly. A delta that
+            // leaves both rosters alone preserves their distinct counts.
+            let counts = roster_changes.and_then(|(changed, deleted)| {
+                let key = u128::from(row.id);
+                if deleted.binary_search(&key).is_ok() {
+                    return None;
+                }
+                if let Ok(at) = changed.binary_search_by_key(&key, |row| row.key)
+                    && changed[at].mask & roster_fields != 0
+                {
+                    return None;
+                }
+                let at = self.open.get(&row.id)?;
+                self.episodes[*at].runs.last().map(|run| run.counts)
+            });
+            let counts = match counts {
+                Some(counts) => counts,
+                None => {
+                    #[cfg(test)]
+                    dashboard_base::prepared::prepass::note("land.rosters");
+                    [distinct(&row.attackers)?, distinct(&row.defenders)?]
+                }
+            };
             let continuing = self.open.get(&row.id).copied().filter(|at| {
                 let episode = &self.episodes[*at];
                 episode.province == row.province

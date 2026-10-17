@@ -237,6 +237,8 @@ fn sample_rows(
 }
 #[derive(Serialize, Deserialize)]
 pub struct Prepared {
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
     scan: Scan,
     tags: BTreeMap<String, u64>,
     values: [Accumulator; 8],
@@ -264,6 +266,7 @@ pub struct Prepared {
 impl Default for Prepared {
     fn default() -> Self {
         Self {
+            catalogue_writer: Default::default(),
             scan: Scan::default(),
             tags: BTreeMap::new(),
             values: Default::default(),
@@ -426,6 +429,7 @@ impl Prepared {
         let Some(first) = self.first.take() else {
             return Ok(());
         };
+        let mut payloads = series::Payloads::default();
         self.scan.seal();
         let runs: BTreeMap<_, _> = self
             .scan
@@ -438,19 +442,18 @@ impl Prepared {
                         .runs
                         .iter()
                         .filter(|run| run.last >= first)
-                        .map(|run| RawRun {
-                            first: run.first.max(first),
-                            ..run.clone()
-                        })
                         .collect::<Vec<_>>(),
                 )
             })
             .collect();
+        let rank_plan = dashboard_base::ranking::RankPlan::new(
+            &runs,
+            |run| (run.first.max(first), run.last),
+            cancelled,
+        )?;
         for index in 0..8 {
             self.ranks[index].through(first);
-            dashboard_base::ranking::rank_positions(
-                &runs,
-                |run| (run.first, run.last),
+            rank_plan.runs(
                 |run| run.totals.values[index],
                 cancelled,
                 |rank, tag, from, to| {
@@ -466,23 +469,35 @@ impl Prepared {
                 },
             )?;
             self.ranks[index].through(self.last);
-            self.ranks[index].flush(
+            self.ranks[index].flush_with_payloads(
                 writer,
                 &format!("army-ranks-{branch}-{index}"),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
-            self.values[index].flush(
+            self.values[index].flush_with_payloads(
                 writer,
                 &format!("army-values-{branch}-{index}"),
                 if matches!(index, 1 | 3) { 5 } else { 0 },
                 cancelled,
+                &mut payloads,
             )?;
         }
-        self.parts
-            .flush(writer, &format!("army-parts-{branch}"), 0, cancelled)?;
-        self.coverage
-            .flush(writer, &format!("army-coverage-{branch}"), 0, cancelled)?;
+        self.parts.flush_with_payloads(
+            writer,
+            &format!("army-parts-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.coverage.flush_with_payloads(
+            writer,
+            &format!("army-coverage-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
         for track in self.scan.tracks.values_mut() {
             if track.runs.len() > 1 {
                 track.runs.drain(..track.runs.len() - 1);
@@ -494,7 +509,8 @@ impl Prepared {
                 track.segments.drain(..track.segments.len() - 1);
             }
         }
-        series::write_catalogue(writer, "army", branch, &self.tags, &self.scan)
+        self.catalogue_writer
+            .write(writer, "army", branch, &self.tags, &self.scan)
     }
 }
 

@@ -1678,3 +1678,72 @@ fn land_battles_fresh_censuses_number_designs_in_combat_order() {
         .collect();
     assert_eq!(states[0], states[1]);
 }
+
+#[test]
+fn duration_deltas_reuse_roster_counts_and_match_full_observation_across_resume_and_gaps() {
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, prepass};
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    let format = replay::format::FormatVersion::CURRENT;
+    let (mut sparse, mut whole) = (Census::new(format), Census::new(format));
+    let mut encoder = FrameEncoder::default();
+    let mut decoder = FrameDecoder::default();
+    let mut tracker = FrameChangeTracker::new();
+    let mut input = frame(100, 3, 2);
+    for step in 0..8 {
+        input.hour = 100 + step + i32::from(step >= 6);
+        // These are hourly combat reads, including their recorded slot evidence.
+        input.metrics.table_ns[TableId::LandCombats.index()] = 1;
+        if let TableView::Complete(TableRows::LandCombats(rows)) =
+            &mut *input.tables[TableId::LandCombats.index()]
+        {
+            for row in rows.iter_mut() {
+                row.duration += 1;
+            }
+            if step == 3 {
+                rows[0].attackers.extend([777, 777]);
+            }
+        }
+        let raw = Arc::new(
+            encoder
+                .encode(input.clone(), [0, 4].contains(&step))
+                .unwrap(),
+        );
+        let decoded = decoder.advance(&raw).unwrap();
+        let changes = tracker.observe_updates(decoded, raw.clone(), format);
+        let before = prepass::noted("land.rosters");
+        sparse.observe_prepared(decoded, &changes).unwrap();
+        if step == 1 || step == 2 || step == 5 || step == 7 {
+            assert_eq!(
+                prepass::noted("land.rosters"),
+                before,
+                "step {step} rebuilt unchanged rosters"
+            );
+        }
+        whole.observe(decoded).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&sparse).unwrap(),
+            serde_json::to_vec(&whole).unwrap(),
+            "step {step}"
+        );
+        assert_eq!(
+            serde_json::to_vec(
+                &sparse
+                    .reply_window(0, &windows(100, input.hour)[0])
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::to_vec(&whole.reply_window(0, &windows(100, input.hour)[0]).unwrap())
+                .unwrap(),
+        );
+        if step == 4 {
+            let restore = |scan: &Census| {
+                let mut restored: Census =
+                    serde_json::from_slice(&serde_json::to_vec(scan).unwrap()).unwrap();
+                restored.format = format;
+                restored
+            };
+            sparse = restore(&sparse);
+            whole = restore(&whole);
+        }
+    }
+}

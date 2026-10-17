@@ -511,7 +511,7 @@ impl Scan {
     ) -> io::Result<()> {
         self.observed.clear();
         self.removed.clear();
-        self.joined = !matches!(self.countries.update(decoded), Ok(false));
+        self.joined = !matches!(self.countries.update_changed(decoded, changes), Ok(false));
         let unchanged = self
             .last_hour
             .is_some_and(|at| at.checked_add(1) == Some(decoded.hour))

@@ -2195,3 +2195,28 @@ fn scattered_replacements_commit_in_one_pass_over_the_runs() {
     let model = BTreeMap::from([("pages".to_owned(), expected)]);
     assert_reads(&fixture, &key, &model);
 }
+
+#[test]
+fn writer_range_id_tracks_current_slots_and_fork_dependencies_without_payload_reads() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    assert_eq!(writer.range_id("page", 0).unwrap(), None);
+    writer.write("page", b"first".as_slice()).unwrap();
+    let first = writer.range_id("page", 0).unwrap().unwrap();
+    assert_eq!(
+        writer.pack.as_ref().unwrap().flushed,
+        0,
+        "identity lookup does not flush staged bytes"
+    );
+    assert_eq!(writer.read_at("page", 0).unwrap().unwrap().id(), first);
+    writer.commit().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    assert_eq!(writer.range_id("page", 0).unwrap(), Some(first));
+    let mut fork = writer.fork().unwrap();
+    assert_eq!(fork.range_id("page", 0).unwrap(), Some(first));
+    assert_eq!(fork.range_id("page", 1).unwrap(), None);
+    writer.write_at("page", 0, b"other".as_slice()).unwrap();
+    assert_ne!(writer.range_id("page", 0).unwrap(), Some(first));
+    assert!(writer.adopt_all(fork.into_staged().unwrap()).is_err());
+}

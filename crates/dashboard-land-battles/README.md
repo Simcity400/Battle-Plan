@@ -53,3 +53,9 @@ the newest proof is unavailable. Before the first commit their ordinary replies
 have no accepted observations or rows. A committed page's geometry is marked
 approximate until complete, since later terminal reads can repair earlier rows.
 The log follows the newest covered window and refreshes as its gate moves.
+
+Land battle duration changes reuse the preceding run's distinct participant
+counts when an exact recorded delta leaves both rosters unchanged. Roster
+edits, snapshots, gaps and newly opened combats count the recorded handles
+again, including duplicate handles. This cache is the run's existing counts;
+it adds no saved state.

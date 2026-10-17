@@ -9,6 +9,8 @@ pub const NATIVE_OWNED_STATES: usize = 8;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
     scan: Scan,
     builder: Builder,
     tags: BTreeMap<String, u64>,
@@ -217,6 +219,7 @@ impl Prepared {
         let Some(first) = self.first.take() else {
             return Ok(());
         };
+        let mut payloads = series::Payloads::default();
         self.builder.seal(&mut self.scan);
         let runs: BTreeMap<_, _> = self
             .scan
@@ -239,7 +242,7 @@ impl Prepared {
             .collect();
         for column in 0..8 {
             self.ranks[column].through(first);
-            crate::ranking::rank_positions(
+            crate::ranking::rank_runs(
                 &runs,
                 |run| (run.first_hour, run.last_hour),
                 |run| run.values[column].map(i128::from),
@@ -257,33 +260,56 @@ impl Prepared {
                 },
             )?;
             self.ranks[column].through(self.last);
-            self.ranks[column].flush(
+            self.ranks[column].flush_with_payloads(
                 writer,
                 &format!("territory-ranks-{branch}-{column}"),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
-            self.values[column].flush(
+            self.values[column].flush_with_payloads(
                 writer,
                 &format!("territory-values-{branch}-{column}"),
                 0,
                 cancelled,
+                &mut payloads,
             )?;
         }
-        self.values[NATIVE_OWNED_STATES].flush(
+        self.values[NATIVE_OWNED_STATES].flush_with_payloads(
             writer,
             &format!("territory-values-{branch}-{NATIVE_OWNED_STATES}"),
             0,
             cancelled,
+            &mut payloads,
         )?;
-        self.facts
-            .flush(writer, &format!("territory-facts-{branch}"), 0, cancelled)?;
-        self.present
-            .flush(writer, &format!("territory-present-{branch}"), 0, cancelled)?;
-        self.rosters
-            .flush(writer, &format!("territory-rosters-{branch}"), 0, cancelled)?;
-        self.world
-            .flush(writer, &format!("territory-world-{branch}"), 0, cancelled)?;
+        self.facts.flush_with_payloads(
+            writer,
+            &format!("territory-facts-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.present.flush_with_payloads(
+            writer,
+            &format!("territory-present-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.rosters.flush_with_payloads(
+            writer,
+            &format!("territory-rosters-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.world.flush_with_payloads(
+            writer,
+            &format!("territory-world-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
         self.breakdown.flush(writer, branch, cancelled)?;
         for track in self.scan.series.values_mut() {
             keep_last(&mut track.runs);
@@ -294,7 +320,7 @@ impl Prepared {
         keep_last(&mut self.scan.world_totals);
         let mut warnings = self.warnings.clone();
         scan_warning(&self.scan, &mut warnings);
-        series::write_catalogue(
+        self.catalogue_writer.write(
             writer,
             "territory",
             branch,

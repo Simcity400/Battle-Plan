@@ -52,57 +52,133 @@ pub(super) fn write<W: crate::prepared::pages::Pages + ?Sized>(
     section: &str,
     text: &[u8],
 ) -> io::Result<()> {
-    let mut stored = Vec::new();
-    while let Some(bytes) = writer.read_at(section, stored.len() as u64)? {
-        if bytes.is_empty() {
-            break;
-        }
-        stored.push(bytes);
-    }
-    if stored.is_empty() {
-        return writer.write_at(section, 0, base(text)?.as_slice());
-    }
-    let origin = decode_base(&stored[0])?;
-    let patches = stored[1..]
-        .iter()
-        .map(|bytes| Patch::decode(bytes))
-        .collect::<io::Result<Vec<_>>>()?;
-    let current = rebuild(&origin, &patches)?;
-    if *current == *text {
-        return Ok(());
-    }
-    let newest = patches.len();
-    let next = patch(&current, text)?;
-    drop(current);
-    let range = match next {
-        Some(range) => {
-            let mut merged = newest;
-            let mut size = range.len();
-            while merged > 0 && stored[merged].len() < 2 * size {
-                size += stored[merged].len();
-                merged -= 1;
-            }
-            let chain = size + stored[1..=merged].iter().map(Vec::len).sum::<usize>();
-            if chain >= stored[0].len() {
-                None
-            } else if merged == newest {
-                Some((merged + 1, range))
-            } else {
-                patch(&rebuild(&origin, &patches[..merged])?, text)?
-                    .map(|range| (merged + 1, range))
+    Published::read(writer, section)?.write(writer, text)
+}
+
+/// The last publication, reused only while every live range and its
+/// terminating slot keep their immutable identities in the current writer.
+/// Other publishers, abandoned transactions and store replacement invalidate
+/// it. Restoration starts with no cache.
+#[derive(Default)]
+pub(super) struct Cached(Option<Published>);
+struct Published {
+    section: String,
+    stored: Vec<Vec<u8>>,
+    text: Vec<u8>,
+    ids: Option<Vec<Option<store::RangeId>>>,
+}
+impl Cached {
+    pub(super) fn write<W: crate::prepared::pages::Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        section: &str,
+        text: &[u8],
+    ) -> io::Result<()> {
+        // A failed publication forgets the cache, including partial writes.
+        let mut previous = self.0.take().filter(|held| held.section == section);
+        if let Some(held) = &previous {
+            let ids = writer.range_ids(section, held.stored.len() as u64 + 1)?;
+            if ids.is_none() || ids != held.ids {
+                previous = None;
             }
         }
-        None => None,
-    };
-    let (slot, range) = match range {
-        Some(written) => written,
-        None => (0, base(text)?),
-    };
-    writer.write_at(section, slot as u64, range.as_slice())?;
-    for stale in slot + 1..=newest {
-        writer.write_at(section, stale as u64, &[])?;
+        let mut held = match previous {
+            Some(held) => held,
+            None => Published::read(writer, section)?,
+        };
+        let changed = held.stored.is_empty() || held.text != text;
+        held.write(writer, text)?;
+        if changed || held.ids.is_none() {
+            held.ids = writer.range_ids(section, held.stored.len() as u64 + 1)?;
+        }
+        self.0 = held.ids.is_some().then_some(held);
+        Ok(())
     }
-    Ok(())
+}
+impl Published {
+    fn read<W: crate::prepared::pages::Pages + ?Sized>(
+        writer: &mut W,
+        section: &str,
+    ) -> io::Result<Self> {
+        let mut stored = Vec::new();
+        while let Some(bytes) = writer.read_at(section, stored.len() as u64)? {
+            if bytes.is_empty() {
+                break;
+            }
+            stored.push(bytes);
+        }
+        let current = if stored.is_empty() {
+            Vec::new()
+        } else {
+            let origin = decode_base(&stored[0])?;
+            let patches = stored[1..]
+                .iter()
+                .map(|bytes| Patch::decode(bytes))
+                .collect::<io::Result<Vec<_>>>()?;
+            rebuild(&origin, &patches)?.into_owned()
+        };
+        Ok(Self {
+            section: section.to_owned(),
+            stored,
+            text: current,
+            ids: None,
+        })
+    }
+    fn write<W: crate::prepared::pages::Pages + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        text: &[u8],
+    ) -> io::Result<()> {
+        if self.stored.is_empty() {
+            let range = base(text)?;
+            writer.write_at(&self.section, 0, &range)?;
+            self.stored.push(range);
+        } else {
+            if self.text == text {
+                return Ok(());
+            }
+            let stored = &self.stored;
+            let newest = stored.len() - 1;
+            let next = patch(&self.text, text)?;
+            let range = match next {
+                Some(range) => {
+                    let mut merged = newest;
+                    let mut size = range.len();
+                    while merged > 0 && stored[merged].len() < 2 * size {
+                        size += stored[merged].len();
+                        merged -= 1;
+                    }
+                    let chain = size + stored[1..=merged].iter().map(Vec::len).sum::<usize>();
+                    if chain >= stored[0].len() {
+                        None
+                    } else if merged == newest {
+                        Some((merged + 1, range))
+                    } else {
+                        let origin = decode_base(&stored[0])?;
+                        let patches = stored[1..=merged]
+                            .iter()
+                            .map(|bytes| Patch::decode(bytes))
+                            .collect::<io::Result<Vec<_>>>()?;
+                        patch(&rebuild(&origin, &patches)?, text)?.map(|range| (merged + 1, range))
+                    }
+                }
+                None => None,
+            };
+            let (slot, range) = match range {
+                Some(written) => written,
+                None => (0, base(text)?),
+            };
+            writer.write_at(&self.section, slot as u64, &range)?;
+            for stale in slot + 1..=newest {
+                writer.write_at(&self.section, stale as u64, &[])?;
+            }
+            self.stored.truncate(slot);
+            self.stored.push(range);
+        }
+        self.text.clear();
+        self.text.extend_from_slice(text);
+        Ok(())
+    }
 }
 
 /// The current text of a catalogue whose ranges `open` returns by ordinal.

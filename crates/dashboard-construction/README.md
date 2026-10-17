@@ -39,3 +39,15 @@ no accepted projects or types. Spending has no output reads or leaves. An
 unproved, uncovered log window has empty projects and observations with the
 shared prefix's pending hours, rather than asserting that construction was not
 recorded. Published prefix presentations retain their approximate marking.
+
+Construction and spending retain their current published catalogue text and
+compressed ranges between flushes. They use the shared patch and compaction
+rules, with no reread of the owner's previous publication; restored owners
+read and validate the chain once. Numeric channels pass an explicit payload table through their flush,
+retaining separate payload bytes per key.
+
+Catalogue reuse checks every live range's immutable identity and the next
+empty/missing slot in the current writer. A second publisher, store
+replacement or abandoned writes invalidate the cache; an unchanged append
+can retain it. The shared publication rules are in
+[dashboard-base](../dashboard-base/README.md#prepared-series).

@@ -2205,10 +2205,10 @@ impl Writer {
         Ok(if id.len == 0 { RangeId::EMPTY } else { id })
     }
 
-    /// Opens the transaction's latest range, including unpublished tail pages.
-    /// Producers can evict a page buffer and continue it before commit. A fork
-    /// reads its own ranges, else its parent's as they stood when forked.
-    pub fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Range>> {
+    /// The latest range's immutable identity without opening its pack or
+    /// flushing staged bytes. On a fork this records the same dependency as
+    /// `read_at`, so adoption checks what an identity-based cache reused.
+    pub fn range_id(&mut self, section: &str, range: u64) -> io::Result<Option<RangeId>> {
         let index = self.position(section);
         let slot = index.map_or(Slot::Missing, |index| self.sections[index].slot(range));
         self.record(|writer| Operation::Read {
@@ -2219,7 +2219,14 @@ impl Writer {
         let Some(index) = index else {
             return Ok(None);
         };
-        let Some(id) = self.slot_id(index, range, slot)? else {
+        self.slot_id(index, range, slot)
+    }
+
+    /// Opens the transaction's latest range, including unpublished tail pages.
+    /// Producers can evict a page buffer and continue it before commit. A fork
+    /// reads its own ranges, else its parent's as they stood when forked.
+    pub fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Range>> {
+        let Some(id) = self.range_id(section, range)? else {
             return Ok(None);
         };
         if let Some(pack) = self.pack.as_mut().filter(|pack| pack.id == id.pack) {

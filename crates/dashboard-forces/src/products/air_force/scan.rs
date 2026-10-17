@@ -749,7 +749,7 @@ impl Scan {
     ) -> io::Result<()> {
         self.histories.observed.clear();
         self.histories.removed.clear();
-        let joined = self.countries.update(decoded);
+        let joined = self.countries.update_changed(decoded, changes);
         self.joined = !matches!(joined, Ok(false));
         let unchanged = self
             .last_hour
