@@ -604,6 +604,67 @@ fn unchanged_tables_are_shared_and_a_delta_copies_on_write() {
     assert_eq!(second.tables[countries], next.tables[countries]);
 }
 
+/// A selected decoder reconstructs its tables as the whole decoder does,
+/// hour by hour through deltas, a keyframe and a branch change: rows, sample
+/// hours and which hours share an allocation. Every other table is the one
+/// unselected view, moved on from the hour before: it is shared anew only at
+/// the decoder's first hour, not once a table an hour.
+#[test]
+fn a_selected_decoder_moves_the_unselected_view_from_hour_to_hour() {
+    let mut encoder = FrameEncoder::new();
+    let mut full = FrameDecoder::new();
+    let selected = [TableId::Countries, TableId::Campaign];
+    let mut projected = FrameDecoder::for_tables(&selected);
+    let unselected = not_selected();
+    let hours = [
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (1, 4),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+    ];
+    let ((), shares) = count_unselected(|| {
+        let mut before: Option<(DecodedFrame, Vec<ViewIdentity>)> = None;
+        for (branch, hour) in hours {
+            let mut state = source(branch, hour);
+            change_country(&mut state, i64::from(hour) * 7);
+            let keyframe = hour == 0 || hour == 3;
+            let frame = encoder.encode(state, keyframe).unwrap();
+            let expected = full.apply(&frame).unwrap();
+            let actual = projected.advance(&frame).unwrap();
+            for table in TableId::ALL {
+                let index = table.index();
+                if !selected.contains(&table) {
+                    assert!(SharedView::ptr_eq(&actual.tables[index], &unselected));
+                    continue;
+                }
+                assert_eq!(actual.tables[index], expected.tables[index]);
+                assert_eq!(
+                    actual.tables[index].sampled_at(),
+                    expected.tables[index].sampled_at()
+                );
+                if let Some((expected_before, actual_before)) = &before {
+                    let position = selected.iter().position(|t| *t == table).unwrap();
+                    assert_eq!(
+                        actual_before[position].is(&actual.tables[index]),
+                        SharedView::ptr_eq(&expected_before.tables[index], &expected.tables[index]),
+                        "{table:?} shares the hour before's view in one decoder only at {branch}/{hour}"
+                    );
+                }
+            }
+            let identities = selected
+                .iter()
+                .map(|table| actual.tables[table.index()].identity())
+                .collect();
+            before = Some((expected, identities));
+        }
+    });
+    assert_eq!(shares, TABLE_COUNT - selected.len());
+}
+
 #[test]
 fn timed_equal_acquisition_advances_origin_without_copying_carried_rows() {
     let mut encoder = FrameEncoder::new();

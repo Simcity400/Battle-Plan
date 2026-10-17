@@ -3,7 +3,7 @@
 use super::super::tests::{CAMPAIGN, interleaved_copy, records, source};
 use super::*;
 use crate::{
-    frame::FrameEncoder,
+    frame::{FrameEncoder, not_selected},
     rows::{CountryLinkRow, CountryRow, SunkShipsRow},
 };
 
@@ -575,4 +575,58 @@ fn a_replaced_view_with_other_keys_differs_under_a_keys_only_watch() {
         &complete(vec![country(1, 0), country(3, 0)]),
         &complete(vec![country(1, 5), country(3, 0)]),
     ));
+}
+
+/// Each changed hour's frame holds the one unselected view for every table
+/// it does not reconstruct, moved on from the frame before: a block shares
+/// it anew only for its first visited frame, however many hours change.
+/// Selected tables also use that view temporarily when releasing a replaced
+/// baseline before reconstruction; these shares are counted separately.
+#[test]
+fn changed_hours_move_the_unselected_view_on() {
+    let replay = fixture();
+    let fields = [TableFields::all(TableId::Countries)];
+    let unselected = not_selected();
+    for index in &replay.index {
+        let selected = [TableId::Campaign, TableId::Countries];
+        let released = replay
+            .read_block_selected(index, &selected)
+            .unwrap()
+            .iter()
+            .filter(|frame| !frame.keyframe)
+            .map(|frame| {
+                selected
+                    .iter()
+                    .filter(|table| {
+                        !matches!(frame.tables[table.index()], TableUpdate::Unchanged { .. })
+                    })
+                    .count()
+            })
+            .sum::<usize>();
+        let mut changed = 0;
+        let (read, shares) = crate::frame::count_unselected(|| {
+            replay.read_block_changes(
+                index,
+                &fields,
+                |change| {
+                    if let BlockChange::Changed { frame, .. } = change {
+                        changed += 1;
+                        for table in TableId::ALL {
+                            if table != TableId::Countries && table != TableId::Campaign {
+                                assert!(SharedView::ptr_eq(
+                                    &frame.tables[table.index()],
+                                    &unselected
+                                ));
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            )
+        });
+        read.unwrap();
+        assert!(changed > 2, "{changed} changed hours");
+        assert_eq!(shares, TABLE_COUNT - selected.len() + released);
+    }
 }

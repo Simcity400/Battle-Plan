@@ -16,6 +16,8 @@ mod encoder;
 mod provenance;
 mod wire;
 
+#[cfg(test)]
+pub(crate) use self::decoder::count_unselected;
 pub(crate) use self::decoder::{advance_table, keyframe_update, not_selected};
 pub(crate) use self::wire::decode_update;
 pub use self::{

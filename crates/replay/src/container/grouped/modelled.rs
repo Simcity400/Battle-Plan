@@ -348,6 +348,9 @@ pub(super) struct Model {
     run: Vec<(u128, u64, bool)>,
     held_masks: Vec<u64>,
     held_changes: Option<u64>,
+    /// The held keys `held_masks` were indexed for, and spare mask storage.
+    held_keys: Vec<u128>,
+    spare_masks: Vec<u64>,
 }
 
 /// Advance an ordered merge cursor, using exponential skips for cold spans.
@@ -426,6 +429,8 @@ impl Model {
             run: Vec::new(),
             held_masks: Vec::new(),
             held_changes: None,
+            held_keys: Vec::new(),
+            spare_masks: Vec::new(),
         }
     }
 
@@ -443,16 +448,31 @@ impl Model {
         self.run = rows;
     }
 
+    /// Each held row's last mask, by its place among the held rows. A row
+    /// held when they were last indexed keeps the mask indexed for it, which
+    /// [`Self::take`] kept equal to its last mask; only the others are looked up.
     fn index_held(&mut self, held: &KeySet) {
-        if self.held_changes != Some(held.changes()) {
-            self.held_masks.clear();
-            self.held_masks.extend(
-                held.keys()
-                    .iter()
-                    .map(|key| self.last.get(key).copied().unwrap_or(0)),
-            );
-            self.held_changes = Some(held.changes());
+        if self.held_changes == Some(held.changes()) {
+            return;
         }
+        let mut masks = std::mem::take(&mut self.spare_masks);
+        masks.clear();
+        let mut before = self.held_keys.iter().zip(&self.held_masks).peekable();
+        for key in held.keys() {
+            while before.next_if(|(before, _)| *before < key).is_some() {}
+            masks.push(match before.peek() {
+                Some((before, mask)) if *before == key => **mask,
+                _ => {
+                    #[cfg(test)]
+                    HELD_LOOKUPS.with(|count| count.set(count.get() + 1));
+                    self.last.get(key).copied().unwrap_or(0)
+                }
+            });
+        }
+        self.spare_masks = std::mem::replace(&mut self.held_masks, masks);
+        self.held_keys.clear();
+        self.held_keys.extend_from_slice(held.keys());
+        self.held_changes = Some(held.changes());
     }
 
     /// Merge both ordered sets. Galloping over a long cold span avoids
@@ -871,7 +891,73 @@ impl Model {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Held rows whose last mask this thread looked up when indexing.
+    static HELD_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
+    /// Indexing the held rows after a membership change gives each row its
+    /// own key's last mask, through deletions, a new row and a reinserted
+    /// one, and looks up only the rows not held when last indexed.
+    #[test]
+    fn held_masks_follow_membership_and_look_up_only_rows_not_held_before() {
+        use super::super::keyed::KeyChanges;
+        let keys: Vec<u128> = (0..1_000).map(|key| key * 3).collect();
+        let mut held = KeySet::of(keys.clone());
+        let rows: Vec<(u128, u64)> = keys.iter().map(|&key| (key, 1 + key as u64 % 5)).collect();
+        let mut writer = Model::new(FIELDS);
+        let (mut keys_column, mut coded) = (Vec::new(), Vec::new());
+        writer
+            .put(&held, &rows, &mut keys_column, &mut coded)
+            .unwrap();
+        writer.finish(&mut coded);
+        let mut reader = Model::new(FIELDS);
+        let (mut keys_column, mut coded) = (Decoder::new(&keys_column), Decoder::new(&coded));
+        reader
+            .take(
+                TableId::Divisions,
+                &held,
+                rows.len(),
+                &mut keys_column,
+                &mut coded,
+            )
+            .unwrap();
+        let lookups = || HELD_LOOKUPS.with(std::cell::Cell::get);
+        for (changes, looked_up) in [
+            // Two rows leave and one never stored arrives.
+            (
+                KeyChanges {
+                    inserted: vec![1],
+                    deleted: vec![0, 6],
+                },
+                1,
+            ),
+            // A row stored before comes back and another leaves.
+            (
+                KeyChanges {
+                    inserted: vec![0],
+                    deleted: vec![3],
+                },
+                1,
+            ),
+        ] {
+            let mut changes = changes;
+            held.apply(&mut changes);
+            let before = lookups();
+            reader.index_held(&held);
+            assert_eq!(lookups() - before, looked_up);
+            let by_key: Vec<u64> = held
+                .keys()
+                .iter()
+                .map(|key| reader.last.get(key).copied().unwrap_or(0))
+                .collect();
+            assert_eq!(reader.held_masks, by_key);
+        }
+        assert_eq!(reader.held_masks[..3], [1, 0, 5]);
+    }
+
     #[test]
     fn modelled_reader_reuses_runs_and_indexes_each_held_mask() {
         let mut held = KeySet::of(vec![4, 8]);

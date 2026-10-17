@@ -1852,6 +1852,84 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     });
 }
 
+/// Every table of the campaign, read and reconstructed in selections of 32
+/// tables, equals the whole decoder's reconstruction at every hour: rows,
+/// availability, sample hours, metrics and which hours share a table's
+/// allocation, with every delta applied to rows no reader holds. Every other
+/// table is the one unselected view, which each block's decoder shares anew
+/// only at its first hour and then moves on.
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn selected_tables_reconstruct_as_the_whole_decoder_in_every_codec() {
+    use crate::frame::{SharedView, TABLE_COUNT, ViewIdentity, count_unselected, not_selected};
+    let campaign = synthesize();
+    let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
+    let replay = first.append_recovered(&campaign.segments[2..]).unwrap();
+    let unselected = not_selected();
+    for block in &replay.index {
+        let mut whole = FrameDecoder::new();
+        let reconstructed: Vec<DecodedFrame> = replay
+            .read_block(block)
+            .unwrap()
+            .iter()
+            .map(|frame| whole.apply(frame).unwrap())
+            .collect();
+        for selection in TableId::ALL.chunks(32) {
+            let frames = replay.read_block_selected(block, selection).unwrap();
+            assert_eq!(frames.len(), reconstructed.len());
+            let mut decoder = FrameDecoder::for_tables(selection);
+            let ((), shares) = count_unselected(|| {
+                let mut before: Option<Vec<ViewIdentity>> = None;
+                for (at, (frame, expected)) in frames.iter().zip(&reconstructed).enumerate() {
+                    let actual = decoder.advance(frame).unwrap();
+                    assert_eq!(
+                        (actual.branch, actual.hour),
+                        (expected.branch, expected.hour)
+                    );
+                    assert_eq!(actual.metrics, expected.metrics);
+                    for table in TableId::ALL {
+                        let index = table.index();
+                        let Some(position) = selection.iter().position(|t| *t == table) else {
+                            assert!(SharedView::ptr_eq(&actual.tables[index], &unselected));
+                            continue;
+                        };
+                        assert_eq!(
+                            actual.tables[index], expected.tables[index],
+                            "{table:?} at hour {}",
+                            expected.hour
+                        );
+                        assert_eq!(
+                            actual.tables[index].sampled_at(),
+                            expected.tables[index].sampled_at()
+                        );
+                        if let Some(before) = &before {
+                            assert_eq!(
+                                before[position].is(&actual.tables[index]),
+                                SharedView::ptr_eq(
+                                    &reconstructed[at - 1].tables[index],
+                                    &expected.tables[index]
+                                ),
+                                "{table:?} shares the hour before's view in one reader only at {}",
+                                expected.hour
+                            );
+                        }
+                    }
+                    before = Some(
+                        selection
+                            .iter()
+                            .map(|table| actual.tables[table.index()].identity())
+                            .collect(),
+                    );
+                }
+            });
+            assert_eq!(shares, TABLE_COUNT - selection.len());
+        }
+    }
+}
+
 /// The written layout's recording of the campaign, and its appended sessions,
 /// packed on 1, 2 and many threads: blocks follow sessions, branches, spool
 /// keyframes and the file's earlier keyframes, and every table changes in

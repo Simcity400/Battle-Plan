@@ -58,36 +58,50 @@ impl FrameDecoder {
         if frame.keyframe && !frame.tables.iter().all(keyframe_update) {
             return Err(invalid("keyframe contains a dependent or partial table"));
         }
-        let mut previous = self
-            .current
-            .take()
-            .filter(|current| !frame.keyframe && current.branch == frame.branch)
-            .map(|current| {
-                // Every complete table advances its baseline to the enclosing
-                // hour, including unchanged tables after a recorded gap.
-                current.tables.map(|table| {
-                    matches!(*table, TableView::Complete(_)).then_some((current.hour, table))
-                })
-            })
-            .unwrap_or_else(|| std::array::from_fn(|_| None));
+        let selected = |index: usize| {
+            self.selected
+                .as_ref()
+                .is_none_or(|selected| selected[index])
+        };
+        // The hour before's views. An unselected table's is the shared
+        // unselected view, which moves on unchanged; a selected table's is
+        // its baseline only on the same branch and outside a keyframe, and
+        // is released before this hour's views are built otherwise.
+        let current = self.current.take();
+        let continues = current
+            .as_ref()
+            .is_some_and(|current| !frame.keyframe && current.branch == frame.branch);
+        let (previous_hour, mut held) = match current {
+            Some(current) => (current.hour, current.tables.map(Some)),
+            None => (frame.hour, std::array::from_fn(|_| None)),
+        };
+        if !continues {
+            for (index, view) in held.iter_mut().enumerate() {
+                if selected(index) {
+                    *view = None;
+                }
+            }
+        }
         let mut allocation_failure = None;
         let tables = std::array::from_fn(|index| {
+            if !selected(index) {
+                return held[index].take().unwrap_or_else(not_selected);
+            }
             if allocation_failure.is_some() {
                 return not_selected();
             }
             let table = TableId::ALL[index];
-            if self
-                .selected
-                .as_ref()
-                .is_some_and(|selected| !selected[index])
-            {
-                return not_selected();
-            }
+            // Every complete table advances its baseline to the enclosing
+            // hour, including unchanged tables after a recorded gap.
+            let previous = held[index]
+                .take()
+                .filter(|view| matches!(**view, TableView::Complete(_)))
+                .map(|view| (previous_hour, view));
             let started = if measured { crate::cpu::stamp() } else { 0 };
             let advanced = advance_table(
                 table,
                 &frame.tables[index],
-                previous[index].take(),
+                previous,
                 frame.hour,
                 frame.metrics.table_ns[index] != 0,
             );
@@ -124,7 +138,9 @@ impl FrameDecoder {
 pub(crate) fn keyframe_update(update: &TableUpdate) -> bool {
     matches!(
         update,
-        TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. } | TableUpdate::Incompatible { .. }
+        TableUpdate::Snapshot(_)
+            | TableUpdate::Unavailable { .. }
+            | TableUpdate::Incompatible { .. }
     )
 }
 
@@ -161,6 +177,8 @@ pub(crate) fn advance_table(
 
 /// One view shared by every unselected table of every hour.
 pub(crate) fn not_selected() -> SharedView {
+    #[cfg(test)]
+    UNSELECTED_SHARES.with(|count| count.set(count.get() + 1));
     static VIEW: LazyLock<SharedView> = LazyLock::new(|| {
         TableView::Unavailable {
             reason: "Table not selected for reconstruction".into(),
@@ -168,6 +186,23 @@ pub(crate) fn not_selected() -> SharedView {
         .into()
     });
     VIEW.clone()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Times this thread shared the unselected view anew.
+    static UNSELECTED_SHARES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `read`'s result and the times it shared the unselected view anew on this thread.
+#[cfg(test)]
+pub(crate) fn count_unselected<T>(read: impl FnOnce() -> T) -> (T, usize) {
+    let before = UNSELECTED_SHARES.with(std::cell::Cell::get);
+    let result = read();
+    (
+        result,
+        UNSELECTED_SHARES.with(std::cell::Cell::get) - before,
+    )
 }
 
 /// An unchanged table is the previous hour's allocation, shared rather than

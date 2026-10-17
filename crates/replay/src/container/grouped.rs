@@ -440,7 +440,17 @@ fn advance_shadow(
                 let element = before[4..8].to_vec();
                 fields.insert(DROPPED, element);
             }
-            fields.insert(field, bytes.to_vec());
+            // The base before is replaced in its own storage when that is
+            // not much larger, rather than freed and allocated again.
+            match fields.get_mut(&field) {
+                Some(base) if base.capacity() <= 2 * bytes.len().max(8) => {
+                    base.clear();
+                    base.extend_from_slice(bytes);
+                }
+                _ => {
+                    fields.insert(field, bytes.to_vec());
+                }
+            }
         }
         _ => {}
     })
@@ -2779,16 +2789,14 @@ fn read_through(
     }
     let mut out = Vec::with_capacity(keep);
     for (position, (hour, metrics)) in hours.iter().zip(metrics).enumerate() {
-        let tables: Vec<TableUpdate> = columns
-            .iter_mut()
-            .map(|updates| updates.next().expect("one update per frame"))
-            .collect();
         out.push(Frame {
             branch: index.branch,
             hour: *hour,
             keyframe: position == 0,
             metrics,
-            tables: tables.try_into().unwrap(),
+            tables: std::array::from_fn(|table| {
+                columns[table].next().expect("one update per frame")
+            }),
         });
     }
     Ok(out)

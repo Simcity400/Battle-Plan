@@ -455,30 +455,54 @@ impl Transitions {
 
 /// `a - b` as little-endian integers of one length, wrapping.
 fn byte_difference(a: &[u8], b: &[u8]) -> Vec<u8> {
-    let mut borrow = false;
-    a.iter()
-        .zip(b)
-        .map(|(a, b)| {
-            let (value, first) = a.overflowing_sub(*b);
-            let (value, second) = value.overflowing_sub(u8::from(borrow));
-            borrow = first || second;
-            value
-        })
-        .collect()
+    words(a, b, |a, b, borrow| {
+        let (value, first) = a.overflowing_sub(b);
+        let (value, second) = value.overflowing_sub(u64::from(borrow));
+        (value, first || second)
+    })
 }
 
 /// `a + b` as little-endian integers of one length, wrapping.
 fn byte_sum(a: &[u8], b: &[u8]) -> Vec<u8> {
+    words(a, b, |a, b, carry| {
+        let (value, first) = a.overflowing_add(b);
+        let (value, second) = value.overflowing_add(u64::from(carry));
+        (value, first || second)
+    })
+}
+
+/// Little-endian integer arithmetic over the common length of `a` and `b`,
+/// eight bytes at a time: `step` takes two words and the carry or borrow
+/// into them and returns their result and the carry or borrow out of them,
+/// which an operation byte by byte would pass through each byte of the word.
+fn words(a: &[u8], b: &[u8], step: impl Fn(u64, u64, bool) -> (u64, bool)) -> Vec<u8> {
+    let length = a.len().min(b.len());
+    let (a, b) = (&a[..length], &b[..length]);
+    let mut out = Vec::with_capacity(length);
     let mut carry = false;
-    a.iter()
-        .zip(b)
-        .map(|(a, b)| {
-            let (value, first) = a.overflowing_add(*b);
-            let (value, second) = value.overflowing_add(u8::from(carry));
-            carry = first || second;
-            value
-        })
-        .collect()
+    let (mut a_words, mut b_words) = (a.chunks_exact(8), b.chunks_exact(8));
+    for (a, b) in (&mut a_words).zip(&mut b_words) {
+        let (value, out_carry) = step(
+            u64::from_le_bytes(a.try_into().expect("an eight-byte chunk")),
+            u64::from_le_bytes(b.try_into().expect("an eight-byte chunk")),
+            carry,
+        );
+        out.extend_from_slice(&value.to_le_bytes());
+        carry = out_carry;
+    }
+    // The tail as one shorter word: its bytes above the length are zero on
+    // both sides, so they only receive the carry out, which is dropped.
+    let (a, b) = (a_words.remainder(), b_words.remainder());
+    if !a.is_empty() {
+        let word = |bytes: &[u8]| {
+            let mut word = [0; 8];
+            word[..bytes.len()].copy_from_slice(bytes);
+            u64::from_le_bytes(word)
+        };
+        let (value, _) = step(word(a), word(b), carry);
+        out.extend_from_slice(&value.to_le_bytes()[..a.len()]);
+    }
+    out
 }
 
 /// The motion of a byte field whose encoding changed from `base` to
@@ -950,6 +974,76 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
+    /// Byte encodings' differences and sums, word by word, equal the
+    /// little-endian arithmetic byte by byte, carries and borrows through
+    /// every byte and word boundary included, over the common length.
+    #[test]
+    fn byte_arithmetic_by_words_equals_it_byte_by_byte() {
+        let bytewise = |a: &[u8], b: &[u8], add: bool| -> Vec<u8> {
+            let mut carry = false;
+            a.iter()
+                .zip(b)
+                .map(|(&a, &b)| {
+                    let carried = u8::from(carry);
+                    let (value, first, second) = if add {
+                        let (value, first) = a.overflowing_add(b);
+                        let (value, second) = value.overflowing_add(carried);
+                        (value, first, second)
+                    } else {
+                        let (value, first) = a.overflowing_sub(b);
+                        let (value, second) = value.overflowing_sub(carried);
+                        (value, first, second)
+                    };
+                    carry = first || second;
+                    value
+                })
+                .collect()
+        };
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut random = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        };
+        for length in 0..=41 {
+            let patterns: [&dyn Fn(usize) -> (u8, u8); 4] = [
+                &|_| (0xff, 0x01),
+                &|_| (0x00, 0x01),
+                &|at| {
+                    if at % 8 == 7 {
+                        (0xff, 0xff)
+                    } else {
+                        (0x00, 0xff)
+                    }
+                },
+                &|at| (at as u8, 0xfe),
+            ];
+            let mut cases: Vec<(Vec<u8>, Vec<u8>)> = patterns
+                .iter()
+                .map(|pattern| (0..length).map(pattern).unzip())
+                .collect();
+            for _ in 0..8 {
+                cases.push((
+                    (0..length).map(|_| random()).collect(),
+                    (0..length).map(|_| random()).collect(),
+                ));
+            }
+            for (a, b) in &cases {
+                assert_eq!(
+                    byte_difference(a, b),
+                    bytewise(a, b, false),
+                    "{a:02x?} - {b:02x?}"
+                );
+                assert_eq!(byte_sum(a, b), bytewise(a, b, true), "{a:02x?} + {b:02x?}");
+                // A shorter right side: the common length only.
+                let short = &b[..length / 2];
+                assert_eq!(byte_difference(a, short), bytewise(a, short, false));
+                assert_eq!(byte_sum(short, a), bytewise(short, a, true));
+            }
+        }
+    }
+
     #[test]
     fn readers_visit_only_stored_and_moving_fields() {
         let mut writer = Predictor::default();
