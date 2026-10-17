@@ -60,6 +60,13 @@ timeout reports stopped progress and retains the spool. Total finalization time
 has no deadline. Controller exit without completion fails immediately; normal
 game exit can still finish recovery. Completion retains partial/drain failures.
 
+Finalization progress is advisory. The controller attempts an atomic progress JSON
+publication at startup and at most once per second of finalization work. A failed
+write or replacement logs one warning per finalization and is retried on later
+updates; it never aborts replay publication. In-process saving updates continue
+even when the file cannot be updated. The detach command can report inactivity
+while that file is unavailable or stale; the controller continues finalizing.
+
 The collector appends each attach and detach step to `progress` in the session
 directory: milliseconds since attach began, the step (each hook family installed
 or restored, each worker join and queue drain) and an optional count. The controller
@@ -72,7 +79,7 @@ Each process session, in-process load or unexplained hour discontinuity starts a
 
 Game-score, operation-outcome and politics capture default to enabled. Record-only `--no-game-score`, `--disable-operation-outcomes` and `--disable-politics-capture` preserve named unavailable coverage, never recorded zero.
 
-Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound, which applies to each table. Split hours become keyframes, anchored like any other, with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics, then syncs the matching destination file and parent directory before acknowledging success without changing recording bytes or modification time. A sync failure retains the spool and reports failure.
+Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound, which applies to each table. Split hours become keyframes, anchored like any other, with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and replay I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics, then syncs the matching destination file and parent directory before acknowledging success without changing recording bytes or modification time. A sync failure retains the spool and reports failure.
 
 ## Inspect and compare
 

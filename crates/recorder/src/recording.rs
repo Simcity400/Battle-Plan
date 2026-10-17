@@ -1130,10 +1130,11 @@ pub(crate) fn capture(
     let _lock = finalization_lock(target)?;
     stage(Stage::Saving { records: 0 });
     let saving = |records| stage(Stage::Saving { records });
-    let progress = FinalizationProgress::new(&directory, &saving)?;
+    let progress = FinalizationProgress::new(&directory, &saving);
     let (finalized, omitted) = match outcome.recovery_allowed.then(|| {
         replay_io::finalize_session_outcome_with_progress(&directory, target, &|| {
-            progress.advance()
+            progress.advance();
+            Ok(())
         })
     }) {
         Some(Ok(done)) => {
@@ -1824,37 +1825,48 @@ fn step_summary(directory: &Path, from: &str, to: &str) -> Option<String> {
 }
 struct FinalizationProgress<'a> {
     directory: &'a Path,
-    /// Told the record count whenever it is published.
+    /// Told the record count even when the advisory file cannot be published.
     observe: &'a dyn Fn(u64),
     records: Cell<u64>,
     last_write: Cell<Instant>,
+    warned: Cell<bool>,
 }
 impl<'a> FinalizationProgress<'a> {
-    fn new(directory: &'a Path, observe: &'a dyn Fn(u64)) -> Result<Self, String> {
-        write_json(
-            &directory.join("finalization-progress.json"),
-            &json!({"recorder_pid": std::process::id(), "records": 0u64}),
-        )?;
-        Ok(Self {
+    fn new(directory: &'a Path, observe: &'a dyn Fn(u64)) -> Self {
+        let progress = Self {
             directory,
             observe,
             records: Cell::new(0),
             last_write: Cell::new(Instant::now()),
-        })
+            warned: Cell::new(false),
+        };
+        progress.publish();
+        progress
     }
-    fn advance(&self) -> std::io::Result<()> {
+    fn advance(&self) {
         self.records.set(self.records.get().saturating_add(1));
         let now = Instant::now();
         if now.duration_since(self.last_write.get()) >= Duration::from_secs(1) {
-            write_json(
-                &self.directory.join("finalization-progress.json"),
-                &json!({"recorder_pid": std::process::id(), "records": self.records.get()}),
-            )
-            .map_err(std::io::Error::other)?;
+            // Throttle failed attempts too: progress must not stall replay work.
             self.last_write.set(now);
+            self.publish();
             (self.observe)(self.records.get());
         }
-        Ok(())
+    }
+    fn publish(&self) {
+        let path = self.directory.join("finalization-progress.json");
+        // Readers can deny rename-over on Windows. This file is advisory;
+        // keep finalizing and try again at the next scheduled update.
+        if let Err(error) = write_json(
+            &path,
+            &json!({"recorder_pid": std::process::id(), "records": self.records.get()}),
+        ) && !self.warned.replace(true)
+        {
+            eprintln!(
+                "Finalization progress unavailable at {}: {error}; replay finalization continues.",
+                path.display()
+            );
+        }
     }
 }
 
@@ -2000,6 +2012,88 @@ mod tests {
     use super::*;
     use replay::container::Replay;
     use std::{cell::RefCell, collections::BTreeMap};
+
+    #[test]
+    fn finalization_progress_locked_reader_does_not_abort_publication() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let root = allocation_test_directory("finalization-progress-reader");
+        let session = root.join("session");
+        let output = root.join("replays");
+        write_campaign_spool(&session, &allocation_records());
+        let observed = Cell::new(0);
+        let observe = |records| observed.set(records);
+        let progress = FinalizationProgress::new(&session, &observe);
+        let path = session.join("finalization-progress.json");
+        // Model a reader that permits reads/writes but denies rename-over.
+        let reader = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(write_json(&path, &json!({"records": 1})).is_err());
+
+        let done = replay_io::finalize_session_outcome_with_progress(&session, &output, &|| {
+            // Exercise publication at every finalizer callback without sleeps.
+            progress
+                .last_write
+                .set(Instant::now() - Duration::from_secs(2));
+            progress.advance();
+            Ok(())
+        })
+        .unwrap();
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert_eq!(done.replays.len(), 1);
+        assert_eq!(published_hours(&done.replays[0]), [(9, 2), (9, 3), (9, 4)]);
+        assert!(observed.get() > 0);
+        assert_eq!(observed.get(), progress.records.get());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        drop(reader);
+
+        progress
+            .last_write
+            .set(Instant::now() - Duration::from_secs(2));
+        progress.advance();
+        let resumed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(resumed["records"], observed.get());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finalization_progress_initial_write_failure_is_advisory_and_throttled() {
+        use crate::test_support::allocation_test_directory;
+
+        let root = allocation_test_directory("finalization-progress-initial-write");
+        // An unwritable temporary path exercises failure before replacement.
+        let temporary = root.join(format!(
+            "finalization-progress.json.{}.tmp",
+            std::process::id()
+        ));
+        fs::create_dir(&temporary).unwrap();
+        let observed = Cell::new(0);
+        let observe = |records| observed.set(records);
+        let progress = FinalizationProgress::new(&root, &observe);
+        let previous_attempt = Instant::now() - Duration::from_secs(2);
+        progress.last_write.set(previous_attempt);
+        progress.advance();
+        assert_eq!(observed.get(), 1);
+        assert!(progress.last_write.get() > previous_attempt);
+        fs::remove_dir(&temporary).unwrap();
+        progress
+            .last_write
+            .set(Instant::now() - Duration::from_secs(2));
+        progress.advance();
+        let resumed: Value =
+            serde_json::from_slice(&fs::read(root.join("finalization-progress.json")).unwrap())
+                .unwrap();
+        assert_eq!(resumed["records"], 2);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn detach_wait_follows_progress_past_the_old_total_deadline_and_detects_stalls() {
