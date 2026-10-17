@@ -1009,3 +1009,125 @@ fn quiet_gain_runs_advance_without_visiting_countries_and_resume_at_a_daily_read
         serde_json::to_value(&hourly).unwrap()
     );
 }
+
+fn assert_banked_row_joins(count: u32) {
+    use super::Scan;
+    use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
+    use replay::rows::CountryExperienceRow;
+    use std::sync::Arc;
+    let frames = (0..12)
+        .map(|offset| {
+            let mut frame = crate::test_fixtures::scale_frame(
+                1,
+                slot_base() + offset + i32::from(offset >= 9),
+                count,
+            );
+            let mut rows: Vec<_> = (0..count)
+                .map(|index| CountryExperienceRow {
+                    country: 100_000 + index,
+                    army_raw: if index == 0 { i64::from(offset) } else { 100 },
+                    ..Default::default()
+                })
+                .collect();
+            if offset == 2 {
+                rows.remove(0);
+            }
+            // Two raw aliases of a slot are ambiguous, even with equal amounts.
+            if (3..=4).contains(&offset) {
+                if let TableView::Complete(TableRows::CountryLinks(links)) =
+                    &mut *frame.tables[TableId::CountryLinks.index()]
+                {
+                    links.push(CountryLinkRow {
+                        id: 200_000,
+                        canonical_slot: 0,
+                    });
+                }
+                rows.push(CountryExperienceRow {
+                    country: 200_000,
+                    ..rows[0].clone()
+                });
+            }
+            frame.tables[TableId::CountryExperience.index()] = if offset == 5 {
+                TableView::Unavailable {
+                    reason: "synthetic banked refusal".into(),
+                }
+            } else {
+                TableView::Complete(TableRows::CountryExperience(rows))
+            }
+            .into();
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let mut sparse = Scan::default();
+    let mut whole = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            &TableId::ALL,
+            |raw, frame| {
+                let before = sparse.work().row_visits;
+                let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                let dense = FrameChanges {
+                    rows_changed: changes.rows_changed,
+                    table_read: changes.table_read,
+                    slot_read: changes.slot_read,
+                    updates: None,
+                };
+                let mut replies = [Vec::new(), Vec::new()];
+                sparse
+                    .step(
+                        frame,
+                        replay.format,
+                        Some(&changes),
+                        |tag, identity, read| {
+                            replies[0].push((tag.to_owned(), identity, read));
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                whole
+                    .step(frame, replay.format, Some(&dense), |tag, identity, read| {
+                        replies[1].push((tag.to_owned(), identity, read));
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_vec(&replies[0]).unwrap(),
+                    serde_json::to_vec(&replies[1]).unwrap()
+                );
+                assert_eq!(sparse.native.banked, whole.native.banked);
+                assert_eq!(
+                    serde_json::to_vec(&sparse).unwrap(),
+                    serde_json::to_vec(&whole).unwrap()
+                );
+                if frame.hour == slot_base() + 1 {
+                    assert_eq!(
+                        sparse.work().row_visits - before,
+                        2,
+                        "one banked row joins one slot, regardless of country count"
+                    );
+                }
+                if frame.hour == slot_base() + 7 {
+                    sparse = serde_json::from_slice(&serde_json::to_vec(&sparse).unwrap()).unwrap();
+                    whole = serde_json::from_slice(&serde_json::to_vec(&whole).unwrap()).unwrap();
+                    tracker.invalidate();
+                }
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+}
+
+#[test]
+fn banked_rows_join_only_changed_slots_and_preserve_aliases_refusals_resume_and_gaps() {
+    assert_banked_row_joins(32);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn banked_row_changes_among_5000_countries_join_only_their_slots() {
+    assert_banked_row_joins(5000);
+}

@@ -127,7 +127,10 @@ impl StabilityAccumulator {
         result?;
         let adjacent = self.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.last = Some(frame.hour);
+        let cpu = ::replay::cpu::scope_phase("stability:series_observe");
         self.batch.advance(frame.hour)?;
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("stability:measures_projection_series");
         let Self {
             stability,
             actors,
@@ -179,6 +182,8 @@ impl StabilityAccumulator {
                 Ok(())
             },
         )?;
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stability:pruning");
         for tag in &stability.removed {
             for measure in ["readHour", "stability", "warSupport", "maxCommandPower"] {
                 if let Some(actor) = actors.get_mut(&series::field_key(tag, measure)) {
@@ -206,6 +211,7 @@ impl StabilityAccumulator {
             BTreeMap<&'static str, dashboard_base::prepared::timing::FamilyTimings>,
         >,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("stability:series_flush");
         if let Some(last) = self.last {
             let started = dashboard_base::prepared::timing::start_timing(timings);
             let result = self.parts.flush(writer, branch, cancelled);

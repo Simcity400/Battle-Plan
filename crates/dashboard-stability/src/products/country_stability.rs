@@ -1307,6 +1307,7 @@ impl Native {
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         command_power: bool,
     ) -> BTreeSet<u32> {
+        let _cpu = ::replay::cpu::scope_phase("stability:observe_apply");
         self.membership_changed = false;
         // These operands use their rows/status. Supplying dates are explicit
         // SliceReads rows; an equal fresh acquisition changes no operand here.
@@ -1442,8 +1443,11 @@ impl Native {
         if command_power && reads(TableId::CountryCommandPower) {
             let rows = frame.complete::<tables::CountryCommandPower>().ok();
             let mut slots = BTreeSet::new();
-            let applied = match (delta(TableId::CountryCommandPower), self.command.as_mut(), rows)
-            {
+            let applied = match (
+                delta(TableId::CountryCommandPower),
+                self.command.as_mut(),
+                rows,
+            ) {
                 (Some(delta), Some(held), Some(rows)) => {
                     #[cfg(test)]
                     {

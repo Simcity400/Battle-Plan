@@ -3199,10 +3199,36 @@ fn assert_daily_changes_observe_only_their_owners(count: u32) {
         let mut work = [0; 2];
         for ((observer, tracker), visits) in observers.iter_mut().zip(&mut trackers).zip(&mut work)
         {
-            let before = observer.scan.country_visits;
+            let before = (
+                observer.scan.country_visits,
+                observer.daily_key_visits,
+                observer.scan.cost_prune_visits,
+            );
             let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
             observer.observe(&decoded, &changes, &flag).unwrap();
-            *visits = observer.scan.country_visits - before;
+            *visits = observer.scan.country_visits - before.0;
+            if hour == 25 {
+                assert_eq!(
+                    observer.daily_key_visits - before.1,
+                    if observer.scan.whole_tables {
+                        count as usize
+                    } else {
+                        1
+                    },
+                    "daily keys follow only changed owners"
+                );
+            }
+            if hour == 26 || hour == 27 {
+                let pruned = observer.scan.cost_prune_visits - before.2;
+                if observer.scan.whole_tables {
+                    assert!(pruned >= count as usize);
+                } else {
+                    assert!(
+                        pruned <= 2,
+                        "only the changed owner's retained costs: {pruned}"
+                    );
+                }
+            }
         }
         if hour == 25 {
             assert_eq!(work, [1, count as usize], "one daily owner, not the census");
@@ -3292,6 +3318,7 @@ fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_
     let flag = AtomicBool::new(false);
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].scan.whole_tables = true;
     let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
     let mut recorded = Recorded::new();
     let mut input = frame(24, 2);
@@ -3310,6 +3337,9 @@ fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_
     for hour in 24..=36 {
         input.hour = hour;
         match hour {
+            // Amount changes recheck reconciliation, but retain the cost identity.
+            26 => costs[0].cost_raw = 1,
+            27 => costs[0].cost_raw = 0,
             28 => {
                 costs.pop().unwrap();
             }
@@ -3380,4 +3410,22 @@ fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_
         publish(observer, fixture);
     }
     assert_eq!(sections(&fixtures[0]), sections(&fixtures[1]));
+}
+
+#[test]
+fn pending_rows_of_one_owner_do_not_scan_other_owners_refusals() {
+    for shift in [32, 64] {
+        let mut pending: BTreeSet<_> = (0..5000_u128)
+            .flat_map(|country| [country << shift, (country << shift) | 17])
+            .collect();
+        let mut expected = pending.clone();
+        let owners = BTreeSet::from([0_u32, 17, u32::MAX]);
+        expected.retain(|key| !owners.contains(&((key >> shift) as u32)));
+        let visits = super::super::clock::remove_pending(&mut pending, &owners, shift);
+        assert_eq!(pending, expected);
+        assert_eq!(
+            visits, 4,
+            "only unresolved rows belonging to observed owners"
+        );
+    }
 }

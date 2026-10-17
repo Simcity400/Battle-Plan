@@ -151,6 +151,13 @@ pub struct ProductionAccumulator {
     spent: crate::prepared::series::Accumulator,
     spent_keys: BTreeMap<String, u64>,
     spent_active: BTreeSet<u64>,
+    #[serde(skip)]
+    spent_holders: [BTreeMap<String, SpentHolder>; 2],
+    #[serde(skip)]
+    spent_holders_ready: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    spent_visits: usize,
     classification_keys: BTreeMap<u64, u64>,
     /// Last published payload fingerprints, never a second copy of quantities.
     endpoint_hashes: BTreeMap<u64, [u8; 32]>,
@@ -171,6 +178,21 @@ pub struct ProductionAccumulator {
     rocket_origin: Option<i32>,
     rocket_restart: Option<i32>,
     variant_refusals: crate::catalogue::Refusals,
+}
+
+/// A holder's numeric spending projection. Track versions change whenever
+/// either retained inventory changes; scope refusals and continuity are separate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SpentInputs {
+    identity: Identity,
+    units: Option<(Identity, u64)>,
+    costs: Option<(Identity, u64)>,
+    reason: Option<ProductionSpendingUnknown>,
+}
+struct SpentHolder {
+    inputs: SpentInputs,
+    hour: i32,
+    active: BTreeSet<u64>,
 }
 
 /// The latest complete variant read, used only at another complete read.
@@ -331,9 +353,24 @@ impl ProductionAccumulator {
         self.spent.bytes()
     }
 
+    /// Carry only proofs current at the old frontier across certified unchanged
+    /// hours. An already stale holder must still project at its next read.
+    fn advance_spent_holders(&mut self, hour: i32) {
+        for held in self
+            .spent_holders
+            .iter_mut()
+            .flat_map(|holders| holders.values_mut())
+        {
+            if Some(held.hour) == self.last_frame {
+                held.hour = hour;
+            }
+        }
+    }
+
     fn observe_spent(&mut self, hour: i32) -> io::Result<()> {
         self.spent.advance(hour)?;
-        let mut observed = BTreeSet::new();
+        let mut opened = BTreeSet::new();
+        let mut closed = BTreeSet::new();
         for (rocket, tracks, holders, restart) in [
             (
                 false,
@@ -376,8 +413,30 @@ impl ProductionAccumulator {
                     rocket,
                     hour,
                 );
+                let starts = track.starts.last() == Some(&true) && track.hours.last() == Some(&at);
+                let inputs = SpentInputs {
+                    identity,
+                    units: track.taken,
+                    costs: track.cost_taken,
+                    reason: scope_reason,
+                };
+                if !starts
+                    && inputs.units.is_some()
+                    && inputs.costs.is_some()
+                    && let Some(held) = self.spent_holders[usize::from(rocket)].get_mut(tag)
+                    && held.hour.checked_add(1) == Some(hour)
+                    && held.inputs == inputs
+                {
+                    held.hour = hour;
+                    continue;
+                }
+                let mut observed = BTreeSet::new();
                 let mut variants: BTreeMap<u64, [Option<CostTotal>; 2]> = BTreeMap::new();
                 for &(variant, refit) in track.current.keys().chain(track.cost_current.keys()) {
+                    #[cfg(test)]
+                    {
+                        self.spent_visits += 1;
+                    }
                     variants.entry(variant).or_default()[usize::from(refit)] = Some(
                         track
                             .cost_current
@@ -412,8 +471,6 @@ impl ProductionAccumulator {
                                 reason = reason.or(value.reason);
                             }
                         }
-                        let starts =
-                            track.starts.last() == Some(&true) && track.hours.last() == Some(&at);
                         let value = reason.is_none().then_some(amount);
                         if value.is_some() {
                             observed.insert(key);
@@ -435,16 +492,54 @@ impl ProductionAccumulator {
                         }
                     }
                 }
+                let held = SpentHolder {
+                    inputs,
+                    hour,
+                    active: observed,
+                };
+                if let Some(previous) =
+                    self.spent_holders[usize::from(rocket)].insert(tag.clone(), held)
+                {
+                    let active = &self.spent_holders[usize::from(rocket)][tag].active;
+                    closed.extend(previous.active.difference(active).copied());
+                }
+                opened.extend(&self.spent_holders[usize::from(rocket)][tag].active);
             }
         }
-        for &key in self.spent_active.difference(&observed) {
+        for holders in &mut self.spent_holders {
+            let removed: Vec<_> = holders
+                .iter()
+                .filter(|(_, held)| held.hour != hour)
+                .map(|(tag, _)| tag.clone())
+                .collect();
+            for tag in removed {
+                closed.extend(holders.remove(&tag).unwrap().active);
+            }
+        }
+        if !self.spent_holders_ready {
+            // The saved active keys precede this runtime index. Reconcile them
+            // once, including keys belonging to a holder gone at the first read.
+            let observed: BTreeSet<_> = self
+                .spent_holders
+                .iter()
+                .flat_map(|holders| holders.values())
+                .flat_map(|held| held.active.iter().copied())
+                .collect();
+            closed.extend(self.spent_active.difference(&observed).copied());
+            opened = observed;
+            self.spent_holders_ready = true;
+        }
+        // Keep the full projection's call order: values first, then ending
+        // keys in numeric order. Failed projections publish no endings.
+        for key in closed {
             self.spent.observe(key, hour, None, false);
+            self.spent_active.remove(&key);
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.emitted += 1;
             }
         }
-        self.spent_active = observed;
+        self.spent_active.extend(opened);
         Ok(())
     }
 
@@ -1148,6 +1243,7 @@ impl ProductionAccumulator {
         cancelled: &AtomicBool,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<Option<EndpointPage>> {
+        let _cpu = ::replay::cpu::scope_phase("production:observe_apply");
         check_cancel(cancelled)?;
         self.spent.advance(frame.hour)?;
         let consecutive = self.last_frame.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
@@ -1212,6 +1308,7 @@ impl ProductionAccumulator {
             .any(|table| changes.slot_read[table.index()]);
         if !changed && let Some(pending) = &mut self.pending {
             pending.last_hour = frame.hour;
+            self.advance_spent_holders(frame.hour);
             self.last_frame = Some(frame.hour);
             return Ok(None);
         }
@@ -1236,8 +1333,9 @@ impl ProductionAccumulator {
     /// Hours `first..=last` that follow the last frame, at which no table
     /// production reads changed (country keys and links included) and no
     /// output or variant read is dated: ingesting each of them extends the
-    /// open endpoint page to it and advances the spent series, in constant
-    /// time. False without an open page, whose hours only ingestion opens.
+    /// open endpoint page and the spent series to it, carrying holder cache
+    /// proofs without visiting inventories. False without an open page, whose
+    /// hours only ingestion opens.
     pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<bool> {
         if self.schema != 1
             || self.pending.is_none()
@@ -1249,6 +1347,7 @@ impl ProductionAccumulator {
         if let Some(pending) = &mut self.pending {
             pending.last_hour = last;
         }
+        self.advance_spent_holders(last);
         self.last_frame = Some(last);
         Ok(true)
     }
@@ -1308,6 +1407,7 @@ impl ProductionAccumulator {
         equipment_changed: bool,
         rocket_changed: bool,
     ) -> io::Result<Option<EndpointPage>> {
+        let cpu = ::replay::cpu::scope_phase("production:settle_reconcile");
         check_cancel(cancelled)?;
         if self.schema != 1 {
             return Err(io::Error::new(
@@ -1337,6 +1437,8 @@ impl ProductionAccumulator {
         }
         let diagnostics_before = self.diagnostic_counts();
         let consecutive = self.last_frame.and_then(|last| last.checked_add(1)) == Some(frame.hour);
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("production:observe_apply");
         self.observe(format, frame, equipment_changed, rocket_changed)?;
         for (values, origin, restart) in [
             (
@@ -1360,7 +1462,10 @@ impl ProductionAccumulator {
                 }
             }
         }
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("production:spending_projection_series");
         self.observe_spent(frame.hour)?;
+        drop(cpu);
         let numeric_read = slot_read(
             format,
             &frame.metrics,
@@ -1384,6 +1489,7 @@ impl ProductionAccumulator {
             check_cancel(cancelled)?;
             return Ok(None);
         }
+        let cpu = ::replay::cpu::scope_phase("production:presentation");
         // A fresh hourly catalogue is empty outside a complete variant read.
         // At a complete read only changed operands need building again.
         let complete_names = VariantCatalogue::hour_of(format, frame) == VariantHour::Read;
@@ -1503,6 +1609,8 @@ impl ProductionAccumulator {
                 }
             }
         }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("production:endpoint_projection");
         let mut countries = Vec::new();
         let tags: BTreeSet<_> = self
             .country_reads
@@ -1684,6 +1792,7 @@ impl ProductionAccumulator {
                 None
             }
         };
+        let _pruning = ::replay::cpu::scope_phase("production:pruning");
         // Only current supplying reads and retained row counters survive a frame.
         for tag in &self.result.active {
             compact(
@@ -2590,6 +2699,7 @@ pub fn publish_endpoint_to(
             "Prepared production schema or branch mismatch",
         ));
     }
+    let _cpu = ::replay::cpu::scope_phase("production:series_flush");
     let mut header = page.clone();
     let mut active = BTreeSet::new();
     for row in &mut header.countries {

@@ -436,6 +436,7 @@ impl Scan {
         frame: &DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {
+        let cpu = ::replay::cpu::scope_phase("naval:observe_apply");
         self.available |= frame_available(frame);
         let hour = frame.hour;
         self.hour = hour;
@@ -472,6 +473,8 @@ impl Scan {
         }
         self.links_known = links_known;
 
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:combat_projection");
         let unchanged_combat = contiguous
             && !links_changed
             && self
@@ -620,6 +623,8 @@ impl Scan {
             }
         }
 
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:settle_reconcile");
         if self.result_through.is_some()
             && !self
                 .result_views
@@ -630,6 +635,8 @@ impl Scan {
             self.extend_results();
         }
         self.observe_sources(frame, &previous_combats, previous_hour);
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("naval:results_projection");
         let Ok(rows) = frame.complete::<tables::NavalResults>() else {
             self.extend_results();
             self.refuse("Retained result census unavailable or incomplete");
@@ -729,7 +736,10 @@ impl Scan {
             .flatten()
             .map(|row| (row.result, row))
             .collect();
-        self.result_inputs.retain(|id, _| ids.contains(id));
+        {
+            let _cpu = ::replay::cpu::scope_phase("naval:pruning");
+            self.result_inputs.retain(|id, _| ids.contains(id));
+        }
         let mut incomplete = 0;
         for row in rows {
             #[cfg(test)]

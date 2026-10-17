@@ -609,6 +609,8 @@ fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
         let track = state.result.tags.get_mut("mod country 1").unwrap();
         track.last.as_mut().unwrap().1 = hour;
         track.cost_current.get_mut(&(1, false)).unwrap().reason = reason;
+        // The production observer versions each change to the cost inventory.
+        track.cost_taken.as_mut().unwrap().1 += 1;
         state.observe_spent(hour).unwrap();
     }
     let fixture = Fixture::new();
@@ -1538,5 +1540,240 @@ fn endpoint_reads_search_each_leaf_directory_once_and_restore_only_requested_lea
                 assert!(row.rocket.as_ref().unwrap().amounts.is_empty());
             }
         }
+    }
+}
+
+#[test]
+fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restore() {
+    use crate::prepared::series::tests::{Fixture, assert_payloads_equal};
+    use replay::rows::{ProductionLineOutputRow, TableRows};
+    let flag = AtomicBool::new(false);
+    let mut frame = observer_frame(1, false);
+    let format = observer_format(&frame);
+    let mut outputs: Vec<_> = (0..128)
+        .map(|ordinal| ProductionLineOutputRow {
+            line: 1,
+            country: 1,
+            variant: u64::from(ordinal) + 1,
+            ordinal,
+            units: 1,
+            since_hour: frame.hour,
+            exact: true,
+            spent_raw: Recorded::Value(Some(7)),
+            ..Default::default()
+        })
+        .collect();
+    let mut states = [
+        ProductionAccumulator::new(format.version(), 1, frame.hour),
+        ProductionAccumulator::new(format.version(), 1, frame.hour),
+    ];
+    let fixtures = [Fixture::new(), Fixture::new()];
+    for offset in 0..10 {
+        frame.hour = 8 + offset + i32::from(offset >= 8);
+        frame.metrics.table_ns[TableId::ProductionLineOutput.index()] = 1;
+        if offset == 6
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].tag = b"replacement holder".to_vec();
+        }
+        if offset == 3 {
+            outputs[0].spent_raw = Recorded::Value(None);
+        }
+        if offset == 4 {
+            outputs[0].spent_raw = Recorded::Value(Some(7));
+        }
+        if offset == 5 {
+            outputs[0].units = 2;
+        }
+        frame.tables[TableId::ProductionLineOutput.index()] =
+            TableView::Complete(TableRows::ProductionLineOutput(outputs.clone())).into();
+        if offset == 7 {
+            frame.tables[TableId::ProductionLineOutput.index()] = TableView::Unavailable {
+                reason: "synthetic output refusal".into(),
+            }
+            .into();
+        }
+        for (index, state) in states.iter_mut().enumerate() {
+            // Rebuilding the runtime projection at every hour is the full
+            // inventory reference, including every formerly active key.
+            if index == 1 {
+                state.spent_holders = Default::default();
+                state.spent_holders_ready = false;
+            }
+            let before = state.spent_visits;
+            state
+                .ingest(format, &frame, Named::default(), &flag)
+                .unwrap();
+            if offset == 1 || offset == 2 {
+                assert_eq!(
+                    state.spent_visits - before,
+                    if index == 0 { 0 } else { 256 }
+                );
+            }
+        }
+        assert_eq!(
+            serde_json::to_vec(&states[0]).unwrap(),
+            serde_json::to_vec(&states[1]).unwrap()
+        );
+        if offset == 2 || offset == 9 {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                state
+                    .spent
+                    .flush(&mut writer, "spending", 0, &flag)
+                    .unwrap();
+                writer.commit().unwrap();
+            }
+            assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "spending projection",
+            );
+        }
+        if offset == 2 {
+            for state in &mut states {
+                *state = serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourly_carries() {
+    use crate::prepared::{
+        frame_changes::FrameChanges,
+        series::tests::{Fixture, assert_payloads_equal},
+    };
+    use replay::rows::{ProductionLineOutputRow, ProductionLineRow, TableRows};
+    const VARIANTS: u32 = 32;
+    let flag = AtomicBool::new(false);
+    for quiet in [true, false] {
+        let mut frame = observer_frame(2, false);
+        frame.tables[TableId::ProductionLines.index()] =
+            TableView::Complete(TableRows::ProductionLines(
+                (1..=2)
+                    .map(|country| ProductionLineRow {
+                        handle: u64::from(country),
+                        country,
+                        variant: 1,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+            .into();
+        let mut output: Vec<_> = (1..=2)
+            .flat_map(|country| {
+                (0..VARIANTS).map(move |ordinal| ProductionLineOutputRow {
+                    line: u64::from(country),
+                    country,
+                    ordinal,
+                    variant: u64::from(ordinal) + 1,
+                    units: 1,
+                    since_hour: 8,
+                    exact: true,
+                    spent_raw: Recorded::Value(Some(7)),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let format = observer_format(&frame);
+        let mut states = [
+            ProductionAccumulator::new(format.version(), 1, 8),
+            ProductionAccumulator::new(format.version(), 1, 8),
+        ];
+        for day in 0..VARIANTS {
+            let hour = 8 + 24 * day as i32;
+            if day > 0 {
+                let first = hour - 23;
+                if quiet {
+                    for state in &mut states {
+                        assert!(state.advance_quiet(first, hour - 1).unwrap());
+                    }
+                } else {
+                    let changes = FrameChanges {
+                        rows_changed: [false; replay::frame::TABLE_COUNT],
+                        table_read: [false; replay::frame::TABLE_COUNT],
+                        slot_read: [false; replay::frame::TABLE_COUNT],
+                        updates: None,
+                    };
+                    frame.metrics.table_ns.fill(0);
+                    for carried in first..hour {
+                        frame.hour = carried;
+                        for state in &mut states {
+                            assert!(
+                                state
+                                    .ingest_changed(
+                                        format,
+                                        &frame,
+                                        Named::default(),
+                                        &flag,
+                                        &changes
+                                    )
+                                    .unwrap()
+                                    .is_none()
+                            );
+                        }
+                    }
+                }
+            }
+            // One owner's cost changes once; the other inventory stays equal.
+            if day == VARIANTS / 2 {
+                output[0].spent_raw = Recorded::Value(Some(9));
+            }
+            frame.hour = hour;
+            frame.metrics.table_ns.fill(0);
+            frame.metrics.table_ns[TableId::ProductionLineOutput.index()] = 1;
+            frame.tables[TableId::ProductionLineOutput.index()] =
+                TableView::Complete(TableRows::ProductionLineOutput(output.clone())).into();
+            let mut changes = FrameChanges {
+                rows_changed: [day == 0; replay::frame::TABLE_COUNT],
+                table_read: [false; replay::frame::TABLE_COUNT],
+                slot_read: [false; replay::frame::TABLE_COUNT],
+                updates: None,
+            };
+            changes.rows_changed[TableId::ProductionLineOutput.index()] = true;
+            changes.table_read[TableId::ProductionLineOutput.index()] = true;
+            changes.slot_read[TableId::ProductionLineOutput.index()] = true;
+            for (index, state) in states.iter_mut().enumerate() {
+                if index == 1 {
+                    state.spent_holders = Default::default();
+                    state.spent_holders_ready = false;
+                }
+                let before = state.spent_visits;
+                state
+                    .ingest_changed(format, &frame, Named::default(), &flag, &changes)
+                    .unwrap();
+                let owners = if index == 1 || day == 0 {
+                    2
+                } else {
+                    u32::from(day == VARIANTS / 2)
+                };
+                assert_eq!(
+                    state.spent_visits - before,
+                    (2 * VARIANTS * owners) as usize,
+                    "quiet={quiet}, day={day}: only changed holders project"
+                );
+            }
+            assert_eq!(
+                serde_json::to_vec(&states[0]).unwrap(),
+                serde_json::to_vec(&states[1]).unwrap()
+            );
+        }
+        assert_eq!(states[0].spent_visits, (6 * VARIANTS) as usize);
+        let fixtures = [Fixture::new(), Fixture::new()];
+        for (state, fixture) in states.iter_mut().zip(&fixtures) {
+            let mut writer = fixture.writer();
+            state
+                .spent
+                .flush(&mut writer, "spending", 0, &flag)
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "quiet spending",
+        );
     }
 }

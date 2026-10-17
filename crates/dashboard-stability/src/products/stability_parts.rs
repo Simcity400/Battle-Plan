@@ -533,6 +533,7 @@ impl Scan {
             &NamingCountry,
         ) -> io::Result<()>,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("stability:observe_apply");
         let hour = decoded.hour;
         let previous = self.hour;
         let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(hour);
@@ -706,6 +707,8 @@ impl Scan {
         }) else {
             return Ok(());
         };
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stability:parts_projection_series");
         let mut seen = BTreeSet::new();
         for id in dirty {
             let Some(country) = self.native.country(id) else {
@@ -1156,8 +1159,11 @@ impl Prepared {
         frame: &replay::frame::DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("stability:series_observe");
         self.last = frame.hour;
         self.batch.advance(frame.hour)?;
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("stability:parts_projection_series");
         progressive::sample(
             &mut self.scan,
             frame,
@@ -1228,6 +1234,8 @@ impl Prepared {
                 Ok(())
             },
         )?;
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stability:pruning");
         for tag in &self.scan.removed {
             for field in ["stability", "warSupport"] {
                 if let Some(open) = self

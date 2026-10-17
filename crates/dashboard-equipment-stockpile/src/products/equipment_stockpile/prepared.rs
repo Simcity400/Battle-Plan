@@ -198,9 +198,12 @@ impl Prepared {
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("stockpile:series_observe");
         self.naming.advance(frame.hour)?;
         self.numbers.advance(frame.hour)?;
         self.choices.advance(frame.hour)?;
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("stockpile:observe_apply");
         let previous = self.frontier;
         let continuous = previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.frontier = Some(frame.hour);
@@ -254,6 +257,8 @@ impl Prepared {
                 .any(|table| changes.rows_changed[table.index()])
             || (!self.naming_ready && changes.slot_read[TableId::VariantDefinitions.index()]);
         // Variants whose group changed this hour: their current holders regroup.
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("stockpile:presentation");
         let reclassified = if naming_changed {
             // Input changes can precede their supplying read, including after
             // restore. Retain that invalidation until the catalogue can read it;
@@ -356,6 +361,7 @@ impl Prepared {
             BTreeSet::new()
         };
         self.naming.through(frame.hour);
+        drop(cpu);
         // A break, a change of holders or of the dictionary their logistics
         // tokens are spelled from is read from the whole tables.
         let whole = !continuous
@@ -407,6 +413,7 @@ impl Prepared {
         changes: &FrameChanges,
         previous: Option<i32>,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("stockpile:observe_apply");
         let reads = [
             changes.slot_read[TableId::Stockpiles.index()],
             changes.slot_read[TableId::LogisticsEquipment.index()],
@@ -425,10 +432,14 @@ impl Prepared {
             .cloned()
             .chain(self.active.iter().cloned())
             .collect();
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("stockpile:projection_series");
         for tag in &touched {
             let identity = input.identities.get(tag).copied();
             self.observe_holder(format, &input, tag, identity, reads, previous)?;
         }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stockpile:pruning");
         self.repeated
             .retain(|tag, _| input.identities.contains_key(tag));
         self.active = input.identities.keys().cloned().collect();
@@ -455,6 +466,7 @@ impl Prepared {
         previous: Option<i32>,
         reclassified: &BTreeSet<u64>,
     ) -> io::Result<bool> {
+        let cpu = ::replay::cpu::scope_phase("stockpile:observe_apply");
         let reads = [
             changes.slot_read[TableId::Stockpiles.index()],
             changes.slot_read[TableId::LogisticsEquipment.index()],
@@ -502,6 +514,8 @@ impl Prepared {
         {
             self.work.row_visits += ROW_VISITS.with(std::cell::Cell::get) - rows_before;
         }
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("stockpile:projection_series");
         if read {
             for (tag, repeat) in &self.repeated {
                 if full.contains_key(tag) || !repeat.repeats_any(reads) {
@@ -522,6 +536,8 @@ impl Prepared {
         for (tag, &identity) in &full {
             self.observe_holder(format, &input, tag, Some(identity), reads, previous)?;
         }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stockpile:pruning");
         let index = self.rows.as_mut().expect("stockpile row index");
         for (stale, _) in index.stale.iter_mut().zip(reads).filter(|(_, due)| *due) {
             stale.clear();
@@ -672,6 +688,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("stockpile:settle");
         for tag in &self.active {
             let state = self.scan.get_mut(tag).expect("active stockpile country");
             // Publication and its checkpoint hold every holder through the
@@ -679,6 +696,8 @@ impl Prepared {
             state.catch_up(self.frontier);
             state.seal();
         }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stockpile:series_flush");
         self.numbers.flush(writer, branch, cancelled)?;
         self.choices.flush(writer, branch, cancelled)?;
         self.naming

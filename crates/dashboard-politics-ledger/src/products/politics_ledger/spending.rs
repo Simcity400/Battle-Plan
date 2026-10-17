@@ -473,6 +473,7 @@ impl Scanned {
     }
 
     fn prune_publications(&mut self, frame: &DecodedFrame) {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:pruning");
         // Native change publications advance their sequence cursor within an
         // epoch. Daily costs replace the latest published day. A key removed
         // by a complete publication cannot return; failed reads prove no removal.
@@ -542,15 +543,37 @@ impl Scanned {
             && !self.costs_pruned
         {
             let current = &self.inputs.cost_keys;
-            #[cfg(test)]
-            let visits = &mut self.cost_prune_visits;
-            self.costs.retain(|key| {
-                #[cfg(test)]
-                {
-                    *visits += 1;
+            if let Some(owners) = self.inputs.changed_cost_owners() {
+                for &country in owners {
+                    let old: Vec<_> = self
+                        .costs
+                        .range(
+                            (country, 0, 0, i32::MIN, 0)
+                                ..=(country, u32::MAX, u64::MAX, i32::MAX, u32::MAX),
+                        )
+                        .copied()
+                        .collect();
+                    #[cfg(test)]
+                    {
+                        self.cost_prune_visits += old.len();
+                    }
+                    for key in old {
+                        if !current.contains(&key) {
+                            self.costs.remove(&key);
+                        }
+                    }
                 }
-                current.contains(key)
-            });
+            } else {
+                #[cfg(test)]
+                let visits = &mut self.cost_prune_visits;
+                self.costs.retain(|key| {
+                    #[cfg(test)]
+                    {
+                        *visits += 1;
+                    }
+                    current.contains(key)
+                });
+            }
             self.costs_pruned = true;
         }
     }

@@ -118,6 +118,22 @@ pub fn scope(category: &'static str, family: Option<&'static str>) -> Scope {
     Scope(with_local(|acc| acc.push(category, family)).is_some())
 }
 
+/// Label a phase within the current category. Shared observers retain their
+/// caller's fold, extract or commit attribution.
+#[inline]
+pub fn scope_phase(family: &'static str) -> Scope {
+    if !enabled() {
+        return Scope(false);
+    }
+    Scope(
+        with_local(|acc| {
+            let category = acc.stack.last().map_or("thread", |label| label.0);
+            acc.push(category, Some(family));
+        })
+        .is_some(),
+    )
+}
+
 /// [`scope`] with a family named at run time (a product's name), kept
 /// once per distinct name.
 pub fn scope_named(category: &'static str, family: &str) -> Scope {

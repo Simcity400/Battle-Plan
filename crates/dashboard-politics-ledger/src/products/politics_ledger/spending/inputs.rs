@@ -68,9 +68,9 @@ pub(super) struct Inputs {
     /// The countries whose [power, government] rows changed this hour, when
     /// it was joined from its changed rows; none when the whole tables were.
     pub changed_rows: Option<[BTreeSet<u32>; 2]>,
-    /// How many [daily upkeep or gain power, government] rows date at each
+    /// How many [daily upkeep or gain power, government, daily] rows date at each
     /// native day: the newest is the newest native day they publish.
-    days: [BTreeMap<i32, usize>; 2],
+    days: [BTreeMap<i32, usize>; 3],
     /// The captures this hour's join from its changed rows only extended to
     /// the hour, each with its first hour, by country: none after a join of
     /// the whole tables.
@@ -144,6 +144,10 @@ fn power_day(row: &CountryPowerChangeRow) -> Option<i32> {
 
 fn government_day(row: &GovernmentChangeRow) -> Option<i32> {
     Some(row.hour.div_euclid(24) * 24)
+}
+
+fn daily_day(row: &CountryPowerDailyRow) -> Option<i32> {
+    Some(row.day_hour)
 }
 
 /// Count each row's native day in or out.
@@ -288,10 +292,16 @@ impl Inputs {
     pub(super) fn costs(&self) -> &[CountryPowerDailyCostRow] {
         held::<tables::CountryPowerDailyCosts>(&self.costs)
     }
-    /// The newest native day of the [daily upkeep or gain power, government]
+    /// The newest native day of the [daily upkeep or gain power, government, daily]
     /// rows held.
     pub(super) fn newest_day(&self, table: usize) -> Option<i32> {
         self.days[table].last_key_value().map(|(&day, _)| day)
+    }
+
+    /// Owners whose costs may differ from the last join. Identity rechecks
+    /// can add owners; their equal keys are safe to prune again as well.
+    pub(super) fn changed_cost_owners(&self) -> Option<&BTreeSet<u32>> {
+        self.narrow.then_some(&self.touched[3])
     }
     /// One country's power rows, in table order.
     pub(super) fn power_of(&self, country: u32) -> impl Iterator<Item = &CountryPowerChangeRow> {
@@ -312,7 +322,7 @@ impl Inputs {
         )
     }
     #[cfg(test)]
-    pub(super) fn native_days(&self) -> &[BTreeMap<i32, usize>; 2] {
+    pub(super) fn native_days(&self) -> &[BTreeMap<i32, usize>; 3] {
         &self.days
     }
     /// The countries whose power or cost rows this hour observes.
@@ -624,6 +634,8 @@ impl Inputs {
                 self.row_visits += self.daily().len();
             }
             let daily = held::<tables::CountryPowerDaily>(&self.daily);
+            self.days[2].clear();
+            count_days(&mut self.days[2], daily, daily_day, true);
             self.daily_keys = daily
                 .iter()
                 .map(|row| (row.country, row.instance, row.epoch, row.day_hour))
@@ -1090,6 +1102,7 @@ impl Inputs {
                     raw,
                     |row| row.country,
                 ) {
+                    count_days(&mut self.days[2], [row], daily_day, false);
                     self.daily_keys
                         .remove(&(row.country, row.instance, row.epoch, row.day_hour));
                     if let Some(sequence) = row.pp_sequence {
@@ -1113,6 +1126,7 @@ impl Inputs {
                         raw,
                         |row| row.country,
                     ) {
+                        count_days(&mut self.days[2], [row], daily_day, true);
                         self.daily_keys.insert((
                             row.country,
                             row.instance,

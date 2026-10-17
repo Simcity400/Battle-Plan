@@ -186,6 +186,7 @@ impl Scan {
         frame_changes: &FrameChanges,
         places: bool,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("naval:series_observe");
         let details = &mut self.details;
         details.fleet_reads.through(frame.hour);
         details.ship_reads.through(frame.hour);
@@ -201,10 +202,14 @@ impl Scan {
         {
             details.census_reads.event(0, frame.hour, &frame.hour)?;
         }
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:sinkings_apply");
         let reads = details.ships.scan.ship_reads.len();
         let changes = details
             .ships
             .prepare(source.replay_ref().format, frame, frame_changes);
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:losses_projection_series");
         let changed = !changes.is_empty();
         let unavailable;
         let retention = if let Some(retention) = &mut details.retention {
@@ -227,6 +232,8 @@ impl Scan {
             retention,
             cancelled,
         )?;
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:presentation_projection_series");
         details.sinking_titles.observe_read(
             source,
             context,
@@ -310,8 +317,12 @@ impl Scan {
         if details.ships.scan.ship_reads.len() != reads {
             details.ship_reads.event(0, frame.hour, &frame.hour)?;
         }
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:pruning");
         details.ships.scan.ship_reads.clear();
         details.ships.scan.convoy_reads.clear();
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("naval:fleet_projection_series");
         // Equal acquisitions still supply census/read proof above, but cannot
         // change this fixed-content name projection. Rebuild only changed rows.
         if !details.fleet_inputs_changed(frame, frame_changes) {
@@ -458,6 +469,7 @@ impl Scan {
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("naval:series_flush");
         self.extend_results();
         let windows = windows(replay, branch);
         let window = &windows[ordinal];
@@ -474,6 +486,8 @@ impl Scan {
             0,
             cancelled,
         )?;
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("naval:window_projection_series");
         let mut changed = BTreeSet::from([ordinal]);
         for &index in &self.dirty {
             check_cancel(cancelled)?;
@@ -522,6 +536,8 @@ impl Scan {
                 &self.window_records(window).reply_window(at, window)?,
             )?;
         }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("naval:series_flush");
         let details = &mut self.details;
         details.ships.finish_prepared(window.last_hour);
         details
@@ -546,6 +562,7 @@ impl Scan {
             0,
             cancelled,
         )?;
+        let cpu = ::replay::cpu::scope_phase("naval:sinking_log_projection_series");
         details.sinking_log.publish(
             replay,
             writer,
@@ -565,6 +582,7 @@ impl Scan {
                 .as_mut()
                 .map(|retention| retention.update(&details.ships.scan)),
         )?;
+        drop(cpu);
         for (combat, mut rows) in std::mem::take(&mut details.pending_named) {
             let next = details.ship_pages.len() as u64;
             let page = *details.ship_pages.entry(combat.to_string()).or_insert(next);

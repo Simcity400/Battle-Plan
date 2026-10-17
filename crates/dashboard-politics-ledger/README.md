@@ -57,9 +57,12 @@ them only from the first item that demanded the power content.
 Daily gain and cost publications join from their changed owners when the
 recorded deltas are available: those owners' daily keys, applications, wrapping
 cost sums and reconciliation counts are replaced, and other owners retain
-their indexes and deferred coverage. Recorded cost keys are pruned again only
-after a nonempty cost delta or a read whose rows may all have changed; an equal
-cost acquisition keeps the previous prune. Rebuilt tables, changes to census keys,
+their indexes and deferred coverage. Daily key membership follows recorded key
+changes, and a counted native-day index supplies the newest daily settlement.
+Recorded cost keys are pruned only for owners whose occurrence identities may
+have changed; amount and presentation edits keep the previous prune. Unresolved
+power and cost rows are replaced through the observed owners' key ranges.
+Rebuilt tables, changes to census keys,
 links or the dictionary, and incomplete reads whose former rows must be
 removed use the whole-table join. Each country's presented payments share
 indexes of their source identities, item definitions, categories and row

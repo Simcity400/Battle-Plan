@@ -1065,8 +1065,8 @@ fn stability_and_parts_observe_an_hours_changed_rows_as_its_whole_tables() {
             TableView::Complete(TableRows::CountryStabilityLines(
                 (0..COUNT)
                     .flat_map(|index| {
-                        [(0, 10_000), (1, 5_000 + 1_000 * (day(index) % 2))].map(
-                            |(line, value)| CountryStabilityLineRow {
+                        [(0, 10_000), (1, 5_000 + 1_000 * (day(index) % 2))].map(|(line, value)| {
+                            CountryStabilityLineRow {
                                 country: 100_000 + index,
                                 line,
                                 key: 0x8d,
@@ -1074,8 +1074,8 @@ fn stability_and_parts_observe_an_hours_changed_rows_as_its_whole_tables() {
                                 identity: format!("mod/line{line}").into_bytes(),
                                 value,
                                 ..Default::default()
-                            },
-                        )
+                            }
+                        })
                     })
                     .collect(),
             ));

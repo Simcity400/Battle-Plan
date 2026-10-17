@@ -2,6 +2,33 @@
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
 
+static COST_IDENTITY_FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    dashboard_base::prepared::frame_changes::field_mask(
+        TableId::CountryPowerDailyCosts,
+        &["instance", "epoch", "day_hour"],
+    )
+});
+
+/// Remove only the observed owners' unresolved rows, whose recorded keys
+/// lead with their country. Returns the keys visited.
+pub(super) fn remove_pending(
+    keys: &mut BTreeSet<u128>,
+    owners: &BTreeSet<u32>,
+    shift: u32,
+) -> usize {
+    let mut visits = 0;
+    for &owner in owners {
+        let first = u128::from(owner) << shift;
+        let last = first | ((1_u128 << shift) - 1);
+        let removed: Vec<_> = keys.range(first..=last).copied().collect();
+        visits += removed.len();
+        for key in removed {
+            keys.remove(&key);
+        }
+    }
+    visits
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Clock {
     pub through: Option<i32>,
@@ -145,12 +172,18 @@ impl Scanned {
         #[cfg(test)]
         let pending = pending.filter(|_| !self.whole_tables);
         Arc::make_mut(&mut self.inputs).refresh_changes(frame, changes, pending);
-        // An equal acquisition keeps the cost keys. A nonempty delta or a
-        // read whose rows may all have changed requires another prune.
+        // Cost amounts and presentation operands do not change the retained
+        // identities. Additions cannot remove one either; deletions and edits
+        // to the occurrence's identity can, as can a whole-table read.
         if self.inputs.costs_changed
             && changes
                 .rows(TableId::CountryPowerDailyCosts)
-                .is_none_or(|(changed, deleted)| !changed.is_empty() || !deleted.is_empty())
+                .is_none_or(|(changed, deleted)| {
+                    !deleted.is_empty()
+                        || changed
+                            .iter()
+                            .any(|row| row.mask & *COST_IDENTITY_FIELDS != 0)
+                })
         {
             self.costs_pruned = false;
         }
@@ -482,8 +515,8 @@ impl Scanned {
                 inputs.observed(0).copied().collect(),
                 inputs.observed(3).copied().collect(),
             ];
-            self.pending[0].retain(|key| !observed[0].contains(&((key >> 64) as u32)));
-            self.pending[1].retain(|key| !observed[1].contains(&((key >> 32) as u32)));
+            remove_pending(&mut self.pending[0], &observed[0], 64);
+            remove_pending(&mut self.pending[1], &observed[1], 32);
         } else {
             self.pending = Default::default();
         }

@@ -348,6 +348,20 @@ reads sum the last 24 complete intervals with wide arithmetic. Missing or
 ambiguous gains, instance changes and identity gaps break that day. Quiet spans
 advance the frontier without visiting countries. The saved runs and recent
 banked reads resume with the observer; runtime joins rebuild from the first frame.
+Banked and gain row deltas join only their affected slots, including every raw
+alias of each slot. Several rows resolving to one slot remain unknown. Rebuilt
+tables, link changes and availability transitions use the whole join; banked
+rows are read directly from the accepted frame without retaining another copy.
+
+Prepared production spending projects a holder's equipment inventory only when
+its units or cost version, identity, continuity or scope refusal changes. Equal
+versions retain their active numeric keys without visiting their variants.
+Certified quiet spans and unchanged hourly ingests carry current holder cache
+proofs through the accepted frontier without projecting their inventories.
+Removed holders close their own keys. The runtime projection rebuilds after
+restore and reconciles all saved active keys once; rockets without inventory
+versions project on every observation. Published values and continuation layouts
+use the same keys and series.
 
 ## Country identity history
 

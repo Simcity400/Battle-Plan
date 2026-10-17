@@ -20,6 +20,13 @@ The shared recording contract: rows, tables, frames, sample provenance, branches
 | [acceptance.rs](src/acceptance.rs) | Synthetic capture/recovery campaign; `DOMAIN_TABLES` and direct fixtures cover every table exactly once. |
 | [cpu.rs](src/cpu.rs) | Measurement-only thread CPU by (category, family) label, section decodes by block and table, and reconstructed table-hours; off unless a harness (the dashboard readiness probe) enables it, and never changes what is read. |
 
+CPU phase scopes name `family:phase` and inherit their caller's category, so
+shared observers keep extract, fold and commit work separate. A phase containing
+both projection and series calls names both. Scopes surround whole phases,
+holder loops or presentation workers, with no per-row accounting; the disabled
+path reads only the measurement flag. Family totals sum the base family and
+its phase labels within the same category.
+
 Code owns versions, TableIds, field counts, lifetimes and cadence; keep catalogs out of prose. Shared rules live in [AGENTS.md](../../AGENTS.md).
 
 ## Values, availability and freshness

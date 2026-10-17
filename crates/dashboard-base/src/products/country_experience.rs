@@ -288,7 +288,6 @@ struct Native {
     slots: BTreeMap<u32, Vec<(u32, u32)>>,
     removed: Vec<(String, (u32, u32))>,
     roster_changed: bool,
-    banked_rows: Option<Vec<replay::rows::CountryExperienceRow>>,
     /// The last complete gains read, held as the frame's own view.
     gain_rows: Option<replay::frame::SharedView>,
     /// The raw country ids `links` resolves to each slot.
@@ -300,62 +299,56 @@ struct Native {
     #[cfg(any(test, feature = "test-support"))]
     gain_updates: usize,
 }
-impl Native {
-    /// This hour's gains (`rows`) joined from the hour's recorded changes to
-    /// them, with the links and the hour before's gains held: only the slots
-    /// of the countries the changed and deleted rows name are joined again,
-    /// each from the rows of every country the links resolve to it, as the
-    /// whole join does (one row a slot, none for several). The slots whose
-    /// gains differ, which comparing the whole joins finds.
-    fn apply_gains(
-        &mut self,
-        rows: &[replay::rows::CountryExperienceGainRow],
-        (changed, deleted): (&[replay::rows::DeltaRow], &[u128]),
-    ) -> BTreeSet<u32> {
-        let slots: BTreeSet<u32> = changed
-            .iter()
-            .map(|row| row.key)
-            .chain(deleted.iter().copied())
-            .filter_map(|key| self.links.get(&((key >> 32) as u32)).copied())
-            .collect();
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.work.row_visits += changed.len();
+/// Replace the joins of changed owners only. Every raw alias of an affected
+/// slot participates, so duplicate rows leave that slot unknown as in the
+/// whole-table join. Returns the changed slots and rows visited.
+fn apply_experience_rows<R: Clone + PartialEq>(
+    rows: &[R],
+    (changed, deleted): (&[replay::rows::DeltaRow], &[u128]),
+    links: &std::collections::HashMap<u32, u32>,
+    link_countries: &BTreeMap<u32, Vec<u32>>,
+    held: &mut BTreeMap<u32, Option<R>>,
+    country: fn(&R) -> u32,
+    shift: u32,
+) -> (BTreeSet<u32>, usize) {
+    let slots: BTreeSet<u32> = changed
+        .iter()
+        .map(|row| row.key)
+        .chain(deleted.iter().copied())
+        .filter_map(|key| links.get(&((key >> shift) as u32)).copied())
+        .collect();
+    let mut visits = changed.len();
+    let mut dirty = BTreeSet::new();
+    for slot in slots {
+        let mut found = Vec::new();
+        for &raw in link_countries.get(&slot).into_iter().flatten() {
+            let first = rows.partition_point(|row| country(row) < raw);
+            let last = rows.partition_point(|row| country(row) <= raw);
+            found.extend(&rows[first..last]);
         }
-        let held = self.gains.as_mut().expect("held gains");
-        let mut dirty = BTreeSet::new();
-        for slot in slots {
-            let mut found = Vec::new();
-            for &raw in self.link_countries.get(&slot).into_iter().flatten() {
-                let first = rows.partition_point(|row| row.country < raw);
-                let last = rows.partition_point(|row| row.country <= raw);
-                found.extend(&rows[first..last]);
+        visits += found.len();
+        let next = match found.as_slice() {
+            [] => None,
+            [row] => Some(Some((*row).clone())),
+            _ => Some(None),
+        };
+        if held.get(&slot) == next.as_ref() {
+            continue;
+        }
+        dirty.insert(slot);
+        match next {
+            Some(row) => {
+                held.insert(slot, row);
             }
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.work.row_visits += found.len();
-            }
-            let next = match found.as_slice() {
-                [] => None,
-                [row] => Some(Some((*row).clone())),
-                _ => Some(None),
-            };
-            if held.get(&slot) == next.as_ref() {
-                continue;
-            }
-            dirty.insert(slot);
-            match next {
-                Some(row) => {
-                    held.insert(slot, row);
-                }
-                None => {
-                    held.remove(&slot);
-                }
+            None => {
+                held.remove(&slot);
             }
         }
-        dirty
     }
+    (dirty, visits)
+}
 
+impl Native {
     fn refresh(
         &mut self,
         frame: &replay::frame::DecodedFrame,
@@ -393,7 +386,9 @@ impl Native {
                     .and_then(|changes| changes.rows(TableId::Countries))
                     .is_some_and(|(changed, deleted)| {
                         deleted.is_empty()
-                            && changed.iter().all(|row| row.mask & *COUNTRY_KEY_FIELDS == 0)
+                            && changed
+                                .iter()
+                                .all(|row| row.mask & *COUNTRY_KEY_FIELDS == 0)
                     });
             #[cfg(any(test, feature = "test-support"))]
             if !kept {
@@ -458,13 +453,38 @@ impl Native {
             dirty.extend(self.identities.keys().map(|identity| identity.0));
         }
         let banked_changed = changed(TableId::CountryExperience);
+        let mut banked_applied = false;
         if banked_changed {
             let rows = frame.complete::<tables::CountryExperience>().ok();
-            #[cfg(any(test, feature = "test-support"))]
+            if !links_changed
+                && let (Some(rows), Some(delta), Some(held)) = (
+                    rows,
+                    changes.and_then(|changes| changes.rows(TableId::CountryExperience)),
+                    self.banked.as_mut(),
+                )
             {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                let (updated, visits) = apply_experience_rows(
+                    rows,
+                    delta,
+                    &self.links,
+                    &self.link_countries,
+                    held,
+                    |row| row.country,
+                    0,
+                );
+                dirty.extend(updated);
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += visits;
+                }
+                let _ = visits;
+                banked_applied = true;
+            } else {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
             }
-            self.banked_rows = rows.map(|rows| rows.to_vec());
         }
         let gains_changed = changed(TableId::CountryExperienceGains);
         let mut gains_applied = false;
@@ -480,7 +500,21 @@ impl Native {
                 )
                 && self.gains.is_some()
             {
-                dirty.extend(self.apply_gains(rows, changed));
+                let (updated, visits) = apply_experience_rows(
+                    rows,
+                    changed,
+                    &self.links,
+                    &self.link_countries,
+                    self.gains.as_mut().expect("held gains"),
+                    |row| row.country,
+                    32,
+                );
+                dirty.extend(updated);
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += visits;
+                }
+                let _ = visits;
                 gains_applied = true;
             } else {
                 #[cfg(any(test, feature = "test-support"))]
@@ -492,8 +526,9 @@ impl Native {
                 .is_some()
                 .then(|| frame.tables[TableId::CountryExperienceGains.index()].clone());
         }
-        if banked_changed || links_changed {
-            let next = self.banked_rows.as_ref().map(|rows| {
+        if !banked_applied && (banked_changed || links_changed) {
+            let rows = frame.complete::<tables::CountryExperience>().ok();
+            let next = rows.map(|rows| {
                 country_history::unique_by_slots(rows, &self.links, |row| row.country)
                     .rows
                     .into_iter()
