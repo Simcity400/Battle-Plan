@@ -82,13 +82,30 @@ fn historical_prefix_preserves_every_format99_icon_field() {
     decoder.recorded_fields = 14;
     let decoded = DivisionTemplateIconRow::decode_fields(row.key(), &mut decoder).unwrap();
     decoder.finish().unwrap();
+    assert_eq!(decoded.priority_unit, row.priority_unit);
+    assert_eq!(decoded.priority_unit_name, row.priority_unit_name);
+    assert_eq!(decoded.custom_icon, row.custom_icon);
+    assert_eq!(decoded.custom_icon_nato, row.custom_icon_nato);
+    assert_eq!(decoded.representative, row.representative);
+    assert_eq!(decoded.representative_local, row.representative_local);
+    assert_eq!(decoded.subunits, row.subunits);
+    assert_eq!(decoded.country, row.country);
+    assert_eq!(decoded.foreign_country, row.foreign_country);
+    assert_eq!(decoded.model_category, row.model_category);
+    assert_eq!(decoded.model_entity, row.model_entity);
+    assert_eq!(decoded.excluded_variants, row.excluded_variants);
+    assert_eq!(decoded.model_unreadable, row.model_unreadable);
     assert_eq!(
         decoded.formation_division_count,
         row.formation_division_count
     );
-    assert_eq!(decoded.priority_unit_name, row.priority_unit_name);
     assert_eq!(decoded.display_name, Recorded::NotRecorded);
-    assert_eq!(decoded.not_recorded_fields(), 1 << 14);
+    let absent = DivisionTemplateIconRow::NAMES
+        .iter()
+        .enumerate()
+        .skip(14)
+        .fold(0_u64, |mask, (field, _)| mask | (1_u64 << field));
+    assert_eq!(decoded.not_recorded_fields(), absent);
 }
 
 #[test]

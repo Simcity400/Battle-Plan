@@ -613,13 +613,13 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
 #[test]
 fn kept_only_tables_have_no_reconstructed_views() {
     let replay = fixture();
-    let own = [TableId::Campaign, TableId::Clock];
+    let own = own(Watching::Every(&[TableId::Campaign, TableId::Clock]));
     let extra = [
         TableId::Countries,
         TableId::SunkShips,
         TableId::WorldTension,
     ];
-    let selected: Vec<TableId> = own.into_iter().chain(extra).collect();
+    let selected: Vec<TableId> = own.iter().copied().chain(extra).collect();
     for index in &replay.index {
         let mut log = Log::default();
         {
@@ -679,7 +679,7 @@ fn clock_hours_keep_no_change_only_division_updates_in_either_layout() {
     }
     let grouped = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
     let interleaved = interleaved_copy(&grouped);
-    let clock_tables = [TableId::Campaign, TableId::Clock];
+    let clock_tables = own(Watching::Every(&[TableId::Clock]));
     let fields = [TableFields::named(TableId::Divisions, &["province"]).unwrap()];
     for replay in [&grouped, &interleaved] {
         for index in &replay.index {

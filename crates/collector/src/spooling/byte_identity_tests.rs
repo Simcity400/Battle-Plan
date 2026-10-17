@@ -1,13 +1,14 @@
 //! Spool bytes of a fixed synthetic campaign driven through the spool path.
 //!
-//! `EXPECTED_DIGEST` is the spool of format 102 (arrival-time,
+//! `EXPECTED_DIGEST` is the spool of format 103 (arrival-time,
 //! attrition-breakdown and the selected transport and route preview inputs
 //! retired; the selected-attack operands replaced by the inputs playback
 //! derives them from, such as Provinces' `fort_bunker`; the hover-only and
 //! oracle-only tables refused as retired; with the naval hover source trees,
 //! the region air combat records, the controller areas, the combat sides'
 //! inputs, ship experience, the nuclear strike table, the battle sound list,
-//! template grids and land combat participant classes), and the
+//! template grids, land combat participant classes, and the operative and
+//! resource-route inputs), and the
 //! comparison stage, conversion helpers and thread
 //! restructuring (phase accounting, event-driven wake-ups, the persistent
 //! durability worker) reproduce it. The campaign runs with
@@ -29,7 +30,9 @@ use replay::{
 const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
 /// FNV-1a 64 over every spool segment's bytes in segment order.
-const EXPECTED_DIGEST: u64 = 0x6df6_c3c6_5ce4_1b1d;
+// The operative map tables (#541), then the format-103 resource-route
+// tables (#542), deliberately expanded the spool's table set and framing.
+const EXPECTED_DIGEST: u64 = 0x9f61_7fc0_4fb5_e5d1;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {
