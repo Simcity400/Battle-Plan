@@ -45,6 +45,8 @@ pub(super) struct Inputs {
     pub identity_slots: BTreeSet<u32>,
     identity_countries: BTreeSet<u32>,
     raw_slots: BTreeMap<u32, BTreeSet<u32>>,
+    /// Native countries with one census row, one slot and one tag, without aliases.
+    unique_countries: BTreeSet<u32>,
     /// Row positions by country; none after a table changed by its rows,
     /// whose decoded rows ascend by key and so by country.
     power_index: Option<Index>,
@@ -69,6 +71,8 @@ pub(super) struct Inputs {
     sum_counts: BTreeMap<(u32, u32, u64, i32, u64), usize>,
     #[cfg(test)]
     pub aggregate_visits: usize,
+    #[cfg(test)]
+    pub window_visits: usize,
     /// The countries with a daily political gain at each hour.
     mutation_hours: BTreeMap<i32, BTreeSet<u32>>,
     /// The countries whose [power, government] rows changed this hour, when
@@ -84,6 +88,10 @@ pub(super) struct Inputs {
     /// the hour, each with its first hour, by country: none after a join of
     /// the whole tables.
     pub advanced: Vec<(u32, i32)>,
+    /// This read slid captures by one hour, in country order, each with its
+    /// width relative to the hour; fixed-start certificates cannot describe it.
+    pub windows: Vec<(u32, i64)>,
+    window: Option<(Arc<WindowAdvance>, i32)>,
     /// Captures extended to an hour by [`Self::refresh_advanced`] whose
     /// witnesses still hold the last hour before: the captures and the hour
     /// they reached. [`Self::materialize_advance`] moves them there.
@@ -187,6 +195,142 @@ fn advances(old: &PoliticsCaptureCoverageRow, row: &PoliticsCaptureCoverageRow, 
         && row.through_hour == hour
 }
 
+/// Remove the moving windows' old boundaries before inserting any new one:
+/// the starts have already taken effect, so only the next expiry is scheduled.
+fn shift_deadlines(
+    deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
+    shifted: &[(u32, i32, i32)],
+    hour: i32,
+) {
+    let _cpu = ::replay::cpu::scope_phase("politics_ledger:capture_windows");
+    let Some(&(.., first, _)) = shifted.first() else {
+        return;
+    };
+    let last = hour
+        .checked_sub(1)
+        .expect("a window continued the prior hour");
+    // A common recorded window moves all its countries together. Reuse its
+    // expiry set instead of removing and reinserting each country at each end.
+    if shifted.iter().all(|&(_, old, _)| old == first)
+        && deadlines.get(&hour).is_some_and(|due| {
+            due.len() == shifted.len()
+                && due.iter().zip(shifted).all(|(raw, moved)| *raw == moved.0)
+        })
+    {
+        let mut moving = deadlines.remove(&hour).unwrap();
+        for at in [first, last] {
+            if let Some(rows) = deadlines.get_mut(&at) {
+                if *rows == moving {
+                    deadlines.remove(&at);
+                } else {
+                    rows.retain(|raw| !moving.contains(raw));
+                    if rows.is_empty() {
+                        deadlines.remove(&at);
+                    }
+                }
+            }
+        }
+        if let Some(next) = hour.checked_add(1) {
+            deadlines.entry(next).or_default().append(&mut moving);
+        }
+    } else {
+        for &(raw, old, _) in shifted {
+            unschedule(deadlines, raw, &[Some(old), Some(last), Some(hour)]);
+        }
+        for &(raw, _, _) in shifted {
+            schedule(deadlines, raw, &[None, hour.checked_add(1), None]);
+        }
+    }
+}
+
+/// Countries whose capture starts and ends move together. Widths are relative
+/// to the accepted hour, so consecutive windows share one certificate.
+pub(super) struct WindowAdvance {
+    pub captures: Vec<(u32, i64)>,
+    countries: BTreeSet<u32>,
+    starts: BTreeMap<i64, BTreeSet<u32>>,
+}
+
+impl WindowAdvance {
+    pub fn new(captures: Vec<(u32, i64)>) -> Self {
+        let mut starts = BTreeMap::<_, BTreeSet<_>>::new();
+        for &(raw, width) in &captures {
+            starts.entry(width).or_default().insert(raw);
+        }
+        Self {
+            countries: captures.iter().map(|&(raw, _)| raw).collect(),
+            captures,
+            starts,
+        }
+    }
+
+    pub fn contains(&self, raw: &u32) -> bool {
+        self.countries.contains(raw)
+    }
+
+    fn shift(&self, deadlines: &mut BTreeMap<i32, BTreeSet<u32>>, hour: i32, carried: bool) {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_expiry_changes");
+        let before = hour
+            .checked_sub(1)
+            .expect("a window continued the prior hour");
+        // Starts at or before this hour have already taken effect. As with
+        // a fixed-start extension's old last hour, do not schedule them again:
+        // a zero-width window would otherwise reselect every country now.
+        if !carried {
+            for (&width, countries) in &self.starts {
+                let since =
+                    i32::try_from(i64::from(hour) - width).expect("certified capture start");
+                let old = since
+                    .checked_sub(1)
+                    .expect("a capture start moved by one hour");
+                take_deadline_members(deadlines, old, countries, false);
+            }
+            take_deadline_members(deadlines, before, &self.countries, false);
+        }
+        let mut moving = take_deadline_members(deadlines, hour, &self.countries, carried)
+            .unwrap_or_else(|| self.countries.clone());
+        if let Some(next) = hour.checked_add(1) {
+            deadlines.entry(next).or_default().append(&mut moving);
+        }
+    }
+}
+
+/// A carried certificate already inserted these members. An otherwise empty
+/// bucket can move whole; mixed buckets retain only the other boundaries.
+fn take_deadline_members(
+    deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
+    hour: i32,
+    members: &BTreeSet<u32>,
+    carried: bool,
+) -> Option<BTreeSet<u32>> {
+    let rows = deadlines.get_mut(&hour)?;
+    if rows.len() == members.len() && (carried || rows == members) {
+        return deadlines.remove(&hour);
+    }
+    rows.retain(|raw| {
+        #[cfg(test)]
+        WINDOW_DEADLINE_VISITS.with(|visits| visits.set(visits.get() + 1));
+        !members.contains(raw)
+    });
+    if rows.is_empty() {
+        deadlines.remove(&hour);
+    }
+    None
+}
+
+impl dashboard_base::prepared::prepass::Held for WindowAdvance {
+    fn held(&self, held: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        held.heap(&self.captures)
+            .heap(&self.countries)
+            .heap(&self.starts);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static WINDOW_DEADLINE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Move the deadlines of the captures that advanced to `hour` (each country
 /// with its first hour, in country order) exactly as unscheduling each one's
 /// old hours and scheduling its first hour and its next expiry does, one
@@ -283,6 +427,7 @@ impl dashboard_base::prepared::prepass::Held for Inputs {
             .heap(&self.identity_slots)
             .heap(&self.identity_countries)
             .heap(&self.raw_slots)
+            .heap(&self.unique_countries)
             .heap(&self.power_index)
             .heap(&self.government_index)
             .heap(&self.daily_index)
@@ -301,6 +446,8 @@ impl dashboard_base::prepared::prepass::Held for Inputs {
             .heap(&self.accounting)
             .heap(&self.days)
             .heap(&self.advanced)
+            .heap(&self.windows)
+            .heap(&self.window)
             .heap(&self.deferred);
     }
 }
@@ -437,8 +584,8 @@ impl Inputs {
     /// Whether this hour was joined from its changed rows and they join no
     /// country: no census, link, capture identity, power, government,
     /// allocation, completeness, daily gain or naming change selects one,
-    /// and no row is observed again. Its captures at most extend their
-    /// intervals to the hour.
+    /// and no row is observed again. Its captures extend or slide to the
+    /// hour without changing any accounting operand.
     pub(super) fn joins_nothing(&self) -> bool {
         self.narrow
             && !self.countries_changed
@@ -473,6 +620,7 @@ impl Inputs {
         };
         self.materialize_advance();
         self.advanced.clear();
+        self.windows.clear();
         self.narrow = false;
         self.changed_rows = None;
         self.accounting = None;
@@ -566,6 +714,9 @@ impl Inputs {
             for (&raw, &slot) in &self.links {
                 self.raw_slots.entry(slot).or_default().insert(raw);
             }
+        }
+        if self.countries_changed || links {
+            self.join_unique_countries();
         }
         let coverage = read(TableId::PoliticsCaptureCoverage);
         if coverage {
@@ -1012,6 +1163,7 @@ impl Inputs {
         self.countries_changed = false;
         let links = read(TableId::CountryLinks);
         let coverage_read = read(TableId::PoliticsCaptureCoverage);
+        let capture_cpu = ::replay::cpu::scope_phase("politics_ledger:capture_join");
         for &key in coverage.1 {
             let raw = key as u32;
             if let Some(old) = self.witnesses.remove(&raw) {
@@ -1024,12 +1176,15 @@ impl Inputs {
         // after this one: every such capture's together
         // ([`advance_deadlines`]).
         let mut advanced = Vec::new();
+        let mut shifted = Vec::new();
         for row in captures {
             let raw = row.country;
+            let unique = self.unique_countries.contains(&raw);
             if let Some(old) = self.witnesses.get_mut(&raw) {
                 // No power row dated after the old interval: the extension adds
                 // no event, daily gain or unknown addition to it.
-                if advances(old, row, frame.hour)
+                if unique
+                    && advances(old, row, frame.hour)
                     && self
                         .latest_power
                         .get(&raw)
@@ -1045,6 +1200,42 @@ impl Inputs {
                     }
                     continue;
                 }
+                // Moving a start by one hour drops only its old first hour.
+                // Unknown additions require their full counted recheck; a
+                // daily gain there can change spending completeness. All
+                // other operands and every old coverage run keep their value.
+                if unique
+                    && (old.instance, old.epoch, old.streams)
+                        == (row.instance, row.epoch, row.streams)
+                    && old.since_hour.checked_add(1) == Some(row.since_hour)
+                    && old.through_hour.checked_add(1) == Some(row.through_hour)
+                    && row.through_hour == frame.hour
+                    && row.since_hour <= frame.hour
+                    && self
+                        .latest_power
+                        .get(&raw)
+                        .is_none_or(|&at| at <= old.through_hour)
+                    && self
+                        .unknown_additions
+                        .get(&raw)
+                        .is_none_or(BTreeMap::is_empty)
+                    && !self
+                        .daily_mutations
+                        .get(&raw)
+                        .is_some_and(|hours| hours.contains(&old.since_hour))
+                {
+                    shifted.push((raw, old.since_hour, row.since_hour));
+                    old.since_hour = row.since_hour;
+                    old.through_hour = row.through_hour;
+                    if let Some(slot) = self.links.get(&raw)
+                        && let Some(witness) = self.by_slot.get_mut(slot)
+                        && witness.country == raw
+                    {
+                        witness.since_hour = row.since_hour;
+                        witness.through_hour = row.through_hour;
+                    }
+                    continue;
+                }
                 unschedule(&mut self.deadlines, raw, &witness_hours(old));
             }
             schedule(&mut self.deadlines, raw, &witness_hours(row));
@@ -1053,7 +1244,14 @@ impl Inputs {
         }
         advanced.sort_unstable_by_key(|&(raw, _)| raw);
         advance_deadlines(&mut self.deadlines, &advanced, frame.hour, false);
+        shifted.sort_unstable_by_key(|&(raw, _, _)| raw);
+        shift_deadlines(&mut self.deadlines, &shifted, frame.hour);
+        self.windows = shifted
+            .iter()
+            .map(|&(raw, _, since)| (raw, i64::from(frame.hour) - i64::from(since)))
+            .collect();
         self.advanced = advanced;
+        drop(capture_cpu);
         self.identity_slots.extend(
             self.identity_countries
                 .iter()
@@ -1400,12 +1598,12 @@ impl Inputs {
         changes: &FrameChanges,
         advanced: &Arc<[(u32, i32)]>,
     ) {
-        let read = |table: TableId| {
-            changes.rows_changed[table.index()] || changes.table_read[table.index()]
-        };
         // The prior advance inserted every one of these captures into this
         // hour's expiry bucket. With the same membership and bucket size no
         // key comparison is needed; extra fixed deadlines still take the join.
+        if self.window.is_some() {
+            self.materialize_advance();
+        }
         let carried = self.deferred.as_ref().is_some_and(|(deferred, through)| {
             Arc::ptr_eq(deferred, advanced) && through.checked_add(1) == Some(frame.hour)
         });
@@ -1417,8 +1615,19 @@ impl Inputs {
         {
             self.materialize_advance();
         }
+        advance_deadlines(&mut self.deadlines, advanced, frame.hour, carried);
+        self.deferred = Some((Arc::clone(advanced), frame.hour));
+        self.carry_views(frame, changes);
+    }
+
+    /// The empty selection and retained views shared by both capture proofs.
+    fn carry_views(&mut self, frame: &DecodedFrame, changes: &FrameChanges) {
+        let read = |table: TableId| {
+            changes.rows_changed[table.index()] || changes.table_read[table.index()]
+        };
         self.narrow = true;
         self.advanced.clear();
+        self.windows.clear();
         self.touched = Default::default();
         self.slots.clear();
         self.previous_tags.clear();
@@ -1427,8 +1636,6 @@ impl Inputs {
         self.countries_changed = false;
         let links = read(TableId::CountryLinks);
         let coverage_read = read(TableId::PoliticsCaptureCoverage);
-        advance_deadlines(&mut self.deadlines, advanced, frame.hour, carried);
-        self.deferred = Some((Arc::clone(advanced), frame.hour));
         self.identity_changed = links || coverage_read;
         self.power_changed = read(TableId::CountryPowerChanges);
         self.governments_changed = read(TableId::GovernmentChanges);
@@ -1470,9 +1677,55 @@ impl Inputs {
             .any(read);
     }
 
+    /// Apply a worker-certified sliding window, carrying deadline membership
+    /// and deferring witness writes until the next join reads them.
+    pub(super) fn refresh_window(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        window: &Arc<WindowAdvance>,
+    ) {
+        let carried = self.window.as_ref().is_some_and(|(held, through)| {
+            Arc::ptr_eq(held, window) && through.checked_add(1) == Some(frame.hour)
+        });
+        if self.deferred.is_some()
+            || self
+                .window
+                .as_ref()
+                .is_some_and(|(held, _)| !Arc::ptr_eq(held, window))
+        {
+            self.materialize_advance();
+        }
+        window.shift(&mut self.deadlines, frame.hour, carried);
+        self.window = Some((Arc::clone(window), frame.hour));
+        self.carry_views(frame, changes);
+    }
+
     /// Move the deferred captures' witnesses to the last hour they reached,
     /// as each hour's join from its changed rows moves them.
     pub(super) fn materialize_advance(&mut self) {
+        if let Some((window, through)) = self.window.take() {
+            let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_witnesses");
+            for &(raw, width) in &window.captures {
+                #[cfg(test)]
+                {
+                    self.window_visits += 1;
+                }
+                let since =
+                    i32::try_from(i64::from(through) - width).expect("certified capture start");
+                if let Some(witness) = self.witnesses.get_mut(&raw) {
+                    witness.since_hour = since;
+                    witness.through_hour = through;
+                }
+                if let Some(slot) = self.links.get(&raw)
+                    && let Some(witness) = self.by_slot.get_mut(slot)
+                    && witness.country == raw
+                {
+                    witness.since_hour = since;
+                    witness.through_hour = through;
+                }
+            }
+        }
         let Some((advanced, through)) = self.deferred.take() else {
             return;
         };
@@ -1491,7 +1744,7 @@ impl Inputs {
 
     /// Whether captures are deferred ([`Self::refresh_advanced`]).
     pub(super) fn deferred(&self) -> bool {
-        self.deferred.is_some()
+        self.deferred.is_some() || self.window.is_some()
     }
 
     /// Whether, once `advanced` (in country order) extended to `hour` and
@@ -1522,6 +1775,8 @@ impl Inputs {
     pub(super) fn same_join(&self, other: &Self) -> bool {
         self.deferred.is_none()
             && other.deferred.is_none()
+            && self.window.is_none()
+            && other.window.is_none()
             && self.countries == other.countries
             && self.census == other.census
             && self.naming_ids == other.naming_ids
@@ -1545,6 +1800,7 @@ impl Inputs {
             && self.daily_keys == other.daily_keys
             && self.cost_keys == other.cost_keys
             && self.raw_slots == other.raw_slots
+            && self.unique_countries == other.unique_countries
             && self.character_slots == other.character_slots
             && self.command == other.command
             && self.complete == other.complete
@@ -1554,6 +1810,31 @@ impl Inputs {
             && self.latest_power == other.latest_power
             && self.mutation_hours == other.mutation_hours
             && self.days == other.days
+    }
+
+    /// Coverage and holds are stored by tag, while accounting visits slots.
+    /// Shared tags or aliases can append rows even when each native witness
+    /// only advances. Cache the one-to-one joins when census or links change.
+    fn join_unique_countries(&mut self) {
+        let mut slots = BTreeMap::<_, usize>::new();
+        let mut tags = BTreeMap::<_, usize>::new();
+        for row in &self.census {
+            *slots.entry(row.canonical_slot).or_default() += 1;
+            *tags.entry(row.tag.as_slice()).or_default() += 1;
+        }
+        self.unique_countries = self
+            .countries
+            .values()
+            .filter(|row| {
+                slots[&row.canonical_slot] == 1
+                    && tags[row.tag.as_slice()] == 1
+                    && self
+                        .raw_slots
+                        .get(&row.canonical_slot)
+                        .is_some_and(|raws| raws.len() == 1 && raws.contains(&row.id))
+            })
+            .map(|row| row.id)
+            .collect();
     }
 
     /// Each identity slot's capture: that of its last linked country with one.
@@ -2078,6 +2359,109 @@ mod tests {
             |key| (key >> 64) as u32,
         );
         assert_eq!(positions, [0, 2, 3]);
+    }
+
+    fn window_one_at_a_time(
+        deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
+        shifted: &[(u32, i32, i32)],
+        hour: i32,
+    ) {
+        for &(raw, old, _) in shifted {
+            unschedule(
+                deadlines,
+                raw,
+                &[Some(old), hour.checked_sub(1), Some(hour)],
+            );
+        }
+        for &(raw, _, _) in shifted {
+            schedule(deadlines, raw, &[None, None, hour.checked_add(1)]);
+        }
+    }
+
+    #[test]
+    fn sliding_windows_move_only_their_boundaries_including_zero_width_and_integer_edges() {
+        for (hour, widths) in [
+            (50, vec![0, 0, 0]),
+            (50, vec![0, 1, 17]),
+            (i32::MIN + 1, vec![0]),
+            (i32::MAX, vec![0, 1, 17]),
+        ] {
+            let shifted: Vec<_> = widths
+                .iter()
+                .enumerate()
+                .map(|(at, &width)| {
+                    let since = hour - width;
+                    (at as u32 + 1, since - 1, since)
+                })
+                .collect();
+            let window = WindowAdvance::new(
+                shifted
+                    .iter()
+                    .map(|&(raw, _, since)| (raw, i64::from(hour) - i64::from(since)))
+                    .collect(),
+            );
+            let mut original = BTreeMap::new();
+            for &(raw, old, _) in &shifted {
+                schedule(&mut original, raw, &[Some(old), Some(hour - 1), Some(hour)]);
+            }
+            // Other countries can share every boundary being moved.
+            for at in [hour - 1, hour, hour.saturating_add(1)] {
+                original.entry(at).or_default().insert(99);
+            }
+            let mut expected = original.clone();
+            window_one_at_a_time(&mut expected, &shifted, hour);
+            let mut ordinary = original.clone();
+            shift_deadlines(&mut ordinary, &shifted, hour);
+            let mut certified = original;
+            window.shift(&mut certified, hour, false);
+            assert_eq!(ordinary, expected, "ordinary {hour}");
+            assert_eq!(certified, expected, "certificate {hour}");
+        }
+    }
+
+    fn assert_carried_windows(count: u32) {
+        let window = WindowAdvance::new((1..=count).map(|raw| (raw, i64::from(raw % 3))).collect());
+        let mut deadlines = BTreeMap::new();
+        for &(raw, width) in &window.captures {
+            let since = 20 - width as i32;
+            schedule(&mut deadlines, raw, &[Some(since), Some(20), Some(21)]);
+        }
+        for hour in 21..=28 {
+            let shifted: Vec<_> = window
+                .captures
+                .iter()
+                .map(|&(raw, width)| {
+                    let since = hour - width as i32;
+                    (raw, since - 1, since)
+                })
+                .collect();
+            let mut expected = deadlines.clone();
+            window_one_at_a_time(&mut expected, &shifted, hour);
+            let before = WINDOW_DEADLINE_VISITS.with(std::cell::Cell::get);
+            window.shift(&mut deadlines, hour, hour > 21);
+            assert_eq!(deadlines, expected, "hour {hour}");
+            if hour > 21 {
+                assert_eq!(
+                    WINDOW_DEADLINE_VISITS.with(std::cell::Cell::get),
+                    before,
+                    "a carried window must not revisit its {count} countries"
+                );
+            }
+            // A bucket at the former last hour containing only other countries
+            // must not be mistaken for moving members just because sizes match.
+            deadlines.insert(hour, (count + 1..=count * 2).collect());
+        }
+    }
+
+    #[test]
+    fn sliding_windows_carry_expiry_membership_without_revisiting_countries() {
+        assert_carried_windows(8);
+    }
+
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn sliding_windows_carry_5000_countries_without_revisiting_expiry_membership() {
+        assert_carried_windows(5000);
     }
 
     /// Each advancing capture's old hours unscheduled and its first hour and

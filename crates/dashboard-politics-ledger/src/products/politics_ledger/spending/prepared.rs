@@ -681,7 +681,7 @@ impl Prepared {
     /// ([`BlockFacts`]), with what it folded of the block so far (`fold`).
     /// The block's first hour is observed; when the join it leaves is the
     /// worker's after that hour, every later hour the worker certified (its
-    /// changed captures only extend to it and nothing else joins a country)
+    /// changed captures only extend or slide to it and nothing else joins a country)
     /// that only advances captures here too
     /// ([`Scanned::certified_advance`]) takes the advance path without
     /// joining its captures, which the certificate names
@@ -720,6 +720,31 @@ impl Prepared {
             )
         {
             return self.observe_certified(frame, content.as_deref(), changes, &advanced);
+        }
+        if joined
+            && let Some(window) = fold.window(frame.hour)
+            && !self.dense()
+            && self.scan.certified_window(
+                frame,
+                changes,
+                &window,
+                self.day_tags
+                    .first_key_value()
+                    .is_some_and(|(hour, _)| *hour <= frame.hour),
+            )
+        {
+            let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_window");
+            self.scan.advance(frame.hour)?;
+            self.series.advance(frame.hour)?;
+            self.metadata.first.get_or_insert(frame.hour);
+            self.metadata.last = Some(frame.hour);
+            self.scan.inputs_window(frame, changes, &window);
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.paths[0] += 1;
+                self.folds[0] += 1;
+            }
+            return self.observe_advance(frame, content.as_deref(), changes);
         }
         self.observe_changed_frame(frame, content.as_deref(), changes, cancelled)
     }
@@ -2303,9 +2328,10 @@ pub const BLOCK_TABLES: &[TableId] = &[
 /// ledger's own join does ([`BLOCK_TABLES`], with the change facts of the
 /// block alone, which are the observer's), and none of the ledger's
 /// accounting. At an hour it certifies, its join from the hour's changed
-/// rows extends at least one capture to the hour, every changed capture
-/// only extends (same identity, first hour and streams, no power row dated
-/// after its old last hour), and nothing else joins a country: no census,
+/// rows extends or slides captures to the hour without changing accounting
+/// operands (same identity and streams, no power row entering at the new end,
+/// no unknown addition or daily gain dropped at a sliding start). A span
+/// contains only fixed starts or only sliding starts. Nothing else joins a country: no census,
 /// link, capture, power, government, allocation, completeness, daily gain
 /// or dictionary change. With none of the rows not yet recorded as events,
 /// which are the observer's own, observed again. A join's state after an
@@ -2319,6 +2345,8 @@ pub struct BlockFacts {
     /// first and last hour and the captures, each with its first hour, in
     /// country order.
     spans: Vec<(i32, i32, Arc<[(u32, i32)]>)>,
+    /// Consecutive certified hours with the same sliding widths and membership.
+    windows: Vec<(i32, i32, Arc<inputs::WindowAdvance>)>,
 }
 
 /// A fresh join of one block on a pre-pass worker ([`BlockFacts`]).
@@ -2336,6 +2364,7 @@ pub fn block_extract(_: replay::format::FormatVersion) -> Box<dyn Extract> {
         facts: BlockFacts {
             first: None,
             spans: Vec::new(),
+            windows: Vec::new(),
         },
     })
 }
@@ -2351,7 +2380,10 @@ impl Extract for BlockExtract {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
         // The join (its box and all it keeps), and each span's captures,
         // each shared allocation once.
-        held.heap(&self.facts.first).heap(&self.facts.spans).total()
+        held.heap(&self.facts.first)
+            .heap(&self.facts.spans)
+            .heap(&self.facts.windows)
+            .total()
     }
 
     fn observe(
@@ -2369,7 +2401,11 @@ impl Extract for BlockExtract {
         let inputs = &self.inputs;
         if self.facts.first.is_none() {
             self.facts.first = Some((frame.hour, Box::new(inputs.clone())));
-        } else if inputs.narrow && inputs.joins_nothing() && !inputs.advanced.is_empty() {
+        } else if inputs.narrow
+            && inputs.joins_nothing()
+            && inputs.windows.is_empty()
+            && !inputs.advanced.is_empty()
+        {
             match self.facts.spans.last_mut() {
                 Some((_, last, advanced))
                     if last.checked_add(1) == Some(frame.hour)
@@ -2381,6 +2417,24 @@ impl Extract for BlockExtract {
                     frame.hour,
                     frame.hour,
                     Arc::from(inputs.advanced.as_slice()),
+                )),
+            }
+        } else if inputs.narrow
+            && inputs.joins_nothing()
+            && inputs.advanced.is_empty()
+            && !inputs.windows.is_empty()
+        {
+            match self.facts.windows.last_mut() {
+                Some((_, last, window))
+                    if last.checked_add(1) == Some(frame.hour)
+                        && window.captures == inputs.windows =>
+                {
+                    *last = frame.hour
+                }
+                _ => self.facts.windows.push((
+                    frame.hour,
+                    frame.hour,
+                    Arc::new(inputs::WindowAdvance::new(inputs.windows.clone())),
                 )),
             }
         }
@@ -2400,6 +2454,7 @@ pub struct BlockFold {
     joined: Option<bool>,
     /// The first span that may hold a later hour.
     span: usize,
+    window: usize,
 }
 
 impl BlockFold {
@@ -2408,6 +2463,7 @@ impl BlockFold {
             facts,
             joined: None,
             span: 0,
+            window: 0,
         }
     }
 
@@ -2425,6 +2481,20 @@ impl BlockFold {
             .get(self.span)
             .filter(|&&(first, _, _)| first <= hour)
             .map(|(_, _, advanced)| Arc::clone(advanced))
+    }
+
+    fn window(&mut self, hour: i32) -> Option<Arc<inputs::WindowAdvance>> {
+        let windows = &self.facts.windows;
+        while windows
+            .get(self.window)
+            .is_some_and(|&(_, last, _)| last < hour)
+        {
+            self.window += 1;
+        }
+        windows
+            .get(self.window)
+            .filter(|&&(first, _, _)| first <= hour)
+            .map(|(_, _, window)| Arc::clone(window))
     }
 }
 

@@ -36,6 +36,13 @@ struct AdvancingDeadlines {
     next: Option<i32>,
 }
 
+#[derive(Clone)]
+struct WindowDeadlines {
+    captures: Arc<inputs::WindowAdvance>,
+    through: i32,
+    next: Option<i32>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Clock {
     pub through: Option<i32>,
@@ -68,6 +75,8 @@ pub(super) struct Clock {
     pub census_known: bool,
     #[serde(skip)]
     advancing_deadlines: Option<AdvancingDeadlines>,
+    #[serde(skip)]
+    window_deadlines: Option<WindowDeadlines>,
     #[cfg(test)]
     #[serde(skip)]
     deadline_visits: usize,
@@ -169,6 +178,7 @@ impl Scanned {
     pub(super) fn inputs_changed(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
         let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_changed");
         self.clock.advancing_deadlines = None;
+        self.clock.window_deadlines = None;
         let refused_tags: Vec<_> = if changes.rows_changed[TableId::Countries.index()]
             || changes.table_read[TableId::Countries.index()]
         {
@@ -254,6 +264,17 @@ impl Scanned {
         day_due: bool,
     ) -> bool {
         let _cpu = ::replay::cpu::scope_phase("politics_ledger:certified_check");
+        if advanced.is_empty() || !self.certifies_join(frame, changes, day_due) {
+            return false;
+        }
+        // The captures due at the hour that the whole accounting observes.
+        !self
+            .clock
+            .next
+            .is_some_and(|next| next <= frame.hour && self.captures_due(next, frame.hour, advanced))
+    }
+
+    fn certifies_join(&self, frame: &DecodedFrame, changes: &FrameChanges, day_due: bool) -> bool {
         let read = |table: TableId| {
             changes.rows_changed[table.index()] || changes.table_read[table.index()]
         };
@@ -264,8 +285,7 @@ impl Scanned {
         // The hour continues the last one joined, from its changed rows.
         let continuous =
             self.clock.through.and_then(|last| last.checked_add(1)) == Some(frame.hour);
-        if advanced.is_empty()
-            || day_due
+        if day_due
             || !continuous
             || !self.pending_known
             || !rows_known
@@ -298,11 +318,66 @@ impl Scanned {
                 return false;
             }
         }
-        // The captures due at the hour that the whole accounting observes.
-        !self
-            .clock
-            .next
-            .is_some_and(|next| next <= frame.hour && self.captures_due(next, frame.hour, advanced))
+        true
+    }
+
+    pub(super) fn certified_window(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        window: &Arc<inputs::WindowAdvance>,
+        day_due: bool,
+    ) -> bool {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_certificate");
+        if !self.certifies_join(frame, changes, day_due) {
+            return false;
+        }
+        if !self.clock.next.is_some_and(|next| next <= frame.hour) {
+            return true;
+        }
+        if let Some(held) = &mut self.clock.window_deadlines
+            && Arc::ptr_eq(&held.captures, window)
+            && held.through.checked_add(1) == Some(frame.hour)
+        {
+            held.through = frame.hour;
+            return !held.next.is_some_and(|next| next <= frame.hour);
+        }
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:window_capture_deadlines");
+        let next = self
+            .inputs
+            .deadlines
+            .range(self.clock.next.unwrap()..)
+            .find_map(|(&hour, rows)| {
+                rows.iter()
+                    .any(|raw| {
+                        #[cfg(test)]
+                        {
+                            self.clock.deadline_visits += 1;
+                        }
+                        self.inputs.links.contains_key(raw) && !window.contains(raw)
+                    })
+                    .then_some(hour)
+            });
+        self.clock.window_deadlines = Some(WindowDeadlines {
+            captures: Arc::clone(window),
+            through: frame.hour,
+            next,
+        });
+        !next.is_some_and(|next| next <= frame.hour)
+    }
+
+    pub(super) fn inputs_window(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        window: &Arc<inputs::WindowAdvance>,
+    ) {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_window");
+        Arc::make_mut(&mut self.inputs).refresh_window(frame, changes, window);
+        #[cfg(test)]
+        {
+            self.row_hours += 1;
+        }
     }
 
     /// During one certified span only these captures' last hours and expiries
@@ -668,6 +743,73 @@ mod deadline_tests {
             scan.inputs.due_after_advance(7, 7, &replacement)
         );
         assert!(scan.clock.deadline_visits > before);
+    }
+
+    fn window_deadlines_follow_their_span(count: u32) {
+        let mut scan = Scanned::default();
+        scan.clock.stable = true;
+        scan.clock.bound = true;
+        scan.clock.census_known = true;
+        scan.pending_known = true;
+        let window = Arc::new(inputs::WindowAdvance::new(
+            (1..=count).map(|raw| (raw, 0)).collect(),
+        ));
+        let inputs = Arc::make_mut(&mut scan.inputs);
+        inputs.links = (1..=count + 1).map(|raw| (raw, raw)).collect();
+        inputs.deadlines.insert(1, (1..=count).collect());
+        inputs.deadlines.insert(6, BTreeSet::from([count + 1]));
+        let changes = FrameChanges {
+            rows_changed: [false; replay::frame::TABLE_COUNT],
+            table_read: [false; replay::frame::TABLE_COUNT],
+            slot_read: [false; replay::frame::TABLE_COUNT],
+            updates: None,
+        };
+        let mut frame = super::super::tests::frame(1, 1);
+        for hour in 1..=6 {
+            frame.hour = hour;
+            scan.clock.through = Some(hour - 1);
+            scan.clock.next = Some(hour);
+            let before = scan.clock.deadline_visits;
+            assert_eq!(
+                scan.certified_window(&frame, &changes, &window, false),
+                hour < 6
+            );
+            if hour > 1 {
+                assert_eq!(
+                    scan.clock.deadline_visits, before,
+                    "a carried window does not scan {count} captures again"
+                );
+            }
+            let inputs = Arc::make_mut(&mut scan.inputs);
+            let mut moving = inputs.deadlines.remove(&hour).unwrap();
+            moving.remove(&(count + 1));
+            inputs
+                .deadlines
+                .entry(hour + 1)
+                .or_default()
+                .append(&mut moving);
+        }
+        let replacement = Arc::new(inputs::WindowAdvance::new(window.captures.clone()));
+        scan.clock.next = Some(7);
+        scan.clock.through = Some(6);
+        frame.hour = 7;
+        let before = scan.clock.deadline_visits;
+        assert!(scan.certified_window(&frame, &changes, &replacement, false));
+        assert!(
+            scan.clock.deadline_visits > before,
+            "another certificate rechecks the deadlines"
+        );
+    }
+
+    #[test]
+    fn sliding_window_certificates_stop_at_other_countries_deadlines() {
+        window_deadlines_follow_their_span(8);
+    }
+
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn sliding_window_certificates_do_not_revisit_5000_countries_each_hour() {
+        window_deadlines_follow_their_span(5000);
     }
 
     #[test]

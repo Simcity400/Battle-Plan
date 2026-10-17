@@ -3568,8 +3568,8 @@ fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publicati
     }
 }
 
-/// Replacing capture starts selects every owner even when its retained daily
-/// operands and empty holds have not changed.
+/// Expanding capture starts backwards selects every owner even when its retained
+/// daily operands and empty holds have not changed.
 fn unchanged_daily_and_empty_holds_do_not_rebuild(count: u32) {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let format = replay::format::FormatVersion::CURRENT;
@@ -3592,7 +3592,7 @@ fn unchanged_daily_and_empty_holds_do_not_rebuild(count: u32) {
             &mut input,
             TableRows::PoliticsCaptureCoverage(
                 (1..=count)
-                    .map(|country| capture(country, hour, hour))
+                    .map(|country| capture(country, 24 - (hour - 24), hour))
                     .collect(),
             ),
         );
@@ -3737,6 +3737,459 @@ fn retained_daily_projection_keeps_bytes_across_membership_refusals_days_and_res
                 read(&fixtures[0], tag, 24, 77, view),
                 read(&fixtures[1], tag, 24, 77, view)
             );
+        }
+    }
+}
+
+/// Sliding capture starts are witnesses of the current read, not new country
+/// identities. Compare the ordinary join and the worker certificate against
+/// whole-table accounting, including their complete published continuations.
+fn assert_sliding_window_bytes(count: u32, campaign: bool) {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new(), Fixture::new()];
+    let mut observers = [
+        Prepared::default(),
+        Prepared::default(),
+        Prepared::default(),
+    ];
+    observers[2].dense = true;
+    observers[2].whole_projection = true;
+    observers[2].scan.whole_tables = true;
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, count);
+    put(&mut input, command_power(count));
+    let mut captures: Vec<_> = (1..=count)
+        .map(|country| capture(country, 24, 24))
+        .collect();
+    let mut power = Vec::new();
+    let hours: Vec<i32> = if campaign {
+        (24..=95).filter(|hour| !(52..=53).contains(hour)).collect()
+    } else {
+        (24..=39).collect()
+    };
+    let mut advanced = BTreeSet::new();
+    let mut certified = BTreeSet::new();
+    for (block, hours) in hours.chunks(if campaign { 12 } else { 8 }).enumerate() {
+        let mut frames = Vec::new();
+        for &hour in hours {
+            input.hour = hour;
+            if campaign {
+                advancing_hour(&mut input, &mut captures, &mut power);
+                if hour == 70 {
+                    captures[2].streams &= !PoliticsCaptureCoverageRow::PP_DAILY_COSTS;
+                }
+                if hour == 31 {
+                    power.push(CountryPowerChangeRow {
+                        operation: PowerOperation::Add,
+                        requested_delta_raw: None,
+                        ..payment(2, 31, hour)
+                    });
+                }
+                // Unresolved rows still refresh a resolved target's names on
+                // each publication. A later alias/capture join admits them.
+                if hour == 86 {
+                    power.push(CountryPowerChangeRow {
+                        identity: PowerIdentity {
+                            target_country: Some(1),
+                            ..Default::default()
+                        },
+                        ..payment(99, 86, hour)
+                    });
+                }
+                if hour >= 86 {
+                    let mut costs = input
+                        .complete::<tables::CountryPowerDailyCosts>()
+                        .unwrap()
+                        .to_vec();
+                    let mut unresolved = daily_gain(99, 1, 72).1;
+                    unresolved.identity.target_country = Some(1);
+                    costs.push(unresolved);
+                    put(&mut input, TableRows::CountryPowerDailyCosts(costs));
+                }
+                if hour == 89 {
+                    let mut links = input.complete::<tables::CountryLinks>().unwrap().to_vec();
+                    links.push(CountryLinkRow {
+                        id: 99,
+                        canonical_slot: 1,
+                    });
+                    put(&mut input, TableRows::CountryLinks(links));
+                    captures.push(capture(99, hour, hour));
+                }
+                put(&mut input, TableRows::CountryPowerChanges(power.clone()));
+                if hour == 43 {
+                    put(
+                        &mut input,
+                        TableRows::GovernmentChanges(vec![GovernmentChangeRow {
+                            country: 1,
+                            instance: 1,
+                            epoch: 1,
+                            sequence: 43,
+                            hour,
+                            before_party: Some(1),
+                            after_party: Some(2),
+                            ..Default::default()
+                        }]),
+                    );
+                }
+                if hour == 60 || hour == 61 {
+                    let mut countries = input.complete::<tables::Countries>().unwrap().to_vec();
+                    countries[3].tag = if hour == 60 {
+                        vec![0xff]
+                    } else {
+                        b"C4".to_vec()
+                    };
+                    put(&mut input, TableRows::Countries(countries));
+                }
+                for (at, table) in [
+                    (67, TableId::CountryPowerDailyCosts),
+                    (76, TableId::CountryPowerChanges),
+                ] {
+                    if hour == at {
+                        input.tables[table.index()] = replay::frame::TableView::Unavailable {
+                            reason: "synthetic sliding-window read refused".into(),
+                        }
+                        .into();
+                    }
+                }
+            }
+            for row in &mut captures {
+                if !campaign || row.through_hour == hour {
+                    row.through_hour = hour;
+                    row.since_hour = hour - ((row.country - 1) % 3) as i32;
+                    // Mix fixed and sliding witnesses, switch back, and refuse
+                    // to certify a window whose start is still in the future.
+                    if campaign && row.country == 4 {
+                        if (78..=82).contains(&hour) {
+                            row.since_hour = 77;
+                        }
+                        if hour == 45 {
+                            row.since_hour = hour + 1;
+                            row.through_hour = hour + 1;
+                        }
+                    }
+                }
+            }
+            put(
+                &mut input,
+                TableRows::PoliticsCaptureCoverage(captures.clone()),
+            );
+            frames.push(recorded.next(&mut input, frames.is_empty()));
+        }
+        let mut fold = BlockFold::new(worker_facts(&frames));
+        let mut trackers = [
+            FrameChangeTracker::new(),
+            FrameChangeTracker::new(),
+            FrameChangeTracker::new(),
+        ];
+        for (decoded, wire) in &frames {
+            let hour = decoded.hour;
+            for (index, (observer, tracker)) in observers.iter_mut().zip(&mut trackers).enumerate()
+            {
+                let before = (
+                    observer.advanced_hours(),
+                    observer.certified_hours(),
+                    observer.scan.inputs.row_visits,
+                    observer.scan.country_visits,
+                    observer.scan.accounting_visits,
+                    observer.work.history_visits,
+                    observer.scan.inputs.window_visits,
+                );
+                let changes = tracker.observe_updates(decoded, Arc::clone(wire), format);
+                if index == 1 {
+                    observer
+                        .observe_folded(decoded, &changes, &flag, &mut fold)
+                        .unwrap();
+                } else {
+                    observer.observe(decoded, &changes, &flag).unwrap();
+                }
+                if index == 0 && observer.advanced_hours() > before.0 {
+                    advanced.insert(hour);
+                }
+                if index == 1 && observer.certified_hours() > before.1 {
+                    certified.insert(hour);
+                    assert_eq!(
+                        (
+                            observer.scan.inputs.row_visits,
+                            observer.scan.country_visits,
+                            observer.scan.accounting_visits,
+                            observer.work.history_visits,
+                            observer.scan.inputs.window_visits
+                        ),
+                        (before.2, before.3, before.4, before.5, before.6),
+                        "hour {hour}: certificates visit no country, row, history or witness"
+                    );
+                }
+                if !campaign && index < 2 && hour != hours[0] {
+                    assert_eq!(
+                        observer.advanced_hours(),
+                        before.0 + 1,
+                        "hour {hour}: every quiet window skips accounting among {count} countries"
+                    );
+                    assert_eq!(
+                        (
+                            observer.scan.country_visits,
+                            observer.scan.accounting_visits,
+                            observer.work.history_visits
+                        ),
+                        (before.3, before.4, before.5)
+                    );
+                    if index == 1 {
+                        assert_eq!(observer.certified_hours(), before.1 + 1);
+                    }
+                }
+            }
+            for observer in &observers[0..2] {
+                assert_eq!(
+                    observer.scan.events, observers[2].scan.events,
+                    "events at {hour}"
+                );
+                assert_eq!(
+                    observer.scan.costs, observers[2].scan.costs,
+                    "costs at {hour}"
+                );
+                assert_eq!(
+                    observer.scan.clock.next, observers[2].scan.clock.next,
+                    "deadline at {hour}"
+                );
+                assert_eq!(
+                    observer.day_tags, observers[2].day_tags,
+                    "native days at {hour}"
+                );
+            }
+        }
+        let before = observers[1].scan.inputs.window_visits;
+        observers[1].end_block();
+        if !campaign {
+            assert_eq!(
+                observers[1].scan.inputs.window_visits - before,
+                count as usize,
+                "deferred witnesses move once at the block end, not every hour"
+            );
+        }
+        assert!(
+            observers[0]
+                .scan
+                .inputs
+                .same_join(&observers[1].scan.inputs),
+            "ordinary and certified joins after block {block}"
+        );
+        for observer in &observers[0..2] {
+            assert_eq!(
+                observer.scan.inputs.witnesses,
+                observers[2].scan.inputs.witnesses
+            );
+            assert_eq!(
+                observer.scan.inputs.by_slot,
+                observers[2].scan.inputs.by_slot
+            );
+        }
+        let saved = observers
+            .each_mut()
+            .map(|observer| observer.saved_bytes().unwrap());
+        assert_eq!(
+            saved[0], saved[2],
+            "hourly continuation after block {block}"
+        );
+        assert_eq!(
+            saved[1], saved[2],
+            "certified continuation after block {block}"
+        );
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            publish(observer, fixture);
+        }
+        let pages = fixtures.each_ref().map(sections);
+        assert!(!pages[2].is_empty());
+        assert_eq!(pages[0], pages[2], "hourly pages after block {block}");
+        assert_eq!(pages[1], pages[2], "certified pages after block {block}");
+        // Both the retained observer and a restored observer append another
+        // independently extracted block. Resume after the first publication.
+        if block == 0 {
+            for (index, observer) in observers.iter_mut().enumerate() {
+                let (paths, folds) = (observer.paths, observer.folds);
+                *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+                observer.paths = paths;
+                observer.folds = folds;
+                observer.dense = index == 2;
+                observer.whole_projection = index == 2;
+                observer.scan.whole_tables = index == 2;
+                observer.resume(&frames.last().unwrap().0);
+            }
+        }
+    }
+    assert!(certified.is_subset(&advanced));
+    assert!(
+        certified.len() >= if campaign { 10 } else { 14 },
+        "certified {certified:?}"
+    );
+    if campaign {
+        assert!(
+            observers
+                .iter()
+                .all(|observer| observer.metadata.last == Some(95)),
+            "the campaign reaches its final append after gaps, refusals and resume"
+        );
+        for hour in [
+            25, 26, 27, 28, 29, 34, 39, 41, 42, 50, 51, 57, 59, 64, 65, 69,
+        ] {
+            assert!(
+                advanced.contains(&hour),
+                "quiet sliding hour {hour}: {advanced:?}"
+            );
+        }
+        for hour in [
+            30, 31, 38, 40, 45, 48, 54, 56, 58, 60, 61, 66, 67, 72, 73, 75, 76, 86, 87, 88, 89, 90,
+            91,
+        ] {
+            assert!(
+                !advanced.contains(&hour),
+                "changed sliding hour {hour} was certified quiet"
+            );
+        }
+    }
+}
+
+#[test]
+fn sliding_capture_windows_skip_country_work_and_keep_hourly_and_folded_bytes() {
+    assert_sliding_window_bytes(8, false);
+}
+
+#[test]
+fn sliding_capture_windows_keep_bytes_across_changes_refusals_gaps_resume_and_append() {
+    assert_sliding_window_bytes(4, true);
+}
+
+#[cfg(feature = "slow-tests")]
+#[test]
+fn sliding_capture_windows_among_5000_countries_do_no_hourly_accounting_or_projection() {
+    assert_sliding_window_bytes(5000, false);
+}
+
+#[test]
+fn shared_tags_slots_and_aliases_keep_ordinary_capture_accounting_bytes() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    // Shared tags, shared native links, census aliases with one remaining
+    // native link, and a sole native link naming a different census id.
+    for case in 0..4 {
+        for sliding in [false, true] {
+            let count = if case == 3 { 1 } else { 2 };
+            let mut input = frame(24, count);
+            put(&mut input, command_power(count));
+            let mut countries = input.complete::<tables::Countries>().unwrap().to_vec();
+            let mut links = input.complete::<tables::CountryLinks>().unwrap().to_vec();
+            match case {
+                0 => countries
+                    .iter_mut()
+                    .for_each(|row| row.tag = b"DUP".to_vec()),
+                1 => links[1].canonical_slot = 1,
+                2 => {
+                    countries[1].canonical_slot = 1;
+                    links = vec![CountryLinkRow {
+                        id: 2,
+                        canonical_slot: 1,
+                    }];
+                }
+                3 => links[0].id = 99,
+                _ => unreachable!(),
+            }
+            put(&mut input, TableRows::Countries(countries));
+            put(&mut input, TableRows::CountryLinks(links));
+            let mut recorded = Recorded::new();
+            let mut frames = Vec::new();
+            for hour in 24..=26 {
+                input.hour = hour;
+                put(
+                    &mut input,
+                    TableRows::PoliticsCaptureCoverage(
+                        (1..=count)
+                            .map(|raw| {
+                                capture(
+                                    if case == 3 { 99 } else { raw },
+                                    if sliding { hour } else { 24 },
+                                    hour,
+                                )
+                            })
+                            .collect(),
+                    ),
+                );
+                frames.push(recorded.next(&mut input, hour == 24));
+            }
+            let fixtures = [Fixture::new(), Fixture::new(), Fixture::new()];
+            let mut observers = [
+                Prepared::default(),
+                Prepared::default(),
+                Prepared::default(),
+            ];
+            observers[2].dense = true;
+            observers[2].whole_projection = true;
+            observers[2].scan.whole_tables = true;
+            let mut trackers = [
+                FrameChangeTracker::new(),
+                FrameChangeTracker::new(),
+                FrameChangeTracker::new(),
+            ];
+            let mut fold = BlockFold::new(worker_facts(&frames));
+            for (decoded, wire) in &frames {
+                let hour = decoded.hour;
+                for (index, (observer, tracker)) in
+                    observers.iter_mut().zip(&mut trackers).enumerate()
+                {
+                    let before = observer.accounted_hours();
+                    let changes = tracker.observe_updates(decoded, Arc::clone(wire), format);
+                    if index == 1 {
+                        observer
+                            .observe_folded(decoded, &changes, &flag, &mut fold)
+                            .unwrap();
+                    } else {
+                        observer.observe(decoded, &changes, &flag).unwrap();
+                    }
+                    assert_eq!(
+                        observer.accounted_hours(),
+                        before + 1,
+                        "case {case}, sliding {sliding}, hour {hour}: aliases require ordinary accounting"
+                    );
+                    assert!(observer.scan.inputs.advanced.is_empty());
+                    assert!(observer.scan.inputs.windows.is_empty());
+                }
+                assert_eq!(observers[1].certified_hours(), 0);
+                if hour == 25 && case == 0 {
+                    for observer in &observers {
+                        let last = observer.scan.countries["DUP"].coverage.last().unwrap();
+                        assert_eq!(
+                            (last.country, last.read_hour, last.since_hour),
+                            (Some(2), 25, Some(if sliding { 25 } else { 24 }))
+                        );
+                    }
+                }
+                let saved = observers
+                    .each_mut()
+                    .map(|observer| observer.saved_bytes().unwrap());
+                assert_eq!(
+                    saved[0], saved[2],
+                    "ordinary state: case {case}, sliding {sliding}, hour {hour}"
+                );
+                assert_eq!(
+                    saved[1], saved[2],
+                    "fold state: case {case}, sliding {sliding}, hour {hour}"
+                );
+                if hour >= 25 {
+                    for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                        publish(observer, fixture);
+                    }
+                    let pages = fixtures.each_ref().map(sections);
+                    assert_eq!(
+                        pages[0], pages[2],
+                        "ordinary pages: case {case}, sliding {sliding}, hour {hour}"
+                    );
+                    assert_eq!(
+                        pages[1], pages[2],
+                        "fold pages: case {case}, sliding {sliding}, hour {hour}"
+                    );
+                }
+            }
         }
     }
 }
