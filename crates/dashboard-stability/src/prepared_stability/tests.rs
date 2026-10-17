@@ -1282,3 +1282,86 @@ fn experience_observes_an_hours_changed_gains_as_its_whole_tables() {
         "{visits} rows visited from the changes, {whole_visits} from the whole tables"
     );
 }
+
+fn equal_parts_carry_numeric_publication(count: u32) {
+    use dashboard_base::prepared::series::tests::assert_payloads_equal;
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [
+        StabilityAccumulator::default(),
+        StabilityAccumulator::default(),
+    ];
+    let flag = AtomicBool::new(false);
+    for hour in [100, 101, 102, 103, 104, 106, 107, 108] {
+        for (index, state) in states.iter_mut().enumerate() {
+            state.batch.advance(hour).unwrap();
+            let before = state.batch.key_visits;
+            for country in 1..=count {
+                let tag = format!("mod country {country}");
+                let value = (hour != 103).then_some(if hour >= 107 { 8 } else { 7 });
+                let holder = if hour >= 108 {
+                    country + count
+                } else {
+                    country
+                };
+                let prior = WHOLE_RECORDS.with(|whole| whole.replace(index == 1));
+                let result = record(
+                    &mut state.actors,
+                    &mut state.batch,
+                    &tag,
+                    "part",
+                    hour,
+                    value,
+                    hour != 100,
+                    (holder, holder, hour),
+                    hour == 102,
+                    None,
+                );
+                WHOLE_RECORDS.with(|whole| whole.set(prior));
+                result.unwrap();
+            }
+            if hour == 101 {
+                assert_eq!(
+                    state.batch.key_visits - before,
+                    if index == 0 { 0 } else { count as usize }
+                );
+            }
+            state.batch.seal();
+        }
+        assert_eq!(
+            serde_json::to_vec(&states[0]).unwrap(),
+            serde_json::to_vec(&states[1]).unwrap(),
+            "hour {hour}"
+        );
+        if hour == 104 || hour == 108 {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                flush(
+                    &state.actors,
+                    &mut state.batch,
+                    &mut writer,
+                    ("parts", 1, hour, 5),
+                    &flag,
+                )
+                .unwrap();
+                writer.commit().unwrap();
+                *state = serde_json::from_slice(&serde_json::to_vec(state).unwrap()).unwrap();
+            }
+            assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "changed versus hourly numeric parts",
+            );
+        }
+    }
+}
+
+#[test]
+fn equal_parts_keep_hourly_bytes_read_events_boundaries_and_refusals() {
+    equal_parts_carry_numeric_publication(8);
+}
+
+#[cfg(feature = "slow-tests")]
+#[test]
+fn equal_parts_do_not_publish_5000_numeric_keys_again_at_each_read() {
+    equal_parts_carry_numeric_publication(5000);
+}

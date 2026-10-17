@@ -513,6 +513,50 @@ impl CountryKeys {
                 *id == row.id && *slot == row.canonical_slot && *tag == row.tag
             })
     }
+    /// Whether the previous hour's key projection still holds after these
+    /// recorded row changes. Snapshots and identity edits compare normally.
+    pub fn same_changes(
+        &self,
+        countries: &[CountryRow],
+        delta: Option<(&[replay::rows::DeltaRow], &[u128])>,
+    ) -> bool {
+        self.kept_changes(countries.len(), delta) || self.same(countries)
+    }
+
+    /// Whether one consecutive hour's delta proves these identity operands
+    /// unchanged, without walking the keys. Callers delaying their comparison
+    /// must retain every failed proof until they compare the full projection.
+    pub fn kept_changes(
+        &self,
+        country_count: usize,
+        delta: Option<(&[replay::rows::DeltaRow], &[u128])>,
+    ) -> bool {
+        let _cpu = replay::cpu::scope_phase("country_keys:changed_fields");
+        static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+            let mask = (0..64)
+                .filter(|&field| {
+                    TableId::Countries
+                        .field_name(field)
+                        .is_some_and(|name| matches!(name, "canonical_slot" | "tag"))
+                })
+                .fold(0_u64, |mask, field| mask | (1_u64 << field));
+            if mask.count_ones() == 2 {
+                mask
+            } else {
+                u64::MAX
+            }
+        });
+        self.0.len() == country_count
+            && delta.is_some_and(|(changed, deleted)| {
+                deleted.is_empty()
+                    && changed.iter().all(|row| {
+                        #[cfg(any(test, feature = "test-support"))]
+                        self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        row.mask & *FIELDS == 0
+                    })
+            })
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn row_visits(&self) -> usize {
         self.1.load(std::sync::atomic::Ordering::Relaxed)
@@ -705,17 +749,13 @@ pub fn validate_campaign(frame: &DecodedFrame, replay: &Replay) -> io::Result<()
 /// a table read daily then is dated at its slot even if it is hourly now.
 /// Every product that dates a daily table's values by their read uses this.
 pub fn slot_read(format: FormatVersion, metrics: &Metrics, table: TableId, hour: i32) -> bool {
-    let timed = |table: TableId| metrics.table_ns[table.index()] != 0;
     if table == TableId::CountryIntel {
-        return timed(table);
+        return metrics.table_ns[table.index()] != 0;
     }
-    let slot = replay::cadence::cadence_in(table, format);
-    slot.is_refresh(hour)
-        || TableId::ALL.into_iter().any(|other| {
-            other != TableId::CountryIntel
-                && replay::cadence::cadence_in(other, format) == slot
-                && timed(other)
-        })
+    if replay::cadence::cadence_in(table, format).is_refresh(hour) {
+        return true;
+    }
+    slot_reads(format, metrics, hour)[table.index()]
 }
 
 /// Every table's supplying-read flag, as [`slot_read`] decides it. The
@@ -775,6 +815,7 @@ impl ReadSlots {
         {
             return *flags;
         }
+        let _cpu = replay::cpu::scope_phase("slot_reads:refresh");
         #[cfg(any(test, feature = "test-support"))]
         SLOT_READ_BATCHES.with(|count| count.set(count.get() + 1));
         let mut flags = [false; replay::frame::TABLE_COUNT];

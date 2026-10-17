@@ -96,3 +96,9 @@ No empty prefix claims zero spending or a recording gap.
 The live spending ledger shares that cold reply with spending totals. Both read
 only through the accepted prefix and keep following their joint coverage; an
 unprepared live hour does not claim an empty day or zero spending.
+
+Certified capture spans retain the next linked deadline outside their advancing
+captures. Consecutive hours with the same certificate carry that check and the
+expiry bucket membership; other deadlines still stop at their recorded dates.
+Ordinary joins discard the deadline proof, and captures with future starts keep
+each hour's check. Phase labels separate capture deadline checks and expiry changes.

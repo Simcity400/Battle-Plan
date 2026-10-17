@@ -49,3 +49,8 @@ accepted extent. Its raw reply is retained in the existing observation cache,
 bound to content and keyed by holder tag, hour and membership spans. Re-asks
 update preparation metadata without repeating the supplying-read look-back.
 The retained-byte bound follows the live blocks in that read window.
+
+Naming carries the shared catalogue's country-key proof through unchanged hours
+and retains recorded field deltas at a complete read. Only changed naming
+operands rebuild raw variant presentation; a pending or restored read rechecks
+its full inputs before carrying them.

@@ -262,6 +262,10 @@ struct Scan {
     read_through: Option<i32>,
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
+    #[serde(skip)]
+    country_dirty: bool,
+    #[serde(skip)]
+    country_frame: Option<(u64, i32)>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -336,6 +340,30 @@ impl Scan {
     ) -> bool {
         let mut changed = false;
         let hour = frame.hour;
+        // The roster can skip reads while country balances keep changing.
+        // Retain identity invalidation from every intervening hour; only a
+        // roster read may confirm the complete projection and clear it.
+        let country_continuous = self.country_frame.is_some_and(|(branch, last)| {
+            branch == frame.branch && last.checked_add(1) == Some(hour)
+        });
+        self.country_frame = Some((frame.branch, hour));
+        self.country_dirty = self.country_dirty
+            || !country_continuous
+            || self.country_keys.as_ref().is_none_or(|keys| {
+                #[cfg(test)]
+                let before = keys.row_visits();
+                let kept = frame.complete::<tables::Countries>().is_ok_and(|rows| {
+                    keys.kept_changes(
+                        rows.len(),
+                        changes.and_then(|changes| changes.rows(TableId::Countries)),
+                    )
+                });
+                #[cfg(test)]
+                {
+                    self.work.row_visits += keys.row_visits() - before;
+                }
+                !kept
+            });
         if self
             .last_frame
             .is_some_and(|last| last.checked_add(1) != Some(hour))
@@ -392,8 +420,7 @@ impl Scan {
                     TableId::Raids,
                     TableId::RaidTooltipOperands,
                 ];
-                let country_same = changes
-                    .is_some_and(|changes| !changes.rows_changed[TableId::Countries.index()])
+                let country_same = !self.country_dirty
                     || self.country_keys.as_ref().is_some_and(|keys| {
                         #[cfg(test)]
                         let before = keys.row_visits();
@@ -406,14 +433,17 @@ impl Scan {
                         }
                         same
                     });
+                self.country_dirty = !country_same;
                 if self.known
                     && self.from.len() == inputs.len()
                     && self.from.iter().zip(inputs).all(|(identity, table)| {
-                        (table == TableId::Countries && country_same)
-                            || changes.map_or_else(
-                                || identity.is(&frame.tables[table.index()]),
-                                |changes| !changes.rows_changed[table.index()],
-                            )
+                        if table == TableId::Countries {
+                            country_same
+                        } else {
+                            // These stamps date the last roster, not the
+                            // previous hour whose delta `changes` describes.
+                            identity.is(&frame.tables[table.index()])
+                        }
                     })
                 {
                     self.read_through = Some(hour);
@@ -424,6 +454,7 @@ impl Scan {
                         .complete::<tables::Countries>()
                         .ok()
                         .map(dashboard_text::metadata::CountryKeys::read);
+                    self.country_dirty = self.country_keys.is_none();
                     #[cfg(test)]
                     {
                         self.work.row_visits += rows.len();

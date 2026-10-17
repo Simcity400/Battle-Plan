@@ -625,9 +625,9 @@ impl Prepared {
             || changes.rows_changed[TableId::CountryLinks.index()]
             || changes.rows_changed[TableId::Countries.index()]
                 && self.country_keys.as_ref().is_none_or(|keys| {
-                    frame
-                        .complete::<tables::Countries>()
-                        .map_or(true, |rows| !keys.same(rows))
+                    frame.complete::<tables::Countries>().map_or(true, |rows| {
+                        !keys.same_changes(rows, changes.rows(TableId::Countries))
+                    })
                 });
         if identity_changed {
             if changes.rows_changed[TableId::Countries.index()] {

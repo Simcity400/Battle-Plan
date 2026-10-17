@@ -270,9 +270,14 @@ impl Prepared {
                 updates: None,
             };
             naming_changes.rows_changed[TableId::VariantDefinitions.index()] |= !self.naming_ready;
+            let naming_changes = if self.naming_ready {
+                changes
+            } else {
+                &naming_changes
+            };
             let dirty: std::collections::BTreeSet<u64> = self
                 .names
-                .observe_changed(format, frame, &naming_changes)
+                .observe_changed(format, frame, naming_changes)
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
@@ -357,7 +362,7 @@ impl Prepared {
             }
             reclassified
         } else {
-            self.names.advance(frame.hour);
+            self.names.advance_changed(frame, changes);
             BTreeSet::new()
         };
         self.naming.through(frame.hour);

@@ -653,7 +653,10 @@ impl Scan {
                 && self.country_keys.as_ref().is_none_or(|keys| {
                     #[cfg(test)]
                     let before = keys.row_visits();
-                    let changed = !keys.same(countries);
+                    let changed = !keys.same_changes(
+                        countries,
+                        changes.rows(TableId::Countries),
+                    );
                     #[cfg(test)]
                     {
                         self.work.row_visits += keys.row_visits() - before;

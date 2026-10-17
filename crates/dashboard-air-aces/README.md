@@ -30,3 +30,13 @@ Lazy portraits use that same supplying read. The root carries coverage and
 pending hours so mounted rosters are replaced as preparation advances.
 
 The cold roster also resolves the latest variant-name read within its own daily cadence before the roster read, preserving the aircraft names carried by hourly preparation.
+
+Country identity comparisons follow recorded country field masks: balance-only
+deltas and equal acquisitions keep the previous key projection. Snapshots,
+identity edits and membership changes use the complete key comparison.
+
+Country identity invalidation accumulates at every accepted hour, including
+hours without a roster read. Identity edits, membership changes, snapshots,
+gaps and unavailable countries require the next roster read to compare the
+full country keys before carrying owners and portrait operands. Balance-only
+deltas check their masks without walking retained country keys.

@@ -779,14 +779,25 @@ impl HistoryScan {
             })
         };
         let view = &frame.tables[TableId::CountryLinks.index()];
+        let country_delta = changes.and_then(|changes| changes.rows(TableId::Countries));
         #[cfg(any(test, feature = "test-support"))]
-        {
-            if touched(TableId::Countries) {
-                self.work.row_visits += countries.len();
-            }
+        if touched(TableId::Countries) && country_delta.is_none() {
+            self.work.row_visits += countries.len();
         }
         let same = self.read.as_ref().is_some_and(|read| {
-            read.links.is(view) && (!touched(TableId::Countries) || read.keys.same(countries))
+            read.links.is(view)
+                && (!touched(TableId::Countries) || {
+                    #[cfg(any(test, feature = "test-support"))]
+                    let before = read.keys.row_visits();
+                    let same = read.keys.same_changes(countries, country_delta);
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        if country_delta.is_some() {
+                            self.work.row_visits += read.keys.row_visits() - before;
+                        }
+                    }
+                    same
+                })
         });
         let slots = self
             .read

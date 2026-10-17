@@ -666,3 +666,15 @@ and construction spending. Their lifetimes follow these rules:
 - A fork records identity checks as reads, so another adoption changing a
   checked range refuses the fork's publication. Identity checks open no pack
   and flush no staged payload bytes.
+
+Variant catalogues retain the current definitions and design operands used by
+production naming. Changed observations rebuild raw naming only where those
+operands differ; used dictionary spellings remain independent of the decoder.
+Consecutive country deltas that keep identity fields carry the country-key
+projection. Identity invalidation stays pending between supplying reads; weak
+view equality cannot clear it. Snapshots, unavailable countries, gaps and
+span-only advances require a full key comparison at the next read. Forgotten
+names and restoration rebuild the operands.
+Production presentation retains counted variant membership by holder inventory
+version, replacing only changed holders while dating names at each presentation.
+These operand and membership caches are transient.

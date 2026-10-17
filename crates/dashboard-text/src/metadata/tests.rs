@@ -825,7 +825,7 @@ fn supplying_read_batches_match_each_tables_own_read_rule() {
                 for table in TableId::ALL {
                     assert_eq!(
                         flags[table.index()],
-                        super::slot_read(format, &metrics, table, hour),
+                        scalar_read_rule(format, &metrics, table, hour),
                         "{format:?}, {table:?} at {hour}, timed {timed:?}"
                     );
                 }
@@ -1522,4 +1522,137 @@ fn link_tags_projected_matches_native_bytes_unchanged_inputs_aliases_and_recover
             .update_projected(Some(&countries), Some(&links))
             .unwrap()
     );
+}
+
+/// The independent scalar rule: a timed slot mate dates the slot except for
+/// CountryIntel, whose read dates only itself.
+fn scalar_read_rule(
+    format: replay::format::FormatVersion,
+    metrics: &replay::frame::Metrics,
+    table: TableId,
+    hour: i32,
+) -> bool {
+    if table == TableId::CountryIntel {
+        return metrics.table_ns[table.index()] != 0;
+    }
+    let cadence = replay::cadence::cadence_in(table, format);
+    cadence.is_refresh(hour)
+        || TableId::ALL.into_iter().any(|other| {
+            other != TableId::CountryIntel
+                && replay::cadence::cadence_in(other, format) == cadence
+                && metrics.table_ns[other.index()] != 0
+        })
+}
+
+#[test]
+fn scalar_supplying_reads_share_one_projection_at_5000_holders() {
+    use replay::{format::FormatVersion, frame::Metrics};
+    super::SLOT_READS.with_borrow_mut(|held| *held = None);
+    let before = super::slot_read_batches();
+    let format = FormatVersion::CURRENT;
+    let mut metrics = Metrics::default();
+    metrics.table_ns[TableId::CountryFuel.index()] = 1;
+    let hour = daily_slot_of(TableId::CountryFuel) + 1;
+    let expected = scalar_read_rule(format, &metrics, TableId::CountryFuel, hour);
+    for _ in 0..5000 {
+        assert_eq!(
+            super::slot_read(format, &metrics, TableId::CountryFuel, hour),
+            expected
+        );
+    }
+    assert_eq!(
+        super::slot_read_batches() - before,
+        1,
+        "one timed-table projection, independent of holder count"
+    );
+    // Different readers can present different read evidence at the same hour.
+    for (at, timed) in [
+        (hour, TableId::LexicalTokens),
+        (hour + 1, TableId::CountryIntel),
+        (hour + 3, TableId::CountryFuel),
+    ] {
+        metrics.table_ns.fill(0);
+        metrics.table_ns[timed.index()] = replay::frame::READ_TIME_NOT_RECORDED;
+        for table in TableId::ALL {
+            assert_eq!(
+                super::slot_read(format, &metrics, table, at),
+                scalar_read_rule(format, &metrics, table, at)
+            );
+        }
+    }
+    let previous = FormatVersion::read(format.version() - 1).unwrap();
+    for table in TableId::ALL {
+        assert_eq!(
+            super::slot_read(previous, &metrics, table, hour),
+            scalar_read_rule(previous, &metrics, table, hour)
+        );
+    }
+    assert_eq!(super::slot_read_batches() - before, 5);
+}
+
+fn country_key_masks_follow_the_recorded_rows(count: u32) {
+    use super::CountryKeys;
+    let mut input = scale_frame(1, 100, count);
+    let baseline = input.complete::<tables::Countries>().unwrap().to_vec();
+    let keys = CountryKeys::read(&baseline);
+    let mut encoder = FrameEncoder::new();
+    encoder.encode(input.clone(), true).unwrap();
+    for (offset, edit) in ["balance", "tag", "slot", "delete"].into_iter().enumerate() {
+        input.hour += 1;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *input.tables[TableId::Countries.index()]
+        {
+            match edit {
+                "balance" => rows[0].political_power_raw = Some(123),
+                "tag" => rows[0].tag = b"mod changed country".to_vec(),
+                "slot" => rows[0].canonical_slot += count,
+                "delete" => {
+                    rows.remove(0);
+                }
+                _ => unreachable!(),
+            }
+        }
+        let wire = encoder.encode(input.clone(), false).unwrap();
+        let rows = input.complete::<tables::Countries>().unwrap();
+        let delta = match &wire.tables[TableId::Countries.index()] {
+            TableUpdate::Delta {
+                changed, deleted, ..
+            } => Some((changed.as_slice(), deleted.as_slice())),
+            _ => panic!("fixture countries must encode a delta"),
+        };
+        let before = keys.row_visits();
+        assert_eq!(keys.same_changes(rows, delta), offset == 0);
+        if offset == 0 {
+            assert_eq!(
+                keys.row_visits() - before,
+                1,
+                "one mask must not compare {count} countries"
+            );
+        }
+        assert_eq!(keys.same_changes(rows, delta), keys.same(rows));
+    }
+    let before = keys.row_visits();
+    assert!(keys.same_changes(&baseline, Some((&[], &[]))));
+    assert_eq!(
+        keys.row_visits(),
+        before,
+        "an equal fresh acquisition visits no country key"
+    );
+    assert!(keys.same_changes(&baseline, None));
+    assert_eq!(
+        keys.row_visits() - before,
+        count as usize,
+        "a snapshot rechecks every key"
+    );
+}
+
+#[test]
+fn country_key_changes_use_field_masks_and_snapshots_keep_full_comparison() {
+    country_key_masks_follow_the_recorded_rows(8);
+}
+
+#[cfg(feature = "slow-tests")]
+#[test]
+fn one_country_balance_change_does_not_compare_5000_country_keys() {
+    country_key_masks_follow_the_recorded_rows(5000);
 }

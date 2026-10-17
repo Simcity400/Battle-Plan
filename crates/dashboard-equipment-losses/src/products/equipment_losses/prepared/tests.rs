@@ -1370,3 +1370,52 @@ fn combat_read_date_deltas_keep_all_prepared_bytes_and_future_dates() -> io::Res
     }
     Ok(())
 }
+
+#[test]
+fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Result<()> {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    let mut input = dashboard_core::test_fixtures::named_frame(117, Some(b"mod design"));
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"AAA".to_vec();
+    }
+    let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::new(&replay, 1, 117);
+    let mut oracle = VariantCatalogue::default();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    for hour in 117..=141 {
+        input.hour = hour;
+        input.metrics.table_ns.fill(0);
+        if hour == 117 || hour == 141 {
+            input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+        }
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *input.tables[TableId::Countries.index()]
+        {
+            if hour == 118 {
+                rows[0].tag = b"BBB".to_vec();
+            }
+            rows[0].political_power_raw = Some(i64::from(hour));
+        }
+        let wire = Arc::new(encoder.encode(input.clone(), hour == 117)?);
+        let frame = decoder.advance(&wire)?;
+        let changes = tracker.observe_updates(frame, wire.clone(), replay.format);
+        prepared.observe_changes(frame, &replay, &flag, &changes)?;
+        oracle.observe(replay.format, frame);
+        assert_eq!(
+            serde_json::to_vec(&prepared.variants)?,
+            serde_json::to_vec(&oracle)?,
+            "variant versions at {hour}"
+        );
+        assert_eq!(
+            prepared.variants.current(20).unwrap().name_tag.as_deref(),
+            Some(if hour < 141 { "AAA" } else { "BBB" })
+        );
+    }
+    Ok(())
+}

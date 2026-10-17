@@ -54,3 +54,7 @@ frame cache. Its rows and string dictionaries use the same holder selection
 before reply construction and budget checks. The reply carries the witnessed
 identity spans covering its roster observations. Join and departure dates remain
 preparing until the joint intelligence and identity prefix reaches them.
+
+Country identity comparisons follow recorded country field masks: balance-only
+deltas and equal acquisitions keep the previous key projection. Snapshots,
+identity edits and membership changes use the complete key comparison.

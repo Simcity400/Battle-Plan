@@ -1777,3 +1777,105 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
         );
     }
 }
+
+fn presentation_inventory_work_follows_changed_holders(count: u32) {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::rows::{ProductionLineOutputRow, ProductionLineRow, TableRows};
+    let flag = AtomicBool::new(false);
+    let mut frame = observer_frame(count, false);
+    let first = frame.hour;
+    *frame.tables[TableId::ProductionLines.index()] =
+        TableView::Complete(TableRows::ProductionLines(
+            (1..=count)
+                .map(|id| ProductionLineRow {
+                    handle: u64::from(id),
+                    country: id,
+                    variant: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ProductionLineOutput.index()] =
+        TableView::Complete(TableRows::ProductionLineOutput(
+            (1..=count)
+                .map(|id| ProductionLineOutputRow {
+                    line: u64::from(id),
+                    country: id,
+                    variant: 1,
+                    units: 1,
+                    since_hour: first,
+                    exact: true,
+                    spent_raw: Recorded::Value(Some(7)),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let format = observer_format(&frame);
+    let mut state = ProductionAccumulator::new(format.version(), 1, first);
+    let mut tracker = FrameChangeTracker::new();
+    frame.metrics.table_ns[TableId::ProductionLineOutput.index()] = 1;
+    state
+        .ingest_changed(
+            format,
+            &frame,
+            Named::default(),
+            &flag,
+            &tracker.observe(&frame, format),
+        )
+        .unwrap();
+    assert_eq!(state.variants.inventory_visits, 2 * count as usize);
+    for offset in 1..=4 {
+        frame.hour = first + offset;
+        frame.metrics.table_ns.fill(0);
+        // A real presentation read with unchanged numeric inventories.
+        frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+        let before = state.variants.inventory_visits;
+        state
+            .ingest_changed(
+                format,
+                &frame,
+                Named::default(),
+                &flag,
+                &tracker.observe(&frame, format),
+            )
+            .unwrap();
+        assert_eq!(
+            state.variants.inventory_visits - before,
+            0,
+            "presentation at {count} holders must carry unchanged inventory keys"
+        );
+    }
+    frame.hour += 1;
+    frame.metrics.table_ns[TableId::ProductionLineOutput.index()] = 1;
+    if let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+        &mut *frame.tables[TableId::ProductionLineOutput.index()]
+    {
+        rows[0].units += 1;
+    }
+    let before = state.variants.inventory_visits;
+    state
+        .ingest_changed(
+            format,
+            &frame,
+            Named::default(),
+            &flag,
+            &tracker.observe(&frame, format),
+        )
+        .unwrap();
+    assert_eq!(
+        state.variants.inventory_visits - before,
+        2,
+        "only the changed holder's two keys are visited"
+    );
+}
+
+#[test]
+fn presentation_inventory_carries_keys_and_replaces_only_the_changed_holder() {
+    presentation_inventory_work_follows_changed_holders(8);
+}
+
+#[cfg(feature = "slow-tests")]
+#[test]
+fn presentation_inventory_carries_keys_at_5000_countries() {
+    presentation_inventory_work_follows_changed_holders(5000);
+}

@@ -26,3 +26,7 @@ for the dashboard's tests.
 Current requests name an hour. Running cards before history reaches that hour use the frame, the preparation observer and its episode/presentation builders. Starts and completed/cancelled history remain preparing. The separate `current` reply cannot enter History lanes or expose a fabricated start date.
 
 Current-card selections include exact holders witnessed in the requested frame, including countries not yet reached by the identity prefix.
+
+Country identity comparisons follow recorded country field masks: balance-only
+deltas and equal acquisitions keep the previous key projection. Snapshots,
+identity edits and membership changes use the complete key comparison.

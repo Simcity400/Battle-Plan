@@ -98,3 +98,14 @@ ascend by country in a decoded table), with the scan's verdicts and refusals,
 rather than from an index of every row.
 
 The `test-support` feature compiles the catalogue and scope fixtures (`catalogue::tests`, `catalogue::texture_tests`, `scope::tests`) and the test-only instrumentation, such as read counters and synthetic scripted environments, for the tests of crates above this one. Only dev-dependencies enable it.
+
+Scalar supplying-read queries reuse the same per-hour timed-table projection as
+`slot_reads`, retaining direct answers for scheduled reads and CountryIntel.
+The cache checks the format, hour and every table's timed/un-timed evidence;
+`slot_reads:refresh` labels an evidence change that rebuilds its flags.
+
+`CountryKeys::same_changes` carries a previous hour's projection through recorded
+country deltas that keep its keys, slots and tags. Without that evidence it
+compares the full key sequence. `kept_changes` checks only the row count and
+recorded masks; a caller deferring its full comparison retains any failed proof
+until that comparison. `country_keys:changed_fields` labels the mask check.

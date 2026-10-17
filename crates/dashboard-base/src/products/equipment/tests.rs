@@ -461,3 +461,252 @@ fn an_hour_between_reads_whose_variant_table_is_not_complete_ends_what_is_known(
     assert_eq!(versions, [(0, true), (2, false), (4, true)]);
     assert_eq!(catalogue.current(99), None);
 }
+
+fn catalogue_changes_carry_unchanged_operands(count: u32) {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay::rows::CountryLinkRow;
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut input = named_frame(slot_hour(TableId::VariantDefinitions), Some(b"mod design"));
+    *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("mod country {id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *input.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    let definition = input.complete::<tables::VariantDefinitions>().unwrap()[0].clone();
+    *input.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
+            (1..=count)
+                .map(|id| VariantDefinitionRow {
+                    id: u64::from(id),
+                    creator_link: 1,
+                    ..definition.clone()
+                })
+                .collect(),
+        ));
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut changed = VariantCatalogue::default();
+    let mut whole = VariantCatalogue::default();
+    let first = input.hour;
+    let mut refused = None;
+    for offset in 0..=18 {
+        if offset == 12 {
+            continue;
+        }
+        input.hour = first + offset;
+        input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+        match offset {
+            1 => {
+                if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                    &mut *input.tables[TableId::LexicalTokens.index()]
+                {
+                    rows.push(LexicalTokenRow {
+                        token: 1_000_000,
+                        literal: b"unused token".to_vec(),
+                    });
+                }
+            }
+            2 => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *input.tables[TableId::Countries.index()]
+                {
+                    rows[0].political_power_raw = Some(123);
+                }
+            }
+            3 => {
+                if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                    &mut *input.tables[TableId::VariantDefinitions.index()]
+                {
+                    rows[0].display_name = b"renamed design".to_vec();
+                }
+            }
+            6 => {
+                refused = Some(std::mem::replace(
+                    &mut input.tables[TableId::VariantDefinitions.index()],
+                    TableView::Unavailable {
+                        reason: "fixture refusal".into(),
+                    }
+                    .into(),
+                ));
+            }
+            7 => {
+                input.tables[TableId::VariantDefinitions.index()] = refused.take().unwrap();
+                input.metrics.table_ns[TableId::VariantDefinitions.index()] = 0;
+                input.metrics.table_ns[TableId::VariantModules.index()] = 0;
+            }
+            10 => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *input.tables[TableId::Countries.index()]
+                {
+                    rows[0].tag = b"mod transferred creator".to_vec();
+                }
+            }
+            15 => {
+                if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                    &mut *input.tables[TableId::VariantDefinitions.index()]
+                {
+                    rows.remove(0);
+                }
+            }
+            _ => {}
+        }
+        let wire = Arc::new(
+            encoder
+                .encode(input.clone(), offset == 0 || offset == 5 || offset == 11)
+                .unwrap(),
+        );
+        let frame = decoder.advance(&wire).unwrap();
+        let changes = tracker.observe_updates(frame, Arc::clone(&wire), format);
+        let before = changed.work.row_visits;
+        let actual = changed.observe_changed(format, frame, &changes);
+        let expected = whole.observe_versions(format, frame, None);
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&expected).unwrap(),
+            "changed versions at {offset}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&changed).unwrap(),
+            serde_json::to_vec(&whole).unwrap(),
+            "hour {offset}"
+        );
+        if [1, 2, 4].contains(&offset) {
+            assert!(
+                changed.work.row_visits - before <= 1,
+                "unchanged operands must not walk {count} countries or variants at hour {offset}"
+            );
+        }
+        if [4, 11].contains(&offset) {
+            changed = serde_json::from_slice(&serde_json::to_vec(&changed).unwrap()).unwrap();
+            tracker.invalidate();
+        }
+    }
+}
+
+#[test]
+fn catalogue_changes_match_whole_reads_across_snapshots_resume_append_gaps_and_refusals() {
+    catalogue_changes_carry_unchanged_operands(8);
+}
+
+#[cfg(feature = "slow-tests")]
+#[test]
+fn catalogue_unchanged_operands_do_not_walk_5000_countries_or_variants() {
+    catalogue_changes_carry_unchanged_operands(5000);
+}
+
+#[test]
+fn variant_weak_country_identity_cannot_clear_pending_invalidation() {
+    use crate::prepared::frame_changes::FrameChanges;
+    for invalidation in [
+        "identity",
+        "delete",
+        "count",
+        "snapshot",
+        "gap",
+        "unavailable",
+    ] {
+        let first = named_frame(117, Some(b"mod design"));
+        let mut reads = VariantReads::default();
+        reads.build(&first, false);
+        let keys = reads.keys.as_ref().unwrap().clone();
+        let mut intervening = first.clone();
+        intervening.hour = if invalidation == "gap" { 119 } else { 118 };
+        match invalidation {
+            "identity" => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *intervening.tables[TableId::Countries.index()]
+                {
+                    rows[0].tag = b"BBB".to_vec();
+                }
+            }
+            "delete" => {
+                *intervening.tables[TableId::Countries.index()] =
+                    TableView::Complete(TableRows::Countries(vec![]))
+            }
+            "count" => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *intervening.tables[TableId::Countries.index()]
+                {
+                    rows.push(CountryRow {
+                        id: 10_000,
+                        canonical_slot: 10_000,
+                        tag: b"mod added".to_vec(),
+                        ..Default::default()
+                    });
+                }
+            }
+            "unavailable" => {
+                *intervening.tables[TableId::Countries.index()] = TableView::Unavailable {
+                    reason: "fixture country refusal".into(),
+                }
+            }
+            _ => {}
+        }
+        let changes = FrameChanges::alone(&intervening, replay::format::FormatVersion::CURRENT);
+        reads.carry_keys(&intervening, &changes);
+        // Even returning to the original live allocation cannot erase the
+        // intervening invalidation. Only the full key comparison can confirm it.
+        let mut restored = first.clone();
+        restored.hour = intervening.hour + 1;
+        let changes = FrameChanges {
+            rows_changed: [false; replay::frame::TABLE_COUNT],
+            table_read: [false; replay::frame::TABLE_COUNT],
+            slot_read: [false; replay::frame::TABLE_COUNT],
+            updates: None,
+        };
+        reads.carry_keys(&restored, &changes);
+        let before = keys.row_visits();
+        assert!(reads.build(&restored, false).is_empty());
+        assert_eq!(
+            keys.row_visits() - before,
+            1,
+            "{invalidation}: weak identity must not bypass the pending full comparison"
+        );
+    }
+}
+
+#[test]
+fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
+    use crate::prepared::frame_changes::FrameChanges;
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut input = named_frame(117, Some(b"mod design"));
+    input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+    let mut catalogue = VariantCatalogue::default();
+    catalogue.observe_changed(format, &input, &FrameChanges::alone(&input, format));
+    let keys = catalogue.reads.keys.as_ref().unwrap().clone();
+    catalogue.advance(140);
+    input.hour = 141;
+    let mut changes = FrameChanges {
+        rows_changed: [false; replay::frame::TABLE_COUNT],
+        table_read: [false; replay::frame::TABLE_COUNT],
+        slot_read: [false; replay::frame::TABLE_COUNT],
+        updates: None,
+    };
+    changes.slot_read[TableId::VariantDefinitions.index()] = true;
+    let before = keys.row_visits();
+    assert!(
+        catalogue
+            .observe_changed(format, &input, &changes)
+            .is_empty()
+    );
+    assert_eq!(
+        keys.row_visits() - before,
+        1,
+        "an advance without country deltas must not restore the weak proof"
+    );
+}

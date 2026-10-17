@@ -44,3 +44,8 @@ availability operands; every hour still consumes its signed drain, including an
 equal one. Country balance changes keep the slot projection, and unchanged typed
 read keys keep their saved serialized text. These joins and comparisons rebuild
 at resume; recorded rows, published pages and saved loss operands keep their order.
+
+Variant naming observes each accepted hour through the shared changed-operand
+catalogue. It carries unchanged country keys and variant operands, reads changes
+at the variant's supplying slot, and forgets names at gaps or incomplete reads.
+The transient operand cache rebuilds after restoration.

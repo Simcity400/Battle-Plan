@@ -29,6 +29,13 @@ pub(super) fn remove_pending(
     visits
 }
 
+#[derive(Clone)]
+struct AdvancingDeadlines {
+    captures: Arc<[(u32, i32)]>,
+    through: i32,
+    next: Option<i32>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Clock {
     pub through: Option<i32>,
@@ -59,6 +66,11 @@ pub(super) struct Clock {
     pub holders: BTreeSet<String>,
     #[serde(skip)]
     pub census_known: bool,
+    #[serde(skip)]
+    advancing_deadlines: Option<AdvancingDeadlines>,
+    #[cfg(test)]
+    #[serde(skip)]
+    deadline_visits: usize,
 }
 
 impl Scanned {
@@ -154,6 +166,7 @@ impl Scanned {
     /// Country balances are not identity operands. The shared projection avoids
     /// joins when only those unrelated fields supplied a new allocation.
     pub(super) fn inputs_changed(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
+        self.clock.advancing_deadlines = None;
         let refused_tags: Vec<_> = if changes.rows_changed[TableId::Countries.index()]
             || changes.table_read[TableId::Countries.index()]
         {
@@ -229,12 +242,13 @@ impl Scanned {
     /// it from its changed rows, observing again no row not yet recorded as
     /// an event, dirtying no country and checking none again; no linked
     /// capture is due once the captures moved; and [`Self::advances_only`]
-    /// holds. Nothing is changed.
+    /// holds. No accounting state changes; deadline checks can retain a
+    /// transient proof.
     pub(super) fn certified_advance(
-        &self,
+        &mut self,
         frame: &DecodedFrame,
         changes: &FrameChanges,
-        advanced: &[(u32, i32)],
+        advanced: &Arc<[(u32, i32)]>,
         day_due: bool,
     ) -> bool {
         let read = |table: TableId| {
@@ -282,9 +296,60 @@ impl Scanned {
             }
         }
         // The captures due at the hour that the whole accounting observes.
-        !self.clock.next.is_some_and(|next| {
-            next <= frame.hour && inputs.due_after_advance(next, frame.hour, advanced)
-        })
+        !self
+            .clock
+            .next
+            .is_some_and(|next| next <= frame.hour && self.captures_due(next, frame.hour, advanced))
+    }
+
+    /// During one certified span only these captures' last hours and expiries
+    /// move. Every other linked deadline keeps its date until an ordinary join.
+    fn captures_due(&mut self, next: i32, hour: i32, captures: &Arc<[(u32, i32)]>) -> bool {
+        if let Some(held) = &mut self.clock.advancing_deadlines
+            && Arc::ptr_eq(&held.captures, captures)
+            && held.through.checked_add(1) == Some(hour)
+        {
+            held.through = hour;
+            let due = held.next.is_some_and(|next| next <= hour);
+            #[cfg(test)]
+            assert_eq!(due, self.inputs.due_after_advance(next, hour, captures));
+            return due;
+        }
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:capture_deadlines");
+        let due = self.inputs.deadlines.range(next..).find_map(|(&at, raws)| {
+            raws.iter()
+                .any(|raw| {
+                    #[cfg(test)]
+                    {
+                        self.clock.deadline_visits += 1;
+                    }
+                    if !self.inputs.links.contains_key(raw) {
+                        return false;
+                    }
+                    let moving = captures.binary_search_by_key(raw, |&(raw, _)| raw).ok();
+                    match moving {
+                        None => true,
+                        Some(index) if at > hour => captures[index].1 == at,
+                        Some(index) => {
+                            at != hour
+                                && !(Some(at) == hour.checked_sub(1) && captures[index].1 != at)
+                        }
+                    }
+                })
+                .then_some(at)
+        });
+        // A captured future start can coincide with an expiry removed by a
+        // later advance. Keep checking those unusual intervals at each hour.
+        self.clock.advancing_deadlines =
+            captures
+                .iter()
+                .all(|(_, since)| *since < hour)
+                .then(|| AdvancingDeadlines {
+                    captures: Arc::clone(captures),
+                    through: hour,
+                    next: due,
+                });
+        due.is_some_and(|next| next <= hour)
     }
 
     /// [`Self::inputs_changed`] of an hour [`Self::certified_advance`]
@@ -550,5 +615,80 @@ impl Scanned {
             }
         }
         self.pending_known = true;
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    fn advancing_deadlines_follow_their_span(count: u32) {
+        let mut scan = Scanned::default();
+        let captures: Arc<[(u32, i32)]> = (1..=count).map(|id| (id, 0)).collect();
+        let inputs = Arc::make_mut(&mut scan.inputs);
+        inputs.links = (1..=count + 1).map(|id| (id, id)).collect();
+        // The captures at every accepted hour expire at the next, while a
+        // different country's future deadline must still stop the carry.
+        inputs.deadlines.insert(1, (1..=count).collect());
+        inputs.deadlines.insert(6, BTreeSet::from([count + 1]));
+        for hour in 1..=6 {
+            let before = scan.clock.deadline_visits;
+            let expected = scan.inputs.due_after_advance(hour, hour, &captures);
+            assert_eq!(
+                scan.captures_due(hour, hour, &captures),
+                expected,
+                "hour {hour}"
+            );
+            if hour > 1 {
+                assert_eq!(
+                    scan.clock.deadline_visits, before,
+                    "unchanged advancing membership walked {count} captures"
+                );
+            }
+            assert_eq!(expected, hour == 6);
+            let inputs = Arc::make_mut(&mut scan.inputs);
+            let mut moving = inputs.deadlines.remove(&hour).unwrap();
+            moving.remove(&(count + 1));
+            inputs.deadlines.entry(hour + 1).or_default().extend(moving);
+        }
+        // Another span, even with the same rows, cannot use the former proof.
+        let replacement: Arc<[(u32, i32)]> = captures.to_vec().into();
+        let before = scan.clock.deadline_visits;
+        assert_eq!(
+            scan.captures_due(7, 7, &replacement),
+            scan.inputs.due_after_advance(7, 7, &replacement)
+        );
+        assert!(scan.clock.deadline_visits > before);
+    }
+
+    #[test]
+    fn future_capture_starts_keep_each_hours_exact_deadline_check() {
+        let mut scan = Scanned::default();
+        let captures: Arc<[(u32, i32)]> = vec![(1, 3)].into();
+        Arc::make_mut(&mut scan.inputs).links.insert(1, 1);
+        for hour in 1..=4 {
+            let inputs = Arc::make_mut(&mut scan.inputs);
+            inputs.deadlines.clear();
+            inputs.deadlines.insert(hour, BTreeSet::from([1]));
+            if hour < 3 {
+                inputs.deadlines.insert(3, BTreeSet::from([1]));
+            }
+            let expected = scan.inputs.due_after_advance(hour, hour, &captures);
+            assert_eq!(scan.captures_due(hour, hour, &captures), expected);
+            if hour <= 3 {
+                assert!(scan.clock.advancing_deadlines.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn capture_deadlines_carry_membership_but_reach_other_countries_deadlines() {
+        advancing_deadlines_follow_their_span(8);
+    }
+
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn capture_deadlines_do_not_revisit_5000_captures_each_hour_of_a_span() {
+        advancing_deadlines_follow_their_span(5000);
     }
 }

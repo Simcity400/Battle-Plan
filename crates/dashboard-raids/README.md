@@ -31,3 +31,7 @@ invalidate them, while coverage re-asks reuse retained observations.
 The local scan precedes the older-key proof. A look-back containing no raid
 keys needs no older read; a missing country anchor leaves the window pending
 without starting that read.
+
+Country identity comparisons follow recorded country field masks: balance-only
+deltas and equal acquisitions keep the previous key projection. Snapshots,
+identity edits and membership changes use the complete key comparison.

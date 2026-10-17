@@ -203,11 +203,82 @@ struct ProductionVariants {
     reads: VariantReads,
     catalogue: VariantCatalogue,
     classified: HashSet<u64>,
+    inventory: [BTreeMap<String, VariantInventory>; 2],
+    members: BTreeMap<u64, VariantMembers>,
+    #[cfg(test)]
+    inventory_visits: usize,
     #[cfg(test)]
     classifications: usize,
 }
 
+/// Inventory versions authenticate the keys used by presentation independently
+/// of quantities, supplying dates and country names.
+struct VariantInventory {
+    versions: [Option<(Identity, u64)>; 2],
+    members: BTreeMap<u64, [bool; 4]>,
+}
+#[derive(Default)]
+struct VariantMembers {
+    seen: [usize; 4],
+    selected: usize,
+}
+
 impl ProductionVariants {
+    fn inventory(
+        &mut self,
+        countries: Option<&crate::products::territory::CountryReads>,
+        tracks: [&BTreeMap<String, TagHistory>; 2],
+    ) {
+        let _cpu = ::replay::cpu::scope_phase("production:inventory_changes");
+        for (source, tracks) in tracks.into_iter().enumerate() {
+            let held = &mut self.inventory[source];
+            let removed: Vec<_> = held
+                .keys()
+                .filter(|tag| {
+                    !countries.is_some_and(|countries| countries.holders().contains_key(*tag))
+                        || !tracks.contains_key(*tag)
+                })
+                .cloned()
+                .collect();
+            for tag in removed {
+                let old = held.remove(&tag).expect("removed presentation holder");
+                change_members(&mut self.members, &old.members, source, false);
+            }
+            for tag in countries
+                .into_iter()
+                .flat_map(|countries| countries.holders().keys())
+            {
+                let Some(track) = tracks.get(tag) else {
+                    continue;
+                };
+                let versions = [track.taken, track.cost_taken];
+                if versions.iter().all(Option::is_some)
+                    && held.get(tag).is_some_and(|held| held.versions == versions)
+                {
+                    continue;
+                }
+                if let Some(old) = held.remove(tag) {
+                    change_members(&mut self.members, &old.members, source, false);
+                }
+                let mut members: BTreeMap<u64, [bool; 4]> = BTreeMap::new();
+                for (cost, &(variant, refit)) in track
+                    .current
+                    .keys()
+                    .map(|entry| (0, entry))
+                    .chain(track.cost_current.keys().map(|entry| (2, entry)))
+                {
+                    #[cfg(test)]
+                    {
+                        self.inventory_visits += 1;
+                    }
+                    members.entry(variant).or_default()[cost + usize::from(refit)] = true;
+                }
+                change_members(&mut self.members, &members, source, true);
+                held.insert(tag.clone(), VariantInventory { versions, members });
+            }
+        }
+    }
+
     fn read(&mut self, frame: &DecodedFrame, refusals: &mut crate::catalogue::Refusals) {
         for (id, raw) in self.reads.build(frame, false) {
             for (_, reason) in &raw.refusals {
@@ -226,6 +297,36 @@ impl ProductionVariants {
             .versions
             .retain(|id, _| self.reads.contains(*id));
         self.classified.retain(|id| self.reads.contains(*id));
+    }
+}
+
+fn change_members(
+    counts: &mut BTreeMap<u64, VariantMembers>,
+    members: &BTreeMap<u64, [bool; 4]>,
+    source: usize,
+    add: bool,
+) {
+    for (&variant, seen) in members {
+        let count = counts.entry(variant).or_default();
+        for (count, seen) in count.seen.iter_mut().zip(seen) {
+            if *seen {
+                if add {
+                    *count += 1;
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+        if source == 0 || variant != 0 {
+            if add {
+                count.selected += 1;
+            } else {
+                count.selected -= 1;
+            }
+        }
+        if count.seen == [0; 4] {
+            counts.remove(&variant);
+        }
     }
 }
 
@@ -1496,42 +1597,20 @@ impl ProductionAccumulator {
         if complete_names {
             self.variants.read(frame, &mut self.variant_refusals);
         }
+        self.variants.inventory(
+            self.country_reads.as_ref(),
+            [&self.result.tags, &self.result.rocket.tags],
+        );
         let empty = VariantCatalogue::default();
         let catalogue = if complete_names {
             &self.variants.catalogue
         } else {
             &empty
         };
-        let variants = self
-            .country_reads
-            .as_ref()
-            .into_iter()
-            .flat_map(|reads| reads.holders().keys())
-            .filter_map(|tag| self.result.tags.get(tag))
-            .flat_map(|track| {
-                track
-                    .current
-                    .keys()
-                    .chain(track.cost_current.keys())
-                    .map(|entry| entry.0)
-            })
-            .chain(
-                self.country_reads
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|reads| reads.holders().keys())
-                    .filter_map(|tag| self.result.rocket.tags.get(tag))
-                    .flat_map(|track| {
-                        track
-                            .current
-                            .keys()
-                            .chain(track.cost_current.keys())
-                            .map(|entry| entry.0)
-                            .filter(|variant| *variant != 0)
-                    }),
-            )
-            .collect::<BTreeSet<_>>();
-        for variant in variants {
+        for (&variant, members) in &self.variants.members {
+            if members.selected == 0 {
+                continue;
+            }
             let token = catalogue.token(variant);
             if let Some(kind) = self.classifications.get_mut(&variant) {
                 if token.is_empty() {
@@ -1575,25 +1654,10 @@ impl ProductionAccumulator {
                 self.variants.classified.insert(variant);
             }
         }
-        for track in self
-            .country_reads
-            .as_ref()
-            .into_iter()
-            .flat_map(|reads| reads.holders().keys())
-            .flat_map(|tag| {
-                [self.result.tags.get(tag), self.result.rocket.tags.get(tag)]
-                    .into_iter()
-                    .flatten()
-            })
-        {
-            for entry in track.current.keys() {
-                if let Some(kind) = self.classifications.get_mut(&entry.0) {
-                    kind.seen[usize::from(entry.1)] = true;
-                }
-            }
-            for entry in track.cost_current.keys() {
-                if let Some(kind) = self.classifications.get_mut(&entry.0) {
-                    kind.seen[2 + usize::from(entry.1)] = true;
+        for (&variant, members) in &self.variants.members {
+            if let Some(kind) = self.classifications.get_mut(&variant) {
+                for (seen, count) in kind.seen.iter_mut().zip(members.seen) {
+                    *seen |= count != 0;
                 }
             }
         }

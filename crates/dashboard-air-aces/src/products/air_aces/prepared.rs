@@ -807,6 +807,152 @@ mod tests {
         }
     }
 
+    fn intervening_country_identity(count: u32) {
+        use dashboard_base::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
+        use replay::{
+            frame::{FrameDecoder, FrameEncoder},
+            rows::CountryRow,
+        };
+        for invalidation in [
+            "rename",
+            "rename_without_delta",
+            "link",
+            "slot",
+            "delete",
+            "insert",
+            "snapshot",
+            "gap",
+            "unavailable",
+        ] {
+            let mut input =
+                super::super::tests::frame(117, vec![super::super::tests::ace(1, true)]);
+            let mut countries = input.complete::<tables::Countries>().unwrap().to_vec();
+            countries[0].tag = b"AAA".to_vec();
+            countries.extend((1..count).map(|id| CountryRow {
+                id: 9001 + id,
+                canonical_slot: 7 + id,
+                tag: format!("mod country {id}").into_bytes(),
+                ..Default::default()
+            }));
+            countries[1].tag = b"BBB".to_vec();
+            *input.tables[TableId::Countries.index()] =
+                TableView::Complete(TableRows::Countries(countries.clone()));
+            let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
+            let mut encoder = FrameEncoder::new();
+            let mut decoder = FrameDecoder::new();
+            let mut tracker = FrameChangeTracker::new();
+            let mut state = Prepared::default();
+            let mut oracle = Prepared::default();
+            for hour in 117..=141 {
+                if invalidation == "gap" && hour == 118 {
+                    continue;
+                }
+                input.hour = hour;
+                input.metrics.table_ns.fill(0);
+                if hour == 117 || hour == 141 {
+                    input.metrics.table_ns[TableId::AirAces.index()] = 1;
+                }
+                if hour == 118 {
+                    match invalidation {
+                        "rename" | "rename_without_delta" => countries[0].tag = b"BBB".to_vec(),
+                        "link" => {
+                            if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                                &mut *input.tables[TableId::CountryLinks.index()]
+                            {
+                                rows.iter_mut()
+                                    .find(|row| row.id == 11)
+                                    .unwrap()
+                                    .canonical_slot = countries[1].canonical_slot;
+                            }
+                        }
+                        "slot" => countries[0].canonical_slot += 100_000,
+                        "delete" => {
+                            countries.remove(0);
+                        }
+                        "insert" => countries.push(CountryRow {
+                            id: 100_000,
+                            canonical_slot: 100_000,
+                            tag: b"mod added".to_vec(),
+                            ..Default::default()
+                        }),
+                        _ => {}
+                    }
+                }
+                if hour != 141 || invalidation != "rename_without_delta" {
+                    countries[0].political_power_raw = Some(i64::from(hour));
+                }
+                *input.tables[TableId::Countries.index()] =
+                    if hour == 118 && invalidation == "unavailable" {
+                        TableView::Unavailable {
+                            reason: "fixture country refusal".into(),
+                        }
+                    } else {
+                        TableView::Complete(TableRows::Countries(countries.clone()))
+                    };
+                let wire = Arc::new(
+                    encoder
+                        .encode(
+                            input.clone(),
+                            hour == 117 || hour == 118 && invalidation == "snapshot",
+                        )
+                        .unwrap(),
+                );
+                let frame = decoder.advance(&wire).unwrap();
+                let changes = tracker.observe_updates(frame, wire.clone(), replay.format);
+                let before = state.scan.work.row_visits;
+                let keys = state.scan.country_keys.clone();
+                let key_visits = keys.as_ref().map_or(0, |keys| keys.row_visits());
+                state.observe_changed(frame, &replay, &changes).unwrap();
+                if hour == 141 && matches!(invalidation, "snapshot" | "unavailable") {
+                    assert_eq!(
+                        keys.unwrap().row_visits() - key_visits,
+                        count as usize,
+                        "{invalidation}: the next roster must compare the full country projection"
+                    );
+                }
+                oracle
+                    .observe_changed(frame, &replay, &FrameChanges::alone(frame, replay.format))
+                    .unwrap();
+                if hour != 117 && hour != 141 {
+                    assert!(
+                        state.scan.work.row_visits - before <= 1,
+                        "{invalidation}: unread hour must not walk {count} country keys"
+                    );
+                }
+            }
+            state.scan.close(141);
+            oracle.scan.close(141);
+            state.seal_portraits();
+            oracle.seal_portraits();
+            assert_eq!(
+                serde_json::to_vec(&state).unwrap(),
+                serde_json::to_vec(&oracle).unwrap(),
+                "{invalidation}: continuation and portrait bytes"
+            );
+            if invalidation.starts_with("rename") || invalidation == "link" {
+                assert_eq!(
+                    state.scan.aces[0].runs.last().unwrap().facts.tag.as_deref(),
+                    Some("BBB")
+                );
+                assert_eq!(
+                    state.portrait_at(1, 141).unwrap().tag.as_deref(),
+                    Some("BBB")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn aces_country_identity_changes_between_roster_reads_match_hourly_bytes() {
+        intervening_country_identity(8);
+    }
+
+    #[test]
+    #[cfg(feature = "slow-tests")]
+    fn aces_unread_hours_do_not_walk_5000_country_keys_after_invalidation() {
+        intervening_country_identity(5000);
+    }
+
     #[test]
     #[cfg_attr(
         not(feature = "slow-tests"),

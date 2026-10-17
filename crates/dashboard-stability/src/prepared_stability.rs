@@ -421,8 +421,16 @@ pub(crate) fn record(
             key: next,
             holder: None,
         });
+    #[cfg(not(test))]
+    let whole = false;
+    #[cfg(test)]
+    let whole = WHOLE_RECORDS.with(std::cell::Cell::get);
     let Some(value) = value else {
-        batch.observe(actor.key, hour, None, false);
+        if whole {
+            batch.observe(actor.key, hour, None, false);
+        } else {
+            batch.observe_if_changed(actor.key, hour, None, false, false);
+        }
         actor.holder = None;
         return Ok(());
     };
@@ -430,12 +438,20 @@ pub(crate) fn record(
         && actor
             .holder
             .is_some_and(|seen| (seen.0, seen.1) == (holder.0, holder.1));
-    batch.observe_boundary(actor.key, hour, Some(value), !same_holder, boundary);
+    let observed = if whole {
+        batch.observe_boundary(actor.key, hour, Some(value), !same_holder, boundary);
+        true
+    } else {
+        batch.observe_if_changed(actor.key, hour, Some(value), !same_holder, boundary)
+    };
+    // A carried value proves continuity. Ordinary observation materializes
+    // this key through the hour before its state is inspected.
     let follows = same_holder
-        && batch
-            .state(actor.key)
-            .and_then(|state| state.last)
-            .is_some_and(|run| run.first_hour != hour || !run.break_before);
+        && (!observed
+            || batch
+                .state(actor.key)
+                .and_then(|state| state.last)
+                .is_some_and(|run| run.first_hour != hour || !run.break_before));
     let first = if follows {
         actor.holder.unwrap().3
     } else {
@@ -459,6 +475,11 @@ pub(crate) fn record(
         actor.holder = Some(next_holder);
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static WHOLE_RECORDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]

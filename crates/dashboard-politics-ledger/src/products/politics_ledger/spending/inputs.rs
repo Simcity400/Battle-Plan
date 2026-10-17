@@ -198,7 +198,9 @@ fn advance_deadlines(
     deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
     advanced: &[(u32, i32)],
     hour: i32,
+    carried: bool,
 ) {
+    let _cpu = ::replay::cpu::scope_phase("politics_ledger:expiry_changes");
     if advanced.is_empty() {
         return;
     }
@@ -219,7 +221,12 @@ fn advance_deadlines(
     let mut moving = match deadlines.remove(&hour) {
         Some(due)
             if due.len() == advanced.len()
-                && due.iter().zip(advanced).all(|(due, (raw, _))| due == raw) =>
+                && (carried
+                    || due.iter().zip(advanced).all(|(due, (raw, _))| {
+                        #[cfg(test)]
+                        DEADLINE_MEMBERSHIP_VISITS.with(|visits| visits.set(visits.get() + 1));
+                        due == raw
+                    })) =>
         {
             due
         }
@@ -238,6 +245,11 @@ fn advance_deadlines(
     if let Some(next) = hour.checked_add(1) {
         deadlines.entry(next).or_default().append(&mut moving);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static DEADLINE_MEMBERSHIP_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// What a join holds: its event views once, and every country, link,
@@ -1040,7 +1052,7 @@ impl Inputs {
             self.witnesses.insert(raw, row.clone());
         }
         advanced.sort_unstable_by_key(|&(raw, _)| raw);
-        advance_deadlines(&mut self.deadlines, &advanced, frame.hour);
+        advance_deadlines(&mut self.deadlines, &advanced, frame.hour, false);
         self.advanced = advanced;
         self.identity_slots.extend(
             self.identity_countries
@@ -1391,6 +1403,12 @@ impl Inputs {
         let read = |table: TableId| {
             changes.rows_changed[table.index()] || changes.table_read[table.index()]
         };
+        // The prior advance inserted every one of these captures into this
+        // hour's expiry bucket. With the same membership and bucket size no
+        // key comparison is needed; extra fixed deadlines still take the join.
+        let carried = self.deferred.as_ref().is_some_and(|(deferred, through)| {
+            Arc::ptr_eq(deferred, advanced) && through.checked_add(1) == Some(frame.hour)
+        });
         // Captures other than those deferred reach their last hour first.
         if self
             .deferred
@@ -1409,7 +1427,7 @@ impl Inputs {
         self.countries_changed = false;
         let links = read(TableId::CountryLinks);
         let coverage_read = read(TableId::PoliticsCaptureCoverage);
-        advance_deadlines(&mut self.deadlines, advanced, frame.hour);
+        advance_deadlines(&mut self.deadlines, advanced, frame.hour, carried);
         self.deferred = Some((Arc::clone(advanced), frame.hour));
         self.identity_changed = links || coverage_read;
         self.power_changed = read(TableId::CountryPowerChanges);
@@ -1479,6 +1497,7 @@ impl Inputs {
     /// Whether, once `advanced` (in country order) extended to `hour` and
     /// their expiries moved, a linked capture is due from `next` through
     /// `hour`: the captures the whole accounting observes there.
+    #[cfg(test)]
     pub(super) fn due_after_advance(&self, next: i32, hour: i32, advanced: &[(u32, i32)]) -> bool {
         self.deadlines.range(next..=hour).any(|(&at, raws)| {
             raws.iter().any(|raw| {
@@ -2078,6 +2097,38 @@ mod tests {
         }
     }
 
+    fn assert_carried_expiries(count: u32) {
+        let advanced: Vec<_> = (1..=count).map(|id| (id, 0)).collect();
+        let raw: BTreeSet<_> = (1..=count).collect();
+        let mut deadlines = BTreeMap::from([(0, raw.clone()), (1, raw)]);
+        let mut oracle = deadlines.clone();
+        for hour in 1..=8 {
+            let before = DEADLINE_MEMBERSHIP_VISITS.with(std::cell::Cell::get);
+            advance_deadlines(&mut deadlines, &advanced, hour, hour != 1);
+            one_at_a_time(&mut oracle, &advanced, hour);
+            assert_eq!(deadlines, oracle);
+            let visits = DEADLINE_MEMBERSHIP_VISITS.with(std::cell::Cell::get) - before;
+            assert_eq!(visits, if hour == 1 { count as usize } else { 0 });
+        }
+        // An extra unlinked deadline stays behind when the captures advance.
+        deadlines.get_mut(&9).unwrap().insert(count + 1);
+        oracle.get_mut(&9).unwrap().insert(count + 1);
+        advance_deadlines(&mut deadlines, &advanced, 9, true);
+        one_at_a_time(&mut oracle, &advanced, 9);
+        assert_eq!(deadlines, oracle);
+    }
+
+    #[test]
+    fn certified_expiry_buckets_carry_their_membership() {
+        assert_carried_expiries(8);
+    }
+
+    #[cfg(feature = "slow-tests")]
+    #[test]
+    fn certified_expiry_buckets_do_not_compare_5000_keys_every_hour() {
+        assert_carried_expiries(5000);
+    }
+
     /// Captures advancing together move their deadlines exactly as one at a
     /// time: every capture due advancing, some not (a stale capture still
     /// due, one stopped long before), captures begun the hour before or at
@@ -2141,7 +2192,7 @@ mod tests {
             let mut expected = deadlines.clone();
             one_at_a_time(&mut expected, &advanced, hour);
             advanced.sort_unstable_by_key(|&(raw, _)| raw);
-            advance_deadlines(&mut deadlines, &advanced, hour);
+            advance_deadlines(&mut deadlines, &advanced, hour, false);
             assert_eq!(deadlines, expected, "case {case}");
             assert!(
                 deadlines.values().all(|raws| !raws.is_empty()),

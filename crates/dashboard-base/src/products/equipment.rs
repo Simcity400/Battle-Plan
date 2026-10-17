@@ -189,8 +189,13 @@ pub struct VariantVersion {
 /// countries' keys, links, appearance and the lexical tokens its names and
 /// design read, or a definition's own row, modules or upgrades. The dictionary
 /// keeps only those spellings and a weak identity, leaving its decoder unshared.
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct VariantReads {
+    countries: Option<ViewIdentity>,
+    country_at: Option<(u64, i32)>,
+    country_dirty: bool,
+    #[cfg(any(test, feature = "test-support"))]
+    work: crate::prepared::observer_tests::Work,
     keys: Option<crate::metadata::CountryKeys>,
     links: Option<SharedView>,
     appearance: Option<SharedView>,
@@ -204,6 +209,7 @@ pub(crate) struct VariantReads {
 
 /// A definition's inputs at a read: its row, and its modules and upgrades in
 /// recorded order (None where either table was not complete).
+#[derive(Clone, Debug)]
 struct VariantInput {
     definition: VariantDefinitionRow,
     design: Option<(Vec<VariantModuleRow>, Vec<VariantUpgradeRow>)>,
@@ -241,6 +247,36 @@ fn same_design(
 }
 
 impl VariantReads {
+    /// Carry the key projection through consecutive country deltas that touch
+    /// no identity field. A skipped hour or a snapshot requires comparison.
+    fn carry_keys(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) {
+        let continuous = self.country_at.is_some_and(|(branch, hour)| {
+            branch == frame.branch && hour.checked_add(1) == Some(frame.hour)
+        });
+        self.country_at = Some((frame.branch, frame.hour));
+        self.country_dirty = self.country_dirty
+            || !continuous
+            || self.keys.as_ref().is_none_or(|keys| {
+                #[cfg(any(test, feature = "test-support"))]
+                let before = keys.row_visits();
+                let kept = frame.complete::<tables::Countries>().is_ok_and(|rows| {
+                    keys.kept_changes(rows.len(), changes.rows(TableId::Countries))
+                });
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += keys.row_visits() - before;
+                }
+                !kept
+            });
+        if !self.country_dirty {
+            self.countries = Some(frame.tables[TableId::Countries.index()].identity());
+        }
+    }
+
     pub(crate) fn contains(&self, id: u64) -> bool {
         self.inputs.contains_key(&id)
     }
@@ -270,12 +306,32 @@ impl VariantReads {
         };
         let same_lexical = self.lexical.as_ref().is_some_and(|(identity, held)| {
             identity.is(view(TableId::LexicalTokens))
-                || held
-                    .iter()
-                    .all(|(&token, literal)| literal.as_ref() == spelling(token))
+                || held.iter().all(|(&token, literal)| {
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        self.work.row_visits += 1;
+                    }
+                    literal.as_ref() == spelling(token)
+                })
         });
+        let same_countries = !all
+            && ((!self.country_dirty
+                && self
+                    .countries
+                    .as_ref()
+                    .is_some_and(|held| held.is(view(TableId::Countries))))
+                || self.keys.as_ref().is_some_and(|keys| {
+                    #[cfg(any(test, feature = "test-support"))]
+                    let before = keys.row_visits();
+                    let same = keys.same(countries);
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        self.work.row_visits += keys.row_visits() - before;
+                    }
+                    same
+                }));
         let context = !all
-            && self.keys.as_ref().is_some_and(|keys| keys.same(countries))
+            && same_countries
             && same_view(self.links.as_ref(), view(TableId::CountryLinks))
             && same_view(self.appearance.as_ref(), view(TableId::CountryAppearance))
             && same_lexical;
@@ -288,6 +344,9 @@ impl VariantReads {
                 .as_ref()
                 .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantDefinitions)))
         {
+            self.countries = Some(view(TableId::Countries).identity());
+            self.country_at = Some((frame.branch, frame.hour));
+            self.country_dirty = false;
             if let Some((identity, _)) = &mut self.lexical {
                 *identity = view(TableId::LexicalTokens).identity();
             }
@@ -304,8 +363,21 @@ impl VariantReads {
         let mut built = Vec::new();
         let mut inputs = HashMap::with_capacity(definitions.len());
         for definition in definitions {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.work.row_visits += 1;
+            }
             let id = definition.id;
             let held = self.inputs.remove(&id);
+            if context
+                && designs
+                && held
+                    .as_ref()
+                    .is_some_and(|held| held.definition == *definition)
+            {
+                inputs.insert(id, held.expect("unchanged variant inputs"));
+                continue;
+            }
             // With both design tables unchanged, a held design is this read's.
             let rows: Option<(Vec<&VariantModuleRow>, Vec<&VariantUpgradeRow>)> =
                 match (&held, designs) {
@@ -341,7 +413,14 @@ impl VariantReads {
                 inputs.insert(id, held);
                 continue;
             }
-            let tags = tags.get_or_insert_with(|| Tags::new(countries, links, appearance));
+            let tags = tags.get_or_insert_with(|| {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits +=
+                        countries.len() + links.len() + appearance.map_or(0, <[_]>::len);
+                }
+                Tags::new(countries, links, appearance)
+            });
             #[cfg(test)]
             VARIANT_BUILDS.with(|builds| builds.set(builds.get() + 1));
             built.push((id, read_raw(definition, hour, tags, lexical, design)));
@@ -362,6 +441,9 @@ impl VariantReads {
         if !context {
             self.keys = Some(crate::metadata::CountryKeys::read(countries));
         }
+        self.countries = Some(view(TableId::Countries).identity());
+        self.country_at = Some((frame.branch, frame.hour));
+        self.country_dirty = false;
         self.links = Some(view(TableId::CountryLinks).clone());
         self.appearance = Some(view(TableId::CountryAppearance).clone());
         let tokens = definitions
@@ -409,7 +491,7 @@ pub struct VariantCatalogue {
     last_hour: Option<i32>,
     known: BTreeSet<u64>,
     #[serde(skip)]
-    country_keys: Option<crate::metadata::CountryKeys>,
+    reads: VariantReads,
     /// A complete read was applied and nothing was forgotten since, so every
     /// definition not read again holds its operands from that read
     /// ([`Self::observe_built`]). False when restored from a save.
@@ -506,7 +588,25 @@ pub fn read_raw(
 impl VariantCatalogue {
     /// Authenticate carried naming without rebuilding any retained versions.
     pub fn advance(&mut self, hour: i32) {
+        // A span without country deltas cannot extend their identity proof.
+        self.reads.country_dirty |= self.reads.country_at.is_none_or(|(_, at)| at != hour);
         self.last_hour = Some(hour);
+    }
+    /// Authenticate unchanged naming and carry its country-key proof from this
+    /// hour's recorded changes without reading a variant catalogue.
+    pub fn advance_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) {
+        #[cfg(any(test, feature = "test-support"))]
+        let before = self.reads.work.row_visits;
+        self.reads.carry_keys(frame, changes);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.work.row_visits += self.reads.work.row_visits - before;
+        }
+        self.advance(frame.hour);
     }
     /// A catalogue carrying `versions` as they stand: each variant whose latest
     /// version names it is known, so the next forget ends its names as it would
@@ -556,6 +656,15 @@ impl VariantCatalogue {
     ) -> Vec<(u64, VariantVersion)> {
         let mut changed = Vec::new();
         let hour = frame.hour;
+        if let Some(changes) = changes {
+            #[cfg(any(test, feature = "test-support"))]
+            let before = self.reads.work.row_visits;
+            self.reads.carry_keys(frame, changes);
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.work.row_visits += self.reads.work.row_visits - before;
+            }
+        }
         // After a gap, what was known ends at the first hour not recorded.
         if let Some(last) = self.last_hour
             && last.checked_add(1) != Some(hour)
@@ -590,28 +699,23 @@ impl VariantCatalogue {
             changed.extend(self.forget_versions(hour));
             return changed;
         };
-        if let Some(changes) = changes {
-            let country_changed = changes.rows_changed[TableId::Countries.index()]
-                && self.country_keys.as_ref().is_none_or(|keys| {
-                    #[cfg(any(test, feature = "test-support"))]
-                    let before = keys.row_visits();
-                    let changed = !keys.same(countries);
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        self.work.row_visits += keys.row_visits() - before;
-                    }
-                    changed
-                });
-            if !country_changed
-                && Self::TABLES
-                    .iter()
-                    .filter(|table| **table != TableId::Countries)
-                    .all(|table| !changes.rows_changed[table.index()])
+        if changes.is_some() {
+            let cpu = ::replay::cpu::scope_phase("variants:changed_operands");
+            #[cfg(any(test, feature = "test-support"))]
+            let before = self.reads.work.row_visits;
+            let built = self.reads.build(frame, !self.settled);
+            #[cfg(any(test, feature = "test-support"))]
             {
-                return changed;
+                self.work.row_visits += self.reads.work.row_visits - before;
             }
+            for (id, raw) in built {
+                self.apply(id, raw, hour, &mut changed);
+            }
+            self.settled = true;
+            drop(cpu);
+            return changed;
         }
-        self.country_keys = Some(crate::metadata::CountryKeys::read(countries));
+        // The whole-table observer is also the independent naming oracle.
         #[cfg(any(test, feature = "test-support"))]
         {
             self.work.row_visits += countries.len()

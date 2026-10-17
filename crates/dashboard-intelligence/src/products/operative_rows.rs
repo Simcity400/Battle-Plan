@@ -46,7 +46,12 @@ impl CountryInputs {
         if reached(TableId::Countries) {
             match frame.complete::<tables::Countries>() {
                 Ok(rows) => {
-                    if self.keys.as_ref().is_none_or(|keys| !keys.same(rows)) {
+                    if self.keys.as_ref().is_none_or(|keys| {
+                        !keys.same_changes(
+                            rows,
+                            changes.and_then(|changes| changes.rows(TableId::Countries)),
+                        )
+                    }) {
                         self.keys = Some(dashboard_text::metadata::CountryKeys::read(rows));
                         self.countries = Some(
                             rows.iter()

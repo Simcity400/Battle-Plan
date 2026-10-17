@@ -22,3 +22,9 @@ and resume rebuild it from the complete table.
 
 `cargo test -p dashboard-stability` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation for the dashboard's tests.
+
+Equal authenticated part and measure values carry their numeric runs without
+materializing endpoints on each read. Supplying-read events still retain their
+own dates, and starts, boundaries, unknowns and holder replacements take ordinary
+observation. State reads after observation inspect a materialized current key;
+a carried value uses its authenticated continuity proof instead.

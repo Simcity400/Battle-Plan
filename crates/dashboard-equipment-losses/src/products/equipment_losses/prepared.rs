@@ -27,7 +27,6 @@ struct CurrentJoins {
     drain_status: Option<(String, Option<String>, BTreeSet<u32>, bool)>,
     land: CoverageInputs,
     joined: bool,
-    variants_pending: bool,
     /// Whether the last observed hour lacked complete Countries or CountryLinks.
     identities_incomplete: bool,
     drain_len: Option<usize>,
@@ -302,21 +301,7 @@ impl Prepared {
         }
         self.values.advance(frame.hour)?;
         let cpu = ::replay::cpu::scope_phase("equipment_losses:variant_names");
-        self.joins.variants_pending |= VariantCatalogue::TABLES
-            .iter()
-            .any(|table| changes.rows_changed[table.index()]);
-        let variant_read = changes.slot_read[TableId::VariantDefinitions.index()];
-        if interrupted
-            || changes.rows_changed[TableId::VariantDefinitions.index()]
-            || (variant_read && self.joins.variants_pending)
-        {
-            self.variants.observe(replay.format, frame);
-            if variant_read {
-                self.joins.variants_pending = false;
-            }
-        } else {
-            self.variants.advance(frame.hour);
-        }
+        self.variants.observe_changed(replay.format, frame, changes);
         drop(cpu);
         let cpu = ::replay::cpu::scope_phase("equipment_losses:joins");
         let links = frame.complete::<tables::CountryLinks>().ok();
