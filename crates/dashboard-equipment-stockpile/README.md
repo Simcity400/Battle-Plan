@@ -54,3 +54,12 @@ Naming carries the shared catalogue's country-key proof through unchanged hours
 and retains recorded field deltas at a complete read. Only changed naming
 operands rebuild raw variant presentation; a pending or restored read rechecks
 its full inputs before carrying them.
+
+Kept frames without recorded row deltas compare each changed numeric source
+table once and mark only the owners of differing rows. Those owner marks
+accumulate until their stock or logistics supplying read. Dictionary changes
+compare the logistics spellings in use and mark their owners for the next
+logistics read; unrelated dictionary additions carry every holder. Equal reads
+still emit their own dated read events and diagnostic counts. Phase labels
+separate source comparisons, spelling invalidation, changed holders, whole
+holders and repeated reads.

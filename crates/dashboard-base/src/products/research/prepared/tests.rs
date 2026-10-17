@@ -1053,3 +1053,47 @@ fn cold_research_keeps_unavailable_slots_instead_of_reporting_no_slots() {
     store.clear().unwrap();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn research_equal_projection_carries_numeric_keys_until_publication() {
+    let flag = AtomicBool::new(false);
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::default();
+    let frame = sliced_research_frame(100, 100, &[Some(1), None]);
+    prepared.observe(&frame).unwrap();
+    let before = prepared.values.key_visits;
+    prepared
+        .observe_with(101, |scan| {
+            scan.observed = scan.countries.keys().cloned().collect();
+            for country in scan.countries.values_mut() {
+                country.carry_until = Some(101);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        prepared.values.key_visits, before,
+        "equal numeric keys are held"
+    );
+    prepared.values.seal();
+    assert_eq!(
+        prepared
+            .values
+            .state(prepared.keys["GER"])
+            .unwrap()
+            .last
+            .unwrap()
+            .last_hour,
+        101
+    );
+    let mut writer = fixture.writer();
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reference = Scan::default();
+    reference.observe_selected(&frame, None).unwrap();
+    let mut next = frame;
+    next.hour = 101;
+    reference.observe_selected(&next, None).unwrap();
+    reference.seal();
+    compare(&fixture, &reference, "GER");
+}

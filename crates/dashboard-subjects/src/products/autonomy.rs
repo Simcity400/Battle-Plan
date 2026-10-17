@@ -65,6 +65,10 @@ pub const TABLES: &[TableId] = &[
 ];
 const FIELDS: [&str; 5] = ["score", "lower", "upper", "ratio", "relative"];
 
+#[cfg(test)]
+thread_local! {
+    static HOLDER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 /// Current native holders are independent of hourly country balances.
 struct Holders {
     slots: HashMap<u32, u32>,
@@ -73,6 +77,8 @@ struct Holders {
 }
 impl Holders {
     fn read(frame: &DecodedFrame) -> Option<Self> {
+        #[cfg(test)]
+        HOLDER_READS.set(HOLDER_READS.get() + 1);
         let countries = dashboard_text::metadata::CountryKeys::read(
             frame.complete::<tables::Countries>().ok()?,
         );
@@ -225,6 +231,10 @@ pub(crate) fn sample(
     frame: &DecodedFrame,
     requested: Option<&[(String, String)]>,
 ) -> io::Result<BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)>> {
+    let (holders, inputs) = query_inputs(frame);
+    sample_inputs(holders.as_deref(), inputs.as_ref(), requested)
+}
+fn query_inputs(frame: &DecodedFrame) -> (Option<Arc<Holders>>, Option<Inputs>) {
     let holders = Holders::read(frame).map(Arc::new);
     let inputs = holders.as_ref().and_then(|holders| {
         Some(Inputs {
@@ -233,7 +243,7 @@ pub(crate) fn sample(
             holders: Arc::clone(holders),
         })
     });
-    sample_inputs(holders.as_deref(), inputs.as_ref(), requested)
+    (holders, inputs)
 }
 #[allow(clippy::type_complexity)]
 fn sample_inputs(
@@ -498,6 +508,21 @@ fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
 
 /// Scans one branch for every subject's autonomy.
 impl ScannedAutonomy {
+    /// Categorical and numeric replies share the same native join. Missing
+    /// relations still retain the sampler's witnessed holder placeholders.
+    fn observe_sample(
+        &mut self,
+        frame: &DecodedFrame,
+        observe: bool,
+    ) -> io::Result<dashboard_base::prepared::query::progressive::Samples> {
+        let _cpu = replay::cpu::scope_phase("autonomy:query_native_sample");
+        let (holders, inputs) = query_inputs(frame);
+        let values = sample_inputs(holders.as_deref(), inputs.as_ref(), None)?;
+        if observe {
+            self.observe_inputs(frame, inputs, None, false)?;
+        }
+        Ok(values)
+    }
     fn observe(&mut self, decoded: &DecodedFrame) -> io::Result<()> {
         self.observe_from(decoded, None)
     }

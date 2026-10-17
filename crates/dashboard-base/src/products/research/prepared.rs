@@ -96,6 +96,7 @@ impl Prepared {
         hour: i32,
         step: impl FnOnce(&mut Scan) -> io::Result<()>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("research:observe");
         self.values.advance(hour)?;
         step(&mut self.scan)?;
         for tag in &self.scan.observed {
@@ -110,7 +111,7 @@ impl Prepared {
                 self.next_key += 1;
                 key
             });
-            self.values.observe(
+            self.values.observe_if_changed(
                 key,
                 hour,
                 country
@@ -124,6 +125,7 @@ impl Prepared {
                     .coverage
                     .last()
                     .is_some_and(|span| span.first_hour == hour),
+                false,
             );
             let slots = self.slots.entry(tag.clone()).or_default();
             // Whether progress is shown at this read hour alone: the carried
@@ -143,18 +145,20 @@ impl Prepared {
                     .availability
                     .last()
                     .filter(|span| span.last_hour == hour);
-                self.values.observe(
+                self.values.observe_if_changed(
                     keys.available,
                     hour,
                     available.map(|_| 1),
                     available.is_some_and(|span| span.first_hour == hour),
+                    false,
                 );
                 let state = slot.states.last().filter(|state| state.last_hour == hour);
-                self.values.observe(
+                self.values.observe_if_changed(
                     keys.state,
                     hour,
                     state.map(|state| i128::from(state.first_hour)),
                     state.is_some_and(|state| state.first_hour == hour),
+                    false,
                 );
                 if let Some(state) = state.filter(|state| state.first_hour == hour) {
                     self.values.event(
@@ -181,11 +185,12 @@ impl Prepared {
                     .map(|progress| progress.progress_raw.parse::<i128>())
                     .transpose()
                     .map_err(|_| crate::invalid("Invalid research progress"))?;
-                self.values.observe(
+                self.values.observe_if_changed(
                     keys.progress,
                     hour,
                     value,
                     progress.is_some_and(|progress| progress.first_hour == hour),
+                    false,
                 );
                 if let Some(progress) = progress.filter(|progress| {
                     progress.last_hour == hour && country.last_read == Some(hour)

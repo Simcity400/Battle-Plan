@@ -43,3 +43,8 @@ Queries deserialize only the continuation's choice history, catalogue operands
 and reached hour. They read numeric values and auxiliary history from the series
 pages; preparation alone restores its accumulators, open score joins and
 continuation dictionaries.
+
+Query continuations use the shared bulk page-text reader, retaining decompressed
+text with its immutable page identity in the request's bounded summary cache.
+Their typed query operands and side classifications are read for the current
+reply.

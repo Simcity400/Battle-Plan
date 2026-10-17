@@ -12,7 +12,11 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+mod idle;
 mod query;
+mod saved;
+#[cfg(any(test, feature = "test-support"))]
+pub use query::text_reads;
 pub use query::{SummaryCache, cache_scope, reuse_value};
 
 const LEVELS: [i64; 4] = [16, 256, 4096, 65536];
@@ -375,9 +379,13 @@ pub struct Batch {
     bytes: usize,
 }
 /// A product's open keys and the current publication batch.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct Accumulator {
     states: BTreeMap<u64, KeyState>,
+    #[serde(skip)]
+    saved: saved::Cache,
+    #[serde(skip)]
+    idle: idle::Cache,
     frontier: Option<i32>,
     previous: Option<i32>,
     active: BTreeSet<u64>,
@@ -509,6 +517,59 @@ impl Accumulator {
     }
     pub fn push(&mut self, key: u64, run: Run) {
         self.push_boundary(key, run, false);
+    }
+    /// Push one key's ordered runs with one state and batch lookup. Recording
+    /// keeps the ordinary calls; the unrecorded path retains their canonical
+    /// runs, counters and bytes without looking up this key for every point.
+    pub fn push_runs(&mut self, key: u64, runs: impl IntoIterator<Item = Run>) {
+        if self.recorded.is_some() {
+            for run in runs {
+                self.push(key, run);
+            }
+            return;
+        }
+        let mut runs = runs.into_iter();
+        let Some(first) = runs.next() else { return };
+        let state = self.states.entry(key).or_default();
+        if self.active.remove(&key)
+            && let Some(previous) = self.previous
+        {
+            Self::extend(
+                &mut self.batch,
+                key,
+                state,
+                previous.min(first.first_hour.saturating_sub(1)),
+            );
+        }
+        let rows = self.batch.keys.entry(key).or_insert_with(|| Rows {
+            state: state.clone(),
+            ..Default::default()
+        });
+        for run in std::iter::once(first).chain(runs) {
+            #[cfg(test)]
+            OBSERVATION_WORK.with(|work| work.set(work.get() + 1));
+            self.batch.first.get_or_insert(run.first_hour);
+            self.batch.last = run.last_hour;
+            let canonical = match state.last.filter(|previous| previous.continues(run)) {
+                Some(previous) => Run {
+                    last_hour: run.last_hour,
+                    ..previous
+                },
+                None => {
+                    state.runs += 1;
+                    run
+                }
+            };
+            if let Some(last) = rows.runs.last_mut().filter(|last| last.continues(run)) {
+                last.last_hour = run.last_hour;
+            } else {
+                rows.runs.push(run);
+                self.batch.bytes += size_of::<Run>() * 2;
+            }
+            state.last = Some(canonical);
+        }
+        rows.state.last = state.last;
+        rows.state.runs = state.runs;
     }
     /// A supplying read can start a new canonical run without an identity break.
     pub fn push_boundary(&mut self, key: u64, run: Run, boundary: bool) {
@@ -705,13 +766,16 @@ impl Accumulator {
             self.states = std::mem::take(&mut self.batch)
                 .write_inner(writer, section, decimals, cancelled, payloads)?;
         } else {
-            self.states = std::mem::take(&mut self.batch).write_accumulated(
-                std::mem::take(&mut self.states),
+            std::mem::take(&mut self.batch).write_accumulated(
+                &mut self.states,
                 writer,
                 section,
                 decimals,
                 cancelled,
-                payloads,
+                Encoding {
+                    shared: payloads,
+                    idle: Some(&mut self.idle),
+                },
             )?;
         }
         Ok(())
@@ -1213,6 +1277,14 @@ pub struct Payloads {
     encoded: HashMap<PayloadIdentity, (Vec<u8>, [Option<Partial>; 4])>,
 }
 
+type KeyRows<'a> = (u64, &'a [Run], &'a [(i32, Vec<u8>)], &'a mut KeyState);
+
+#[derive(Default)]
+struct Encoding<'a> {
+    shared: Option<&'a mut Payloads>,
+    idle: Option<&'a mut idle::Cache>,
+}
+
 impl Batch {
     pub fn through(&mut self, hour: i32) {
         self.first.get_or_insert(hour);
@@ -1300,24 +1372,33 @@ impl Batch {
     }
     fn write_accumulated<W: super::pages::Pages + ?Sized>(
         self,
-        states: BTreeMap<u64, KeyState>,
+        states: &mut BTreeMap<u64, KeyState>,
         writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
-        shared: Option<&mut Payloads>,
-    ) -> io::Result<BTreeMap<u64, KeyState>> {
+        mut encoding: Encoding<'_>,
+    ) -> io::Result<()> {
         let Some(first) = self.first else {
-            return Ok(states);
+            return Ok(());
         };
-        let mut changed = self.keys;
-        let keys = states.into_iter().map(move |(key, state)| {
-            let mut rows = changed.remove(&key).unwrap_or_default();
-            rows.state = state;
-            (key, rows)
+        if let Some(idle) = &mut encoding.idle {
+            idle.begin();
+        }
+        let mut changed = self.keys.iter().peekable();
+        let keys = states.iter_mut().map(|(&key, state)| {
+            let rows = changed
+                .next_if(|(changed, _)| **changed == key)
+                .map(|(_, rows)| rows);
+            (
+                key,
+                rows.map_or(&[][..], |rows| rows.runs.as_slice()),
+                rows.map_or(&[][..], |rows| rows.events.as_slice()),
+                state,
+            )
         });
         Self::write_keys(
-            first, self.last, keys, writer, section, decimals, cancelled, shared,
+            first, self.last, keys, writer, section, decimals, cancelled, encoding,
         )
     }
     pub fn write<W: super::pages::Pages + ?Sized>(
@@ -1340,69 +1421,77 @@ impl Batch {
         let Some(first) = self.first else {
             return Ok(BTreeMap::new());
         };
+        let mut rows = self.keys;
+        let keys = rows.iter_mut().map(|(&key, rows)| {
+            (
+                key,
+                rows.runs.as_slice(),
+                rows.events.as_slice(),
+                &mut rows.state,
+            )
+        });
         Self::write_keys(
             first,
             self.last,
-            self.keys.into_iter(),
+            keys,
             writer,
             section,
             decimals,
             cancelled,
-            shared,
-        )
+            Encoding { shared, idle: None },
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|(key, rows)| {
+                #[cfg(test)]
+                STATE_MAP_WORK.with(|work| work.set(work.get() + 1));
+                (key, rows.state)
+            })
+            .collect())
     }
-    fn write_keys<W: super::pages::Pages + ?Sized>(
+    fn write_keys<'a, W: super::pages::Pages + ?Sized>(
         first: i32,
         last: i32,
-        keys: impl ExactSizeIterator<Item = (u64, Rows)>,
+        keys: impl ExactSizeIterator<Item = KeyRows<'a>>,
         writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
-        mut shared: Option<&mut Payloads>,
-    ) -> io::Result<BTreeMap<u64, KeyState>> {
+        mut encoding: Encoding<'_>,
+    ) -> io::Result<()> {
         let mut bytes = vec![0; (HEADER + DIRECTORY * keys.len() as u64) as usize];
         put(&mut bytes, 0, &first.to_le_bytes());
         put(&mut bytes, 4, &last.to_le_bytes());
         put(&mut bytes, 8, &(keys.len() as u64).to_le_bytes());
-        let mut states = BTreeMap::new();
         let mut blobs = HashMap::new();
         let mut payloads = HashMap::<[u8; 32], (usize, usize, [Option<Partial>; 4])>::new();
         let mut identity = Vec::new();
         let mut empty: Option<(usize, usize)> = None;
-        for (index, (key, mut rows)) in keys.enumerate() {
+        for (index, (key, runs, events, state)) in keys.enumerate() {
             check_cancel(cancelled)?;
             let at = HEADER as usize + index * DIRECTORY as usize;
             put(&mut bytes, at, &key.to_le_bytes());
-            put(&mut bytes, at + 24, &(rows.runs.len() as u64).to_le_bytes());
-            put(&mut bytes, at + 32, &rows.state.runs.to_le_bytes());
+            put(&mut bytes, at + 24, &(runs.len() as u64).to_le_bytes());
+            put(&mut bytes, at + 32, &state.runs.to_le_bytes());
             put(
                 &mut bytes,
                 at + 40,
-                &(rows.state.events - rows.events.len() as u64).to_le_bytes(),
+                &(state.events - events.len() as u64).to_le_bytes(),
             );
-            put(
-                &mut bytes,
-                at + 48,
-                &(rows.events.len() as u64).to_le_bytes(),
-            );
+            put(&mut bytes, at + 48, &(events.len() as u64).to_le_bytes());
             put(
                 &mut bytes,
                 at + 56,
-                &rows
-                    .state
-                    .last
-                    .map_or(first, |run| run.last_hour)
-                    .to_le_bytes(),
+                &state.last.map_or(first, |run| run.last_hour).to_le_bytes(),
             );
             #[cfg(not(test))]
             let inactive = true;
             #[cfg(test)]
             let inactive = !WHOLE_PAYLOADS.with(std::cell::Cell::get);
             if inactive
-                && rows.runs.is_empty()
-                && rows.events.is_empty()
-                && rows.state.partial.iter().all(Option::is_none)
+                && runs.is_empty()
+                && events.is_empty()
+                && state.partial.iter().all(Option::is_none)
             {
                 let offset = bytes.len();
                 if let Some((start, length)) = empty {
@@ -1414,16 +1503,14 @@ impl Batch {
                     blob(&mut bytes, at + 8, vec![0; LEVELS.len() * 2], &mut blobs)?;
                     empty = Some((offset, bytes.len() - offset));
                 }
-                states.insert(key, rows.state);
                 continue;
             }
             // Numeric keys often hold the same runs and incoming summaries.
             // Reuse their payload before building its buckets, keeping every
             // key's directory, canonical counters and separate byte extent.
-            let input = rows
-                .events
+            let input = events
                 .is_empty()
-                .then(|| payload_input(&rows, &mut identity));
+                .then(|| payload_input(runs, state, &mut identity));
             #[cfg(test)]
             let input = input.filter(|_| !WHOLE_PAYLOADS.with(std::cell::Cell::get));
             if let Some((start, length, partial)) =
@@ -1433,13 +1520,14 @@ impl Batch {
                 bytes.extend_from_within(start..start + length);
                 put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
                 put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
-                rows.state.partial = partial;
-                states.insert(key, rows.state);
+                state.partial = partial;
                 continue;
             }
-            let identity = input.map(|input| (first, last, decimals, input));
+            let idle_identity = input
+                .filter(|_| runs.is_empty())
+                .map(|input| idle::identity(state, last, decimals, input));
             if let Some((payload, partial)) =
-                identity.and_then(|identity| shared.as_ref()?.encoded.get(&identity))
+                idle_identity.and_then(|identity| encoding.idle.as_mut()?.reuse(identity))
             {
                 let offset = bytes.len();
                 bytes.extend_from_slice(payload);
@@ -1449,15 +1537,32 @@ impl Batch {
                     input.expect("numeric payload identity"),
                     (offset, payload.len(), *partial),
                 );
-                rows.state.partial = *partial;
-                states.insert(key, rows.state);
+                state.partial = *partial;
+                continue;
+            }
+            let identity = input.map(|input| (first, last, decimals, input));
+            if let Some((payload, partial)) =
+                identity.and_then(|identity| encoding.shared.as_ref()?.encoded.get(&identity))
+            {
+                let offset = bytes.len();
+                bytes.extend_from_slice(payload);
+                put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                put(&mut bytes, at + 16, &(payload.len() as u64).to_le_bytes());
+                payloads.insert(
+                    input.expect("numeric payload identity"),
+                    (offset, payload.len(), *partial),
+                );
+                if let Some((identity, idle)) = idle_identity.zip(encoding.idle.as_mut()) {
+                    idle.insert(identity, payload.clone(), *partial);
+                }
+                state.partial = *partial;
                 continue;
             }
             #[cfg(test)]
             PAYLOAD_WORK.with(|work| work.set(work.get() + 1));
             let mut raw = Vec::new();
             let (mut hour, mut value) = (0_i128, 0_i128);
-            for run in &rows.runs {
+            for run in runs {
                 var(&mut raw, zig(i128::from(run.first_hour) - hour));
                 var(
                     &mut raw,
@@ -1469,22 +1574,17 @@ impl Batch {
                 value = run.value;
             }
             hour = 0;
-            for (date, row) in &rows.events {
+            for (date, row) in events {
                 var(&mut raw, zig(i128::from(*date) - hour));
                 var(&mut raw, row.len() as u128);
                 raw.extend_from_slice(row);
                 hour = i128::from(*date);
             }
             for (level, size) in LEVELS.into_iter().enumerate() {
-                let buckets = summary_buckets(
-                    &rows.runs,
-                    rows.state.partial[level],
-                    size,
-                    decimals,
-                    cancelled,
-                )?;
+                let buckets =
+                    summary_buckets(runs, state.partial[level], size, decimals, cancelled)?;
                 var(&mut raw, buckets.len() as u128);
-                let mut pending = rows.state.partial[level]
+                let mut pending = state.partial[level]
                     .map(|partial| (partial.aligned(), partial.bucket(decimals)));
                 let mut previous = 0_i64;
                 for (aligned, mut bucket) in buckets {
@@ -1509,44 +1609,47 @@ impl Batch {
                     pending = Some((aligned, prefix));
                 }
                 let tail = i64::from(last).div_euclid(size) * size;
-                let held = rows.state.last;
-                rows.state.partial[level] = pending
+                let held = state.last;
+                state.partial[level] = pending
                     .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
                     .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
-                let mut counts = BTreeMap::<i64, u64>::new();
-                for (hour, _) in &rows.events {
-                    *counts
-                        .entry(i64::from(*hour).div_euclid(size) * size)
-                        .or_default() += 1;
-                }
-                var(&mut raw, counts.len() as u128);
+                let aligned = |hour: i32| i64::from(hour).div_euclid(size) * size;
+                let counts = || events.chunk_by(|a, b| aligned(a.0) == aligned(b.0));
+                var(&mut raw, counts().count() as u128);
                 previous = 0;
-                for (aligned, count) in counts {
+                for events in counts() {
+                    let aligned = aligned(events[0].0);
                     var(&mut raw, zig(i128::from(aligned - previous)));
-                    var(&mut raw, u128::from(count));
+                    var(&mut raw, events.len() as u128);
                     previous = aligned;
                 }
             }
             let offset = bytes.len();
             blob(&mut bytes, at + 8, raw, &mut blobs)?;
             if let Some(input) = input {
-                payloads.insert(input, (offset, bytes.len() - offset, rows.state.partial));
+                payloads.insert(input, (offset, bytes.len() - offset, state.partial));
             }
-            if let Some((identity, shared)) = identity.zip(shared.as_mut()) {
+            if let Some((identity, idle)) = idle_identity.zip(encoding.idle.as_mut()) {
+                idle.insert(identity, bytes[offset..].to_vec(), state.partial);
+            }
+            if let Some((identity, shared)) = identity.zip(encoding.shared.as_mut()) {
                 shared
                     .encoded
-                    .insert(identity, (bytes[offset..].to_vec(), rows.state.partial));
+                    .insert(identity, (bytes[offset..].to_vec(), state.partial));
             }
-            states.insert(key, rows.state);
+        }
+        if let Some(idle) = &mut encoding.idle {
+            idle.finish();
         }
         check_cancel(cancelled)?;
+        let _cpu = ::replay::cpu::scope_phase("series:write_page");
         writer.write(section, bytes.as_slice())?;
-        Ok(states)
+        Ok(())
     }
 }
 
-/// One run already has its bucket order. Only overlapping or multiple runs
-/// need the ordered merge; the common carried value allocates one buffer.
+/// Ordered, disjoint runs merge into the last bucket directly, in their
+/// original order. Overlapping or backdated runs use the ordered map.
 fn summary_buckets(
     runs: &[Run],
     partial: Option<Partial>,
@@ -1558,22 +1661,32 @@ fn summary_buckets(
     let direct = true;
     #[cfg(test)]
     let direct = !WHOLE_SUMMARY_MAPS.with(std::cell::Cell::get);
-    if direct && runs.len() <= 1 {
-        let mut buckets = Vec::new();
-        if let Some(&run) = runs.first() {
+    let _cpu = ::replay::cpu::scope_phase("series:summary_buckets");
+    if direct
+        && (runs.len() <= 1
+            || (runs.iter().all(|run| run.first_hour <= run.last_hour)
+                && runs
+                    .windows(2)
+                    .all(|pair| pair[0].last_hour < pair[1].first_hour)))
+    {
+        let mut buckets: Vec<(i64, Option<ChartBucket>)> = Vec::new();
+        for &run in runs {
             let mut hour = i64::from(run.first_hour);
             let last = i64::from(run.last_hour);
-            if hour <= last {
+            if runs.len() == 1 && hour <= last {
                 buckets.reserve((last.div_euclid(size) - hour.div_euclid(size) + 1) as usize);
             }
             while hour <= last {
                 check_cancel(cancelled)?;
                 let aligned = hour.div_euclid(size) * size;
                 let end = (aligned + size - 1).min(last);
-                buckets.push((
-                    aligned,
-                    Some(run_bucket(run, hour as i32, end as i32, decimals)),
-                ));
+                let bucket = Some(run_bucket(run, hour as i32, end as i32, decimals));
+                if let Some((_, previous)) = buckets.last_mut().filter(|(hour, _)| *hour == aligned)
+                {
+                    *previous = merge(*previous, bucket);
+                } else {
+                    buckets.push((aligned, bucket));
+                }
                 hour = end + 1;
             }
         }
@@ -1638,19 +1751,19 @@ impl ExactSizeIterator for SummaryBuckets {}
 /// Identity of the operands that produce a numeric key's payload and next
 /// partial summaries. Batch bounds and decimals are shared by every key.
 /// Canonical counters live only in the directory, not in the payload.
-fn payload_input(rows: &Rows, bytes: &mut Vec<u8>) -> [u8; 32] {
+fn payload_input(runs: &[Run], state: &KeyState, bytes: &mut Vec<u8>) -> [u8; 32] {
     #[cfg(test)]
     PAYLOAD_INPUT_WORK.with(|work| work.set(work.get() + 1));
     bytes.clear();
-    bytes.extend_from_slice(&(rows.runs.len() as u64).to_le_bytes());
-    for run in rows.runs.iter().copied().chain(rows.state.last) {
+    bytes.extend_from_slice(&(runs.len() as u64).to_le_bytes());
+    for run in runs.iter().copied().chain(state.last) {
         bytes.extend_from_slice(&run.first_hour.to_le_bytes());
         bytes.extend_from_slice(&run.last_hour.to_le_bytes());
         bytes.extend_from_slice(&run.value.to_le_bytes());
         bytes.push(u8::from(run.break_before));
     }
-    bytes.push(u8::from(rows.state.last.is_some()));
-    for partial in rows.state.partial {
+    bytes.push(u8::from(state.last.is_some()));
+    for partial in state.partial {
         bytes.push(u8::from(partial.is_some()));
         if let Some(partial) = partial {
             let aligned = partial.aligned();
@@ -1684,6 +1797,7 @@ thread_local! {
     /// Build every key's payload, including repeated numeric inputs.
     static WHOLE_PAYLOADS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static WHOLE_REGISTRATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static STATE_MAP_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static REGISTER_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static PAYLOAD_INPUT_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static WHOLE_OBSERVATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -2152,6 +2266,8 @@ impl Cached {
 #[cfg(test)]
 thread_local! {
     static BLOB_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RUN_BOUNDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EVENT_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EVENT_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
@@ -2239,9 +2355,24 @@ pub struct Reader<'a> {
     searches: HashMap<u64, (u64, Option<u64>)>,
     /// Whole batch directories read so far; None for a batch whose header
     /// claims more entries than it holds.
-    tables: HashMap<u64, Option<Table>>,
+    tables: HashMap<u64, Arc<Option<Table>>>,
     table_bytes: usize,
     publication: Option<Arc<Vec<[u64; 3]>>>,
+    event_walk: Option<EventWalk>,
+    run_bounds: HashMap<u64, (u64, Run)>,
+}
+// A merged event cursor belongs to this reader's immutable manifest and one
+// exact selection. Keeping the merge frontier avoids seeking every key again
+// for each page of the same reply.
+struct EventWalk {
+    keys: Vec<u64>,
+    from: i32,
+    to: i32,
+    next: u64,
+    base: u64,
+    last: u64,
+    ends: BTreeMap<u64, u64>,
+    pending: BTreeMap<(i32, u64, u64), DatedRow>,
 }
 impl<'a> Reader<'a> {
     pub fn from_first_file(
@@ -2267,6 +2398,8 @@ impl<'a> Reader<'a> {
             tables: HashMap::new(),
             table_bytes: 0,
             publication: None,
+            event_walk: None,
+            run_bounds: HashMap::new(),
         }
     }
 
@@ -2296,6 +2429,8 @@ impl<'a> Reader<'a> {
             tables: HashMap::new(),
             table_bytes: 0,
             publication: None,
+            event_walk: None,
+            run_bounds: HashMap::new(),
         })
     }
     fn file(&mut self, batch: u64) -> io::Result<&mut store::Range> {
@@ -2341,26 +2476,35 @@ impl<'a> Reader<'a> {
     /// about as much as reading it; None until then. Counts this search.
     fn table(&mut self, batch: u64) -> io::Result<Option<&Table>> {
         if self.tables.contains_key(&batch) {
-            return Ok(self.tables[&batch].as_ref());
+            return Ok(self.tables[&batch].as_ref().as_ref());
         }
-        let (searches, count) = *self.searches.entry(batch).or_default();
-        let searches = searches + 1;
-        let count = match count {
-            Some(count) => Some(count),
-            None if searches >= DIRECTORY_SEARCHES => {
-                Some(u64_at(&read::<16>(self.file(batch)?, 0)?, 8))
+        let id = self.file(batch)?.id().cache_key();
+        let table = match query::held_table(id) {
+            Some(table) => table,
+            None => {
+                let (searches, count) = *self.searches.entry(batch).or_default();
+                let searches = searches + 1;
+                let count = match count {
+                    Some(count) => Some(count),
+                    None if searches >= DIRECTORY_SEARCHES => {
+                        Some(u64_at(&read::<16>(self.file(batch)?, 0)?, 8))
+                    }
+                    None => None,
+                };
+                self.searches.insert(batch, (searches, count));
+                if count.is_none_or(|count| {
+                    searches < DIRECTORY_SEARCHES.max(count / ENTRIES_PER_SEARCH)
+                }) {
+                    return Ok(None);
+                }
+                let _phase = replay::cpu::scope_phase("query:directory");
+                Arc::new(Table::read(self.file(batch)?)?)
             }
-            None => None,
         };
-        self.searches.insert(batch, (searches, count));
-        if count.is_none_or(|count| searches < DIRECTORY_SEARCHES.max(count / ENTRIES_PER_SEARCH)) {
-            return Ok(None);
-        }
-        let table = Table::read(self.file(batch)?)?;
-        let bytes = table.as_ref().map_or(0, |table| table.0.len());
+        let bytes = table.as_ref().as_ref().map_or(0, |table| table.0.len());
         if bytes > DIRECTORY_TABLE_BYTES {
             // Too large to keep: this batch keeps single-key searches.
-            self.tables.insert(batch, None);
+            self.tables.insert(batch, Arc::new(None));
             return Ok(None);
         }
         if self.table_bytes + bytes > DIRECTORY_TABLE_BYTES {
@@ -2369,8 +2513,9 @@ impl<'a> Reader<'a> {
             self.table_bytes = 0;
         }
         self.table_bytes += bytes;
+        query::keep_table(id, &table);
         self.tables.insert(batch, table);
-        Ok(self.tables[&batch].as_ref())
+        Ok(self.tables[&batch].as_ref().as_ref())
     }
     fn data(&mut self, batch: u64, key: u64) -> io::Result<&Cached> {
         if !self.cached.contains_key(&(batch, key)) {
@@ -2403,6 +2548,8 @@ impl<'a> Reader<'a> {
     pub fn through_hour(&mut self, hour: i32) -> io::Result<Option<i32>> {
         self.count = lower(self.count, |batch| Ok(self.hours(batch)?.1 <= hour))?;
         self.publication = None;
+        self.event_walk = None;
+        self.run_bounds.clear();
         match self.count.checked_sub(1) {
             Some(last) => Ok(Some(self.hours(last)?.1)),
             None => Ok(None),
@@ -2449,6 +2596,15 @@ impl<'a> Reader<'a> {
             return Ok(None);
         };
         let ordinal = dir.first_run() + index as u64 - 1;
+        // Authenticate this hour's local run before reusing its global bounds:
+        // an ordinal alone must not fill a gap between publication batches.
+        if let Some(&(held, run)) = self.run_bounds.get(&key) {
+            if held == ordinal {
+                return Ok(Some(run));
+            }
+        }
+        #[cfg(test)]
+        RUN_BOUNDS.set(RUN_BOUNDS.get() + 1);
         let first = lower(self.count, |batch| {
             Ok(self.info(batch, key)?.run_count < ordinal)
         })?;
@@ -2467,6 +2623,7 @@ impl<'a> Reader<'a> {
                 value.last_hour = value.last_hour.max(self.data(end, key)?.runs[0].last_hour);
             }
         }
+        self.run_bounds.insert(key, (ordinal, value));
         Ok(Some(value))
     }
     /// Exact runs intersecting one requested window, joining continued batch tails.
@@ -2862,6 +3019,8 @@ impl<'a> Reader<'a> {
         Ok(result)
     }
     pub fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
+        #[cfg(test)]
+        EVENT_COUNTS.set(EVENT_COUNTS.get() + 1);
         let end = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= hour))?;
         if end == 0 {
             return Ok(0);
@@ -2963,10 +3122,53 @@ impl<'a> Reader<'a> {
         if from > to || page_size == 0 {
             return Err(invalid("invalid event page"));
         }
-        let keys: Vec<_> = keys
+        check_cancel(self.cancelled)?;
+        let resumed = self.event_walk.take().filter(|walk| {
+            walk.keys == keys && walk.from == from && walk.to == to && walk.next == cursor
+        });
+        let mut walk = match resumed {
+            Some(walk) => walk,
+            None => self.seek_events(keys, from, to, cursor)?,
+        };
+        let _cpu = replay::cpu::scope_phase("series:query_event_page");
+        let first = cursor.max(walk.base);
+        let end = first.saturating_add(u64::from(page_size)).min(walk.last);
+        let mut rows = Vec::new();
+        while (rows.len() as u64) < end.saturating_sub(first) {
+            check_cancel(self.cancelled)?;
+            let Some(((_, key, ordinal), row)) = walk.pending.pop_first() else {
+                return Err(invalid("event page rows do not match its ordinal interval"));
+            };
+            rows.push(row);
+            if ordinal + 1 < walk.ends[&key] {
+                let row = self.event_at(key, ordinal + 1)?;
+                walk.pending.insert((row.hour, key, ordinal + 1), row);
+            }
+        }
+        let page = EventsPage {
+            first,
+            total: walk.last - walk.base,
+            rows,
+            cursor: (end < walk.last).then_some(end),
+        };
+        if let Some(next) = page.cursor {
+            walk.next = next;
+            self.event_walk = Some(walk);
+        }
+        Ok(page)
+    }
+    fn seek_events(
+        &mut self,
+        selected: &[u64],
+        from: i32,
+        to: i32,
+        cursor: u64,
+    ) -> io::Result<EventWalk> {
+        let _cpu = replay::cpu::scope_phase("series:query_event_seek");
+        let keys: Vec<_> = selected
             .iter()
             .copied()
-            .collect::<std::collections::BTreeSet<_>>()
+            .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
         let base = if from == i32::MIN {
@@ -2974,12 +3176,18 @@ impl<'a> Reader<'a> {
         } else {
             self.event_count(&keys, from - 1)?
         };
-        let last = self.event_count(&keys, to)?;
+        let mut ends = BTreeMap::new();
+        let mut last = 0_u64;
+        for &key in &keys {
+            let end = self.event_count_through(key, to)?;
+            last = last
+                .checked_add(end)
+                .ok_or_else(|| invalid("event count overflow"))?;
+            ends.insert(key, end);
+        }
         let first = cursor.max(base);
-        let end = first.saturating_add(u64::from(page_size)).min(last);
-        let mut rows = Vec::new();
-        if first < end {
-            // One key's ordinal already identifies its hour. Multiple keys rank the same cursor by date.
+        let mut pending = BTreeMap::new();
+        if first < last {
             let hour = if keys.len() == 1 {
                 self.event_date(keys[0], first)?
             } else {
@@ -2995,7 +3203,6 @@ impl<'a> Reader<'a> {
                 self.event_count(&keys, hour - 1)?
             };
             let mut skipped = first - before;
-            let mut pending = BTreeMap::new();
             for &key in &keys {
                 let begin = if hour == i32::MIN {
                     0
@@ -3006,30 +3213,21 @@ impl<'a> Reader<'a> {
                 let skip = skipped.min(count);
                 skipped -= skip;
                 let ordinal = begin + skip;
-                if ordinal < self.event_count_through(key, to)? {
+                if ordinal < ends[&key] {
                     let row = self.event_at(key, ordinal)?;
                     pending.insert((row.hour, key, ordinal), row);
                 }
             }
-            while (rows.len() as u64) < end - first {
-                let Some(((_, key, ordinal), row)) = pending.pop_first() else {
-                    break;
-                };
-                rows.push(row);
-                if ordinal + 1 < self.event_count_through(key, to)? {
-                    let row = self.event_at(key, ordinal + 1)?;
-                    pending.insert((row.hour, key, ordinal + 1), row);
-                }
-            }
-            if (rows.len() as u64) < end - first {
-                return Err(invalid("event page rows do not match its ordinal interval"));
-            }
         }
-        Ok(EventsPage {
-            first,
-            total: last - base,
-            rows,
-            cursor: (end < last).then_some(end),
+        Ok(EventWalk {
+            keys: selected.to_vec(),
+            from,
+            to,
+            next: cursor,
+            base,
+            last,
+            ends,
+            pending,
         })
     }
     pub fn event_clusters(
@@ -3238,6 +3436,8 @@ pub fn event_window(
     Ok((from.ceil() as i32, to.floor() as i32, cursor, page_size))
 }
 mod catalogue;
+#[cfg(test)]
+mod publication_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests;
 

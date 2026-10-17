@@ -30,6 +30,8 @@ pub struct CountryInputs {
     pub text: bool,
     country_error: Option<String>,
     link_error: Option<String>,
+    #[cfg(test)]
+    link_comparisons: usize,
 }
 impl CountryInputs {
     pub fn update(
@@ -37,12 +39,10 @@ impl CountryInputs {
         frame: &DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:countries");
         self.changed = false;
-        let reached = |table: TableId| {
-            changes.is_none_or(|changes| {
-                changes.rows_changed[table.index()] || changes.table_read[table.index()]
-            })
-        };
+        let reached =
+            |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
         if reached(TableId::Countries) {
             match frame.complete::<tables::Countries>() {
                 Ok(rows) => {
@@ -80,6 +80,10 @@ impl CountryInputs {
         if reached(TableId::CountryLinks) {
             match frame.complete::<tables::CountryLinks>() {
                 Ok(rows) => {
+                    #[cfg(test)]
+                    {
+                        self.link_comparisons += rows.len();
+                    }
                     if self.links.as_deref() != Some(rows) {
                         self.links = Some(rows.to_vec());
                         self.link_error = None;

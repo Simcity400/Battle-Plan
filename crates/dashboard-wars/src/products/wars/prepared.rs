@@ -28,6 +28,7 @@ pub struct Observer {
     #[serde(skip)]
     pub(super) indices: BTreeMap<String, u64>,
     pub(super) first_reads: Vec<i32>,
+    #[cfg_attr(test, serde(deserialize_with = "count_snapshot"))]
     snapshot: Vec<u8>,
     pub(super) batch: Accumulator,
     #[serde(skip)]
@@ -63,6 +64,16 @@ pub struct Observer {
     #[cfg(test)]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
+}
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn count_snapshot<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Vec<u8>, D::Error> {
+    let bytes = Vec::<u8>::deserialize(input)?;
+    SNAPSHOT_BYTES.set(SNAPSHOT_BYTES.get() + bytes.len());
+    Ok(bytes)
 }
 impl Observer {
     pub fn restore((indices, mut state): KeyCatalogue<Self>) -> Self {
@@ -662,6 +673,27 @@ pub fn current(
     Ok(current)
 }
 
+/// Only the continuation's counter operands are needed to hydrate reached
+/// hours. The input snapshot belongs to preparation and the native walk.
+#[derive(Default, Deserialize)]
+struct QueryCounters {
+    first_reads: Vec<i32>,
+    batch: Accumulator,
+}
+fn read_query_counters(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    structure_only: bool,
+) -> io::Result<Option<KeyCatalogue<QueryCounters>>> {
+    let _cpu = replay::cpu::scope_phase("wars:query_catalogue");
+    if structure_only {
+        return series::read_catalogue::<serde::de::IgnoredAny>(store, key, "wars", branch)
+            .map(|catalogue| catalogue.map(|_| (BTreeMap::new(), QueryCounters::default())));
+    }
+    series::read_catalogue(store, key, "wars", branch)
+}
+
 /// Whole-branch native projection, including membership and naming history before
 /// any requested casualty hour. `selected` overrides the tag/LocalPlayer with
 /// the original native-holder selection; an empty set never falls back.
@@ -682,8 +714,7 @@ pub(crate) fn projection(
 ) -> io::Result<Option<WarsReply>> {
     Wars::validate(params).map_err(invalid)?;
     let branch = params.branch_id.parse().expect("validated branch");
-    let Some((indices, state)) = series::read_catalogue::<Observer>(store, key, "wars", branch)?
-    else {
+    let Some((indices, state)) = read_query_counters(store, key, branch, hours.is_empty())? else {
         return Ok(None);
     };
     let branch_info = source
@@ -695,6 +726,7 @@ pub(crate) fn projection(
     let bounds = branch_bounds(source.replay_ref(), branch_info);
     let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
     let mut casualties: HashMap<usize, Vec<WarCasualtyRun>> = HashMap::new();
+    let cpu = replay::cpu::scope_phase("wars:query_walk");
     let mut reply = super::walks::walk(
         source,
         store,
@@ -751,6 +783,8 @@ pub(crate) fn projection(
             Ok(())
         },
     )?;
+    drop(cpu);
+    let _cpu = replay::cpu::scope_phase("wars:query_finish");
     for (index, war) in reply.wars.iter_mut().enumerate() {
         war.casualties.clear();
         let mut runs = casualties.remove(&index).unwrap_or_default();
@@ -773,7 +807,7 @@ pub(crate) fn projection(
 // Two adjacent runs prove the earlier bounds. A saturated run count proves
 // every earlier read changed: one observation per hour cannot produce more
 // runs than elapsed hours, so these closed runs are exactly one hour each.
-fn closed_counter(state: &Observer, index: u64, key: u64, hour: i32) -> Option<(i32, i32)> {
+fn closed_counter(state: &QueryCounters, index: u64, key: u64, hour: i32) -> Option<(i32, i32)> {
     let held = state.batch.state(key)?;
     let last = held.last?;
     let first = state.first_reads[index as usize];
@@ -794,12 +828,13 @@ fn closed_counter(state: &Observer, index: u64, key: u64, hour: i32) -> Option<(
 /// histories read contiguous requested windows once per key, retaining only sums.
 fn hydrate_losses(
     reader: &mut Reader<'_>,
-    state: &Observer,
+    state: &QueryCounters,
     counters: &HashMap<Pair, (u64, bool)>,
     observed: &[Observed],
     span: series::Run,
     hours: &BTreeSet<i32>,
 ) -> io::Result<Vec<Vec<WarCasualtyRun>>> {
+    let _cpu = replay::cpu::scope_phase("wars:query_losses");
     let hours: Vec<_> = hours
         .range(span.first_hour..=span.last_hour)
         .copied()
@@ -955,4 +990,62 @@ fn hydrate_losses(
                 .collect()
         })
         .collect())
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+    use dashboard_base::prepared::series::tests::Fixture;
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "5,000-country query counter projection"
+    )]
+    fn queries_skip_snapshots_and_structure_only_queries_skip_all_counters() {
+        let fixture = Fixture::new();
+        let mut state = Observer::default();
+        state.snapshot = vec![1; 5000 * 16];
+        for index in 0..5000 {
+            state.indices.insert(format!("relation-{index}"), index);
+            state.first_reads.push(10);
+            state
+                .batch
+                .observe(1 + index * 4, 10, Some(i128::from(index)), false);
+        }
+        let mut writer = fixture.writer();
+        series::write_catalogue(&mut writer, "wars", 1, &state.indices, &state).unwrap();
+        writer.commit().unwrap();
+        let before = SNAPSHOT_BYTES.get();
+        let (keys, reached) = read_query_counters(&fixture.store, &fixture.key, 1, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            SNAPSHOT_BYTES.get(),
+            before,
+            "hydrated preparation's input snapshot"
+        );
+        assert_eq!(keys.len(), 5000);
+        assert_eq!(reached.first_reads, state.first_reads);
+        for index in 0..5000 {
+            assert_eq!(
+                reached.batch.state(1 + index * 4).unwrap().last,
+                state.batch.state(1 + index * 4).unwrap().last
+            );
+        }
+        let (_, structure) = read_query_counters(&fixture.store, &fixture.key, 1, true)
+            .unwrap()
+            .unwrap();
+        assert!(structure.first_reads.is_empty());
+        assert!(
+            structure.batch.state(1).is_none(),
+            "structure-only reply hydrated casualty counters"
+        );
+        assert_eq!(SNAPSHOT_BYTES.get(), before);
+        let (_, full) = series::read_catalogue::<Observer>(&fixture.store, &fixture.key, "wars", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(SNAPSHOT_BYTES.get() - before, 5000 * 16);
+        assert_eq!(full.first_reads, reached.first_reads);
+    }
 }

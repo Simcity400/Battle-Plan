@@ -48,7 +48,7 @@ mod families {
         not(feature = "slow-tests"),
         ignore = "synthetic content and repeated first-view reply publications"
     )]
-    fn a_request_retains_one_reply_across_store_epochs() {
+    fn unchanged_suppliers_reuse_one_reply_across_store_epochs() {
         let fixture = Fixture::new();
         let params = json!({"branchId":"1", "family":{"kind":"army-size","measure":"strength","countFor":"owner"},
             "tags":[tag(0)], "from":0, "to":31, "width":32});
@@ -71,7 +71,44 @@ mod families {
             );
             assert!(current <= bound);
         }
-        assert_eq!(retained().2, 28);
+        assert_eq!(retained().2, 1);
+        let mut writer = fixture.store.replace(fixture.key.clone()).unwrap();
+        writer
+            .write_at("unrelated-family", 0, b"unrelated publication".as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        {
+            let progress = fixture.source.state::<crate::prepared::Progress>();
+            crate::prepared::invalidate(&mut progress.lock().unwrap());
+        }
+        assert_eq!(fixture.query("series-summary", params.clone()), first);
+        assert_eq!(retained().2, 1, "an unrelated page invalidated the reply");
+        // No epoch change accompanies these fixture publications. Page identity
+        // alone must invalidate an accepted prefix, including completion.
+        for complete in [false, true] {
+            let mut writer = fixture.store.extend(&fixture.key).unwrap();
+            dashboard_base::prepared::coverage::publish_coverage(&mut writer, 1, 0, 1, complete)
+                .unwrap();
+            writer.commit().unwrap();
+            let _ = fixture.query("series-summary", params.clone());
+        }
+        assert_eq!(retained().2, 3, "changed gate extents reused a stale reply");
+        let mut writer = fixture.store.extend(&fixture.key).unwrap();
+        let identities = crate::products::country_history::HistoryScan::new(false, &[]);
+        writer
+            .write_at(
+                "country-identities-1",
+                0,
+                serde_json::to_vec(&identities).unwrap().as_slice(),
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        let _ = fixture.query("series-summary", params);
+        assert_eq!(
+            retained().2,
+            4,
+            "an independently replaced identity page reused the reply"
+        );
     }
 
     fn tail_and_zoom<F: Family>(family: Value, expected: f64) {

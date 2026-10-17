@@ -240,6 +240,7 @@ impl Prepared {
         mut reader: Option<&mut Reader<'_>>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:espionage");
         let replay = source.replay_ref();
         self.initialize(source, frame.branch)?;
         self.advance(source, frame.branch, i64::from(frame.hour) - 1, cancelled)?;

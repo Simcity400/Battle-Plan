@@ -119,6 +119,11 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "air-aces" => "queries:air-aces",
         "army-size" => "queries:army-size",
         "trade-flows" => "queries:trade-flows",
+        "wars" => "queries:wars",
+        "casualty-breakdown" => "queries:casualty-breakdown",
+        "military-air-ledger" => "queries:military-air-ledger",
+        "special-projects" => "queries:special-projects",
+        "resource-balance" => "queries:resource-balance",
         _ => return None,
     })
 }
@@ -2355,21 +2360,37 @@ pub fn query(
         } else {
             name
         };
-        let mut pages = super::pipeline::query_pages(&store, &key, branch, name)?;
-        if supplier != name {
+        let publication = {
+            let _phase = replay::cpu::scope_phase("query:publication");
+            let mut pages = super::pipeline::query_pages(&store, &key, branch, name)?;
+            if supplier != name {
+                pages.extend(super::pipeline::query_pages(
+                    &store, &key, branch, supplier,
+                )?);
+            }
+            // Identity pages and their coverage can advance independently of the
+            // numeric supplier. The supplier's unchanged gate alone is not a proof
+            // that naming and exactness are unchanged.
             pages.extend(super::pipeline::query_pages(
-                &store, &key, branch, supplier,
+                &store,
+                &key,
+                branch,
+                "country-identities",
             )?);
-        }
+            let identities = format!("country-identities-{branch}");
+            pages.push((
+                identities.clone(),
+                store
+                    .read(&key, &identities, 0)?
+                    .map(|file| file.id().cache_key()),
+            ));
+            (pages, reply_presentation(content))
+        };
         dashboard_base::prepared::query::observations::scope(source, product, Some(&key))
             .continue_entry(
                 branch,
                 &request.params,
-                &(
-                    &pages,
-                    super::store_epoch(source),
-                    reply_presentation(content),
-                ),
+                &publication,
                 cancelled,
                 |reply: &CachedQuery| {
                     let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();

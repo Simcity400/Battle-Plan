@@ -21,7 +21,18 @@ its pipeline.
 Changed trade exchanges update only their flows' native endpoints. Other active
 flows hold through the accepted frontier and materialize before a whole-table
 observation or publication. Shared coverage and refusal clocks advance separately.
-Hourly signed trade integrals still consume every active flow's terms.
+Signed trade integrals retain each flow's captured integer rates until a rate
+changes or a publication materializes them. Between changes the exact prefix
+is the preceding total plus rate times accepted hours. No division or rounding
+occurs during accumulation: rounding is already in the recorded integer rate.
+Gaps close the accepted span before its rates are replaced. Product overflow
+with representable hourly prefixes takes ordinary checked addition.
+Publication retains every existing hourly staircase row, with grouped per-key
+pushes; zero rates retain one constant run. Runtime rate spans rebuild after
+restore, and saved series and continuation layouts are unchanged. A separate
+compact counter charges exactly the rows hourly integration would have pending,
+including skipped zero rates and held endpoints sealed by gaps. Deferred rows
+and rate-cache memory do not contribute to the publication budget.
 
 `cargo test -p dashboard-resource-balance` builds and runs only this crate's
 tests.
@@ -37,3 +48,12 @@ empty/missing slot in the current writer. A second publisher, store
 replacement or abandoned writes invalidate the cache; an unchanged append
 can retain it. The shared publication rules are in
 [dashboard-base](../dashboard-base/README.md#prepared-series).
+
+Resource query tails retain numeric block folds and learned resource names
+together in the bounded observation cache. Within an ask, equal supplying table
+views reuse their numeric projection; the clock is not a numeric operand.
+Selected-country pool reads build operands only for the selected native holders.
+Trade query samplers retain their reduced exchanges, resource dictionary and
+country-holder inputs for the reply, refreshing them from every visited frame's
+actual table changes. Reached-hour refusals and the ordinary holder and flow
+projections still run at each visited hour.

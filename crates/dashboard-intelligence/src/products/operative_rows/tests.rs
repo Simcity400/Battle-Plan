@@ -196,3 +196,52 @@ fn operative_admission_uses_native_capture_and_mission_variants() {
         Err("Unsupported operative mission variant 9".into())
     );
 }
+
+fn check_equal_country_link_reads(count: u32) {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut input = source(1, 100, None);
+    *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("realm {id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *input.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    let mut countries = CountryInputs::default();
+    let mut tracker = FrameChangeTracker::new();
+    countries.update(&input, Some(&tracker.observe(&input, format)));
+    let before = countries.link_comparisons;
+    input.hour += 1;
+    input.metrics.table_ns[TableId::Countries.index()] = 1;
+    input.metrics.table_ns[TableId::CountryLinks.index()] = 1;
+    countries.update(&input, Some(&tracker.observe(&input, format)));
+    assert!(!countries.changed);
+    assert_eq!(
+        countries.link_comparisons, before,
+        "an equal acquisition retains the join"
+    );
+    assert_eq!(countries.labels.len(), count as usize);
+}
+
+#[test]
+fn equal_country_link_reads_do_not_compare_every_link() {
+    check_equal_country_link_reads(64);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn equal_country_link_reads_carry_5000_countries() {
+    check_equal_country_link_reads(5_000);
+}

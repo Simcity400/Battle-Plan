@@ -94,6 +94,7 @@ impl Prepared {
         changes: &FrameChanges,
         countries: &super::super::operative_rows::CountryInputs,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:agencies");
         let previous = self.last;
         let changed = countries.changed
             || previous.is_none_or(|last| last.checked_add(1) != Some(frame.hour))

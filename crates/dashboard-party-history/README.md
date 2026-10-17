@@ -17,3 +17,7 @@ Progressive popularity summaries retain each block's sampled fold with its
 earliest duplicate-popularity evidence. Re-asks restore that evidence with the
 fold, preserving the existing overlap refusal. State and navigation samplers
 keep their ordinary walks and diagnostics.
+
+The party observer retains country keys when the reduced allocation holds or
+recorded deltas change only balance fields. Snapshots, membership changes and
+identity edits compare the complete key projection before joining holders.

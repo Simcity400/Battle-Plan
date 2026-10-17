@@ -10,7 +10,7 @@ thread_local! {
     pub(crate) static SMALL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-const KEYS: u64 = 4096;
+const KEYS: u64 = 5000;
 /// First seen in the last batch only, so earlier directories lack it.
 const LATE_KEY: u64 = 5000;
 /// Never written.
@@ -122,5 +122,72 @@ fn a_few_lookups_keep_single_key_searches() {
     assert!(
         reader.tables.contains_key(&2),
         "thousands of lookups kept searching the hour's batch key by key"
+    );
+}
+
+#[test]
+fn query_directories_reuse_page_identities_and_drop_unused_or_replaced_pages() {
+    let fixture = three_batches();
+    let flag = AtomicBool::new(false);
+    let selected = keys();
+    let read = || {
+        Reader::new(&fixture.store, &fixture.key, "events".into(), &flag)
+            .unwrap()
+            .latest_event_rows(&selected, 299)
+            .unwrap()
+    };
+    let scope = cache_scope(None);
+    let expected = read();
+    let held = scope.finish();
+    let scope = cache_scope(Some(&held));
+    let before = SMALL_READS.get();
+    assert_eq!(read(), expected);
+    assert!(
+        SMALL_READS.get() - before <= 6,
+        "unchanged directories were searched or read again"
+    );
+    let held = scope.finish();
+    assert!(held.bytes() > KEYS as usize * DIRECTORY as usize);
+
+    // The same ordinal now has different bytes and fewer keys. Neither its
+    // old directory nor its decoded events may survive the replacement.
+    let other = Fixture::new();
+    let mut values = Accumulator::default();
+    let mut writer = other.writer();
+    for batch in 0..3 {
+        for key in 0..5 {
+            values
+                .event(key, batch * 100, &json!({"replacement": key}))
+                .unwrap();
+        }
+        values.through(batch * 100 + 99);
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+    }
+    writer.commit().unwrap();
+    let mut writer = fixture.writer();
+    for batch in 0..3 {
+        writer
+            .write_at(
+                "events",
+                batch,
+                other
+                    .store
+                    .read(&other.key, "events", batch)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    writer.commit().unwrap();
+    let uncached = read();
+    let scope = cache_scope(Some(&held));
+    assert_eq!(read(), uncached);
+    let current = scope.finish();
+    assert!(current.bytes() > 0);
+    let scope = cache_scope(Some(&current));
+    assert_eq!(
+        scope.finish().bytes(),
+        query::SummaryCache::default().bytes(),
+        "unused directories survived"
     );
 }

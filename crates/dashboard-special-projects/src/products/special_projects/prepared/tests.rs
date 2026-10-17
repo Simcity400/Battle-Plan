@@ -60,6 +60,45 @@ fn publish(fixture: &Fixture, prepared: &mut Prepared) {
 }
 
 #[test]
+fn consecutive_project_progress_changes_match_hourly_reply_bytes() {
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let first = frame(100, true, 1);
+    let mut next = first.clone();
+    next.hour = 101;
+    if let TableView::Complete(TableRows::Projects(rows)) =
+        &mut *next.tables[TableId::Projects.index()]
+    {
+        rows[0].state.prototype_progress = 71;
+    }
+    let source = source(&[first, next]);
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
+    for frame in decoded(&source) {
+        prepared.observe(&source, &context, &frame, &flag).unwrap();
+    }
+    let fixture = Fixture::new();
+    publish(&fixture, &mut prepared);
+    let params = params("opaque-1");
+    let expected = SpecialProjects::load(&source, &params, &context, &flag).unwrap();
+    assert_eq!(expected.projects.len(), 1);
+    assert_eq!(
+        expected.projects[0]
+            .runs
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.progress))
+            .collect::<Vec<_>>(),
+        [(100, 100, 1), (101, 101, 71)]
+    );
+    let actual = complete_reply(&fixture.store, &fixture.key, &params, &flag)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&actual).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
+    );
+}
+
+#[test]
 fn prepared_special_projects_match_two_commits_resume_append_progress_gaps_and_holder_changes() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
@@ -3041,4 +3080,28 @@ fn current_cards_select_the_exact_holder_before_identity_preparation() {
     let unselected = frame_reply(&source, &context, &request, 100, &flag).unwrap();
     assert!(unselected.projects.is_empty());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn equal_project_read_markers_carry_without_numeric_publication() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let mut input = frame(100, true, 64);
+    let mut prepared = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    prepared
+        .observe_changed(&input, &tracker.observe(&input, format), &flag)
+        .unwrap();
+    let visits = prepared.values.key_visits;
+    input.hour += 1;
+    prepared
+        .observe_changed(&input, &tracker.observe(&input, format), &flag)
+        .unwrap();
+    assert_eq!(prepared.values.key_visits, visits);
+    prepared.values.seal();
+    assert_eq!(
+        prepared.values.state(0).unwrap().last.unwrap().last_hour,
+        101
+    );
 }

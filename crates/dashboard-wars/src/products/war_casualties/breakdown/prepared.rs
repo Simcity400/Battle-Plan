@@ -80,6 +80,7 @@ pub fn query_through(
         params.window = Some(newest);
     }
     let params = &params;
+    let cpu = replay::cpu::scope_phase("casualties:query_breakdown_catalogue");
     let Some((_, catalogue)) = series::read_catalogue::<super::super::prepared::Catalogue>(
         store, key, "casualty", branch,
     )?
@@ -115,6 +116,8 @@ pub fn query_through(
         .as_ref()
         .map(|options| dashboard_base::catalogue::catalogue(source, options))
         .transpose()?;
+    drop(cpu);
+    let cpu = replay::cpu::scope_phase("casualties:query_breakdown_wars");
     let Some(wars) = crate::products::wars::prepared::projection(
         store,
         key,
@@ -131,6 +134,8 @@ pub fn query_through(
     else {
         return Ok(None);
     };
+    drop(cpu);
+    let _cpu = replay::cpu::scope_phase("casualties:query_breakdown_pairs");
     let mut coverage = Reader::new(store, key, format!("casualty-coverage-{branch}"), cancelled)?;
     let mut observed = observed(&mut coverage, bounds)?;
     if let Some(through) = through {

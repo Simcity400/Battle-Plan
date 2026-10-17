@@ -758,3 +758,55 @@ mod idea_names {
         );
     }
 }
+
+#[test]
+fn breakdown_visits_only_its_country_lines_among_five_thousand_countries() {
+    use super::{BREAKDOWN_LINE_VISITS, BreakdownInput, breakdown_of, modifiers};
+    use replay::rows::{CountryStabilityLineRow, tables};
+    let row = stability_inputs();
+    let own = CountryStabilityLineRow {
+        country: row.country,
+        key: row.keys[0],
+        line: 0,
+        value: 13,
+        ..Default::default()
+    };
+    let mut lines: Vec<_> = (1..=5000)
+        .map(|country| CountryStabilityLineRow {
+            country,
+            ..own.clone()
+        })
+        .collect();
+    lines.push(own.clone());
+    lines.sort_by_key(|line| line.key());
+    let frame = stability_frame(100, row.clone(), 100, lines.clone());
+    let before = BREAKDOWN_LINE_VISITS.with(std::cell::Cell::get);
+    let found = breakdown_of(
+        BreakdownInput {
+            decoded: &frame,
+            hour: 100,
+            row: &row,
+            slot: 7,
+            read_hour: 100,
+            reads: frame.complete::<tables::SliceReads>().unwrap(),
+            tag: "GER",
+        },
+        &mut Vec::new(),
+    );
+    assert_eq!(
+        BREAKDOWN_LINE_VISITS.with(std::cell::Cell::get) - before,
+        10
+    );
+    let oracle = modifiers(
+        &row,
+        None,
+        Some(&lines),
+        |key| (key == 0x8d).then_some(true),
+        "GER",
+        &mut Default::default(),
+    );
+    assert_eq!(
+        serde_json::to_value(found.modifiers).unwrap(),
+        serde_json::to_value(oracle).unwrap()
+    );
+}

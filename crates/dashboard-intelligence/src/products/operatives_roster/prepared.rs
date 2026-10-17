@@ -118,6 +118,7 @@ impl Prepared {
             String,
         >,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:roster");
         let bound = content.as_ref().ok().and_then(|content| content.as_deref());
         if self.scan.is_none() {
             self.scan = Some(Scan::new(

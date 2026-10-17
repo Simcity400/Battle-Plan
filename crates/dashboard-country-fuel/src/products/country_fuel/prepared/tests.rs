@@ -1424,7 +1424,13 @@ fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
         serde_json::to_value(&*prepared).unwrap()
     };
     // Every hour observed.
-    let (hourly_fixture, mut hourly) = (Fixture::new(), Prepared::default());
+    let (hourly_fixture, mut hourly) = (
+        Fixture::new(),
+        Prepared {
+            hourly_settlement: true,
+            ..Default::default()
+        },
+    );
     let mut hourly_states = Vec::new();
     for (frame, changes) in frames.iter().zip(&changes) {
         hourly
@@ -1483,4 +1489,306 @@ fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
     // An off-slot read overlapping the next slot read is left out.
     let left_out = &stepped.metadata.countries["GER"].left_out;
     assert!(left_out[0] > 0, "an overlapping day left out: {left_out:?}");
+}
+
+fn check_deferred_fuel_settlement_work(count: u32) {
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal,
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let mut frame = dashboard_base::test_fixtures::scale_frame(1, fuel_slot(1000), count);
+    frame.metrics.table_ns.fill(0);
+    frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
+    *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
+        (0..count)
+            .map(|index| CountryFuelRow {
+                country: 100_000 + index,
+                current_raw: i64::from(index),
+                maximum_raw: 10_000,
+                ring_gain_raw: 19,
+                ring_consumed_raw: 7,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [
+        Prepared::default(),
+        Prepared {
+            hourly_settlement: true,
+            ..Default::default()
+        },
+    ];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    // Complete preceding ownership evidence makes the first supplying day
+    // eligible, so the post-flush continuation really has day rows to charge.
+    let slot = frame.hour;
+    for hour in slot - DAY_HOURS..slot {
+        frame.hour = hour;
+        frame.metrics.table_ns.fill(0);
+        for (state, tracker) in states.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe(&frame, format);
+            state
+                .observe_changes(&frame, format, &changes, &flag)
+                .unwrap();
+        }
+    }
+    frame.hour = slot;
+    frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
+    for offset in 0..=25 {
+        if offset > 0 {
+            frame.hour += 1;
+            frame.metrics.table_ns.fill(0);
+        }
+        let mut visits = [0; 2];
+        for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+            let changes = tracker.observe(&frame, format);
+            let before = state.settlement_visits;
+            state
+                .observe_changes(&frame, format, &changes, &flag)
+                .unwrap();
+            visits[index] = state.settlement_visits - before;
+        }
+        assert_eq!(
+            states[0].buffered_bytes(),
+            states[1].buffered_bytes(),
+            "fuel publication budget at offset {offset}"
+        );
+        if offset == 1 {
+            assert_eq!(
+                visits,
+                [0, count as usize],
+                "quiet hours decide no fuel reads"
+            );
+        }
+        if offset == 23 {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                state.flush(&mut writer, 1, format, &flag).unwrap();
+                writer.commit().unwrap();
+            }
+        }
+    }
+    for (state, fixture) in states.iter_mut().zip(&fixtures) {
+        let mut writer = fixture.writer();
+        state.flush(&mut writer, 1, format, &flag).unwrap();
+        writer.commit().unwrap();
+    }
+    assert_payloads_equal(
+        &fixtures[0].payloads(),
+        &fixtures[1].payloads(),
+        "deferred fuel settlement",
+    );
+    assert_eq!(
+        serde_json::to_vec(&states[0]).unwrap(),
+        serde_json::to_vec(&states[1]).unwrap()
+    );
+}
+
+#[test]
+fn quiet_fuel_settlement_does_no_per_country_work_between_decisions() {
+    check_deferred_fuel_settlement_work(64);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn quiet_fuel_settlement_carries_5000_countries_without_hourly_decisions() {
+    check_deferred_fuel_settlement_work(5_000);
+}
+
+#[test]
+fn deferred_fuel_settlement_matches_hourly_bytes_through_gaps_restore_and_append() {
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal,
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let slot = fuel_slot(1000);
+    let frames: Vec<_> = (slot - 25..=slot + 80)
+        .filter(|hour| ![slot + 36, slot + 37].contains(hour))
+        .map(|hour| {
+            let mut frame = fuel_frame(
+                hour,
+                [slot + 4, slot + 30].contains(&hour),
+                9001,
+                (i64::from(hour), 10_000, 19, 7),
+            );
+            if hour == slot + 50 {
+                *frame.tables[TableId::CountryFuel.index()] = TableView::Unavailable {
+                    reason: "synthetic unavailable fuel".into(),
+                };
+            }
+            if hour >= slot + 60
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows.iter_mut().find(|row| row.id == 9001).unwrap().tag =
+                    b"changed fuel alias".to_vec();
+            }
+            frame
+        })
+        .collect();
+    let split = frames.partition_point(|frame| frame.hour <= slot + 27);
+    let first =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..split].to_vec())]).unwrap();
+    let replay = first
+        .append(&[dashboard_base::test_fixtures::continuation_records(
+            &first,
+            1,
+            frames[split..].to_vec(),
+        )])
+        .unwrap();
+    let mut fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [
+        Prepared::default(),
+        Prepared {
+            hourly_settlement: true,
+            ..Default::default()
+        },
+    ];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    for block in &replay.index {
+        replay
+            .read_block_alone(
+                block,
+                &TableId::ALL,
+                |raw, frame| {
+                    for (state, tracker) in states.iter_mut().zip(&mut trackers) {
+                        let changes = tracker.observe_updates(frame, Arc::new(raw.clone()), format);
+                        state
+                            .observe_changes(frame, format, &changes, &flag)
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        states[0].buffered_bytes(),
+                        states[1].buffered_bytes(),
+                        "fuel hourly budget at {}",
+                        frame.hour
+                    );
+                    if ![
+                        slot - 20,
+                        slot + 10,
+                        slot + 27,
+                        slot + 49,
+                        slot + 65,
+                        slot + 80,
+                    ]
+                    .contains(&frame.hour)
+                    {
+                        return Ok(());
+                    }
+                    for (state, fixture) in states.iter_mut().zip(&mut fixtures) {
+                        let mut writer = if frame.hour > slot + 27 {
+                            fixture.append_writer()
+                        } else {
+                            fixture.writer()
+                        };
+                        state.flush(&mut writer, 1, format, &flag).unwrap();
+                        writer.commit().unwrap();
+                    }
+                    assert_payloads_equal(
+                        &fixtures[0].payloads(),
+                        &fixtures[1].payloads(),
+                        "fuel decision deadlines",
+                    );
+                    assert_eq!(
+                        serde_json::to_vec(&states[0]).unwrap(),
+                        serde_json::to_vec(&states[1]).unwrap(),
+                        "fuel continuation at {}",
+                        frame.hour
+                    );
+                    if [slot + 27, slot + 65].contains(&frame.hour) {
+                        for (index, (state, tracker)) in
+                            states.iter_mut().zip(&mut trackers).enumerate()
+                        {
+                            *state = serde_json::from_slice(&serde_json::to_vec(&*state).unwrap())
+                                .unwrap();
+                            state.hourly_settlement = index == 1;
+                            tracker.invalidate();
+                        }
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn deferred_fuel_uses_hourly_publication_budget_after_flush() {
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker,
+        pages::{BATCH_BYTES, publication_due},
+        series::tests::assert_payloads_equal,
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let slot = fuel_slot(1000);
+    let mut frame = fuel_frame(slot, true, 9001, (100, 10_000, 19, 7));
+    let mut fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [
+        Prepared::default(),
+        Prepared {
+            hourly_settlement: true,
+            ..Default::default()
+        },
+    ];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut publications: [Vec<i32>; 2] = Default::default();
+    for offset in -DAY_HOURS..=25 {
+        frame.hour = slot + offset;
+        frame.metrics.table_ns.fill(0);
+        if offset == 0 {
+            frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
+        }
+        for (state, tracker) in states.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe(&frame, format);
+            state
+                .observe_changes(&frame, format, &changes, &flag)
+                .unwrap();
+        }
+        if offset < 23 {
+            continue;
+        }
+        if offset == 24 {
+            assert!(
+                states[1].days.bytes() > 0,
+                "hourly settlement charges carried day rows after the flush"
+            );
+        }
+        // Held pages leave exactly enough room for the hourly row charge.
+        // Missing the first carried day rows incorrectly defers this commit.
+        let held = BATCH_BYTES - states[1].buffered_bytes();
+        for (index, (state, fixture)) in states.iter_mut().zip(&mut fixtures).enumerate() {
+            if !publication_due(offset != 25, false, offset == 23, || {
+                (state.buffered_bytes(), held)
+            }) {
+                continue;
+            }
+            publications[index].push(offset);
+            let mut writer = if offset > 23 {
+                fixture.append_writer()
+            } else {
+                fixture.writer()
+            };
+            state.flush(&mut writer, 1, format, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+    }
+    assert_eq!(publications[1], [23, 24, 25]);
+    assert_eq!(
+        publications[0], publications[1],
+        "fuel budget-selected publication hours"
+    );
+    assert_payloads_equal(
+        &fixtures[0].payloads(),
+        &fixtures[1].payloads(),
+        "fuel budget-selected pages and ranges",
+    );
+    assert_eq!(
+        serde_json::to_vec(&states[0]).unwrap(),
+        serde_json::to_vec(&states[1]).unwrap()
+    );
 }

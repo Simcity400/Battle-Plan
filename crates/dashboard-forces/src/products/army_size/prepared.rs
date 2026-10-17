@@ -559,17 +559,38 @@ pub fn query(
             .rev()
             .find(|block| block.branch == branch)
             .ok_or_else(|| dashboard_core::invalid("Unknown army branch"))?;
-        if let replay::container::SeekResult::Frame(frame) =
-            source
-                .replay_ref()
-                .seek_selected(branch, block.first_hour, Some(TABLES))?
-        {
-            let (point, _) = point_scan(&frame);
-            scan.divisions |= point.divisions;
-            scan.strength |= point.strength;
-            scan.manpower |= point.manpower;
-            scan.battalions |= point.battalions;
-        }
+        let availability = dashboard_base::prepared::query::observations::scope(
+            source,
+            "army-size:availability",
+            None,
+        )
+        .get_query(
+            block,
+            &(),
+            cancelled,
+            |_| std::mem::size_of::<[bool; 4]>(),
+            || {
+                let _phase = replay::cpu::scope_phase("army:sampled_availability");
+                let mut available = [false; 4];
+                if let replay::container::SeekResult::Frame(frame) = source
+                    .replay_ref()
+                    .seek_selected(branch, block.first_hour, Some(TABLES))?
+                {
+                    let (point, _) = point_scan(&frame);
+                    available = [
+                        point.divisions,
+                        point.strength,
+                        point.manpower,
+                        point.battalions,
+                    ];
+                }
+                Ok(available)
+            },
+        )?;
+        scan.divisions |= availability[0];
+        scan.strength |= availability[1];
+        scan.manpower |= availability[2];
+        scan.battalions |= availability[3];
         scan.tracks.clear();
         return build_reply(
             source,
@@ -757,7 +778,7 @@ fn sampled_window(
     BTreeMap<(String, String), Vec<Run>>,
     Vec<HourSpan>,
     dashboard_base::products::country_history::RecordedHistories,
-    Scan,
+    Arc<Scan>,
 )> {
     use dashboard_base::prepared::query::progressive;
     let branch = params
@@ -771,51 +792,90 @@ fn sampled_window(
         .iter()
         .map(|tag| (tag.clone(), index.clone()))
         .collect::<Vec<_>>();
-    let metadata = std::cell::RefCell::new(Scan::default());
-    let points = std::cell::RefCell::new(PointScans::default());
-    let sampler = |frame: &DecodedFrame,
-                   recorded: Option<&progressive::Recorded<'_>>,
-                   requested: Option<&[(String, String)]>| {
-        let (scan, state) = points.borrow_mut().scan(frame, recorded);
-        let mut values = sample_rows(&scan, &state, frame.hour, None)?;
-        points.borrow_mut().keep(frame, state);
-        values.retain(|(_, field), _| field == &index);
-        if let Some(requested) = requested {
-            for key in requested {
-                values.entry(key.clone()).or_insert((None, None));
-            }
-        }
-        let mut metadata = metadata.borrow_mut();
-        metadata.divisions |= scan.divisions;
-        metadata.strength |= scan.strength;
-        metadata.manpower |= scan.manpower;
-        metadata.battalions |= scan.battalions;
-        metadata.inventory_fallback |= scan.inventory_fallback;
-        if frame.hour >= range.0
-            && frame.hour <= range.1
-            && coverage.is_none_or(|coverage| frame.hour > coverage.last_hour)
-        {
-            metadata.unreadable += scan.unreadable;
-            metadata.composition_unreadable += scan.composition_unreadable;
-            for (reason, count) in scan.invalid_table_reads {
-                *metadata.invalid_table_reads.entry(reason).or_default() += count;
-            }
-        }
-        if params.by_type && params.measure == ArmyMeasure::Battalions {
-            for (tag, track) in scan.tracks {
-                metadata
-                    .tracks
-                    .entry(tag)
-                    .or_default()
-                    .mix
-                    .extend(track.mix);
-            }
-        }
-        Ok(values)
-    };
-    let tail = progressive::tail_recorded(
-        source, branch, coverage, TABLES, &requested, range, &sampler, cancelled,
-    )?;
+    // The native fold depends on the tail cut, not on preparation before
+    // this window. Keep numeric values and their availability, warning counts
+    // and compositions together; identities still join the current prefix.
+    let first = coverage.map_or(i64::from(range.0), |coverage| {
+        i64::from(range.0).max(i64::from(coverage.last_hour) + 1)
+    });
+    let blocks = source
+        .replay_ref()
+        .index
+        .iter()
+        .filter(|block| {
+            block.branch == branch
+                && i64::from(block.last_hour) >= first
+                && block.first_hour <= range.1
+        })
+        .count();
+    let observed =
+        dashboard_base::prepared::query::observations::scope(source, "army-size:window", None)
+            .working_set(blocks)
+            .get_entry(
+                branch,
+                &(&index, &requested, range, params.by_type),
+                &(first, coverage.is_some_and(|coverage| coverage.complete)),
+                cancelled,
+                |observed: &(progressive::TailData, Arc<Scan>)| {
+                    let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
+                    bytes.value(&observed.1);
+                    std::mem::size_of::<(progressive::TailData, Arc<Scan>)>()
+                        + progressive::tail_bytes(&observed.0)
+                        + bytes.total() as usize
+                },
+                || {
+                    let _phase = replay::cpu::scope_phase("army:sampled_window");
+                    let metadata = std::cell::RefCell::new(Scan::default());
+                    let points = std::cell::RefCell::new(PointScans::default());
+                    let sampler =
+                        |frame: &DecodedFrame,
+                         recorded: Option<&progressive::Recorded<'_>>,
+                         requested: Option<&[(String, String)]>| {
+                            let (scan, state) = points.borrow_mut().scan(frame, recorded);
+                            let mut values = sample_rows(&scan, &state, frame.hour, None)?;
+                            points.borrow_mut().keep(frame, state);
+                            values.retain(|(_, field), _| field == &index);
+                            if let Some(requested) = requested {
+                                for key in requested {
+                                    values.entry(key.clone()).or_insert((None, None));
+                                }
+                            }
+                            let mut metadata = metadata.borrow_mut();
+                            metadata.divisions |= scan.divisions;
+                            metadata.strength |= scan.strength;
+                            metadata.manpower |= scan.manpower;
+                            metadata.battalions |= scan.battalions;
+                            metadata.inventory_fallback |= scan.inventory_fallback;
+                            if frame.hour >= range.0
+                                && frame.hour <= range.1
+                                && coverage.is_none_or(|coverage| frame.hour > coverage.last_hour)
+                            {
+                                metadata.unreadable += scan.unreadable;
+                                metadata.composition_unreadable += scan.composition_unreadable;
+                                for (reason, count) in scan.invalid_table_reads {
+                                    *metadata.invalid_table_reads.entry(reason).or_default() +=
+                                        count;
+                                }
+                            }
+                            if params.by_type && params.measure == ArmyMeasure::Battalions {
+                                for (tag, track) in scan.tracks {
+                                    metadata
+                                        .tracks
+                                        .entry(tag)
+                                        .or_default()
+                                        .mix
+                                        .extend(track.mix);
+                                }
+                            }
+                            Ok(values)
+                        };
+                    let tail = progressive::tail_recorded(
+                        source, branch, coverage, TABLES, &requested, range, &sampler, cancelled,
+                    )?;
+                    Ok((tail, Arc::new(metadata.into_inner())))
+                },
+            )?;
+    let tail = &observed.0;
     let history = progressive::histories(
         &store,
         &key,
@@ -827,7 +887,12 @@ fn sampled_window(
         &params.tags,
         cancelled,
     )?;
-    Ok((tail.0, tail.1, history, metadata.into_inner()))
+    Ok((
+        tail.0.clone(),
+        tail.1.clone(),
+        history,
+        Arc::clone(&observed.1),
+    ))
 }
 
 fn progressive_window(

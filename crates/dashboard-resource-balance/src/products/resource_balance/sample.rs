@@ -10,6 +10,11 @@ use std::{
     io,
 };
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static ROW_PROJECTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -84,10 +89,21 @@ pub(super) fn sample_rows(
         frame.complete::<tables::CountryResources>(),
     ) {
         let slots = reads.slots();
+        let selected_slots: BTreeSet<_> = reads
+            .holders()
+            .iter()
+            .filter(|(tag, _)| requested.is_none() || wanted_tags.contains(tag.as_str()))
+            .filter_map(|(_, identity)| identity.map(|(slot, _)| slot))
+            .collect();
         let mut rows = BTreeMap::<u32, Vec<_>>::new();
-        for row in pools.iter().map(PoolOperand::from) {
-            if let Some(&slot) = slots.get(&row.country) {
-                rows.entry(slot).or_default().push(row);
+        for row in pools {
+            if let Some(&slot) = slots
+                .get(&row.country)
+                .filter(|slot| selected_slots.contains(*slot))
+            {
+                #[cfg(test)]
+                ROW_PROJECTS.set(ROW_PROJECTS.get() + 1);
+                rows.entry(slot).or_default().push(PoolOperand::from(row));
             }
         }
         for (tag, identity) in reads.holders() {

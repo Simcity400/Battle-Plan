@@ -597,6 +597,7 @@ impl Scan {
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
         mut sink: impl FnMut(&str, (u32, u32), RawRead) -> io::Result<()>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("experience:observe");
         let previous = self.hour;
         let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(decoded.hour);
         self.hour = Some(decoded.hour);
@@ -815,6 +816,7 @@ impl Scan {
     /// inputs or banked read. Open gain runs already hold through these hours;
     /// the next changed input or read visits their countries.
     pub fn advance_quiet(&mut self, first: i32, last: i32) -> bool {
+        let _cpu = ::replay::cpu::scope_phase("experience:quiet");
         if self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) || last < first {
             return false;
         }

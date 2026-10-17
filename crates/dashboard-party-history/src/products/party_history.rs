@@ -755,6 +755,7 @@ struct TopicScan {
 #[derive(Default)]
 struct TopicInputs {
     keys: Option<CountryKeys>,
+    country_view: Option<replay::frame::ViewIdentity>,
     countries: Option<Vec<replay::rows::CountryRow>>,
     links: Option<Vec<replay::rows::CountryLinkRow>>,
     holders: BTreeMap<String, (usize, u32)>,
@@ -782,6 +783,7 @@ impl TopicInputs {
         frame: &replay::frame::DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> BTreeSet<String> {
+        let _cpu = ::replay::cpu::scope_phase("parties:inputs");
         let changed =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
         let mut roster = false;
@@ -792,11 +794,24 @@ impl TopicInputs {
             {
                 self.work.row_visits += rows.map_or(0, |rows| rows.len());
             }
-            if !rows.is_some_and(|rows| self.keys.as_ref().is_some_and(|keys| keys.same(rows))) {
+            if !self
+                .country_view
+                .as_ref()
+                .is_some_and(|view| view.is(&frame.tables[TableId::Countries.index()]))
+                && !rows.is_some_and(|rows| {
+                    self.keys.as_ref().is_some_and(|keys| {
+                        keys.same_changes(
+                            rows,
+                            changes.and_then(|changes| changes.rows(TableId::Countries)),
+                        )
+                    })
+                })
+            {
                 self.keys = rows.map(CountryKeys::read);
                 self.countries = rows.map(|rows| rows.to_vec());
                 roster = true;
             }
+            self.country_view = rows.map(|_| frame.tables[TableId::Countries.index()].identity());
         }
         if changed(TableId::CountryLinks) {
             let rows = frame.complete::<tables::CountryLinks>().ok();

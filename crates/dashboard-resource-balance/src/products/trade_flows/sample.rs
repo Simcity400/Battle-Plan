@@ -53,8 +53,39 @@ pub(crate) fn pair(token: &str) -> io::Result<(Identity, Identity, u32)> {
     ))
 }
 
+/// A reply's native input projections, refreshed from each visited frame's
+/// actual table identities. Country balance changes retain the holder join;
+/// unchanged exchanges and dictionaries retain their reduced operands.
+#[derive(Default)]
+pub(crate) struct Query {
+    inputs: std::cell::RefCell<Inputs>,
+    changes: std::cell::RefCell<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
+}
+impl Query {
+    pub(crate) fn sample(
+        &self,
+        frame: &DecodedFrame,
+        requested: Option<&[(String, String)]>,
+        format: replay::format::FormatVersion,
+    ) -> io::Result<Samples> {
+        let cpu = replay::cpu::scope_phase("trade:query_inputs");
+        let changes = self.changes.borrow_mut().observe(frame, format);
+        let mut inputs = self.inputs.borrow_mut();
+        inputs.refresh(frame, &changes);
+        drop(cpu);
+        let _cpu = replay::cpu::scope_phase("trade:query_flows");
+        sample_inputs(frame, requested, &inputs)
+    }
+    #[cfg(all(test, feature = "slow-tests"))]
+    pub(super) fn visits(&self) -> (usize, usize) {
+        let inputs = self.inputs.borrow();
+        (inputs.country_visits, inputs.row_visits)
+    }
+}
+
 /// Country selectors have an empty field; native flow tokens select particular fields.
 /// No absent holder or unavailable exchange table supplies zero.
+#[cfg(test)]
 pub(crate) fn sample(
     frame: &DecodedFrame,
     requested: Option<&[(String, String)]>,

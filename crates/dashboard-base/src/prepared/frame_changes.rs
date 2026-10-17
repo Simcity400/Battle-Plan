@@ -47,6 +47,37 @@ pub fn field_mask(table: TableId, names: &[&str]) -> u64 {
     }
 }
 
+/// Compare ordered snapshot rows once when no recorded delta is available.
+/// Callers retain these keys until their next supplying read consumes them.
+pub fn differing_keys<T: replay::rows::RowCodec>(
+    before: &[T],
+    now: &[T],
+) -> std::collections::BTreeSet<u128> {
+    let mut changed = std::collections::BTreeSet::new();
+    let (mut a, mut b) = (0, 0);
+    while a < before.len() || b < now.len() {
+        match (before.get(a), now.get(b)) {
+            (Some(old), Some(new)) if old.key() == new.key() => {
+                if old != new {
+                    changed.insert(new.key());
+                }
+                a += 1;
+                b += 1;
+            }
+            (Some(old), new) if new.is_none_or(|new| old.key() < new.key()) => {
+                changed.insert(old.key());
+                a += 1;
+            }
+            (_, Some(new)) => {
+                changed.insert(new.key());
+                b += 1;
+            }
+            _ => unreachable!(),
+        }
+    }
+    changed
+}
+
 impl FrameChanges {
     /// The hour's recorded updates. Readers share immutable update cells;
     /// keeping these facts retains this hour's cells, not its entire block.

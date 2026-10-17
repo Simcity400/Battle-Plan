@@ -1239,8 +1239,11 @@ fn experience_observes_an_hours_changed_gains_as_its_whole_tables() {
             frames(36..72),
         )])
         .unwrap();
-    let observe = |updates: bool| {
-        let mut accumulator = ExperienceAccumulator::default();
+    let observe = |updates: bool, whole: bool| {
+        let mut accumulator = ExperienceAccumulator {
+            whole_experience: whole,
+            ..Default::default()
+        };
         for index in &replay.index {
             let mut tracker = FrameChangeTracker::new();
             replay
@@ -1267,13 +1270,17 @@ fn experience_observes_an_hours_changed_gains_as_its_whole_tables() {
             .unwrap();
         writer.commit().unwrap();
         let state = serde_json::to_value(&accumulator).unwrap();
-        (fixture.payloads(), state, visits)
+        (fixture.payloads(), state, visits, accumulator.projections)
     };
-    let (whole_pages, whole_state, whole_visits) = observe(false);
-    let (pages, state, visits) = observe(true);
+    let (whole_pages, whole_state, whole_visits, whole_projections) = observe(false, true);
+    let (pages, state, visits, projections) = observe(true, false);
     assert!(
         whole_pages.keys().any(|(name, _)| name == "experience-1"),
         "experience published"
+    );
+    assert!(
+        projections < whole_projections,
+        "held reads do not reproject ten channels"
     );
     assert_eq!(pages, whole_pages, "pages");
     assert_eq!(state, whole_state, "saved state");

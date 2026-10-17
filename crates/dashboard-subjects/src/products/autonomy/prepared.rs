@@ -128,12 +128,12 @@ pub fn progressive_query(
             .collect();
         let observe = |frame: &DecodedFrame, _: Option<&[(String, String)]>| {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            if accepted
+            let mut native = tail.borrow_mut();
+            let observe = accepted
                 .as_ref()
-                .is_none_or(|coverage| frame.hour > coverage.last_hour)
-            {
-                let mut native = tail.borrow_mut();
-                native.observe(frame)?;
+                .is_none_or(|coverage| frame.hour > coverage.last_hour);
+            let mut values = native.observe_sample(frame, observe)?;
+            if observe {
                 let changed: HashSet<_> = native.changed.iter().map(|(index, _)| *index).collect();
                 let mut bands = categories.borrow_mut();
                 // The shared tail reader owns numeric history; native change
@@ -152,8 +152,6 @@ pub fn progressive_query(
                     }
                 }
             }
-            let mut values = sample(frame, None)?;
-            let native = tail.borrow();
             let chosen = selection(&params, &native.overlord_subjects);
             values.retain(|(tag, field), (_, value)| {
                 let numeric = if product == "series-state" {
@@ -668,6 +666,7 @@ pub fn progressive_query(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    let _cpu = replay::cpu::scope_phase("autonomy:query_identities_finish");
     let history = progressive::histories(
         store,
         key,

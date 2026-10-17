@@ -722,6 +722,7 @@ pub struct Scan {
 struct IdeaInputs {
     complete: bool,
     keys: Option<CountryKeys>,
+    country_view: Option<replay::frame::ViewIdentity>,
     countries: Option<Vec<replay::rows::CountryRow>>,
     links: Option<Vec<replay::rows::CountryLinkRow>>,
     holders: BTreeMap<String, Option<(usize, u32)>>,
@@ -743,6 +744,7 @@ impl IdeaInputs {
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
         refused: &mut RefusedRows,
     ) -> BTreeSet<String> {
+        let _cpu = ::replay::cpu::scope_phase("ideas:inputs");
         let changed =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
         let mut roster = false;
@@ -755,7 +757,19 @@ impl IdeaInputs {
         let mut dirty = BTreeSet::new();
         if changed(TableId::Countries) {
             let rows = frame.complete::<tables::Countries>().ok();
-            if !rows.is_some_and(|rows| self.keys.as_ref().is_some_and(|keys| keys.same(rows))) {
+            if !self
+                .country_view
+                .as_ref()
+                .is_some_and(|view| view.is(&frame.tables[TableId::Countries.index()]))
+                && !rows.is_some_and(|rows| {
+                    self.keys.as_ref().is_some_and(|keys| {
+                        keys.same_changes(
+                            rows,
+                            changes.and_then(|changes| changes.rows(TableId::Countries)),
+                        )
+                    })
+                })
+            {
                 self.keys = rows.map(CountryKeys::read);
                 self.countries = rows.map(|rows| rows.to_vec());
                 roster = true;
@@ -771,6 +785,7 @@ impl IdeaInputs {
                     }
                 }
             }
+            self.country_view = rows.map(|_| frame.tables[TableId::Countries.index()].identity());
         }
         if changed(TableId::CountryLinks) {
             let next = frame
@@ -1061,6 +1076,7 @@ impl Scan {
             && frame.complete::<tables::ModifierDefinitions>().is_ok()
             && frame.complete::<tables::LexicalTokens>().is_ok()
         {
+            let _cpu = ::replay::cpu::scope_phase("ideas:definitions");
             let packet = replay::frame::DecodedFrame {
                 tables: std::array::from_fn(|index| {
                     if tables.contains(&TableId::ALL[index]) {
@@ -1166,6 +1182,7 @@ impl Scan {
         decoded: &replay::frame::DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("ideas:observe");
         // Preserve the production scan's selected-table availability, including
         // reached naming refusals for operands outside its selection.
         static OMITTED: std::sync::LazyLock<replay::frame::SharedView> =
@@ -1346,6 +1363,7 @@ impl Scan {
         last: i32,
         changes: &mut PreparedChanges,
     ) -> bool {
+        let _cpu = ::replay::cpu::scope_phase("ideas:quiet");
         if last < first || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first) {
             return false;
         }

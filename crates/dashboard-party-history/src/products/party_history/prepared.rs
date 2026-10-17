@@ -214,6 +214,7 @@ impl Prepared {
         frame: &replay::frame::DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("parties:observe");
         self.metadata.first.get_or_insert(frame.hour);
         self.metadata.last = frame.hour;
         self.data.advance(frame.hour)?;

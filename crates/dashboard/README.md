@@ -12,6 +12,14 @@ independently of the opening request; Status, Start, Cancel and Clear
 commands operate on that recording through its current source binding. Prepared
 queries use the same host service and cancellation boundary as ordinary products,
 and read only their requested pages. The reply echoes source, revision and product.
+The observation LRU retains whole query replies and their series caches for
+numeric summaries and states, air superiority, party history, force histories,
+trade and resource balance, wars and casualty breakdown, military air ledgers,
+special projects, and the other cached query routes. Their binding names the
+supplier coverage pages, the identity page and its coverage, and presentation
+inputs. An unrelated store publication keeps the answer; replacing a supplier
+page or advancing its gate recomputes it. Refusals are checked before reuse and
+current content warnings are appended when serving the reply.
 Clear cancels writers across opened revisions of the path before deleting the
 prepared files; existing open range readers retain their bytes.
 

@@ -2441,9 +2441,9 @@ fn compact_payload_operands_do_not_expand_constant_spans() {
     };
     let before = SPAN_BUCKET_WORK.with(std::cell::Cell::get);
     let mut identity = Vec::new();
-    let expected = payload_input(&rows, &mut identity);
+    let expected = payload_input(&rows.runs, &rows.state, &mut identity);
     for _ in 0..5_000 {
-        assert_eq!(payload_input(&rows, &mut identity), expected);
+        assert_eq!(payload_input(&rows.runs, &rows.state, &mut identity), expected);
     }
     assert_eq!(SPAN_BUCKET_WORK.with(std::cell::Cell::get), before);
 }
@@ -2727,5 +2727,169 @@ fn payload_tables_share_only_the_flushes_explicitly_given_the_same_table() {
             PAYLOAD_WORK.with(std::cell::Cell::get) - before,
             usize::from(index != 3)
         );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "5,000-country query event frontier"
+)]
+fn event_pages_keep_the_merge_frontier_for_five_thousand_countries() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in 0..2 {
+        values.through(hour);
+        for key in 0..5000 {
+            values.event(key, hour, &json!([hour, key])).unwrap();
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+    }
+    let keys: Vec<_> = (0..5000).rev().chain([4999, 0]).collect();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    let mut cursor = 0;
+    let mut seen = 0;
+    let mut seeks = None;
+    loop {
+        let page = reader.events(&keys, 0, 1, cursor, 127).unwrap();
+        assert_eq!(page.total, 10_000);
+        for row in page.rows {
+            assert_eq!(row.row, json!([seen / 5000, seen % 5000]));
+            assert_eq!(
+                (row.key, row.ordinal),
+                ((seen % 5000) as u64, (seen / 5000) as u64)
+            );
+            seen += 1;
+        }
+        if let Some(before) = seeks {
+            assert_eq!(
+                EVENT_COUNTS.get(),
+                before,
+                "a later page sought every country again"
+            );
+        } else {
+            seeks = Some(EVENT_COUNTS.get());
+        }
+        let Some(next) = page.cursor else { break };
+        cursor = next;
+    }
+    assert_eq!(seen, 10_000);
+    // A changed window/selection and a backwards cursor use ordinary seeking.
+    assert_eq!(
+        reader.events(&[4999], 1, 1, 0, 1).unwrap().rows[0].row,
+        json!([1, 4999])
+    );
+    assert_eq!(
+        reader.events(&keys, 0, 1, 0, 1).unwrap().rows[0].row,
+        json!([0, 0])
+    );
+    // Clamping the immutable reader clears its frontier.
+    reader.through_hour(0).unwrap();
+    let page = reader.events(&keys, 0, 1, 1, 10_000).unwrap();
+    assert_eq!(page.total, 5000);
+    assert!(page.rows.iter().all(|row| row.hour == 0));
+}
+
+#[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "5,000-country query run bounds")]
+fn point_queries_reuse_global_bounds_but_authenticate_local_runs_for_five_thousand_countries() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for first in [0, 3, 6] {
+        for hour in first..first + 3 {
+            values.through(hour);
+            for key in 0..5000 {
+                // A refusal, then a fresh run, keeps an actual hole at hour 4.
+                let value =
+                    (key != 4999 || hour != 4).then_some(i128::from(key) + i128::from(hour >= 6));
+                values.observe(key, hour, value, false);
+            }
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "points", 0, &flag).unwrap();
+        writer.commit().unwrap();
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "points".into(), &flag).unwrap();
+    let before = RUN_BOUNDS.get();
+    for key in 0..5000 {
+        reader.value_at(key, 0).unwrap();
+    }
+    assert_eq!(RUN_BOUNDS.get() - before, 5000);
+    let before = RUN_BOUNDS.get();
+    for key in 0..4999 {
+        let run = reader.value_at(key, 3).unwrap().unwrap();
+        assert_eq!(
+            (run.first_hour, run.last_hour, run.value),
+            (0, 5, i128::from(key))
+        );
+    }
+    assert_eq!(
+        RUN_BOUNDS.get(),
+        before,
+        "reconstructed unchanged global run bounds"
+    );
+    assert!(reader.value_at(4999, 4).unwrap().is_none());
+    assert_eq!(reader.value_at(4999, 5).unwrap().unwrap().first_hour, 5);
+    reader.through_hour(2).unwrap();
+    assert_eq!(reader.value_at(0, 1).unwrap().unwrap().last_hour, 2);
+    assert!(reader.value_at(0, 3).unwrap().is_none());
+}
+
+#[test]
+fn pushed_run_groups_keep_ordinary_payloads_counters_and_continuation() {
+    let fixtures = [Fixture::new(), Fixture::new(), Fixture::new()];
+    let mut values: [Accumulator; 3] = Default::default();
+    let flag = AtomicBool::new(false);
+    for (batch, (first, last)) in [(0, 19), (20, 39), (45, 63)].into_iter().enumerate() {
+        for (index, values) in values.iter_mut().enumerate() {
+            values.advance_span(first, last).unwrap();
+            values.event(1, first, &batch).unwrap();
+            let runs: Vec<_> = (first..last)
+                .map(|hour| {
+                    Run::new(
+                        hour,
+                        hour,
+                        if hour < first + 4 {
+                            7
+                        } else {
+                            i128::from(hour) * -13
+                        },
+                        hour == first,
+                    )
+                })
+                .collect();
+            if index == 0 {
+                values.push_runs(1, runs);
+            } else if index == 1 {
+                for run in runs {
+                    values.push(1, run);
+                }
+            } else {
+                values.record_as(0);
+                values.push_runs(1, runs);
+            }
+            values.observe(1, last, Some(i128::from(last) * -13), false);
+            let mut writer = fixtures[index].writer();
+            values.flush(&mut writer, "grouped-runs", 5, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        for index in 1..3 {
+            assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[index].payloads(),
+                "grouped run pushes",
+            );
+            assert_eq!(
+                serde_json::to_vec(&values[0]).unwrap(),
+                serde_json::to_vec(&values[index]).unwrap()
+            );
+        }
+        for values in &mut values {
+            *values = serde_json::from_slice(&serde_json::to_vec(&*values).unwrap()).unwrap();
+        }
     }
 }

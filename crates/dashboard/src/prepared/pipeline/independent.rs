@@ -53,8 +53,8 @@
 
 use super::super::Section;
 use super::{
-    Accepted, BATCH_BYTES, Batches, Checkpoint, Coverage, CoveragePage, FAMILIES, FamilyTimings,
-    Refused, SCHEMA, lanes,
+    Accepted, Batches, Checkpoint, Coverage, CoveragePage, FAMILIES, FamilyTimings, Refused,
+    SCHEMA, lanes,
 };
 use crate::{
     Source,
@@ -2027,11 +2027,12 @@ fn prepare_family(
         // The batch ends where the hourly walk's does by the recording, or
         // at the byte budget of what this family holds: never by wall time,
         // nor by the shared writer, which other families' commits fill.
-        if continues
-            && !phase.measured
-            && !phase.batches.full(block)
-            && state.pending().saturating_add(pages.bytes()) < BATCH_BYTES
-        {
+        if !dashboard_base::prepared::pages::publication_due(
+            continues,
+            phase.measured,
+            phase.batches.full(block),
+            || (state.pending(), pages.bytes()),
+        ) {
             continue;
         }
         // The family's hourly flush, at the hour it would run.

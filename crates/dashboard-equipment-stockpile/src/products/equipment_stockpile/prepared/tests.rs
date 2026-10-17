@@ -1261,6 +1261,97 @@ fn continuation(observer: &Prepared) -> serde_json::Value {
 }
 
 #[test]
+fn dictionary_change_for_unselected_slot_matches_hourly_preparation() {
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
+    use replay::rows::{CountryLinkRow, CountryRow, LexicalTokenRow};
+    let mut frame = dashboard_base::test_fixtures::source(1, 100, Some(1));
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=2)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: b"AAA".to_vec(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=2)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::Stockpiles.index()] =
+        TableView::Complete(TableRows::Stockpiles(Vec::new()));
+    *frame.tables[TableId::ProductionLines.index()] =
+        TableView::Complete(TableRows::ProductionLines(Vec::new()));
+    *frame.tables[TableId::LogisticsEquipment.index()] = TableView::Complete(
+        TableRows::LogisticsEquipment(vec![logistics(2, 1, 7, -5, 7)]),
+    );
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut observers = [
+        Prepared::default(),
+        Prepared::default(),
+        Prepared {
+            whole_tables: true,
+            ..Default::default()
+        },
+    ];
+    observers[2].choices.whole_projection = true;
+    let mut trackers: [_; 3] = std::array::from_fn(|_| FrameChangeTracker::new());
+    let mut recorded = Recorded::new();
+    for hour in 100..=102 {
+        frame.hour = hour;
+        frame.metrics.table_ns.fill(0);
+        frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = u64::from(hour != 101);
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 7,
+                literal: if hour == 100 { "before" } else { "after" }
+                    .as_bytes()
+                    .to_vec(),
+            }]));
+        let (decoded, wire) = recorded.next(&frame, false);
+        for (index, (observer, tracker)) in observers.iter_mut().zip(&mut trackers).enumerate() {
+            let changes = if index == 1 {
+                tracker.observe(&decoded, format)
+            } else {
+                tracker.observe_updates(&decoded, Arc::clone(&wire), format)
+            };
+            observer
+                .observe_changed(format, &decoded, &changes)
+                .unwrap();
+        }
+        let rows = observers[0].rows.as_ref().unwrap();
+        assert_eq!(rows.identities["AAA"], (1, 1));
+        assert!(!rows.holders.contains_key(&2));
+        if hour == 101 {
+            assert!(rows.stale[1].contains(&2), "wait for the logistics read");
+        }
+    }
+    assert_eq!(observers[0].row_hours, 2);
+    assert_eq!(observers[1].row_hours, 2);
+    let fixtures: [_; 3] = std::array::from_fn(|_| Fixture::new());
+    for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+        let mut writer = fixture.writer();
+        observer
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    for index in 0..2 {
+        dashboard_base::prepared::series::tests::assert_payloads_equal(
+            &fixtures[index].payloads(),
+            &fixtures[2].payloads(),
+            "dictionary change for an unselected slot",
+        );
+        assert_eq!(continuation(&observers[index]), continuation(&observers[2]));
+    }
+}
+
+#[test]
 fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_gap_and_resume() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use engine::cequipment_production_line::KIND_NAVAL;
@@ -1385,6 +1476,7 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
     let fixtures = [
         dashboard_base::prepared::series::tests::Fixture::new(),
         dashboard_base::prepared::series::tests::Fixture::new(),
+        dashboard_base::prepared::series::tests::Fixture::new(),
     ];
     // Observed from changed rows, and from the whole tables every hour.
     let mut observers = [
@@ -1393,14 +1485,23 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
             whole_tables: true,
             ..Default::default()
         },
+        Prepared::default(),
     ];
     observers[1].choices.whole_projection = true;
-    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut trackers = [
+        FrameChangeTracker::new(),
+        FrameChangeTracker::new(),
+        FrameChangeTracker::new(),
+    ];
     let mut recorded = Recorded::new();
     for (input, keyframe) in &inputs {
         let (decoded, wire) = recorded.next(input, *keyframe);
-        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
-            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+        for (index, (observer, tracker)) in observers.iter_mut().zip(&mut trackers).enumerate() {
+            let changes = if index == 2 {
+                tracker.observe(&decoded, format)
+            } else {
+                tracker.observe_updates(&decoded, Arc::clone(&wire), format)
+            };
             observer
                 .observe_changed(format, &decoded, &changes)
                 .unwrap();
@@ -1418,6 +1519,12 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
             &fixtures[1].payloads(),
             &format!("published through hour {}", decoded.hour),
         );
+        dashboard_base::prepared::series::tests::assert_payloads_equal(
+            &fixtures[2].payloads(),
+            &fixtures[1].payloads(),
+            "snapshot comparisons without row deltas",
+        );
+        assert_eq!(continuation(&observers[2]), continuation(&observers[1]));
         assert_eq!(
             continuation(&observers[0]),
             continuation(&observers[1]),
@@ -1519,4 +1626,76 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
         );
     }
     Ok(())
+}
+
+fn sparse_stockpile_holders(count: u32) {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::rows::{CountryLinkRow, CountryRow, StockpileRow};
+    let mut first = stockpile_frame(100, true, &[], Some(&[]));
+    *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("mod holder {id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *first.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    *first.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(
+        (1..=count)
+            .map(|country| StockpileRow {
+                country,
+                ordinal: 0,
+                variant_handle: 10,
+                amount_raw: 7,
+            })
+            .collect(),
+    ));
+    first.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+    let format = replay(vec![first.clone()]).format;
+    let mut state = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    state
+        .observe_changed(format, &first, &tracker.observe(&first, format))
+        .unwrap();
+    let mut next = first.clone();
+    for hour in 101..=104 {
+        next.hour = hour;
+        next.metrics.table_ns.fill(0);
+        if hour == 104 {
+            next.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+        }
+        if hour == 101 {
+            stock_rows(&mut next)[0].amount_raw += 1;
+        }
+        let before = state.work.history_visits;
+        state
+            .observe_changed(format, &next, &tracker.observe(&next, format))
+            .unwrap();
+        assert_eq!(
+            state.work.history_visits - before,
+            usize::from(hour == 104),
+            "only one of {count} holders has changed, with invalidation retained until its read"
+        );
+    }
+}
+
+#[test]
+fn snapshot_numeric_changes_select_only_their_holder_at_its_next_read() {
+    sparse_stockpile_holders(8);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn one_changed_stockpile_visits_one_of_five_thousand_holders() {
+    sparse_stockpile_holders(5000);
 }

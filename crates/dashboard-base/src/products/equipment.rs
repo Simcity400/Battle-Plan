@@ -205,6 +205,16 @@ pub(crate) struct VariantReads {
     upgrades: Option<SharedView>,
     /// Each definition's inputs at the read before.
     inputs: HashMap<u64, VariantInput>,
+    /// Recorded invalidations since the last supplying read, including hours
+    /// on which the catalogue only carried names. None requires a full read.
+    pending: [Option<BTreeSet<u128>>; 4],
+    token_variants: BTreeMap<u32, BTreeSet<u64>>,
+    appearance_dirty: bool,
+    country_tags: BTreeMap<u32, replay::rows::CountryRow>,
+    original_tags: BTreeMap<u32, replay::rows::CountryAppearanceRow>,
+    tag_links: BTreeMap<u32, BTreeSet<u64>>,
+    tag_slots: BTreeMap<u32, BTreeSet<u64>>,
+    original_slots: BTreeMap<u32, BTreeSet<u64>>,
 }
 
 /// A definition's inputs at a read: its row, and its modules and upgrades in
@@ -213,6 +223,31 @@ pub(crate) struct VariantReads {
 struct VariantInput {
     definition: VariantDefinitionRow,
     design: Option<(Vec<VariantModuleRow>, Vec<VariantUpgradeRow>)>,
+}
+
+impl VariantInput {
+    fn naming_link(&self) -> u32 {
+        if (self.definition.origin_link as i32) >= 1 {
+            self.definition.origin_link
+        } else {
+            self.definition.creator_link
+        }
+    }
+    fn tokens(&self) -> impl Iterator<Item = u32> + '_ {
+        std::iter::once(self.definition.equipment_token)
+            .chain(
+                self.design
+                    .iter()
+                    .flat_map(|(modules, _)| modules.iter())
+                    .flat_map(|row| [row.slot, row.definition_token]),
+            )
+            .chain(
+                self.design
+                    .iter()
+                    .flat_map(|(_, upgrades)| upgrades.iter())
+                    .map(|row| row.definition_token as u32),
+            )
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +259,13 @@ thread_local! {
 /// Whether `now` holds the rows of the view held: the same allocation, or equal.
 fn same_view(held: Option<&SharedView>, now: &SharedView) -> bool {
     held.is_some_and(|held| SharedView::ptr_eq(held, now) || held == now)
+}
+
+fn complete_rows<T: replay::rows::TableSchema>(view: &SharedView) -> Option<&[T::Row]> {
+    match &**view {
+        replay::frame::TableView::Complete(rows) => rows.rows::<T>(),
+        _ => None,
+    }
 }
 
 /// A design's modules and upgrades at a read, in recorded order.
@@ -246,7 +288,41 @@ fn same_design(
     }
 }
 
+/// Remove one definition's membership, dropping an entry with no users left.
+fn remove_dependency(dependencies: &mut BTreeMap<u32, BTreeSet<u64>>, key: u32, id: u64) -> bool {
+    let empty = dependencies.get_mut(&key).is_some_and(|variants| {
+        variants.remove(&id);
+        variants.is_empty()
+    });
+    if empty {
+        dependencies.remove(&key);
+    }
+    empty
+}
+
 impl VariantReads {
+    fn remove_dependencies(&mut self, input: &VariantInput) {
+        let id = input.definition.id;
+        for token in input.tokens() {
+            if remove_dependency(&mut self.token_variants, token, id)
+                && let Some((_, spellings)) = &mut self.lexical
+            {
+                spellings.remove(&token);
+            }
+        }
+        let raw = input.naming_link();
+        remove_dependency(&mut self.tag_links, raw, id);
+        if let Some(slot) = self
+            .links
+            .as_ref()
+            .and_then(complete_rows::<tables::CountryLinks>)
+            .and_then(|links| crate::metadata::link_slot(links, raw))
+        {
+            remove_dependency(&mut self.tag_slots, slot, id);
+            remove_dependency(&mut self.original_slots, slot, id);
+        }
+    }
+
     /// Carry the key projection through consecutive country deltas that touch
     /// no identity field. A skipped hour or a snapshot requires comparison.
     fn carry_keys(
@@ -258,6 +334,41 @@ impl VariantReads {
             branch == frame.branch && hour.checked_add(1) == Some(frame.hour)
         });
         self.country_at = Some((frame.branch, frame.hour));
+        for (pending, table) in self.pending.iter_mut().zip([
+            TableId::VariantDefinitions,
+            TableId::VariantModules,
+            TableId::VariantUpgrades,
+            TableId::LexicalTokens,
+        ]) {
+            if !continuous {
+                *pending = None;
+            } else if let Some(held) = pending {
+                if let Some((changed, deleted)) = changes.rows(table) {
+                    held.extend(
+                        changed
+                            .iter()
+                            .map(|row| row.key)
+                            .chain(deleted.iter().copied()),
+                    );
+                } else {
+                    *pending = None;
+                }
+            }
+        }
+        if !continuous || changes.rows_changed[TableId::CountryAppearance.index()] {
+            static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+                crate::prepared::frame_changes::field_mask(
+                    TableId::CountryAppearance,
+                    &["name_tag"],
+                )
+            });
+            self.appearance_dirty |= !continuous
+                || changes
+                    .rows(TableId::CountryAppearance)
+                    .is_none_or(|(changed, deleted)| {
+                        !deleted.is_empty() || changed.iter().any(|row| row.mask & *FIELDS != 0)
+                    });
+        }
         self.country_dirty = self.country_dirty
             || !continuous
             || self.keys.as_ref().is_none_or(|keys| {
@@ -287,7 +398,9 @@ impl VariantReads {
     /// inputs and the hour alone ([`read_raw`]), so one not built
     /// holds those it had.
     pub(crate) fn build(&mut self, frame: &DecodedFrame, all: bool) -> Vec<(u64, RawVariant)> {
+        let cpu = ::replay::cpu::scope_phase("variants:context");
         let hour = frame.hour;
+        let tracked = self.country_at == Some((frame.branch, hour));
         let view = |table: TableId| &frame.tables[table.index()];
         // Called only at a complete read of these.
         let (Ok(countries), Ok(links), Ok(definitions), Ok(lexical)) = (
@@ -306,13 +419,22 @@ impl VariantReads {
         };
         let same_lexical = self.lexical.as_ref().is_some_and(|(identity, held)| {
             identity.is(view(TableId::LexicalTokens))
-                || held.iter().all(|(&token, literal)| {
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        self.work.row_visits += 1;
-                    }
-                    literal.as_ref() == spelling(token)
-                })
+                || self.pending[3]
+                    .as_ref()
+                    .filter(|_| tracked)
+                    .map_or_else(
+                        || held.keys().copied().collect::<Vec<_>>(),
+                        |pending| pending.iter().map(|key| *key as u32).collect(),
+                    )
+                    .into_iter()
+                    .all(|token| {
+                        #[cfg(any(test, feature = "test-support"))]
+                        {
+                            self.work.row_visits += 1;
+                        }
+                        held.get(&token)
+                            .is_none_or(|literal| literal.as_ref() == spelling(token))
+                    })
         });
         let same_countries = !all
             && ((!self.country_dirty
@@ -333,11 +455,32 @@ impl VariantReads {
         let context = !all
             && same_countries
             && same_view(self.links.as_ref(), view(TableId::CountryLinks))
-            && same_view(self.appearance.as_ref(), view(TableId::CountryAppearance))
-            && same_lexical;
-        let designs = same_view(self.modules.as_ref(), view(TableId::VariantModules))
-            && same_view(self.upgrades.as_ref(), view(TableId::VariantUpgrades));
+            && ((tracked && !self.appearance_dirty && self.appearance.is_some())
+                || same_view(self.appearance.as_ref(), view(TableId::CountryAppearance))
+                || self.appearance.as_ref().is_some_and(|held| {
+                    let before = complete_rows::<tables::CountryAppearance>(held);
+                    let now = frame.complete::<tables::CountryAppearance>().ok();
+                    before.zip(now).is_some_and(|(before, now)| {
+                        before
+                            .iter()
+                            .filter(|row| !row.name_tag.is_empty())
+                            .map(|row| (row.country, &row.name_tag))
+                            .eq(now
+                                .iter()
+                                .filter(|row| !row.name_tag.is_empty())
+                                .map(|row| (row.country, &row.name_tag)))
+                    })
+                }));
+        let designs = self
+            .modules
+            .as_ref()
+            .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantModules)))
+            && self
+                .upgrades
+                .as_ref()
+                .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantUpgrades)));
         if context
+            && same_lexical
             && designs
             && self
                 .definitions
@@ -350,32 +493,191 @@ impl VariantReads {
             if let Some((identity, _)) = &mut self.lexical {
                 *identity = view(TableId::LexicalTokens).identity();
             }
+            self.pending = std::array::from_fn(|_| Some(BTreeSet::new()));
+            self.appearance = Some(view(TableId::CountryAppearance).clone());
+            self.appearance_dirty = false;
             return Vec::new();
         }
         let appearance = frame.complete::<tables::CountryAppearance>().ok();
-        // This read's modules and upgrades by variant, grouped once when needed.
-        type Groups<'a> = Option<(
-            VariantRows<'a, VariantModuleRow>,
-            VariantRows<'a, VariantUpgradeRow>,
-        )>;
-        let mut groups: Option<Groups<'_>> = None;
-        let mut tags: Option<Tags> = None;
+        // Exact deltas select definitions by their own key, design owner and
+        // used spelling. Invalidations survive every skipped supplying read.
+        let mut context_ids = BTreeSet::new();
+        if !context && !all && self.definitions.is_some() {
+            let next_tags: BTreeMap<_, _> = countries
+                .iter()
+                .map(|row| {
+                    (
+                        row.canonical_slot,
+                        replay::rows::CountryRow {
+                            canonical_slot: row.canonical_slot,
+                            tag: row.tag.clone(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            let next_original: BTreeMap<_, _> = appearance
+                .into_iter()
+                .flatten()
+                .filter(|row| !row.name_tag.is_empty())
+                .filter_map(|row| {
+                    Some((crate::metadata::link_slot(links, row.country)?, row.clone()))
+                })
+                .collect();
+            let changed_slots: BTreeSet<_> = self
+                .country_tags
+                .keys()
+                .chain(next_tags.keys())
+                .copied()
+                .filter(|slot| self.country_tags.get(slot) != next_tags.get(slot))
+                .collect();
+            if changed_slots.contains(&0) {
+                context_ids.extend(self.inputs.keys().copied());
+            } else {
+                for slot in changed_slots {
+                    context_ids.extend(self.tag_slots.get(&slot).into_iter().flatten().copied());
+                }
+            }
+            for slot in self.original_tags.keys().chain(next_original.keys()) {
+                if self.original_tags.get(slot).map(|row| &row.name_tag)
+                    != next_original.get(slot).map(|row| &row.name_tag)
+                {
+                    context_ids
+                        .extend(self.original_slots.get(slot).into_iter().flatten().copied());
+                }
+            }
+            if let Some(before) = self
+                .links
+                .as_ref()
+                .and_then(complete_rows::<tables::CountryLinks>)
+            {
+                for (raw, variants) in &self.tag_links {
+                    if crate::metadata::link_slot(before, *raw)
+                        != crate::metadata::link_slot(links, *raw)
+                    {
+                        context_ids.extend(variants);
+                    }
+                }
+            }
+            self.country_tags = next_tags;
+            self.original_tags = next_original;
+        }
+        let selected = (!all && self.definitions.is_some())
+            .then(|| {
+                let mut ids: BTreeSet<u64> = if let Some(pending) =
+                    self.pending[0].as_ref().filter(|_| tracked)
+                {
+                    pending.iter().map(|key| *key as u64).collect()
+                } else {
+                    let held =
+                        complete_rows::<tables::VariantDefinitions>(self.definitions.as_ref()?)?;
+                    crate::prepared::frame_changes::differing_keys(held, definitions)
+                        .into_iter()
+                        .map(|key| key as u64)
+                        .collect()
+                };
+                for index in 1..3 {
+                    let pending = self.pending[index]
+                        .as_ref()
+                        .filter(|_| tracked)
+                        .cloned()
+                        .or_else(|| {
+                            if index == 1 {
+                                let held = complete_rows::<tables::VariantModules>(
+                                    self.modules.as_ref()?,
+                                )?;
+                                let now = frame.complete::<tables::VariantModules>().ok()?;
+                                Some(crate::prepared::frame_changes::differing_keys(held, now))
+                            } else {
+                                let held = complete_rows::<tables::VariantUpgrades>(
+                                    self.upgrades.as_ref()?,
+                                )?;
+                                let now = frame.complete::<tables::VariantUpgrades>().ok()?;
+                                Some(crate::prepared::frame_changes::differing_keys(held, now))
+                            }
+                        })?;
+                    ids.extend(pending.iter().map(|key| (*key >> 32) as u64));
+                }
+                if !same_lexical {
+                    for (&token, literal) in &self.lexical.as_ref()?.1 {
+                        if literal.as_ref() != spelling(token)
+                            && let Some(variants) = self.token_variants.get(&token)
+                        {
+                            ids.extend(variants);
+                        }
+                    }
+                }
+                ids.extend(context_ids);
+                Some(ids)
+            })
+            .flatten();
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("variants:definition_designs");
         let mut built = Vec::new();
-        let mut inputs = HashMap::with_capacity(definitions.len());
-        for definition in definitions {
+        let selected_rows: Vec<_> = if let Some(ids) = &selected {
+            ids.iter()
+                .filter_map(|id| {
+                    let found = definitions.binary_search_by_key(id, |row| row.id).ok();
+                    if found.is_none()
+                        && let Some(input) = self.inputs.remove(id)
+                    {
+                        self.remove_dependencies(&input);
+                    }
+                    found.map(|at| &definitions[at])
+                })
+                .collect()
+        } else {
+            self.inputs
+                .retain(|id, _| definitions.binary_search_by_key(id, |row| row.id).is_ok());
+            definitions.iter().collect()
+        };
+        let mut tags = if selected.is_some() {
+            let slots: BTreeSet<_> = std::iter::once(0)
+                .chain(selected_rows.iter().filter_map(|row| {
+                    let raw = if (row.origin_link as i32) >= 1 {
+                        row.origin_link
+                    } else {
+                        row.creator_link
+                    };
+                    crate::metadata::link_slot(links, raw)
+                }))
+                .collect();
+            let countries: Vec<_> = slots
+                .iter()
+                .filter_map(|slot| self.country_tags.get(slot).cloned())
+                .collect();
+            let appearances: Vec<_> = slots
+                .iter()
+                .filter_map(|slot| self.original_tags.get(slot).cloned())
+                .collect();
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.work.row_visits += countries.len() + appearances.len();
+            }
+            Some(Tags::new(&countries, links, Some(&appearances)))
+        } else {
+            None
+        };
+        for definition in selected_rows {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.row_visits += 1;
             }
             let id = definition.id;
             let held = self.inputs.remove(&id);
+            let _variant_cpu = ::replay::cpu::scope_phase("variants:variant_operands");
+            if let Some(held) = &held {
+                self.remove_dependencies(held);
+            }
             if context
+                && same_lexical
                 && designs
                 && held
                     .as_ref()
                     .is_some_and(|held| held.definition == *definition)
             {
-                inputs.insert(id, held.expect("unchanged variant inputs"));
+                self.inputs
+                    .insert(id, held.expect("unchanged variant inputs"));
                 continue;
             }
             // With both design tables unchanged, a held design is this read's.
@@ -384,21 +686,20 @@ impl VariantReads {
                     (Some(held), true) => held.design.as_ref().map(|(modules, upgrades)| {
                         (modules.iter().collect(), upgrades.iter().collect())
                     }),
-                    _ => groups
-                        .get_or_insert_with(|| {
-                            frame
-                                .complete::<tables::VariantModules>()
-                                .ok()
-                                .zip(frame.complete::<tables::VariantUpgrades>().ok())
-                                .map(|(modules, upgrades)| {
-                                    (modules_by_variant(modules), upgrades_by_variant(upgrades))
-                                })
-                        })
-                        .as_ref()
+                    _ => frame
+                        .complete::<tables::VariantModules>()
+                        .ok()
+                        .zip(frame.complete::<tables::VariantUpgrades>().ok())
                         .map(|(modules, upgrades)| {
                             (
-                                modules.get(&id).cloned().unwrap_or_default(),
-                                upgrades.get(&id).cloned().unwrap_or_default(),
+                                modules[modules.partition_point(|row| row.variant < id)
+                                    ..modules.partition_point(|row| row.variant <= id)]
+                                    .iter()
+                                    .collect(),
+                                upgrades[upgrades.partition_point(|row| row.variant < id)
+                                    ..upgrades.partition_point(|row| row.variant <= id)]
+                                    .iter()
+                                    .collect(),
                             )
                         }),
                 };
@@ -406,11 +707,12 @@ impl VariantReads {
                 .as_ref()
                 .map(|(modules, upgrades)| (modules.as_slice(), upgrades.as_slice()));
             let unchanged = context
+                && same_lexical
                 && held.as_ref().is_some_and(|held| {
                     held.definition == *definition && same_design(held.design.as_ref(), design)
                 });
             if unchanged && let Some(held) = held {
-                inputs.insert(id, held);
+                self.inputs.insert(id, held);
                 continue;
             }
             let tags = tags.get_or_insert_with(|| {
@@ -424,7 +726,7 @@ impl VariantReads {
             #[cfg(test)]
             VARIANT_BUILDS.with(|builds| builds.set(builds.get() + 1));
             built.push((id, read_raw(definition, hour, tags, lexical, design)));
-            inputs.insert(
+            self.inputs.insert(
                 id,
                 VariantInput {
                     definition: definition.clone(),
@@ -437,43 +739,71 @@ impl VariantReads {
                 },
             );
         }
-        self.inputs = inputs;
         if !context {
             self.keys = Some(crate::metadata::CountryKeys::read(countries));
+            self.country_tags = countries
+                .iter()
+                .map(|row| {
+                    (
+                        row.canonical_slot,
+                        replay::rows::CountryRow {
+                            canonical_slot: row.canonical_slot,
+                            tag: row.tag.clone(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            self.original_tags = appearance
+                .into_iter()
+                .flatten()
+                .filter(|row| !row.name_tag.is_empty())
+                .filter_map(|row| {
+                    Some((crate::metadata::link_slot(links, row.country)?, row.clone()))
+                })
+                .collect();
         }
         self.countries = Some(view(TableId::Countries).identity());
         self.country_at = Some((frame.branch, frame.hour));
         self.country_dirty = false;
         self.links = Some(view(TableId::CountryLinks).clone());
         self.appearance = Some(view(TableId::CountryAppearance).clone());
-        let tokens = definitions
-            .iter()
-            .map(|row| row.equipment_token)
-            .chain(
-                frame
-                    .complete::<tables::VariantModules>()
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .flat_map(|row| [row.slot, row.definition_token]),
-            )
-            .chain(
-                frame
-                    .complete::<tables::VariantUpgrades>()
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .map(|row| row.definition_token as u32),
-            );
-        self.lexical = Some((
-            view(TableId::LexicalTokens).identity(),
-            tokens
-                .map(|token| (token, spelling(token).cloned()))
-                .collect(),
-        ));
+        self.appearance_dirty = false;
+        let cpu = ::replay::cpu::scope_phase("variants:spelling_dependencies");
+        if selected.is_none() {
+            self.token_variants.clear();
+            self.tag_links.clear();
+            self.tag_slots.clear();
+            self.original_slots.clear();
+            self.lexical = Some((view(TableId::LexicalTokens).identity(), BTreeMap::new()));
+        }
+        let (identity, spellings) = self.lexical.as_mut().expect("variant spelling read");
+        *identity = view(TableId::LexicalTokens).identity();
+        let ids: Vec<_> = selected.map_or_else(
+            || self.inputs.keys().copied().collect(),
+            |ids| ids.into_iter().collect(),
+        );
+        for id in ids {
+            if let Some(input) = self.inputs.get(&id) {
+                let raw = input.naming_link();
+                self.tag_links.entry(raw).or_default().insert(id);
+                if let Some(slot) = crate::metadata::link_slot(links, raw) {
+                    self.tag_slots.entry(slot).or_default().insert(id);
+                    if (input.definition.origin_link as i32) < 1 {
+                        self.original_slots.entry(slot).or_default().insert(id);
+                    }
+                }
+                for token in input.tokens() {
+                    self.token_variants.entry(token).or_default().insert(id);
+                    spellings.insert(token, spelling(token).cloned());
+                }
+            }
+        }
+        drop(cpu);
         self.definitions = Some(view(TableId::VariantDefinitions).clone());
         self.modules = Some(view(TableId::VariantModules).clone());
         self.upgrades = Some(view(TableId::VariantUpgrades).clone());
+        self.pending = std::array::from_fn(|_| Some(BTreeSet::new()));
         built
     }
 }
@@ -590,6 +920,10 @@ impl VariantCatalogue {
     pub fn advance(&mut self, hour: i32) {
         // A span without country deltas cannot extend their identity proof.
         self.reads.country_dirty |= self.reads.country_at.is_none_or(|(_, at)| at != hour);
+        if self.reads.country_dirty {
+            self.reads.pending = std::array::from_fn(|_| None);
+            self.reads.appearance_dirty = true;
+        }
         self.last_hour = Some(hour);
     }
     /// Authenticate unchanged naming and carry its country-key proof from this

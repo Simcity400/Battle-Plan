@@ -53,6 +53,7 @@ impl Prepared {
         content: Option<&Content>,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("raids:observe");
         self.scan.format = format;
         if !self.present
             && [TableId::RaidCountries, TableId::Raids]

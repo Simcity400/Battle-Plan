@@ -1647,7 +1647,8 @@ impl Scan {
         crate::prepared::series::compress(serde_json::to_vec(&state)?.as_slice(), 3)
     }
     pub fn read(reader: impl io::Read) -> io::Result<Self> {
-        let mut state: Self = serde_json::from_reader(zstd::stream::Decoder::new(reader)?)?;
+        let bytes = zstd::stream::decode_all(reader)?;
+        let mut state: Self = serde_json::from_slice(&bytes)?;
         let dictionary = |index: usize| {
             state
                 .dictionary_changes

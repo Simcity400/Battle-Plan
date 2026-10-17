@@ -100,6 +100,9 @@ struct RowIndex {
     /// Slots whose stock or line rows, and whose logistics rows, changed
     /// since their holders last read them.
     stale: [BTreeSet<u32>; 2],
+    views: [replay::frame::SharedView; 3],
+    token_owners: BTreeMap<u32, BTreeSet<u32>>,
+    spellings: Option<(replay::frame::ViewIdentity, BTreeMap<u32, Option<Vec<u8>>>)>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -369,9 +372,7 @@ impl Prepared {
         drop(cpu);
         // A break, a change of holders or of the dictionary their logistics
         // tokens are spelled from is read from the whole tables.
-        let whole = !continuous
-            || countries_changed
-            || changes.rows_changed[TableId::LexicalTokens.index()];
+        let whole = !continuous || countries_changed;
         #[cfg(test)]
         let whole = whole || self.whole_tables;
         if !whole && self.observe_rows(format, frame, changes, previous, &reclassified)? {
@@ -439,10 +440,12 @@ impl Prepared {
             .collect();
         drop(cpu);
         let cpu = ::replay::cpu::scope_phase("stockpile:projection_series");
+        let holders_cpu = ::replay::cpu::scope_phase("stockpile:whole_holders");
         for tag in &touched {
             let identity = input.identities.get(tag).copied();
             self.observe_holder(format, &input, tag, identity, reads, previous)?;
         }
+        drop(holders_cpu);
         drop(cpu);
         let _cpu = ::replay::cpu::scope_phase("stockpile:pruning");
         self.repeated
@@ -480,13 +483,18 @@ impl Prepared {
         let Some(index) = self.rows.as_mut() else {
             return Ok(false);
         };
+        index.mark_dictionary(frame, changes);
         if index.mark(frame, changes).is_none() {
             return Ok(false);
         }
         let mut full = BTreeMap::<String, (u32, u32)>::new();
         for (stale, _) in index.stale.iter().zip(reads).filter(|(_, due)| *due) {
             for slot in stale {
-                for tag in &index.holders[slot] {
+                // Dictionary owners can include slots no tag lookup selected.
+                let Some(tags) = index.holders.get(slot) else {
+                    continue;
+                };
+                for tag in tags {
                     full.insert(tag.clone(), index.identities[tag]);
                 }
             }
@@ -522,6 +530,7 @@ impl Prepared {
         drop(cpu);
         let cpu = ::replay::cpu::scope_phase("stockpile:projection_series");
         if read {
+            let _cpu = ::replay::cpu::scope_phase("stockpile:repeat_reads");
             for (tag, repeat) in &self.repeated {
                 if full.contains_key(tag) || !repeat.repeats_any(reads) {
                     continue;
@@ -538,9 +547,11 @@ impl Prepared {
                 )?;
             }
         }
+        let holders_cpu = ::replay::cpu::scope_phase("stockpile:changed_holders");
         for (tag, &identity) in &full {
             self.observe_holder(format, &input, tag, Some(identity), reads, previous)?;
         }
+        drop(holders_cpu);
         drop(cpu);
         let _cpu = ::replay::cpu::scope_phase("stockpile:pruning");
         let index = self.rows.as_mut().expect("stockpile row index");
@@ -562,6 +573,7 @@ impl Prepared {
         previous: Option<i32>,
     ) -> io::Result<()> {
         let hour = input.frame.hour;
+        let _cpu = ::replay::cpu::scope_phase("stockpile:holder_scan");
         let state = self.scan.get_mut(tag).expect("observed stockpile country");
         state.catch_up(previous);
         #[cfg(test)]
@@ -866,6 +878,30 @@ impl RowIndex {
             }
         }
         let complete = complete(frame);
+        let mut token_owners = BTreeMap::<u32, BTreeSet<u32>>::new();
+        if let Ok(rows) = frame.complete::<tables::LogisticsEquipment>() {
+            for row in rows {
+                if let Some(&slot) = slots.get(&row.country) {
+                    token_owners.entry(row.token).or_default().insert(slot);
+                }
+            }
+        }
+        let spellings = frame.complete::<tables::LexicalTokens>().ok().map(|rows| {
+            (
+                frame.tables[TableId::LexicalTokens.index()].identity(),
+                token_owners
+                    .keys()
+                    .map(|&token| {
+                        (
+                            token,
+                            rows.binary_search_by_key(&token, |row| row.token)
+                                .ok()
+                                .map(|at| rows[at].literal.clone()),
+                        )
+                    })
+                    .collect(),
+            )
+        });
         // Only a complete table has rows that may have changed unread.
         let unread = |read: bool, complete: bool| {
             if read || !complete {
@@ -886,18 +922,156 @@ impl RowIndex {
             links,
             line_owners,
             lines,
+            views: NUMERIC.map(|table| frame.tables[table.index()].clone()),
+            token_owners,
+            spellings,
         })
+    }
+
+    /// Spelling changes affect only the next logistics read of their owners.
+    /// Keep those owners stale across hours without a supplying read.
+    fn mark_dictionary(&mut self, frame: &DecodedFrame, changes: &FrameChanges) {
+        let _cpu = ::replay::cpu::scope_phase("stockpile:spelling_inputs");
+        let view = &frame.tables[TableId::LexicalTokens.index()];
+        if self
+            .spellings
+            .as_ref()
+            .is_some_and(|(held, _)| held.is(view))
+        {
+            return;
+        }
+        let rows = frame.complete::<tables::LexicalTokens>().ok();
+        if let (Some((identity, spellings)), Some(rows)) = (&mut self.spellings, rows) {
+            let tokens: BTreeSet<u32> = changes.rows(TableId::LexicalTokens).map_or_else(
+                || spellings.keys().copied().collect(),
+                |(changed, deleted)| {
+                    changed
+                        .iter()
+                        .map(|row| row.key as u32)
+                        .chain(deleted.iter().map(|key| *key as u32))
+                        .collect()
+                },
+            );
+            for token in tokens {
+                if let Some(held) = spellings.get_mut(&token) {
+                    let next = rows
+                        .binary_search_by_key(&token, |row| row.token)
+                        .ok()
+                        .map(|at| rows[at].literal.clone());
+                    if *held != next {
+                        self.stale[1].extend(self.token_owners[&token].iter().copied());
+                        *held = next;
+                    }
+                }
+            }
+            *identity = view.identity();
+        } else {
+            self.stale[1].extend(self.holders.keys().copied());
+            self.spellings = rows.map(|rows| {
+                (
+                    view.identity(),
+                    self.token_owners
+                        .keys()
+                        .map(|&token| {
+                            (
+                                token,
+                                rows.binary_search_by_key(&token, |row| row.token)
+                                    .ok()
+                                    .map(|at| rows[at].literal.clone()),
+                            )
+                        })
+                        .collect(),
+                )
+            });
+        }
     }
 
     /// Note the holders whose own rows changed this hour. None when a numeric
     /// table became or stopped being complete, changed other than by its
     /// recorded rows, or a changed line is missing from it.
     fn mark(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> Option<()> {
+        let _cpu = ::replay::cpu::scope_phase("stockpile:numeric_inputs");
         if complete(frame) != self.complete {
             return None;
         }
-        let [stock, lines, logistics] = NUMERIC.map(|table| changes.rows(table));
+        // Kept pre-pass frames and snapshots have no delta. Compare each
+        // changed source table once; unaffected holders retain their reads.
+        fn compared<T: replay::rows::TableSchema>(
+            view: &replay::frame::SharedView,
+            frame: &DecodedFrame,
+        ) -> Option<(Vec<replay::rows::DeltaRow>, Vec<u128>)> {
+            let before = match &**view {
+                TableView::Complete(rows) => rows.rows::<T>()?,
+                _ => return None,
+            };
+            let now = frame.complete::<T>().ok()?;
+            let keys = dashboard_base::prepared::frame_changes::differing_keys(before, now);
+            let (mut changed, mut deleted) = (Vec::new(), Vec::new());
+            for key in keys {
+                use replay::rows::RowCodec;
+                if now.binary_search_by_key(&key, |row| row.key()).is_ok() {
+                    changed.push(replay::rows::DeltaRow {
+                        key,
+                        mask: u64::MAX,
+                        format: replay::format::FormatVersion::CURRENT.version(),
+                        recorded_fields: 0,
+                        values: Vec::new(),
+                    });
+                } else {
+                    deleted.push(key);
+                }
+            }
+            Some((changed, deleted))
+        }
+        let fallback = [
+            changes
+                .rows(TableId::Stockpiles)
+                .is_none()
+                .then(|| compared::<tables::Stockpiles>(&self.views[0], frame))
+                .flatten(),
+            changes
+                .rows(TableId::ProductionLines)
+                .is_none()
+                .then(|| compared::<tables::ProductionLines>(&self.views[1], frame))
+                .flatten(),
+            changes
+                .rows(TableId::LogisticsEquipment)
+                .is_none()
+                .then(|| compared::<tables::LogisticsEquipment>(&self.views[2], frame))
+                .flatten(),
+        ];
+        let [stock, lines, logistics] = std::array::from_fn(|i| {
+            changes.rows(NUMERIC[i]).or_else(|| {
+                fallback[i]
+                    .as_ref()
+                    .map(|(changed, deleted)| (changed.as_slice(), deleted.as_slice()))
+            })
+        });
         let (stock, lines, logistics) = (stock?, lines?, logistics?);
+        let previous_lines = self.views[1].clone();
+        self.views = NUMERIC.map(|table| frame.tables[table.index()].clone());
+        let logistics_rows = frame.complete::<tables::LogisticsEquipment>().ok();
+        for change in logistics.0 {
+            if let Some(rows) = logistics_rows
+                && let Ok(at) = rows.binary_search_by_key(&change.key, |row| row.key())
+                && let Some(&slot) = self.slots.get(&rows[at].country)
+            {
+                let token = rows[at].token;
+                self.token_owners.entry(token).or_default().insert(slot);
+                if let Some((_, spellings)) = &mut self.spellings {
+                    spellings.entry(token).or_insert_with(|| {
+                        frame
+                            .complete::<tables::LexicalTokens>()
+                            .ok()
+                            .and_then(|rows| {
+                                rows.binary_search_by_key(&token, |row| row.token)
+                                    .ok()
+                                    .map(|at| rows[at].literal.clone())
+                            })
+                    });
+                }
+            }
+        }
         // Stock and logistics keys lead with the raw country reference.
         for (table, (changed, deleted)) in [(0, stock), (1, logistics)] {
             for key in changed
@@ -920,6 +1094,29 @@ impl RowIndex {
                 continue;
             }
             let owner = rows[rows.binary_search_by_key(&handle, |row| row.handle).ok()?].country;
+            if fallback[1].is_some()
+                && let TableView::Complete(before) = &*previous_lines
+                && let Some(before) = before.rows::<tables::ProductionLines>()
+                && let Ok(at) = before.binary_search_by_key(&handle, |row| row.handle)
+            {
+                let old = &before[at];
+                let now = &rows[rows.binary_search_by_key(&handle, |row| row.handle).ok()?];
+                if (
+                    old.country,
+                    old.kind,
+                    old.variant,
+                    old.cost_raw,
+                    old.speed_raw,
+                ) == (
+                    now.country,
+                    now.kind,
+                    now.variant,
+                    now.cost_raw,
+                    now.speed_raw,
+                ) {
+                    continue;
+                }
+            }
             if let Some(old) = known {
                 self.stale_country(0, old);
                 self.unlink(handle, old);

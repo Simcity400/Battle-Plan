@@ -246,6 +246,12 @@ pub struct ExperienceAccumulator {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_experience: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    projections: usize,
 }
 impl ExperienceAccumulator {
     pub fn buffered_bytes(&self) -> usize {
@@ -269,10 +275,25 @@ impl ExperienceAccumulator {
         format: replay::format::FormatVersion,
         changes: &FrameChanges,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("experience:series_observe");
         self.last = Some(frame.hour);
         self.batch.advance(frame.hour)?;
+        #[cfg(test)]
+        let whole = self.whole_experience;
+        #[cfg(not(test))]
+        let whole = false;
         self.scan
             .step(frame, format, Some(changes), |tag, (slot, id), read| {
+                // Extending this same held read changes no channel or holder
+                // event. The accepted frontier carries its existing values.
+                if !whole && read.first_hour != frame.hour {
+                    return Ok(());
+                }
+                let _cpu = ::replay::cpu::scope_phase("experience:projection_series");
+                #[cfg(test)]
+                {
+                    self.projections += 1;
+                }
                 let tag = serde_json::to_string(&(tag, slot, id))?;
                 let holder = (slot, id, read.read_hour);
                 let boundary = read.first_hour == frame.hour;

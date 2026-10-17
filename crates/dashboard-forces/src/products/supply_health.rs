@@ -138,6 +138,8 @@ struct Supply {
     naval_transfer: bool,
 }
 
+type CountryCounts = BTreeMap<usize, Option<[u32; 3]>>;
+
 impl Supply {
     fn parts(status: &DivisionStatusRow, naval_transfer: bool) -> Option<Self> {
         let (Recorded::Value(maximum_grace), Recorded::Value(remaining_grace)) =
@@ -323,6 +325,9 @@ struct Scan {
     #[cfg(test)]
     #[serde(skip)]
     division_visits: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    total_visits: usize,
     #[serde(skip)]
     transfers: HashMap<u64, bool>,
     #[serde(skip)]
@@ -490,7 +495,7 @@ impl Scan {
         defines: Defines,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
         continuous_roster: bool,
-    ) -> io::Result<BTreeMap<usize, Option<[u32; 3]>>> {
+    ) -> io::Result<(bool, CountryCounts)> {
         let deltas = changes.and_then(|changes| {
             Some((
                 changes.rows(TableId::DivisionLandInputs)?,
@@ -569,6 +574,7 @@ impl Scan {
             self.buckets.clear();
             self.members.iter().map(|&(handle, _)| handle).collect()
         };
+        let mut touched = std::collections::BTreeSet::new();
         if self.owners_known {
             for handle in dirty {
                 let Some(&index) = self.member_owners.get(&handle) else {
@@ -579,6 +585,9 @@ impl Scan {
                     self.division_visits += 1;
                 }
                 let total = self.totals.entry(index).or_default();
+                if partial {
+                    touched.insert(index);
+                }
                 match self.buckets.get(&handle) {
                     Some(Some(bucket)) => total.0[*bucket] -= 1,
                     Some(None) => total.1 -= 1,
@@ -609,19 +618,31 @@ impl Scan {
             }
         }
         self.buckets_ready = self.owners_known;
-        Ok(self
-            .totals
-            .iter()
-            .map(|(&index, &(counts, unknown))| {
-                (
-                    index,
-                    (unknown == 0)
-                        .then_some(self.identities[index])
-                        .flatten()
-                        .map(|_| counts),
-                )
-            })
-            .collect())
+        let indices: Vec<_> = if partial {
+            touched.into_iter().collect()
+        } else {
+            self.totals.keys().copied().collect()
+        };
+        Ok((
+            partial,
+            indices
+                .into_iter()
+                .map(|index| {
+                    #[cfg(test)]
+                    {
+                        self.total_visits += 1;
+                    }
+                    let (counts, unknown) = self.totals[&index];
+                    (
+                        index,
+                        (unknown == 0)
+                            .then_some(self.identities[index])
+                            .flatten()
+                            .map(|_| counts),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     fn observe_changes(
@@ -711,7 +732,8 @@ impl Scan {
             || self.valid != Some(valid)
             || changes.is_none();
         self.valid = Some(valid);
-        let mut next = BTreeMap::<usize, Option<[u32; 3]>>::new();
+        let mut next = CountryCounts::new();
+        let mut partial = false;
         if valid {
             let divisions = divisions?;
             let same_roster = matches!(countries, Ok(false))
@@ -756,22 +778,25 @@ impl Scan {
             self.roster_from = Some(frame.tables[TableId::Divisions.index()].identity());
             drop(cpu);
             let _cpu = ::replay::cpu::scope_phase("supply:division_counts");
-            next = self.count_divisions(land?, status?, defines, changes, !full && same_roster)?;
+            (partial, next) =
+                self.count_divisions(land?, status?, defines, changes, !full && same_roster)?;
         } else {
             self.buckets_ready = false;
             drop(cpu);
         }
         let _cpu = ::replay::cpu::scope_phase("supply:projection_series");
-        let populated = next
-            .keys()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        let candidates: Vec<_> = if full {
-            self.current.clone()
+        let candidates: Vec<_> = if partial {
+            next.keys().copied().collect()
         } else {
-            self.populated.union(&populated).copied().collect()
+            let populated = next.keys().copied().collect();
+            let candidates = if full {
+                self.current.clone()
+            } else {
+                self.populated.union(&populated).copied().collect()
+            };
+            self.populated = populated;
+            candidates
         };
-        self.populated = populated;
         for index in candidates {
             let after = next.remove(&index).unwrap_or_else(|| {
                 (valid && self.owners_known)

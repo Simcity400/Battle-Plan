@@ -594,6 +594,7 @@ impl Prepared {
         kept: Option<&KeptChanges<'_>>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("projects:observe");
         let reuse = match kept {
             Some(kept) => history::Reuse::Advance(kept),
             None => history::Reuse::Confirm(changes),
@@ -608,7 +609,8 @@ impl Prepared {
         // Absence closes the held marker without replacing its last numeric
         // value. Reobserve this single branch-wide scalar so a successful read
         // after an unavailable interval reopens it even when that value is 1.
-        self.values.observe(0, frame.hour, marker, gap);
+        self.values
+            .observe_if_changed(0, frame.hour, marker, gap, false);
         let lexical_changed = self
             .lexical_view
             .as_ref()
@@ -1773,6 +1775,7 @@ fn intervals(
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<Interval>> {
     let mut result = Vec::new();
+    let _cpu = replay::cpu::scope_phase("projects:query_intervals");
     let mut looks = Looks::default();
     let mut cursor = 0;
     loop {
@@ -1809,6 +1812,7 @@ fn identities(
     key: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<CountryIdentityRun>> {
+    let _cpu = replay::cpu::scope_phase("projects:query_identities");
     let mut identities = Vec::new();
     let mut cursor = 0;
     loop {
@@ -1987,7 +1991,9 @@ fn complete_reply(
     };
     let mut lexical = None;
     let mut refusals = catalogue::Refusals::default();
+    let cpu = replay::cpu::scope_phase("projects:query_episodes");
     for interval in &selected_intervals {
+        let _cpu = replay::cpu::scope_phase("projects:query_interval");
         dashboard_text::metadata::check_cancel(cancelled)?;
         if !params.selection_tags.is_empty() && !selected.contains(&interval.observation.identity) {
             builder.last = None;
@@ -2046,6 +2052,8 @@ fn complete_reply(
                 .ok_or_else(|| dashboard_core::invalid("Project interval overflow"))?;
         }
     }
+    drop(cpu);
+    let _cpu = replay::cpu::scope_phase("projects:query_reads_finish");
     for span in &builder.available {
         let mut hour = span.first_hour;
         while hour <= span.last_hour {

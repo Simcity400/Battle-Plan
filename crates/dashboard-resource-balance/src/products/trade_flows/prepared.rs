@@ -5,6 +5,9 @@ use dashboard_base::prepared::query::progressive::{self, AdapterTail};
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use serde_json::{Value, json};
 
+mod integrals;
+use integrals::{Publication, Rate};
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
     #[serde(skip)]
@@ -26,6 +29,16 @@ pub struct Prepared {
     /// Each flow's catalogue key, by flow index, once looked up.
     #[serde(skip)]
     flow_ids: Vec<u64>,
+    #[serde(skip)]
+    rates: BTreeMap<usize, Rate>,
+    #[serde(skip)]
+    publication: Publication,
+    #[cfg(test)]
+    #[serde(skip)]
+    hourly_integrals: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    integral_visits: usize,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -106,8 +119,19 @@ impl Prepared {
         frame: &replay::frame::DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("trade:observe");
         let continuous =
             self.scan.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        let _cpu = ::replay::cpu::scope_phase("trade:observe");
+        self.publication.initialize(&self.keys, &self.totals);
+        self.publication.continuous = continuous;
+        if !continuous {
+            if let Some(previous) = self.scan.last_hour {
+                self.materialize_integrals(previous)?;
+                self.publication.gap(previous);
+            }
+            self.rates.clear();
+        }
         for values in self.totals.iter_mut().chain(self.coverage.iter_mut()) {
             values.advance(frame.hour)?;
         }
@@ -129,8 +153,10 @@ impl Prepared {
             }
             None => self.observe_tables(frame, changes, continuous)?,
         }
-        // These native integrals genuinely change at every accepted known hour.
-        // Retired flows and refusal patterns carry through the shared frontier.
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("trade:integrals");
+        // Branch-wide coverage and refusal clocks advance independently of
+        // the flows' deferred constant-rate integrals.
         let known = self.scan.known;
         if known {
             let before = self.coverage[1]
@@ -150,31 +176,9 @@ impl Prepared {
                 .map_or(0, |run| run.value);
             cumulative(&mut self.pattern_totals, id, frame.hour, before + 1);
         }
-        for &index in &self.scan.active {
-            let id = flow_id(
-                &mut self.keys,
-                &mut self.flow_ids,
-                &self.scan.result.flows,
-                index,
-            );
-            let run = self.scan.result.flows[index]
-                .runs
-                .last()
-                .expect("current native trade terms");
-            let amounts = sample::amounts(run.terms).into_iter().chain([1]);
-            for (values, amount) in self.totals.iter_mut().zip(amounts) {
-                if amount == 0 && continuous && values.state(id).is_some() {
-                    continue;
-                }
-                let before = values
-                    .state(id)
-                    .and_then(|state| state.last)
-                    .map_or(0, |run| run.value);
-                let total = before.checked_add(amount).ok_or_else(|| {
-                    dashboard_core::invalid("Trade integral exceeds its integer range")
-                })?;
-                cumulative(values, id, frame.hour, total);
-            }
+        #[cfg(test)]
+        if self.hourly_integrals {
+            self.observe_integrals_hourly(frame.hour, continuous)?;
         }
         if self.scan.result.reads.len() > 1 {
             self.scan
@@ -359,6 +363,18 @@ impl Prepared {
                 &self.scan.result.flows,
                 index,
             );
+            let rate = self.scan.active.contains(&index).then(|| {
+                let terms = self.scan.result.flows[index]
+                    .runs
+                    .last()
+                    .expect("active trade run")
+                    .terms;
+                let amounts = sample::amounts(terms);
+                [
+                    amounts[0], amounts[1], amounts[2], amounts[3], amounts[4], 1,
+                ]
+            });
+            self.change_rate(index, hour, rate)?;
             let flow = &mut self.scan.result.flows[index];
             let run = self
                 .scan
@@ -398,9 +414,27 @@ impl Prepared {
     }
 
     pub fn bytes(&self) -> usize {
+        let _cpu = ::replay::cpu::scope_phase("trade:budget");
+        #[cfg(test)]
+        let hourly = self.hourly_integrals;
+        #[cfg(not(test))]
+        let hourly = false;
+        let integrals = if hourly {
+            self.totals.iter().map(Accumulator::bytes).sum()
+        } else {
+            self.publication.bytes
+                + self.scan.last_hour.map_or(0, |hour| {
+                    self.rates
+                        .iter()
+                        .map(|(&index, rate)| {
+                            self.publication.pending(self.flow_ids[index], *rate, hour)
+                        })
+                        .sum::<usize>()
+                })
+        };
         self.facts.bytes()
             + self.values.bytes()
-            + self.totals.iter().map(Accumulator::bytes).sum::<usize>()
+            + integrals
             + self.coverage.iter().map(Accumulator::bytes).sum::<usize>()
             + self.refusal_counts.bytes()
             + self.pattern_totals.bytes()
@@ -430,7 +464,11 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let mut payloads = series::Payloads::default();
+        if let Some(hour) = self.scan.last_hour {
+            self.materialize_integrals(hour)?;
+        }
         self.scan.seal();
         if let Some(hour) = self.scan.last_hour {
             // Cumulative endpoints carry their value over unknown observations
@@ -512,6 +550,7 @@ impl Prepared {
             cancelled,
             &mut payloads,
         )?;
+        self.publication = Publication::default();
         let mut reply = super::reply_named(
             naming,
             &TradeFlowParams {
@@ -825,6 +864,7 @@ pub fn query(
         BTreeSet::new()
     });
     let names = std::cell::RefCell::new(Learned::default());
+    let sampled_inputs = sample::Query::default();
     let sampler = |frame: &replay::frame::DecodedFrame, requested: Option<&[(String, String)]>| {
         if let (Ok(definitions), Ok(lexical)) = (
             frame.complete::<tables::ResourceDefinitions>(),
@@ -839,7 +879,8 @@ pub fn query(
                 .iter()
                 .map(|&actor| (identity(actor), "actor".into())),
         );
-        let sampled = sample::sample(frame, Some(&requested))?;
+        let _cpu = replay::cpu::scope_phase("trade:query_sample");
+        let sampled = sampled_inputs.sample(frame, Some(&requested), source.replay_ref().format)?;
         if manual {
             for ((tag, field), (holder, _)) in &sampled {
                 if field == "holder"
@@ -1029,6 +1070,7 @@ fn read_pages(
     progressive: Option<Progressive<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Value>> {
+    let _cpu = replay::cpu::scope_phase("trade:query_pages");
     let mut holders = Holders::new();
     for (tag, country) in &history.countries {
         for run in country.identities.iter() {
@@ -2174,8 +2216,29 @@ mod tests {
                 Some(flow.seller_identity)
             );
         }
+        let query = sample::Query::default();
+        let format = replay::format::FormatVersion::default();
+        let actual = query.sample(&frame, None, format).unwrap();
+        assert_eq!(actual, sampled);
+        let before = query.visits();
+        let mut later = frame.clone();
+        later.hour += 1;
+        assert_eq!(query.sample(&later, None, format).unwrap(), sampled);
+        assert_eq!(
+            query.visits(),
+            before,
+            "reconstructed unchanged native trade inputs"
+        );
+        *later.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
+            reason: "synthetic refusal".into(),
+        };
+        assert_eq!(
+            query.sample(&later, None, format).unwrap(),
+            sample::sample(&later, None).unwrap()
+        );
         assert_eq!(prepared.keys.len(), 5000);
         assert_eq!(prepared.scan.result.flows.len(), 5000);
+        prepared.materialize_integrals(frame.hour).unwrap();
         assert!(
             prepared
                 .totals
@@ -2998,5 +3061,253 @@ mod tests {
         assert_eq!(actual.reads, expected.reads);
         assert_eq!(actual.partial, expected.partial);
         assert_eq!(actual.warnings, expected.warnings);
+    }
+
+    fn assert_deferred_trade_integrals(count: u32) {
+        use dashboard_base::prepared::{
+            frame_changes::FrameChangeTracker,
+            series::tests::{Fixture, assert_payloads_equal},
+        };
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        let mut input = trade_world(count);
+        add_deal(&mut input, steel(u64::from(count), count, 1, 7));
+        let mut frames = Vec::new();
+        for hour in (100..=140).filter(|hour| !(117..120).contains(hour)) {
+            input.hour = hour;
+            match hour {
+                105 => deal(&mut input, 1).delivered = -137,
+                107 => {
+                    let row = deal(&mut input, 1);
+                    row.assigned_factories = -2;
+                    row.convoys_assigned = 3;
+                    row.convoys_required = 9;
+                }
+                110 => exchanges(&mut input).retain(|row| row.id != u64::from(count / 2)),
+                125 => add_deal(
+                    &mut input,
+                    steel(u64::from(count / 2), count / 2, count / 2 + 1, 0),
+                ),
+                129 => add_deal(&mut input, steel(u64::from(count) + 1, 1, 2, 23)),
+                134 => exchanges(&mut input).retain(|row| row.id != u64::from(count) + 1),
+                132 => country(&mut input, 2).tag = b"changed alias".to_vec(),
+                135 => deal(&mut input, 1).delivered = 59,
+                _ => {}
+            }
+            let mut frame = input.clone();
+            if hour == 126 {
+                *frame.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
+                    reason: "synthetic refused trade".into(),
+                };
+            }
+            frames.push(frame);
+        }
+        let split = frames.partition_point(|frame| frame.hour <= 116);
+        let first =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..split].to_vec())]).unwrap();
+        let replay = Arc::new(
+            first
+                .append(&[dashboard_base::test_fixtures::continuation_records(
+                    &first,
+                    1,
+                    frames[split..].to_vec(),
+                )])
+                .unwrap(),
+        );
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "trade-integral-spans".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay,
+            &flag,
+        )
+        .unwrap();
+        let mut fixtures = [Fixture::new(), Fixture::new()];
+        let mut states = [
+            Prepared::default(),
+            Prepared {
+                hourly_integrals: true,
+                ..Default::default()
+            },
+        ];
+        let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+        let mut recorded = Recorded::new();
+        let context = LoadContext { content: None };
+        for frame in &frames {
+            let (decoded, wire) = recorded.next(frame, [100, 108, 120, 131].contains(&frame.hour));
+            let mut visits = [0; 2];
+            for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+                let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+                let before = state.integral_visits;
+                state.observe_changed(&decoded, &changes).unwrap();
+                visits[index] = state.integral_visits - before;
+            }
+            assert_eq!(
+                states[0].bytes(),
+                states[1].bytes(),
+                "hourly budget at {}",
+                decoded.hour
+            );
+            if decoded.hour == 101 {
+                assert_eq!(
+                    visits,
+                    [0, count as usize],
+                    "unchanged flows require no hourly integration"
+                );
+            }
+            if decoded.hour == 105 {
+                assert_eq!(
+                    visits,
+                    [1, count as usize],
+                    "only the changed rate is materialized"
+                );
+            }
+            if ![109, 116, 130, 140].contains(&decoded.hour) {
+                continue;
+            }
+            for (state, fixture) in states.iter_mut().zip(&mut fixtures) {
+                let mut writer = if decoded.hour > 116 {
+                    fixture.append_writer()
+                } else {
+                    fixture.writer()
+                };
+                state
+                    .flush(&mut writer, &source, &context, 1, &flag)
+                    .unwrap();
+                writer.commit().unwrap();
+            }
+            assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "deferred trade integrals",
+            );
+            assert_eq!(
+                serde_json::to_vec(&states[0]).unwrap(),
+                serde_json::to_vec(&states[1]).unwrap(),
+                "continuations through {}",
+                decoded.hour
+            );
+            for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+                *state = serde_json::from_slice(&serde_json::to_vec(&*state).unwrap()).unwrap();
+                state.hourly_integrals = index == 1;
+                tracker.invalidate();
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_trade_integrals_match_hourly_bytes_across_rates_gaps_restore_and_append() {
+        assert_deferred_trade_integrals(32);
+    }
+
+    #[test]
+    #[cfg(feature = "slow-tests")]
+    fn unchanged_5000_trade_flows_do_no_hourly_integral_work_and_keep_bytes() {
+        assert_deferred_trade_integrals(5_000);
+    }
+
+    fn assert_trade_budget_publications(count: u32, held: usize) {
+        use dashboard_base::prepared::{
+            frame_changes::FrameChangeTracker,
+            pages::publication_due,
+            series::tests::{Fixture, assert_payloads_equal},
+        };
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        let mut input = trade_world(count);
+        add_deal(&mut input, steel(u64::from(count), count, 1, 7));
+        for row in exchanges(&mut input) {
+            row.convoys_assigned = 3;
+            row.convoys_required = 9;
+        }
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "trade-publication-budget".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(
+                Replay::from_records(CAMPAIGN.into(), &[records(1, vec![input.clone()])]).unwrap(),
+            ),
+            &flag,
+        )
+        .unwrap();
+        let context = LoadContext { content: None };
+        let mut fixtures = [Fixture::new(), Fixture::new()];
+        let mut states = [
+            Prepared::default(),
+            Prepared {
+                hourly_integrals: true,
+                ..Default::default()
+            },
+        ];
+        let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+        let mut recorded = Recorded::new();
+        let mut publications: [Vec<i32>; 2] = Default::default();
+        for hour in 100..=137 {
+            input.hour = hour;
+            let (decoded, wire) = recorded.next(&input, hour == 100);
+            for (state, tracker) in states.iter_mut().zip(&mut trackers) {
+                let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+                state.observe_changed(&decoded, &changes).unwrap();
+            }
+            // Block 2 publishes at 101. Block 3 has 34 unchanged accepted
+            // hours; block 4 continues it. Each side chooses its own commits.
+            if ![101, 135, 137].contains(&hour) {
+                continue;
+            }
+            for (index, (state, fixture)) in states.iter_mut().zip(&mut fixtures).enumerate() {
+                if !publication_due(hour != 137, false, hour == 101, || (state.bytes(), held)) {
+                    continue;
+                }
+                publications[index].push(hour);
+                let mut writer = if hour > 101 {
+                    fixture.append_writer()
+                } else {
+                    fixture.writer()
+                };
+                state
+                    .flush(&mut writer, &source, &context, 1, &flag)
+                    .unwrap();
+                writer.commit().unwrap();
+                // Exercise a resumed continuation without imposing its next
+                // publication hour on either implementation.
+                *state = serde_json::from_slice(&serde_json::to_vec(&*state).unwrap()).unwrap();
+                state.hourly_integrals = index == 1;
+                trackers[index].invalidate();
+            }
+        }
+        assert_eq!(publications[1], [101, 137]);
+        assert_eq!(
+            publications[0], publications[1],
+            "budget-selected publication hours"
+        );
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "budget-selected trade pages and ranges",
+        );
+        assert_eq!(
+            serde_json::to_vec(&states[0]).unwrap(),
+            serde_json::to_vec(&states[1]).unwrap()
+        );
+    }
+
+    #[test]
+    fn deferred_trade_uses_hourly_publication_budget() {
+        // A smaller version of the 5,000-flow boundary, with prior held pages
+        // taking the rest of the real 64 MiB budget. Leave room for the hourly
+        // coverage clocks, but less than the old cache/prefix overcharge.
+        let staircase = 32 * 34 * 6 * size_of::<series::Run>() * 2;
+        let held = dashboard_base::prepared::pages::BATCH_BYTES - staircase - 16_384;
+        assert_trade_budget_publications(32, held);
+    }
+
+    #[test]
+    #[cfg(feature = "slow-tests")]
+    fn deferred_5000_trade_flows_use_hourly_publication_budget() {
+        assert_trade_budget_publications(5_000, 0);
     }
 }

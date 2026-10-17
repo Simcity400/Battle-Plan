@@ -30,3 +30,12 @@ view, so later part deltas can update the decoder's baseline in place.
 `cargo test -p dashboard-country-fuel` builds and runs only these products'
 tests. The `test-support` feature compiles their test oracles and instrumentation
 for the dashboard's tests.
+
+Fuel day settlement runs on changed supplying observations and each pending
+read's 23-hour decision deadline. Between those boundaries its already computed
+integer day values hold constant. Publication extends the accepted span with
+one ordinary constant run, preserving the supplying strip point and the exact
+dated decision event. No repeated-hour rounding or incremental sum is involved.
+The next decision deadline is transient and rebuilds after restore. The first
+accepted cutoff after publication materializes carried day rows, charging the
+same new batch rows as hourly settlement; later equal extensions add no bytes.

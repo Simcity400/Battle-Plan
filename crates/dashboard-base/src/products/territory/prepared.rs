@@ -95,6 +95,7 @@ impl Prepared {
         cancelled: &AtomicBool,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("territory:observe");
         check_cancel(cancelled)?;
         for values in self.values.iter_mut().take(NATIVE_OWNED_STATES) {
             values.advance(frame.hour)?;
@@ -153,14 +154,16 @@ impl Prepared {
                 if run.first_hour == frame.hour {
                     self.facts.event(key, frame.hour, run)?;
                 }
-                self.facts.observe(
+                self.facts.observe_if_changed(
                     key,
                     frame.hour,
                     Some(i128::from(run.first_hour)),
                     run.first_hour == frame.hour && run.starts_segment,
+                    false,
                 );
             } else {
-                self.facts.observe(key, frame.hour, None, false);
+                self.facts
+                    .observe_if_changed(key, frame.hour, None, false, false);
             }
             self.present.observe(
                 key,
@@ -635,6 +638,7 @@ pub fn query(
     } else {
         Default::default()
     };
+    let cpu = replay::cpu::scope_phase("territory:query_identities");
     let history = crate::prepared::query::progressive::histories(
         &store,
         &key,
@@ -646,6 +650,7 @@ pub fn query(
         &seed_tags,
         cancelled,
     )?;
+    drop(cpu);
     let rank_tail = if params.family.top.is_some() {
         transient_ranks(&sampled.0, field, cancelled)?
     } else {
@@ -1198,6 +1203,7 @@ pub fn query(
             )
         }
         "series-state" => {
+            let _cpu = replay::cpu::scope_phase("territory:query_state");
             let [read] = params.reads.as_slice() else {
                 return Err(crate::invalid("Territory state needs one reached hour"));
             };
@@ -1297,6 +1303,7 @@ pub fn query(
                 cancelled,
             )?;
             for tag in wanted {
+                let _cpu = replay::cpu::scope_phase("territory:query_country");
                 let Some(&actor) = tags.get(&tag) else {
                     continue;
                 };
@@ -1556,6 +1563,27 @@ fn aggregate_summary(
 mod tests {
     use super::*;
     use crate::prepared::series::tests::Fixture;
+
+    #[test]
+    fn equal_territory_fact_markers_carry_without_materializing_each_key() {
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        let mut frame = super::super::tests::frame(100, 64, 64);
+        let mut prepared = Prepared::default();
+        prepared.observe_with(&frame, format, &flag, None).unwrap();
+        let visits = prepared.facts.key_visits;
+        frame.hour += 1;
+        prepared.observe_with(&frame, format, &flag, None).unwrap();
+        assert!(!prepared.builder.changed.is_empty());
+        assert_eq!(prepared.facts.key_visits, visits);
+        prepared.facts.seal();
+        for key in prepared.tags.values() {
+            assert_eq!(
+                prepared.facts.state(*key).unwrap().last.unwrap().last_hour,
+                101
+            );
+        }
+    }
 
     #[test]
     fn cached_area_state_refuses_after_unverified_content_is_disabled() {

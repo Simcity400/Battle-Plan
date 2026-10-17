@@ -892,10 +892,10 @@ impl Prepared {
     }
 
     fn read_query(store: &store::Store, key: &store::SourceKey, branch: u64) -> io::Result<Self> {
-        let file = store
-            .read(key, &format!("air-superiority-{branch}"), 0)?
-            .ok_or_else(|| invalid("Prepared air-superiority continuation is missing"))?;
-        let state: QueryState = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
+        let _cpu = replay::cpu::scope_phase("air_superiority:query_continuation");
+        let state: QueryState =
+            series::read_reply(store, key, &format!("air-superiority-{branch}"), 0)?
+                .ok_or_else(|| invalid("Prepared air-superiority continuation is missing"))?;
         let keys = series::read_catalogue::<()>(store, key, "air-superiority", branch)?
             .ok_or_else(|| invalid("Prepared air-superiority catalogue is missing"))?
             .0;
@@ -977,6 +977,7 @@ impl Prepared {
             .iter()
             .map(|(field, &id)| serde_json::from_str::<Field>(field).map(|field| (field, id)))
             .collect::<Result<_, _>>()?;
+        let cpu = replay::cpu::scope_phase("air_superiority:query_values");
         let observed = values::samples(
             source,
             key,
@@ -990,6 +991,8 @@ impl Prepared {
             &mut events,
             cancelled,
         )?;
+        drop(cpu);
+        let _cpu = replay::cpu::scope_phase("air_superiority:query_classification");
         let mut indices = sides
             .iter()
             .enumerate()
@@ -998,6 +1001,7 @@ impl Prepared {
         let mut samples = Vec::new();
         let mut rosters = scan::RosterRead::default();
         for (hour, observed) in observed {
+            let _cpu = replay::cpu::scope_phase("air_superiority:query_sample_classification");
             check_cancel(cancelled)?;
             let (projection, auxiliary) = &*observed;
             let view = (
@@ -1032,6 +1036,7 @@ fn read_groups(
     key: &store::SourceKey,
     branch: u64,
 ) -> io::Result<dashboard_base::products::country_groups::Scan> {
+    let _cpu = replay::cpu::scope_phase("air_superiority:query_groups");
     let file = match store.read(key, &super::block::groups_section(branch), 0)? {
         Some(file) => file,
         None => store
@@ -1812,6 +1817,30 @@ mod tests {
             state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
         }
         assert_eq!(state.countries.len(), 5001);
+        let scope = series::cache_scope(None);
+        let before = series::text_reads();
+        let first = Prepared::read_query(&fixture.store, &fixture.key, 1).unwrap();
+        assert_eq!(
+            series::text_reads() - before,
+            2,
+            "continuation bypassed bulk page reads"
+        );
+        let held = scope.finish();
+        let scope = series::cache_scope(Some(&held));
+        let before = series::text_reads();
+        let next = Prepared::read_query(&fixture.store, &fixture.key, 1).unwrap();
+        assert_eq!(
+            series::text_reads(),
+            before,
+            "re-read an unchanged query continuation"
+        );
+        assert_eq!(first.keys, next.keys);
+        assert_eq!(
+            serde_json::to_vec(&first.choices).unwrap(),
+            serde_json::to_vec(&next.choices).unwrap()
+        );
+        drop(scope);
+
         parity(&fixture, &frames, None);
     }
     #[test]

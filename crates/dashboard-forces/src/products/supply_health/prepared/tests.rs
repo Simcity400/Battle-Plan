@@ -554,14 +554,34 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
         series::tests::{Fixture, assert_payloads_equal},
     };
     use replay::frame::{FrameDecoder, FrameEncoder};
-    use replay::rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow};
+    use replay::rows::{
+        CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow,
+    };
     let flag = AtomicBool::new(false);
     let mut input = crate::products::supply_health::tests::frame(100);
+    *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| CountryRow {
+                id: id as u32,
+                canonical_slot: id as u32,
+                tag: format!("realm {id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *input.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| CountryLinkRow {
+                id: id as u32,
+                canonical_slot: id as u32,
+            })
+            .collect(),
+    ));
     *input.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
         (1..=count)
             .map(|id| DivisionRow {
                 id,
-                roster_owner: 11,
+                roster_owner: id as u32,
                 ..Default::default()
             })
             .collect(),
@@ -644,6 +664,7 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
         );
         let decoded = decoder.advance(&wire).unwrap().clone();
         let mut visits = [0; 2];
+        let mut totals = [0; 2];
         for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
             let changes = if index == 0 {
                 tracker.observe_updates(
@@ -655,14 +676,18 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
                 tracker.observe(&decoded, replay::format::FormatVersion::CURRENT)
             };
             let before = state.scan.division_visits;
+            let before_totals = state.scan.total_visits;
             state.observe(&decoded, &changes).unwrap();
             visits[index] = state.scan.division_visits - before;
+            totals[index] = state.scan.total_visits - before_totals;
         }
         if hour == 101 {
             assert_eq!(visits, [1, count as usize], "one changed division");
+            assert_eq!(totals, [1, count as usize], "one changed owner's totals");
         }
         if hour == 102 {
             assert_eq!(visits, [0, count as usize], "unrelated status fields");
+            assert_eq!(totals, [0, count as usize], "unchanged owner totals carry");
         }
         if [106, 113].contains(&hour) {
             for (state, fixture) in states.iter_mut().zip(&fixtures) {

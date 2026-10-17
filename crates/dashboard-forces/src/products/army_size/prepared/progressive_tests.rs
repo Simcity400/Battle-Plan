@@ -745,3 +745,81 @@ fn restored_army_mix_resumes_what_continuous_observation_publishes() {
         },
     );
 }
+
+#[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "5000-country sampled window")]
+fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_moves() {
+    use dashboard_base::prepared::{
+        coverage::{Coverage, SCHEMA},
+        query::{observations, progressive},
+    };
+    use dashboard_base::test_fixtures::{continuation_records, file_source};
+    let first = records(1, vec![frame(0, 5000), frame(1, 5000)]);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
+    let mut refused = frame(7, 5000);
+    *refused.tables[TableId::Divisions.index()] = replay::frame::TableView::Unavailable {
+        reason: "synthetic window refusal".into(),
+    };
+    let replay = replay
+        .append(&[continuation_records(
+            &replay,
+            1,
+            vec![frame(6, 5000), refused],
+        )])
+        .unwrap();
+    let (source, root) = file_source(replay);
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let params = ArmySizeParams {
+        branch_id: "1".into(),
+        tags: Vec::new(),
+        top: Some(10),
+        measure: ArmyMeasure::Battalions,
+        count_for: ArmyAttribution::Owner,
+        by_type: true,
+        window: None,
+    };
+    let extent = |last_hour| Coverage {
+        schema: SCHEMA,
+        first_hour: 0,
+        last_hour,
+        complete: false,
+    };
+    let read = |coverage: &Coverage| {
+        sampled_window(&source, &params, &context, Some(coverage), (6, 7), &flag).unwrap()
+    };
+    let first = read(&extent(0));
+    let (again, refused) = progressive::without_block_decodes(|| read(&extent(1)));
+    assert!(
+        !refused,
+        "preparation before the window repeated its extraction"
+    );
+    assert_eq!(first.0, again.0);
+    assert_eq!(first.1, again.1);
+    assert_eq!(
+        serde_json::to_value(&first.3).unwrap(),
+        serde_json::to_value(&again.3).unwrap()
+    );
+    assert_eq!(observations::usage(&source, "army-size:window").2, 1);
+    assert_eq!(first.0.len(), 5000);
+    assert!(
+        !first.3.invalid_table_reads.is_empty(),
+        "fixture must retain warning evidence"
+    );
+    assert!(
+        !first.3.tracks.is_empty(),
+        "cached composition metadata was lost"
+    );
+    let cut = read(&extent(6));
+    assert_eq!(observations::usage(&source, "army-size:window").2, 2);
+    assert!(cut.0.values().flatten().all(|run| run.first_hour >= 7));
+    let mut done = extent(7);
+    done.complete = true;
+    let finished = read(&done);
+    assert!(finished.0.is_empty());
+    let (bytes, bound, _) = observations::usage(&source, "army-size:window");
+    assert!(bytes <= bound);
+    let (store, _) = dashboard_base::prepared::files(&source, None).unwrap();
+    let _ = store.clear();
+    let _ = std::fs::remove_dir_all(root);
+}

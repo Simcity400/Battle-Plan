@@ -34,7 +34,10 @@
 //! (`extract_block`), and the fold takes its hours in order, holding a decoded
 //! frame only at the hours whose rows it reads. Each extracted hour computes
 //! its supplying-read flags together and carries the modifier-read decision
-//! into the fold.
+//! into the fold. Consecutive non-read hours with the same holder and table
+//! availability form one carried span; open line endpoints advance once for
+//! that span. Country lookup follows immutable views and consecutive row deltas
+//! that preserve identity, checking every intervening hour.
 //!
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
@@ -89,7 +92,7 @@ use crate::{
 };
 use replay::{
     container::{BlockIndex, Replay},
-    frame::{DecodedFrame, FrameDecoder, SharedView},
+    frame::{DecodedFrame, FrameDecoder, FrameSource, SharedView, TableUpdate, ViewIdentity},
     rows::{
         IndustrialOrganisationRow, LexicalTokenRow, ProductionLineOutputRow, ProductionLineRow,
         TableId, VariantDefinitionRow, tables,
@@ -721,10 +724,104 @@ impl Country {
     }
 }
 
+/// The selected holder, with the country-key and link evidence from every hour.
+#[derive(Default)]
+struct CountryRead {
+    previous: Option<(u64, i32)>,
+    countries: Option<ViewIdentity>,
+    links: Option<ViewIdentity>,
+    length: Option<usize>,
+    country: Option<Country>,
+}
+
+impl CountryRead {
+    fn observe(
+        &mut self,
+        raw: &impl FrameSource,
+        decoded: &DecodedFrame,
+        tag: &str,
+        holder: Option<(u32, u32)>,
+    ) -> Option<Country> {
+        static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+            crate::prepared::frame_changes::field_mask(
+                TableId::Countries,
+                &["canonical_slot", "tag"],
+            )
+        });
+        let countries = &decoded.tables[TableId::Countries.index()];
+        let links = &decoded.tables[TableId::CountryLinks.index()];
+        let length = decoded
+            .complete::<tables::Countries>()
+            .ok()
+            .map(|rows| rows.len());
+        let continuous = self.previous.is_some_and(|(branch, hour)| {
+            branch == decoded.branch && hour.checked_add(1) == Some(decoded.hour)
+        });
+        let same_keys = self
+            .countries
+            .as_ref()
+            .is_some_and(|held| held.is(countries))
+            || (continuous
+                && !raw.keyframe()
+                && length.is_some()
+                && length == self.length
+                && matches!(raw.update(TableId::Countries.index()),
+                    TableUpdate::Delta { changed, deleted, .. }
+                        if deleted.is_empty() && changed.iter().all(|row|
+                            row.recorded_fields >= TableId::Countries.schema().len()
+                                && row.mask & *FIELDS == 0)));
+        let same = continuous
+            && !raw.keyframe()
+            && same_keys
+            && self.links.as_ref().is_some_and(|held| held.is(links));
+        let country = if same {
+            self.country
+        } else {
+            select_country(decoded, tag, holder)
+        };
+        self.previous = Some((decoded.branch, decoded.hour));
+        self.countries = Some(countries.identity());
+        self.links = Some(links.identity());
+        self.length = length;
+        self.country = country;
+        country
+    }
+}
+
+fn select_country(
+    decoded: &DecodedFrame,
+    tag: &str,
+    holder: Option<(u32, u32)>,
+) -> Option<Country> {
+    let _phase = replay::cpu::scope_phase("production-lines:country");
+    crate::prepared::prepass::note("production-lines.country_lookup");
+    decoded
+        .complete::<tables::Countries>()
+        .ok()
+        .zip(decoded.complete::<tables::CountryLinks>().ok())
+        .map(|(countries, links)| {
+            let selected_tag = match holder {
+                None => Some(tag),
+                Some((slot, id)) => countries
+                    .iter()
+                    .find(|country| country.canonical_slot == slot && country.id == id)
+                    .and_then(|country| std::str::from_utf8(&country.tag).ok()),
+            };
+            match selected_tag.map_or(TaggedCountry::Absent, |tag| {
+                tagged_country(countries, links, tag)
+            }) {
+                TaggedCountry::Absent => Country::Absent,
+                TaggedCountry::Unresolved => Country::Unresolved,
+                TaggedCountry::Found(country, slot) => Country::Found(slot, country.id),
+            }
+        })
+}
+
 /// What the scan reads of one hour, taken from its frame where the block is
 /// decoded: the fold needs the frame itself only where it reads rows.
 struct ScanHour {
     hour: i32,
+    last_hour: i32,
     /// None where the countries or their links are not complete.
     country: Option<Country>,
     /// At a due read of the output, whether this country's lines could be
@@ -746,6 +843,25 @@ struct ScanHour {
     /// The frame, kept at a complete variant read, a read of the variant
     /// table, and a read of this country's lines.
     frame: Option<DecodedFrame>,
+}
+
+impl ScanHour {
+    fn carry(&self) -> bool {
+        self.frame.is_none()
+            && !self.lines_read
+            && self.output_due.is_none()
+            && self.variants == (VariantHour::Carried { complete: true })
+    }
+    fn extends(&self, next: &Self) -> bool {
+        self.carry()
+            && next.carry()
+            && self.last_hour.checked_add(1) == Some(next.hour)
+            && self.country == next.country
+            && self.lines_complete == next.lines_complete
+            && self.output_complete == next.output_complete
+            && self.organisations_complete == next.organisations_complete
+            && self.modifiers_complete == next.modifiers_complete
+    }
 }
 
 /// One block's hours as the scan reads them, and the hour from which it could
@@ -771,10 +887,13 @@ fn extract_block(
     tag: &str,
     holder: Option<(u32, u32)>,
     cancelled: &AtomicBool,
+    compact: bool,
 ) -> io::Result<Extracted> {
     let frames = replay.read_block_recorded_selected(block, selected)?;
     let mut decoder = FrameDecoder::for_tables(selected);
-    let mut hours = engine::allocation::vec(frames.len())?;
+    let _phase = replay::cpu::scope_phase("production-lines:extract");
+    let mut hours: Vec<ScanHour> = Vec::new();
+    let mut country = CountryRead::default();
     let mut lost_from = None;
     for frame in &frames {
         if cancelled.load(Ordering::Acquire) {
@@ -788,12 +907,26 @@ fn extract_block(
             lost_from = Some(frame.hour);
             break;
         }
-        hours.push(scan_hour(replay.format, frame.hour, decoded, tag, holder));
+        let selected = if compact {
+            country.observe(frame, decoded, tag, holder)
+        } else {
+            select_country(decoded, tag, holder)
+        };
+        let next = scan_hour_selected(replay.format, frame.hour, decoded, selected);
+        if compact
+            && let Some(previous) = hours.last_mut().filter(|previous| previous.extends(&next))
+        {
+            previous.last_hour = next.last_hour;
+        } else {
+            engine::allocation::reserve(&mut hours, 1)?;
+            hours.push(next);
+        }
     }
     Ok(Extracted { hours, lost_from })
 }
 
 /// What the scan reads of `decoded`, the frame of `hour`.
+#[cfg(test)]
 fn scan_hour(
     format: replay::format::FormatVersion,
     hour: i32,
@@ -801,26 +934,15 @@ fn scan_hour(
     tag: &str,
     holder: Option<(u32, u32)>,
 ) -> ScanHour {
-    let country = decoded
-        .complete::<tables::Countries>()
-        .ok()
-        .zip(decoded.complete::<tables::CountryLinks>().ok())
-        .map(|(countries, links)| {
-            let selected_tag = match holder {
-                None => Some(tag),
-                Some((slot, id)) => countries
-                    .iter()
-                    .find(|country| country.canonical_slot == slot && country.id == id)
-                    .and_then(|country| std::str::from_utf8(&country.tag).ok()),
-            };
-            match selected_tag.map_or(TaggedCountry::Absent, |tag| {
-                tagged_country(countries, links, tag)
-            }) {
-                TaggedCountry::Absent => Country::Absent,
-                TaggedCountry::Unresolved => Country::Unresolved,
-                TaggedCountry::Found(country, slot) => Country::Found(slot, country.id),
-            }
-        });
+    scan_hour_selected(format, hour, decoded, select_country(decoded, tag, holder))
+}
+
+fn scan_hour_selected(
+    format: replay::format::FormatVersion,
+    hour: i32,
+    decoded: &DecodedFrame,
+    country: Option<Country>,
+) -> ScanHour {
     let reads = slot_reads(format, &decoded.metrics, decoded.hour);
     let read = |table: TableId| reads[table.index()];
     let lines_complete = decoded.complete::<tables::ProductionLines>().is_ok();
@@ -839,6 +961,7 @@ fn scan_hour(
     let keep = variants == VariantHour::Read || definitions_read || lines_of_country;
     ScanHour {
         hour,
+        last_hour: hour,
         country,
         output_due,
         variants,
@@ -884,6 +1007,20 @@ fn scan_blocks_cached(
     icons: Option<&IconContent>,
     holder: Option<(u32, u32)>,
     cancelled: &AtomicBool,
+) -> io::Result<ScannedLines> {
+    scan_blocks_mode(source, replay, blocks, tag, icons, holder, cancelled, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_blocks_mode(
+    source: Option<&Source>,
+    replay: &Replay,
+    blocks: &[&BlockIndex],
+    tag: &str,
+    icons: Option<&IconContent>,
+    holder: Option<(u32, u32)>,
+    cancelled: &AtomicBool,
+    compact: bool,
 ) -> io::Result<ScannedLines> {
     // The variant catalogue's tables include the countries and tokens read here too.
     let mut selected = vec![
@@ -970,7 +1107,7 @@ fn scan_blocks_cached(
         if let Some(position) = replay.block_position(block) {
             consumer.reading(position);
         }
-        let read = || extract_block(replay, block, &selected, tag, holder, cancelled);
+        let read = || extract_block(replay, block, &selected, tag, holder, cancelled, compact);
         match cache
             .as_ref()
             .filter(|_| first_newest.is_some_and(|first| block.first_hour >= first))
@@ -1025,13 +1162,14 @@ fn scan_blocks_cached(
                         return Err(cancel());
                     }
                     let hour = scan_hour.hour;
+                    let through = scan_hour.last_hour;
                     let identity = scan_hour.country.and_then(Country::found);
                     let continues = identity.is_some_and(|identity| {
                         last.is_some_and(|(seen, at)| {
                             seen == identity && at.checked_add(1) == Some(hour)
                         })
                     });
-                    last = identity.map(|identity| (identity, hour));
+                    last = identity.map(|identity| (identity, through));
                     // A due output read this country's lines could not be read at (its tables,
                     // its census or the output incomplete): lines made and ended since the one
                     // before published their only rows here, so they may be missing. A country
@@ -1063,6 +1201,9 @@ fn scan_blocks_cached(
                             }
                         });
                     kept?;
+                    if through != hour {
+                        result.variants.advance(through);
+                    }
                     if scan_hour.definitions_read
                         && let Some(decoded) = decoded
                         && let Ok(rows) = decoded.complete::<tables::VariantDefinitions>()
@@ -1140,40 +1281,25 @@ fn scan_blocks_cached(
                     if !scan_hour.lines_read {
                         // Carried: the last read still holds, but only after a read of this identity.
                         if carried {
-                            mark(&mut result.line_hours, hour);
+                            let _phase = replay::cpu::scope_phase("production-lines:carry");
+                            mark_span(&mut result.line_hours, hour, through);
                             // Output is carried only while its table stays readable: once a
                             // tick went unobserved it is unavailable for the rest of the branch.
                             output_open &= scan_hour.output_complete;
                             organisations_open &= scan_hour.organisations_complete;
                             if organisations_open {
-                                mark(&mut result.organisation_hours, hour);
+                                mark_span(&mut result.organisation_hours, hour, through);
                             }
                             let modifiers_carried = scan_hour.modifiers_complete;
-                            for line in open.values() {
-                                let history = &mut result.lines[line.index];
-                                if modifiers_carried
-                                    && let Some(modifiers) = result
-                                        .modifiers
-                                        .get_mut(&history.key)
-                                        .and_then(|runs| runs.last_mut())
-                                    && modifiers.last_hour.checked_add(1) == Some(hour)
-                                {
-                                    modifiers.last_hour = hour;
-                                }
-                                if let Some(run) = history.runs.last_mut()
-                                    && run.last_hour.checked_add(1) == Some(hour)
-                                {
-                                    run.last_hour = hour;
-                                }
-                                if output_open
-                                    && let Some(output) = history.output.last_mut()
-                                    && output.last_hour.checked_add(1) == Some(hour)
-                                {
-                                    output.last_hour = hour;
-                                }
-                            }
+                            carry_lines(
+                                &mut result,
+                                &open,
+                                (hour, through),
+                                modifiers_carried,
+                                output_open,
+                            );
                             if output_open {
-                                mark(&mut result.output_hours, hour);
+                                mark_span(&mut result.output_hours, hour, through);
                             }
                         }
                         continue;
@@ -1540,6 +1666,41 @@ fn scan_blocks_cached(
         },
     )?;
     Ok(result)
+}
+
+/// Extend each open line through consecutive hours with equal availability.
+fn carry_lines(
+    result: &mut ScannedLines,
+    open: &BTreeMap<u64, Open>,
+    span: (i32, i32),
+    modifiers_carried: bool,
+    output_open: bool,
+) {
+    let (hour, through) = span;
+    for line in open.values() {
+        crate::prepared::prepass::note("production-lines.carried_line");
+        let history = &mut result.lines[line.index];
+        if modifiers_carried
+            && let Some(modifiers) = result
+                .modifiers
+                .get_mut(&history.key)
+                .and_then(|runs| runs.last_mut())
+            && modifiers.last_hour.checked_add(1) == Some(hour)
+        {
+            modifiers.last_hour = through;
+        }
+        if let Some(run) = history.runs.last_mut()
+            && run.last_hour.checked_add(1) == Some(hour)
+        {
+            run.last_hour = through;
+        }
+        if output_open
+            && let Some(output) = history.output.last_mut()
+            && output.last_hour.checked_add(1) == Some(hour)
+        {
+            output.last_hour = through;
+        }
+    }
 }
 
 fn raw_organisation(

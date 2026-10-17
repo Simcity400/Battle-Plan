@@ -23,6 +23,11 @@ here as `dashboard_base::…`.
 
 ## Prepared series
 
+Independent family folds share the publication predicate in `prepared::pages`:
+a continuing, unmeasured batch below its recording limit waits while pending
+hourly row charges plus held pages remain below 64 MiB. Runtime caches are
+separate from that publication charge.
+
 Block extracts share supplying-read flags for the same hour and timed tables;
 the recording's cadence groups decide them, with CountryIntel dated only by
 its own timing. After reconstruction, families sizing the same block share
@@ -48,17 +53,38 @@ unknowns, starts and supplying boundaries go through ordinary observation. Direc
 state readers seal those endpoints before inspecting them.
 
 Accumulator flushes merge their changed rows with the existing key-state map
-without copying every state into another batch map. Inactive keys with no pending
-rows or partial summaries reuse the empty payload directly. Every key keeps its
+in key order, retaining that map's entries and borrowing the pending rows.
+Unchanged keys allocate neither replacement states nor pending-row holders.
+Inactive keys with no pending rows or partial summaries reuse the empty payload
+directly. Every key keeps its
 ordinary directory entry and byte extent; active runs and pending summaries are
 encoded for the current batch bounds.
 
 Equal authenticated observations extend their held run in one step, keeping
 supplying boundaries, repeated-hour observations and unknown intervals separate.
-A single run's summary buckets are built in their existing order without an
-ordered map; multiple runs use the ordinary ordered merge. Payload reuse compares
-constant partial summaries in their compact span form before constructing buckets.
+Disjoint runs in hour order merge summary buckets directly into an ordered
+buffer; overlapping or backdated runs use the ordinary ordered map. Event
+summary counts group adjacent event hours without a separate map. Payload reuse
+compares constant partial summaries in their compact span form before constructing buckets.
 Both paths write the same batch and continuation bytes.
+
+A key with no new runs or events can reuse the preceding flush's compressed
+payload and next partial summaries. Its identity includes the incoming summaries,
+canonical open run, decimal scale and, for every level, whether the current end
+adds a prefix break or closes its partial. The first hour cannot change an absent
+numeric bucket. Only distinct inputs used by the latest flush survive; restore
+starts empty. Directories and separate payload extents remain in every page.
+
+Continuation serialization retains each inactive series key's compact JSON with
+the state that produced it. Every save compares the complete current state,
+including the bit patterns of summary values, and formats only changed inactive
+keys. Active keys, whose endpoints move at publication, stream directly without
+retaining another copy. Public state mutations therefore need no separate
+invalidation proof. The transient cache is
+sized by the current key set, and restore starts empty. The complete continuation
+keeps its ordinary JSON field order and compression; neither pages nor saved
+layouts change. Directory writes and copying the required output still visit
+every published key.
 
 Numeric keys with equal runs, incoming summaries and canonical open run also
 reuse summary construction: their input digest finds the encoded payload and
@@ -99,7 +125,10 @@ searches run in memory, and keeps the directory entries and decoded blobs (up to
 256) it has read. A key's directory entry is a binary search of small reads in
 its batch; once a reader has searched one batch for many keys (at least 16, and
 one per 256 entries), it reads that batch's whole directory at once and searches
-it in memory (up to 64 MiB of directories per reader).
+it in memory (up to 64 MiB of directories per reader). A query's `SummaryCache`
+retains those whole directories by immutable page identity, charged at capacity
+with its reply. Later publications reuse only directories read by the current
+ask; replaced pages search and read their own directories.
 `Reader::latest_event_rows` reads many keys' latest events at one hour, finding
 the hour's batch once.
 
@@ -397,6 +426,21 @@ read and decoded on spare cores (`extract_block`, three ahead), each hour reduce
 to what the fold reads of it, with its frame kept only where the fold reads rows
 (a variant read, a read of the country's lines).
 
+The selected country lookup follows immutable country/link views and consecutive
+country deltas that preserve every identity field and the row count. Snapshots,
+link changes, gaps, missing field evidence and availability changes resolve the
+country again. Every intervening hour updates the proof. Consecutive non-read
+hours with equal holder and line, output, organisation and modifier availability
+form one carried span. The fold extends each open line's endpoints once through
+that span; supplying reads, gaps and availability transitions retain their own
+boundaries. Variant names advance through complete carried spans with their
+ordinary gap and read behavior.
+
+Prepared production endpoints aggregate country/variant quantities and spending;
+they contain no line lifetimes, queue values, organisation history or modifier
+runs. Production-line histories read the recording for those operands. The
+persisted whole-country line scan supplies them directly when it is current.
+
 Equipment variant naming keeps only the lexical spellings its equipment types,
 module slots, modules and upgrades reference, including missing spellings, with
 a weak dictionary identity. Unrelated token edits preserve the naming operands;
@@ -678,3 +722,42 @@ names and restoration rebuild the operands.
 Production presentation retains counted variant membership by holder inventory
 version, replacing only changed holders while dating names at each presentation.
 These operand and membership caches are transient.
+
+Within one immutable series reader, contiguous event pages retain their merged
+frontier and per-key endpoint ordinals. A changed selection, window, cursor or
+coverage clamp starts an ordinary seek. Point reads retain each key's last
+resolved global run bounds, authenticating the requested hour's local run
+before reuse, so a missing hour cannot become known through the retained bounds.
+These transient lookups end with the reader.
+
+Stateless resource samples retain their last table-view identities, extraction
+selection and numeric projection within a reply. Every visited hour still
+passes through the ordinary tail reader and its continuity rules. Country group
+histories parse their decompressed JSON as a whole buffer before restoring their
+dictionary and roster references.
+
+Country key comparisons in ideas retain an unchanged reduced allocation and use
+recorded identity field masks for consecutive deltas. Snapshots and changed
+identities compare the complete key projection.
+
+Research coverage, slot availability, state and progress, and territory's country
+and regional fact markers carry equal numeric values through accepted hours.
+Starts, unknowns and supplying events retain their ordinary observations;
+publication materializes the held endpoints.
+
+Ordered runs of one numeric key can be pushed together with one accumulator
+state and batch lookup. Their canonical runs, counters and saved bytes match
+ordinary ordered pushes. Recorded accumulators retain the ordinary calls.
+
+Variant naming keeps reverse dependencies from spellings, naming links and
+canonical slots to their definitions. Recorded row invalidations accumulate
+until a supplying read consumes them. A snapshot compares ordered source rows
+once to select changed definition and design owners. Each selected design reads
+only its own module and upgrade ranges; its naming joins only the slots it uses
+and slot zero. Replaced and deleted definitions release their dependency
+memberships, dropping a spelling, naming link or slot when its last user leaves.
+Design operands remain only for current definitions; restore rebuilds these
+indexes from the next complete read. Appearance fields other than the original
+naming tag leave this projection unchanged. Gaps, refusals and restore retain
+the ordinary full-read and naming-unknown boundaries. These dependency indexes
+are runtime state.

@@ -366,3 +366,23 @@ fn frame_changes_name_each_tables_changes_for_trigger_inputs() {
         TableChange::Same
     ));
 }
+
+#[test]
+fn snapshot_comparison_selects_changed_added_and_deleted_ordered_keys() {
+    use replay::rows::LexicalTokenRow;
+    let row = |token, literal: &[u8]| LexicalTokenRow {
+        token,
+        literal: literal.to_vec(),
+    };
+    let before = vec![row(1, b"same"), row(2, b"changed"), row(4, b"deleted")];
+    let now = vec![row(1, b"same"), row(2, b"new"), row(3, b"added")];
+    assert_eq!(
+        differing_keys(&before, &now),
+        std::collections::BTreeSet::from([2, 3, 4])
+    );
+    assert!(differing_keys(&now, &now).is_empty());
+    assert_eq!(
+        differing_keys(&before, &[]),
+        std::collections::BTreeSet::from([1, 2, 4])
+    );
+}

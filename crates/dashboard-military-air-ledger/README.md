@@ -27,3 +27,7 @@ it asserts no observed interval or total. Signed events, native dates, supplying
 reads, ranking and refusal rules use the same saved observer state and reply
 builder as a complete reply. A shown hour beyond that prefix is still being
 prepared in each of the three widgets.
+
+Queries read the saved scan through the bulk page-text reader. Accumulators are
+restored only by preparation; replies gather their observed events from series
+pages. Successive pages of that gather retain the reader's merge frontier.

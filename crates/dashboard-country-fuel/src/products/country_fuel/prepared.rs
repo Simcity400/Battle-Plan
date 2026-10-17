@@ -130,6 +130,16 @@ pub struct Prepared {
     active_actors: BTreeSet<String>,
     settling: BTreeSet<String>,
     #[serde(skip)]
+    next_settlement: Option<i32>,
+    #[serde(skip)]
+    settlement_ready: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    hourly_settlement: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    settlement_visits: usize,
+    #[serde(skip)]
     amounts: Vec<(u32, i64, i64)>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
@@ -180,6 +190,7 @@ impl Prepared {
         demand: Option<&[CountryFuelRow]>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("fuel:observe");
         dashboard_text::metadata::check_cancel(cancelled)?;
         let previous_hour = self.metadata.last;
         self.current.advance(frame.hour)?;
@@ -483,7 +494,13 @@ impl Prepared {
             self.active_actors = active_actors;
         }
         if let Some(cutoff) = frame.hour.checked_sub(UNSETTLED_HOURS) {
-            self.settle(cutoff, format, cancelled)?;
+            self.settle_due(
+                cutoff,
+                format,
+                cancelled,
+                !self.scan.updated.is_empty()
+                    || previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour),
+            )?;
         }
         Ok(())
     }
@@ -508,6 +525,7 @@ impl Prepared {
         last: i32,
         format: replay::format::FormatVersion,
     ) -> io::Result<bool> {
+        let _cpu = ::replay::cpu::scope_phase("fuel:quiet");
         if first > last
             || self.metadata.last.and_then(|hour| hour.checked_add(1)) != Some(first)
             || !self.scan.continues_quiet(first)
@@ -515,6 +533,9 @@ impl Prepared {
             return Ok(false);
         }
         self.current.advance_span(first, last)?;
+        if let Some(cutoff) = first.checked_sub(UNSETTLED_HOURS) {
+            self.settlement_clock(cutoff);
+        }
         // Hours of the span before `last` whose cutoff is a settling read's
         // first or last hour. An open read's last hour moves with the span,
         // so its hour here only adds a settlement hourly preparation also
@@ -538,18 +559,53 @@ impl Prepared {
             self.scan.advance_quiet(from, through);
             self.metadata.last = Some(through);
             if let Some(cutoff) = through.checked_sub(UNSETTLED_HOURS) {
-                self.settle(cutoff, format, &cancelled)?;
+                self.settle_due(cutoff, format, &cancelled, false)?;
             }
             from = through + 1;
         }
         Ok(true)
     }
+    fn settle_due(
+        &mut self,
+        cutoff: i32,
+        format: replay::format::FormatVersion,
+        cancelled: &AtomicBool,
+        changed: bool,
+    ) -> io::Result<()> {
+        self.settlement_clock(cutoff);
+        #[cfg(test)]
+        let hourly = self.hourly_settlement;
+        #[cfg(not(test))]
+        let hourly = false;
+        if hourly
+            || changed
+            || !self.settlement_ready
+            || self.next_settlement.is_some_and(|hour| hour <= cutoff)
+        {
+            self.settle(cutoff, format, cancelled)?;
+        }
+        Ok(())
+    }
+
+    fn settlement_clock(&mut self, cutoff: i32) {
+        // Empty accepted cutoffs still establish the batch's original bounds.
+        // The decision frontier stays at the last materialized settlement.
+        let from = self
+            .metadata
+            .settled_until
+            .map_or(i32::MIN, |hour| hour.saturating_add(1));
+        self.days
+            .through(from.max(self.metadata.first.unwrap_or(cutoff)).min(cutoff));
+        self.days.through(cutoff);
+    }
+
     fn settle(
         &mut self,
         cutoff: i32,
         format: replay::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("fuel:settle");
         let from = self
             .metadata
             .settled_until
@@ -559,7 +615,12 @@ impl Prepared {
         self.days
             .through(from.max(self.metadata.first.unwrap_or(cutoff)).min(cutoff));
         let mut settled = Vec::new();
+        self.next_settlement = None;
         for tag in &self.settling {
+            #[cfg(test)]
+            {
+                self.settlement_visits += 1;
+            }
             let country = self.scan.countries.get_mut(tag).unwrap();
             dashboard_text::metadata::check_cancel(cancelled)?;
             let mut decided: Vec<_> = self
@@ -587,6 +648,10 @@ impl Prepared {
             }
             for read in &mut country.result.reads {
                 if read.first_hour > cutoff {
+                    self.next_settlement = Some(
+                        self.next_settlement
+                            .map_or(read.first_hour, |hour| hour.min(read.first_hour)),
+                    );
                     continue;
                 }
                 let decision = decided
@@ -673,6 +738,7 @@ impl Prepared {
         }
         self.days.through(cutoff);
         self.metadata.settled_until = Some(cutoff);
+        self.settlement_ready = true;
         Ok(())
     }
     pub fn flush(
@@ -682,10 +748,25 @@ impl Prepared {
         format: replay::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        // Stable day values merge as one constant run. Only read decisions
+        // need their exact 23-hour deadline; the remaining accepted span can
+        // be published once, without re-deciding a day at every cutoff.
+        if let Some(cutoff) = self
+            .metadata
+            .last
+            .and_then(|hour| hour.checked_sub(UNSETTLED_HOURS))
+            && self.metadata.settled_until != Some(cutoff)
+        {
+            self.settle(cutoff, format, cancelled)?;
+        }
         self.current
             .flush(writer, &format!("{CURRENT}-{branch}"), 0, cancelled)?;
         self.days
             .flush(writer, &format!("{DAYS}-{branch}"), 0, cancelled)?;
+        // The hourly settler charges the first carried row of the new batch
+        // at its first accepted cutoff. Materialize that cutoff too; subsequent
+        // constant extensions merge without changing the publication charge.
+        self.settlement_ready = false;
         let mut metadata = self.metadata.clone();
         #[cfg(any(test, feature = "test-support"))]
         {

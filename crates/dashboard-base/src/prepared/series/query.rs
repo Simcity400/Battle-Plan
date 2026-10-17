@@ -11,12 +11,23 @@ thread_local! {
     pub(super) static BUCKET_FOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEXT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Uncached compressed catalogue/reply reads on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn text_reads() -> usize {
+    TEXT_READS.get()
+}
+
 /// Page reads and numeric folds held with one reply and charged to its LRU entry.
 /// Only entries used by that request survive its next publication.
 #[derive(Clone, Default)]
 pub struct SummaryCache {
     folds: BTreeMap<Vec<u8>, Arc<Fold>>,
     blobs: BTreeMap<([u64; 3], u64), Arc<Cached>>,
+    tables: BTreeMap<[u64; 3], Arc<Option<Table>>>,
     texts: BTreeMap<(TextKind, Vec<[u64; 3]>), Arc<Vec<u8>>>,
     events: BTreeMap<([u64; 3], u64, u64), Arc<Value>>,
     values: BTreeMap<ValueKey, Arc<Retained>>,
@@ -50,6 +61,19 @@ impl SummaryCache {
                         + std::mem::size_of::<Retained>()
                         + 4 * std::mem::size_of::<usize>()
                         + value.bytes
+                })
+                .sum::<usize>()
+            + self
+                .tables
+                .values()
+                .map(|table| {
+                    2 * std::mem::size_of::<([u64; 3], Arc<Option<Table>>)>()
+                        + 2 * std::mem::size_of::<usize>()
+                        + std::mem::size_of::<Option<Table>>()
+                        + table
+                            .as_ref()
+                            .as_ref()
+                            .map_or(0, |table| table.0.capacity())
                 })
                 .sum::<usize>()
             + self
@@ -179,6 +203,29 @@ fn reuse<K: Ord, T>(
     Ok(value)
 }
 
+pub(super) fn held_table(id: [u64; 3]) -> Option<Arc<Option<Table>>> {
+    let scope = current()?;
+    let mut state = scope.borrow_mut();
+    let table = state
+        .current
+        .tables
+        .get(&id)
+        .or_else(|| state.previous.tables.get(&id))
+        .cloned()?;
+    state.current.tables.insert(id, Arc::clone(&table));
+    Some(table)
+}
+
+pub(super) fn keep_table(id: [u64; 3], table: &Arc<Option<Table>>) {
+    if let Some(scope) = current() {
+        scope
+            .borrow_mut()
+            .current
+            .tables
+            .insert(id, Arc::clone(table));
+    }
+}
+
 pub(super) fn blob(
     id: ([u64; 3], u64),
     read: impl FnOnce() -> io::Result<Cached>,
@@ -196,7 +243,16 @@ pub(super) fn text(
     ids: Vec<[u64; 3]>,
     read: impl FnOnce() -> io::Result<Vec<u8>>,
 ) -> io::Result<Arc<Vec<u8>>> {
-    reuse(current(), (kind, ids), |cache| &mut cache.texts, read)
+    reuse(
+        current(),
+        (kind, ids),
+        |cache| &mut cache.texts,
+        || {
+            #[cfg(any(test, feature = "test-support"))]
+            TEXT_READS.set(TEXT_READS.get() + 1);
+            read()
+        },
+    )
 }
 pub(super) fn event(
     id: ([u64; 3], u64, u64),

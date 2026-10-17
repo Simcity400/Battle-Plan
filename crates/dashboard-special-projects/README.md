@@ -30,3 +30,8 @@ Current-card selections include exact holders witnessed in the requested frame, 
 Country identity comparisons follow recorded country field masks: balance-only
 deltas and equal acquisitions keep the previous key projection. Snapshots,
 identity edits and membership changes use the complete key comparison.
+
+The supplying-read marker carries equal authenticated values between changes.
+Unknowns and reactivation take ordinary observation. Structural project reads
+compare held numeric values; publication materializes their endpoints after
+the hour's changes are observed.

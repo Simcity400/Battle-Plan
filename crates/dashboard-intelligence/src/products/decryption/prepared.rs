@@ -87,6 +87,7 @@ impl Accumulator {
         defines: Result<cryptology::Defines, &str>,
         warnings: &[String],
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:decryption");
         use replay::rows::TableId;
         let hour = frame.hour;
         let previous = self.last;

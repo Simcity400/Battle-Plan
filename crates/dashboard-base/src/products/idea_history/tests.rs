@@ -1743,3 +1743,91 @@ fn restored_idea_history_closes_a_holder_that_vanishes_at_the_first_hour_after_a
         },
     );
 }
+
+fn check_idea_country_delta_work(count: u32) {
+    use super::IdeaInputs;
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::{
+        format::FormatVersion,
+        frame::{FrameDecoder, FrameEncoder},
+        rows::{CountryLinkRow, CountryRow},
+    };
+    use std::sync::Arc;
+    let format = FormatVersion::CURRENT;
+    let mut frame = crate::test_fixtures::source(1, 100, None);
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("realm {id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::ActiveIdeas.index()] =
+        TableView::Complete(TableRows::ActiveIdeas(Vec::new()));
+    *frame.tables[TableId::HiredAdvisors.index()] =
+        TableView::Complete(TableRows::HiredAdvisors(Vec::new()));
+    let mut states = [IdeaInputs::default(), IdeaInputs::default()];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for hour in 100..=106 {
+        frame.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].political_power_raw = Some(i64::from(hour));
+            if hour == 102 {
+                rows[0].tag = b"changed alias".to_vec();
+            }
+            if hour == 105 {
+                rows.pop();
+            }
+        }
+        let wire = Arc::new(
+            encoder
+                .encode(frame.clone(), hour == 100 || hour == 104)
+                .unwrap(),
+        );
+        let decoded = decoder.advance(&wire).unwrap();
+        let changes = trackers[0].observe_updates(decoded, Arc::clone(&wire), format);
+        let whole = trackers[1].observe(decoded, format);
+        let before = states[0].keys.as_ref().map_or(0, |keys| keys.row_visits());
+        let dirty = states[0].refresh(decoded, Some(&changes), &mut Default::default());
+        let reference = states[1].refresh(decoded, Some(&whole), &mut Default::default());
+        assert_eq!(dirty, reference, "dirty holders at {hour}");
+        assert_eq!(states[0].holders, states[1].holders);
+        // A kept reduced view can be reported rebuilt while its key allocation holds.
+        let visits = states[0].keys.as_ref().unwrap().row_visits();
+        states[0].refresh(decoded, Some(&changes), &mut Default::default());
+        assert_eq!(states[0].keys.as_ref().unwrap().row_visits(), visits);
+        if hour == 101 {
+            let visits = states[0].keys.as_ref().unwrap().row_visits() - before;
+            assert_eq!(
+                visits, 1,
+                "only the changed country's field mask is compared"
+            );
+        }
+    }
+}
+
+#[test]
+fn idea_country_balance_deltas_visit_only_changed_keys() {
+    check_idea_country_delta_work(64);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn idea_country_balance_delta_work_at_5000_countries() {
+    check_idea_country_delta_work(5_000);
+}

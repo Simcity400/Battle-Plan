@@ -22,3 +22,7 @@ forward preparation covers it.
 Look-back read-ahead is bounded by half the available hardware threads, at least one, regardless of the proof length.
 
 Occupation look-backs read immutable shared section updates and register their current block with replay. Their selected reconstruction and proof rules are unchanged; section retention follows measured table sizes and live reader progress.
+
+Occupation fact markers carry equal authenticated values until publication.
+Their supplying events and the resistance and compliance read boundaries keep
+their recorded dates.

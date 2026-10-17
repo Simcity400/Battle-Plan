@@ -11,6 +11,22 @@ use std::{
     io::{self, Read},
 };
 
+/// The production publication budget, shared by independent family folds.
+pub const BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+/// Whether this block publishes the family's pending rows and held pages.
+pub fn publication_due(
+    continues: bool,
+    measured: bool,
+    full: bool,
+    bytes: impl FnOnce() -> (usize, usize),
+) -> bool {
+    !continues || measured || full || {
+        let (pending, held) = bytes();
+        pending.saturating_add(held) >= BATCH_BYTES
+    }
+}
+
 /// A writer of prepared pages.
 pub trait Pages {
     /// Write `range` of `section`: one it holds, or the next.

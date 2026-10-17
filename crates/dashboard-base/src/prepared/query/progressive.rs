@@ -20,6 +20,50 @@ use std::{
 /// One frame's values: `(tag, field)` -> (native holder identity, raw value).
 pub type Samples = BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)>;
 
+/// One stateless projection's last table views and selection within a reply.
+/// Callers must depend only on these tables and the requested keys, never on
+/// the frame hour or mutable presentation state. Weak identities keep an old
+/// allocation distinct even after the decoder releases its rows. The reader
+/// still visits every hour, applying ordinary gaps, refusals and break flags.
+#[derive(Default)]
+pub struct SamplesCache(std::cell::RefCell<Option<CachedSamples>>);
+struct CachedSamples {
+    branch: u64,
+    views: Vec<(usize, replay::frame::ViewIdentity)>,
+    requested: Option<Vec<(String, String)>>,
+    values: Samples,
+}
+impl SamplesCache {
+    pub fn sample(
+        &self,
+        frame: &DecodedFrame,
+        tables: &[TableId],
+        requested: Option<&[(String, String)]>,
+        sample: Sample<'_>,
+    ) -> io::Result<Samples> {
+        let views: Vec<_> = tables
+            .iter()
+            .map(|table| (table.index(), frame.tables[table.index()].identity()))
+            .collect();
+        let mut held = self.0.borrow_mut();
+        if let Some(previous) = held.as_ref().filter(|previous| {
+            previous.branch == frame.branch
+                && previous.views == views
+                && previous.requested.as_deref() == requested
+        }) {
+            return Ok(previous.values.clone());
+        }
+        let values = sample(frame, requested)?;
+        *held = Some(CachedSamples {
+            branch: frame.branch,
+            views,
+            requested: requested.map(<[_]>::to_vec),
+            values: values.clone(),
+        });
+        Ok(values)
+    }
+}
+
 /// A family's stateless per-frame extraction, shared with its observer. Given
 /// requested keys it may add the keys they expand to (a country's parts); a
 /// family whose extraction needs recorded content captures it in the closure.
@@ -4944,5 +4988,84 @@ mod tests {
             reads.0
         };
         assert_eq!(run(0), run(72), "earlier blocks add no look-back reads");
+    }
+}
+
+#[cfg(test)]
+mod sample_cache_tests {
+    use super::*;
+    use replay::{
+        frame::TableView,
+        rows::{TableRows, tables},
+    };
+    use std::cell::Cell;
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "5,000-country stateless query projections"
+    )]
+    fn unchanged_views_reuse_samples_and_changed_inputs_refuse_or_project_again() {
+        let mut frame = crate::test_fixtures::scale_frame(1, 10, 5000);
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            let rows = frame.complete::<tables::Countries>()?;
+            let mut result = Samples::new();
+            for row in rows {
+                let key = (String::from_utf8(row.tag.clone()).unwrap(), "value".into());
+                if requested.is_none_or(|wanted| wanted.contains(&key)) {
+                    result.insert(
+                        key,
+                        (Some((row.canonical_slot, row.id)), Some(i128::from(row.id))),
+                    );
+                }
+            }
+            Ok(result)
+        };
+        let cache = SamplesCache::default();
+        let tables = [TableId::Countries];
+        let first = cache.sample(&frame, &tables, None, &sample).unwrap();
+        assert_eq!(first.len(), 5000);
+        frame.hour += 7;
+        assert_eq!(cache.sample(&frame, &tables, None, &sample).unwrap(), first);
+        assert_eq!(calls.get(), 1);
+        let selection = [first.keys().next().unwrap().clone()];
+        assert_eq!(
+            cache
+                .sample(&frame, &tables, Some(&selection), &sample)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(calls.get(), 2);
+        frame.branch += 1;
+        cache
+            .sample(&frame, &tables, Some(&selection), &sample)
+            .unwrap();
+        assert_eq!(calls.get(), 3);
+        *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+            reason: "synthetic refusal".into(),
+        };
+        assert!(
+            cache
+                .sample(&frame, &tables, Some(&selection), &sample)
+                .is_err()
+        );
+        assert!(
+            cache
+                .sample(&frame, &tables, Some(&selection), &sample)
+                .is_err()
+        );
+        assert_eq!(calls.get(), 5, "retained a failed extraction");
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![]));
+        assert!(
+            cache
+                .sample(&frame, &tables, None, &sample)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.get(), 6);
     }
 }

@@ -58,3 +58,7 @@ preparing until the joint intelligence and identity prefix reaches them.
 Country identity comparisons follow recorded country field masks: balance-only
 deltas and equal acquisitions keep the previous key projection. Snapshots,
 identity edits and membership changes use the complete key comparison.
+
+Equal country and link acquisitions retain their shared identity join without
+comparing every link. Each product still receives its own supplying-read dates
+and accumulates membership and operation invalidation until its next read.

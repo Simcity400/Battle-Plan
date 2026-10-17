@@ -30,3 +30,8 @@ replies keep their uncovered history pending even when the reached value is exac
 A cold subject query starts the ordinary scan at the branch's recorded bounds,
 marks its empty accepted extent and reuses the keyframe sampler for later
 geometry. No first commit is needed to publish the pending/approximate reply.
+
+Exact autonomy tails share one native holder, relation and score join between
+the categorical observer and numeric sampler at each visited hour. Missing
+relations still preserve the numeric sampler's witnessed holder placeholders;
+categorical observation and continuity retain their ordinary hourly steps.

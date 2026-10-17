@@ -80,3 +80,19 @@ blocks reuse both as preparation advances; exact-zoom and keyframe folds have
 distinct entries. Content-dependent point parts keep their ordinary projection.
 State reads project every visited hour, including hours before the requested
 point, so native count and class-index overflow refusals remain observable.
+
+Army history windows retain their recorded numeric fold together with its
+availability, warning counts and battalion compositions in the shared bounded
+observation LRU. The channel, selected tags, composition choice and window name
+the request; its effective tail cut and completion bind the publication. Prefix
+progress before the window reuses that fold while joining the current identity
+history. A cut inside the window recomputes the fold, preserving the ordinary
+exact/keyframe threshold, preceding observation and per-hour warning accounting.
+The branch's newest keyframe availability is retained separately for the
+no-window view. These observations are revision-local and contain no prepared
+values or presentation text.
+
+With unchanged supply membership, only the owners of changed division operands
+have their totals projected and compared; every other owner's counts carry
+unchanged. Snapshots, membership changes and unavailable operands retain the
+whole census.

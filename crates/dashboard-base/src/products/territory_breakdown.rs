@@ -997,6 +997,7 @@ impl Prepared {
         areas: Option<&ProvinceAreas>,
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("territory:breakdown");
         self.facts.advance(frame.hour)?;
         self.observed.advance(frame.hour)?;
         // A restored builder keeps no freshness; publication sealed the span of
@@ -1050,14 +1051,16 @@ impl Prepared {
                         self.builder.work.emitted += 1;
                     }
                 }
-                self.facts.observe(
+                self.facts.observe_if_changed(
                     index as u64,
                     frame.hour,
                     Some(i128::from(run.first_hour)),
                     run.first_hour == frame.hour && run.starts_segment,
+                    false,
                 );
             } else {
-                self.facts.observe(index as u64, frame.hour, None, false);
+                self.facts
+                    .observe_if_changed(index as u64, frame.hour, None, false, false);
             }
         }
         for (column, known) in self

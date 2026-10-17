@@ -62,6 +62,248 @@ fn variant_reads_keep_used_spellings_without_holding_the_dictionary_baseline() {
 }
 
 #[test]
+fn variant_snapshot_spellings_and_comparisons_follow_only_current_tokens() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut input = named_frame(117, Some(b"mod design"));
+    *input.tables[TableId::VariantUpgrades.index()] =
+        TableView::Complete(TableRows::VariantUpgrades(vec![]));
+    *input.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        (1..=67)
+            .map(|token| LexicalTokenRow {
+                token,
+                literal: format!("mod_token_{token}").into_bytes(),
+            })
+            .collect(),
+    ));
+    let (mut encoder, mut decoder, mut tracker) = (
+        FrameEncoder::new(),
+        FrameDecoder::new(),
+        FrameChangeTracker::new(),
+    );
+    let (mut actual, mut hourly) = (VariantCatalogue::default(), VariantCatalogue::default());
+    for offset in 0..64 {
+        input.hour = 117 + offset;
+        let token = offset as u32 + 3;
+        *input.tables[TableId::VariantModules.index()] =
+            TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
+                variant: 20,
+                slot: 2,
+                definition_token: token,
+                definition_active: 1,
+                ..Default::default()
+            }]));
+        // Force a new dictionary identity without changing any used spelling.
+        if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+            &mut *input.tables[TableId::LexicalTokens.index()]
+        {
+            rows.last_mut().unwrap().literal = format!("unused_{offset}").into_bytes();
+        }
+        let wire = Arc::new(encoder.encode(input.clone(), true).unwrap());
+        let frame = decoder.advance(&wire).unwrap();
+        let changes = tracker.observe_updates(frame, wire.clone(), format);
+        let before = actual.work.row_visits;
+        let found = actual.observe_changed(format, frame, &changes);
+        let expected = hourly.observe_versions(format, frame, None);
+        assert_eq!(
+            serde_json::to_vec(&found).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&hourly).unwrap()
+        );
+        if offset > 0 {
+            assert!(
+                actual.work.row_visits - before <= 8,
+                "read {offset} must compare only the three currently used spellings and naming rows"
+            );
+        }
+        let referenced: BTreeSet<_> = actual.reads.inputs[&20].tokens().collect();
+        let spellings = &actual.reads.lexical.as_ref().unwrap().1;
+        assert!(spellings.len() <= referenced.len());
+        assert_eq!(
+            spellings.keys().copied().collect::<BTreeSet<_>>(),
+            referenced
+        );
+        assert_eq!(actual.reads.token_variants.len(), referenced.len());
+        assert!(
+            actual
+                .reads
+                .token_variants
+                .values()
+                .all(|variants| variants == &BTreeSet::from([20]))
+        );
+    }
+}
+
+#[test]
+fn variant_dependencies_release_definitions_on_deletes_snapshots_and_restore() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay::rows::{CountryAppearanceRow, CountryLinkRow};
+    let format = replay::format::FormatVersion::CURRENT;
+    for snapshots in [false, true] {
+        let mut input = named_frame(117, Some(b"mod design"));
+        *input.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(
+                (1..=16)
+                    .map(|token| LexicalTokenRow {
+                        token,
+                        literal: format!("mod_token_{token}").into_bytes(),
+                    })
+                    .collect(),
+            ));
+        let (mut encoder, mut decoder, mut tracker) = (
+            FrameEncoder::new(),
+            FrameDecoder::new(),
+            FrameChangeTracker::new(),
+        );
+        let (mut actual, mut hourly) = (VariantCatalogue::default(), VariantCatalogue::default());
+        for (offset, count) in [2, 1, 1, 0, 1, 1, 0].into_iter().enumerate() {
+            input.hour = 117 + offset as i32;
+            let generation = offset as u32 / 2;
+            let raw = 100 + generation;
+            let slot = 1 + generation;
+            let token = 1 + 4 * generation;
+            let origin = offset == 5;
+            let ids: BTreeSet<_> = [20, 30].into_iter().take(count).collect();
+            *input.tables[TableId::Countries.index()] =
+                TableView::Complete(TableRows::Countries(vec![CountryRow {
+                    id: 1,
+                    canonical_slot: slot,
+                    tag: b"mod country".to_vec(),
+                    ..Default::default()
+                }]));
+            *input.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
+                    id: raw,
+                    canonical_slot: slot,
+                }]));
+            *input.tables[TableId::CountryAppearance.index()] =
+                TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                    country: raw,
+                    name_tag: b"mod original".to_vec(),
+                    ..Default::default()
+                }]));
+            *input.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(
+                    ids.iter()
+                        .map(|&id| VariantDefinitionRow {
+                            id,
+                            equipment_token: token,
+                            creator_link: raw,
+                            origin_link: if origin { raw } else { 0 },
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            // Orphan design rows must not keep a deleted definition's operands.
+            *input.tables[TableId::VariantModules.index()] =
+                TableView::Complete(TableRows::VariantModules(
+                    [20, 30]
+                        .map(|variant| VariantModuleRow {
+                            variant,
+                            slot: token + 1,
+                            definition_token: token + 2,
+                            definition_active: 1,
+                            ..Default::default()
+                        })
+                        .to_vec(),
+                ));
+            *input.tables[TableId::VariantUpgrades.index()] =
+                TableView::Complete(TableRows::VariantUpgrades(
+                    [20, 30]
+                        .map(|variant| VariantUpgradeRow {
+                            variant,
+                            definition_token: (token + 3) as i32,
+                            level: 1,
+                            ..Default::default()
+                        })
+                        .to_vec(),
+                ));
+            if [4, 6].contains(&offset) {
+                actual = serde_json::from_slice(&serde_json::to_vec(&actual).unwrap()).unwrap();
+                assert!(actual.reads.inputs.is_empty());
+                assert!(actual.reads.lexical.is_none());
+                assert!(actual.reads.token_variants.is_empty());
+                assert!(actual.reads.tag_links.is_empty());
+                assert!(actual.reads.tag_slots.is_empty());
+                assert!(actual.reads.original_slots.is_empty());
+                tracker.invalidate();
+            }
+            let wire = Arc::new(
+                encoder
+                    .encode(input.clone(), snapshots || offset == 0)
+                    .unwrap(),
+            );
+            let frame = decoder.advance(&wire).unwrap();
+            let changes = tracker.observe_updates(frame, wire.clone(), format);
+            let found = actual.observe_changed(format, frame, &changes);
+            let expected = hourly.observe_versions(format, frame, None);
+            assert_eq!(
+                serde_json::to_vec(&found).unwrap(),
+                serde_json::to_vec(&expected).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_vec(&actual).unwrap(),
+                serde_json::to_vec(&hourly).unwrap(),
+                "snapshots={snapshots}, read {offset}"
+            );
+            let reads = &actual.reads;
+            assert_eq!(reads.inputs.keys().copied().collect::<BTreeSet<_>>(), ids);
+            assert_eq!(
+                reads
+                    .inputs
+                    .values()
+                    .map(|input| {
+                        let (modules, upgrades) = input.design.as_ref().unwrap();
+                        modules.len() + upgrades.len()
+                    })
+                    .sum::<usize>(),
+                2 * ids.len()
+            );
+            let tokens: BTreeSet<_> = (token..token + 4).filter(|_| !ids.is_empty()).collect();
+            assert_eq!(
+                reads
+                    .lexical
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .keys()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                tokens
+            );
+            assert_eq!(
+                reads.token_variants,
+                tokens
+                    .into_iter()
+                    .map(|token| (token, ids.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            );
+            let links = if ids.is_empty() {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([(raw, ids.clone())])
+            };
+            let slots = if ids.is_empty() {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([(slot, ids.clone())])
+            };
+            assert_eq!(reads.tag_links, links);
+            assert_eq!(reads.tag_slots, slots);
+            assert_eq!(
+                reads.original_slots,
+                if origin { BTreeMap::new() } else { slots }
+            );
+        }
+    }
+}
+
+#[test]
 fn equipment_localisation_keeps_names_past_the_old_length_limit() {
     struct LongName(String);
     impl Texts for LongName {
@@ -591,6 +833,12 @@ fn catalogue_changes_carry_unchanged_operands(count: u32) {
                 "unchanged operands must not walk {count} countries or variants at hour {offset}"
             );
         }
+        if offset == 3 {
+            assert!(
+                changed.work.row_visits - before <= 3,
+                "one renamed definition must not revisit the other {count} definitions or countries"
+            );
+        }
         if [4, 11].contains(&offset) {
             changed = serde_json::from_slice(&serde_json::to_vec(&changed).unwrap()).unwrap();
             tracker.invalidate();
@@ -709,4 +957,150 @@ fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
         1,
         "an advance without country deltas must not restore the weak proof"
     );
+}
+
+fn pending_variant_operands(count: u32) {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay::rows::{CountryAppearanceRow, CountryLinkRow};
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut input = named_frame(117, Some(b"mod design"));
+    *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("mod {id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *input.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    *input.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 1,
+            ..Default::default()
+        }]));
+    *input.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
+            (1..=count)
+                .map(|id| VariantDefinitionRow {
+                    id: u64::from(id),
+                    creator_link: id,
+                    equipment_token: id,
+                    display_name: b"mod design".to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *input.tables[TableId::VariantModules.index()] =
+        TableView::Complete(TableRows::VariantModules(
+            (1..=count)
+                .map(|id| VariantModuleRow {
+                    variant: u64::from(id),
+                    slot: 0,
+                    definition_token: 0,
+                    definition_active: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *input.tables[TableId::VariantUpgrades.index()] =
+        TableView::Complete(TableRows::VariantUpgrades(vec![]));
+    *input.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        (1..=count)
+            .map(|token| LexicalTokenRow {
+                token,
+                literal: format!("mod_type_{token}").into_bytes(),
+            })
+            .collect(),
+    ));
+    let (mut encoder, mut decoder, mut tracker) = (
+        FrameEncoder::new(),
+        FrameDecoder::new(),
+        FrameChangeTracker::new(),
+    );
+    let (mut actual, mut oracle) = (VariantCatalogue::default(), VariantCatalogue::default());
+    for offset in 0..=8 {
+        input.hour = 117 + offset;
+        input.metrics.table_ns.fill(0);
+        if [0, 4, 6, 8].contains(&offset) {
+            input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+        }
+        if offset == 1
+            && let TableView::Complete(TableRows::VariantModules(rows)) =
+                &mut *input.tables[TableId::VariantModules.index()]
+        {
+            rows[0].definition_active = 0;
+        }
+        if offset == 2
+            && let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                &mut *input.tables[TableId::LexicalTokens.index()]
+        {
+            rows[1].literal = b"changed_type".to_vec();
+        }
+        if offset == 3
+            && let TableView::Complete(TableRows::CountryAppearance(rows)) =
+                &mut *input.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].cosmetic_tag = b"unused appearance field".to_vec();
+        }
+        if offset == 7
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *input.tables[TableId::Countries.index()]
+        {
+            rows[2].tag = b"changed creator".to_vec();
+        }
+        let wire = Arc::new(
+            encoder
+                .encode(input.clone(), offset == 0 || offset == 5)
+                .unwrap(),
+        );
+        let frame = decoder.advance(&wire).unwrap();
+        let changes = tracker.observe_updates(frame, wire.clone(), format);
+        let before = actual.work.row_visits;
+        let builds = VARIANT_BUILDS.with(std::cell::Cell::get);
+        let found = actual.observe_changed(format, frame, &changes);
+        let built = VARIANT_BUILDS.with(std::cell::Cell::get) - builds;
+        let expected = oracle.observe_versions(format, frame, None);
+        assert_eq!(found, expected);
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&oracle).unwrap()
+        );
+        if offset == 4 {
+            assert_eq!(
+                built, 2,
+                "one design and one used spelling changed before this read"
+            );
+            assert!(
+                actual.work.row_visits - before <= 6,
+                "other {count} countries and variants must carry"
+            );
+        }
+        if offset == 6 {
+            assert_eq!(built, 0, "equal snapshot operands do not rebuild designs");
+        }
+        if offset == 8 {
+            assert_eq!(built, 1, "only the renamed creator's variant changes");
+        }
+    }
+}
+
+#[test]
+fn variant_invalidations_accumulate_through_skipped_reads_and_snapshots() {
+    pending_variant_operands(8);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn two_changed_operands_visit_only_their_variants_at_five_thousand_countries() {
+    pending_variant_operands(5000);
 }

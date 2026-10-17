@@ -28,3 +28,14 @@ materializing endpoints on each read. Supplying-read events still retain their
 own dates, and starts, boundaries, unknowns and holder replacements take ordinary
 observation. State reads after observation inspect a materialized current key;
 a carried value uses its authenticated continuity proof instead.
+
+Experience publishes its ten channels when a held read starts or changes.
+Gain changes still update the scan's complete daily intervals; extending the
+same held read carries its channels through the accepted frontier without
+repeating actor-key construction or holder publication.
+
+A parts breakdown locates its country's contiguous line range before building
+its ten modifier groups. Other countries' lines are never scanned for that
+breakdown. Dirty country selection, supplying-read character names and every
+part's dated holder events use the same scan; phase labels distinguish country
+breakdown construction from part publication.

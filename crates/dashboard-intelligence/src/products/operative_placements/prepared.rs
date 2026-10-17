@@ -71,6 +71,7 @@ impl Prepared {
             dashboard_text::catalogue::ContentError,
         >,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:placements");
         let previous = self.last;
         let is_read = operative_rows::membership_read(frame);
         let changed = countries.changed

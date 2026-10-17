@@ -661,6 +661,12 @@ pub fn query(
     )?;
     let requested = vec![(input.tag.clone(), String::new())];
     let names = std::cell::RefCell::new(Learned::default());
+    let sampled_values = progressive::SamplesCache::default();
+    let sample_tables: Vec<_> = sample::TABLES
+        .iter()
+        .copied()
+        .filter(|table| *table != TableId::Campaign)
+        .collect();
     let sampler = |frame: &replay::frame::DecodedFrame, requested: Option<&[(String, String)]>| {
         if let (Ok(definitions), Ok(lexical)) = (
             frame.complete::<tables::ResourceDefinitions>(),
@@ -668,7 +674,9 @@ pub fn query(
         ) {
             names.borrow_mut().learn(definitions, lexical);
         }
-        let mut values = sample::sample(frame, requested)?;
+        let _cpu = replay::cpu::scope_phase("resources:query_sample");
+        let mut values =
+            sampled_values.sample(frame, &sample_tables, requested, &sample::sample)?;
         if !input.resources.is_empty() {
             values.retain(|(_, field), _| {
                 sample::parse(field).is_ok_and(|(_, resource)| input.resources.contains(&resource))
@@ -676,14 +684,25 @@ pub fn query(
         }
         Ok(values)
     };
-    let tail = progressive::tail(
+    let tail = progressive::tail_projected(
         source,
+        "resource-balance:query-tail",
         branch,
         coverage.as_ref(),
         sample::TABLES,
         &requested,
         (view.0.floor() as i32, view.1.floor() as i32),
+        &input.resources,
         &sampler,
+        || std::mem::take(&mut *names.borrow_mut()),
+        |learned| {
+            names.borrow_mut().learn_names(learned);
+        },
+        |learned| {
+            let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
+            bytes.value(learned);
+            bytes.total() as usize
+        },
         cancelled,
     )?;
     let hours: Vec<_> = input
@@ -766,6 +785,7 @@ fn read_pages(
     progressive: Option<Progressive<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Value>> {
+    let _cpu = replay::cpu::scope_phase("resources:query_pages");
     let catalogue = series::read_catalogue::<
         BTreeMap<String, (ResourceBalanceReply, BTreeMap<u32, String>)>,
     >(store, source_key, "resource-balance", branch)?;
@@ -2185,6 +2205,51 @@ mod tests {
             ));
         let samples = sample::sample(&frame, None).unwrap();
         assert_eq!(samples.len(), 60_000);
+        let selected = [("mod country 5000".into(), String::new())];
+        let before = sample::ROW_PROJECTS.get();
+        let one = sample::sample(&frame, Some(&selected)).unwrap();
+        assert_eq!(
+            sample::ROW_PROJECTS.get() - before,
+            1,
+            "projected unselected native pools"
+        );
+        assert_eq!(
+            one,
+            samples
+                .iter()
+                .filter(|((tag, _), _)| tag == "mod country 5000")
+                .map(|(key, value)| (key.clone(), *value))
+                .collect()
+        );
+        let cache = progressive::SamplesCache::default();
+        let expected = cache
+            .sample(
+                &frame,
+                &sample::TABLES[1..],
+                Some(&selected),
+                &sample::sample,
+            )
+            .unwrap();
+        let before = sample::ROW_PROJECTS.get();
+        let mut later = frame.clone();
+        later.hour += 1;
+        assert_eq!(
+            cache
+                .sample(
+                    &later,
+                    &sample::TABLES[1..],
+                    Some(&selected),
+                    &sample::sample
+                )
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            sample::ROW_PROJECTS.get(),
+            before,
+            "reprojected unchanged native pools"
+        );
+
         let mut observer = Prepared::default();
         observer.observe(&frame).unwrap();
         assert_eq!(observer.keys.len(), 75_000);
@@ -2274,6 +2339,25 @@ mod tests {
         let input =
             |from| json!({"branchId":"1","tag":"GER","from":from,"to":29,"width":30,"hours":[29]});
         let cold = query(&source, input(0), None, &flag).unwrap().unwrap();
+        let before = dashboard_base::prepared::query::observations::usage(
+            &source,
+            "resource-balance:query-tail",
+        );
+        assert!(before.2 > 0);
+        assert_eq!(
+            query(&source, input(0), None, &flag).unwrap().unwrap(),
+            cold
+        );
+        let after = dashboard_base::prepared::query::observations::usage(
+            &source,
+            "resource-balance:query-tail",
+        );
+        assert_eq!(
+            after.2, before.2,
+            "re-asked the same immutable resource blocks"
+        );
+        assert!(after.0 <= after.1);
+
         assert_eq!(
             cold["summaries"][0]["supply"]["approximate"],
             json!([{"firstHour":0,"lastHour":29}])

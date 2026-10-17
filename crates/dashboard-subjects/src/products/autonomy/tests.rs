@@ -236,10 +236,8 @@ fn skipped_autonomy_keyframes_leave_every_recorded_unprepared_hour_pending() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let ask = |product, request: &serde_json::Value| {
-        super::prepared::progressive_query(
-            &source, product, request, &store, &key, &context, &flag,
-        )
-        .unwrap()
+        super::prepared::progressive_query(&source, product, request, &store, &key, &context, &flag)
+            .unwrap()
     };
     let request = json!({"branchId":"1", "from":100, "to":105, "width":1, "within":{}});
     let cold = ask("series-summary", &request);
@@ -262,7 +260,10 @@ fn skipped_autonomy_keyframes_leave_every_recorded_unprepared_hour_pending() {
     let (bounded, refused) =
         progressive::without_block_decodes(|| ask("series-summary", &bounded_request));
     assert!(!refused);
-    assert_eq!(bounded["pending"], json!([{"firstHour":102,"lastHour":102}]));
+    assert_eq!(
+        bounded["pending"],
+        json!([{"firstHour":102,"lastHour":102}])
+    );
     let mut prepared = super::ScannedAutonomy::default();
     let mut writer = store.replace(key.clone()).unwrap();
     for frame in &frames[..3] {
@@ -495,6 +496,43 @@ fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countrie
                 .collect(),
         ));
         let sampled = sample(&frame, None).unwrap();
+        let mut joined = ScannedAutonomy::default();
+        let before = super::HOLDER_READS.get();
+        let actual = joined.observe_sample(&frame, true).unwrap();
+        assert_eq!(
+            super::HOLDER_READS.get() - before,
+            1,
+            "numeric and categorical state re-read holders"
+        );
+        assert_eq!(actual, sampled);
+        let mut oracle = ScannedAutonomy::default();
+        oracle.observe(&frame).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&joined).unwrap(),
+            serde_json::to_vec(&oracle).unwrap()
+        );
+        let mut gap = frame.clone();
+        gap.hour += 2;
+        *gap.tables[TableId::Subjects.index()] = TableView::Unavailable {
+            reason: "synthetic refusal".into(),
+        };
+        assert_eq!(
+            joined.observe_sample(&gap, true).unwrap(),
+            sample(&gap, None).unwrap()
+        );
+        oracle.observe(&gap).unwrap();
+        let mut resumed = frame.clone();
+        resumed.hour += 3;
+        assert_eq!(
+            joined.observe_sample(&resumed, true).unwrap(),
+            sample(&resumed, None).unwrap()
+        );
+        oracle.observe(&resumed).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&joined).unwrap(),
+            serde_json::to_vec(&oracle).unwrap()
+        );
+
         let mut observer = ScannedAutonomy::default();
         observer.prepare(&frame).unwrap();
         let countries: std::collections::HashMap<_, _> = frame

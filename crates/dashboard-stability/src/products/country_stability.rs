@@ -388,7 +388,11 @@ pub(super) fn breakdown_of(
     let lines = decoded
         .complete::<tables::CountryStabilityLines>()
         .ok()
-        .filter(|_| lines_read.is_none_or(|lines_read| lines_read == read));
+        .filter(|_| lines_read.is_none_or(|lines_read| lines_read == read))
+        .map(|lines| {
+            &lines[lines.partition_point(|line| line.country < row.country)
+                ..lines.partition_point(|line| line.country <= row.country)]
+        });
     if lines.is_none() {
         warnings.push(format!(
             "{tag}: the stability lines of hour {} were not recorded with its inputs",
@@ -702,6 +706,9 @@ pub fn modifiers_with_totals(
         .zip(&row.keys)
         .zip(totals)
         .map(|((name, &index), total)| {
+            #[cfg(test)]
+            BREAKDOWN_LINE_VISITS
+                .with(|visits| visits.set(visits.get() + lines.map_or(0, <[_]>::len)));
             let index = (index != u32::MAX).then_some(index);
             let rows: Vec<&CountryStabilityLineRow> = match (lines, index) {
                 (Some(lines), Some(index)) => lines
@@ -752,6 +759,11 @@ pub fn modifiers_with_totals(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    static BREAKDOWN_LINE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Every requested country history stays shared for this opened source. Branch

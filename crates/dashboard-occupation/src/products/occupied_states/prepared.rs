@@ -127,6 +127,7 @@ impl Prepared {
         format: replay::format::FormatVersion,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("occupation:observe");
         for values in &mut self.values {
             values.advance(frame.hour)?;
         }
@@ -185,14 +186,16 @@ impl Prepared {
                         self.scan.work.emitted += 1;
                     }
                 }
-                self.facts.observe(
+                self.facts.observe_if_changed(
                     actor,
                     frame.hour,
                     Some(i128::from(run.first_hour)),
                     run.first_hour == frame.hour && run.starts_segment,
+                    false,
                 );
             } else {
-                self.facts.observe(actor, frame.hour, None, false);
+                self.facts
+                    .observe_if_changed(actor, frame.hour, None, false, false);
             }
         }
         Ok(())
@@ -1270,6 +1273,27 @@ pub fn trend_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equal_occupation_fact_markers_carry_without_materializing_each_key() {
+        let format = replay::format::FormatVersion::CURRENT;
+        let mut input = frame(100, 64);
+        let mut prepared = Prepared::default();
+        prepared.observe_frame(&input, format, None).unwrap();
+        let visits = prepared.facts.key_visits;
+        input.hour += 1;
+        input.metrics = Default::default();
+        prepared.observe_frame(&input, format, None).unwrap();
+        assert!(!prepared.scan.trend.changed.is_empty());
+        assert_eq!(prepared.facts.key_visits, visits);
+        prepared.facts.seal();
+        for key in prepared.tags.values() {
+            assert_eq!(
+                prepared.facts.state(*key).unwrap().last.unwrap().last_hour,
+                101
+            );
+        }
+    }
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::rows::{CountryLinkRow, CountryRow, StateGarrisonRow, TableRows};

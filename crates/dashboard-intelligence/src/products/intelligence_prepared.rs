@@ -136,6 +136,7 @@ impl Observer {
         key: &store::SourceKey,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("intelligence:observe");
         self.countries.update(frame, Some(changes));
         self.decryption.observe_bound(
             frame,

@@ -35,3 +35,8 @@ first commit with empty ordinary replies and the shared empty prefix extent.
 No cumulative loss is supplied for those pending hours. The wars' independent
 at-hour groups remain available without continuity lanes; published prefixes
 use the existing observers and projections.
+
+War page queries read only the continuation's counter operands, leaving its
+input snapshot to preparation and the native walk. Structure-only projections,
+including casualty breakdown's war grouping, read no counter operands. They
+retain the same whole-branch native viewpoint walk and grouping history.

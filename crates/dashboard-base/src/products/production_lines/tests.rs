@@ -2296,6 +2296,22 @@ fn a_saved_scan_restores_the_scan_it_saved() {
         &runs[0].country,
         &restored.modifiers["6#1"][0].country
     ));
+    // Span extension retains the modifier operands' supplying run, and leaves
+    // endpoints with a gap untouched just as hourly extension does.
+    let open = BTreeMap::from([(5, Open { index: 0 }), (6, Open { index: 1 })]);
+    let mut spans = restored.clone();
+    let mut hourly = restored.clone();
+    carry_lines(&mut spans, &open, (48, 71), true, true);
+    for hour in 48..=71 {
+        carry_lines(&mut hourly, &open, (hour, hour), true, true);
+    }
+    assert_eq!(spans.modifiers, hourly.modifiers);
+    assert_eq!(spans.lines, hourly.lines);
+    assert_eq!(spans.modifiers["5#1"][1].last_hour, 71);
+    carry_lines(&mut spans, &open, (74, 80), true, true);
+    assert_eq!(spans.modifiers["5#1"][1].last_hour, 71);
+    assert_eq!(spans.lines[0].runs[1].last_hour, 71);
+
     // Another layout's scan is scanned again.
     let mut other = parsed.clone();
     other.schema += 1;
@@ -2557,4 +2573,159 @@ fn saving_a_scan_does_one_lookup_per_modifier_run() {
     );
     let error = SavedLines::save(&scanned, &AtomicBool::new(true)).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+}
+
+fn country_lookup_reuse(count: u32) {
+    use crate::prepared::prepass::noted;
+    use crate::test_fixtures::{scale_frame, scale_tag};
+    use replay::frame::FrameEncoder;
+    let mut encoder = FrameEncoder::default();
+    let mut decoder = FrameDecoder::for_tables(&[TableId::Countries, TableId::CountryLinks]);
+    let mut selected = CountryRead::default();
+    let tag = String::from_utf8(scale_tag(count - 1)).unwrap();
+    let mut lookups = 0;
+    for at in 0..24 {
+        let mut frame = scale_frame(1, at + i32::from(at >= 20), count);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].political_power_raw = Some(i64::from(at) * 1_000_000);
+            if (4..7).contains(&at) {
+                rows.last_mut().unwrap().tag = b"renamed".to_vec();
+            }
+            if at >= 14 {
+                rows.last_mut().unwrap().id = 900_000;
+            }
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            if (10..12).contains(&at) {
+                rows.pop();
+            }
+            if at >= 14 {
+                rows.last_mut().unwrap().id = 900_000;
+            }
+        }
+        let raw = encoder.encode(frame, at == 0 || at == 18).unwrap();
+        let decoded = decoder.advance(&raw).unwrap();
+        let before = noted("production-lines.country_lookup");
+        let actual = selected.observe(&raw, decoded, &tag, None);
+        lookups += noted("production-lines.country_lookup") - before;
+        assert_eq!(
+            actual,
+            select_country(decoded, &tag, None),
+            "hour {}",
+            decoded.hour
+        );
+    }
+    assert!(
+        lookups <= 9,
+        "balance-only hours repeated {lookups} whole-country lookups"
+    );
+}
+
+#[test]
+fn production_country_lookup_reuses_keys_and_follows_every_intervening_identity_edit() {
+    country_lookup_reuse(32);
+}
+
+#[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "5000-country production lookup")]
+fn production_country_lookup_reuses_keys_at_5000_countries() {
+    country_lookup_reuse(5000);
+}
+
+fn quiet_production_replay(lines: u64) -> Replay {
+    use crate::test_fixtures::continuation_records;
+    let frame = |at: i32| {
+        let rows: Vec<_> = (0..lines).map(|line| (line + 5, 70, 8, 3276800)).collect();
+        let outputs: Vec<_> = (0..lines)
+            .map(|line| (line + 5, 70, i64::from(at), true, false))
+            .collect();
+        let mut frame = production_frame(
+            FIRST + at,
+            at % 24 == 0 || at == 34,
+            at % 24 == 0,
+            if at < 80 { 9001 } else { 9002 },
+            &rows,
+            Some(&outputs),
+        );
+        let unavailable = match at {
+            11 | 12 | 24 => Some(TableId::ProductionLineOutput),
+            17 | 18 => Some(TableId::CountryProductionModifiers),
+            29 | 30 => Some(TableId::IndustrialOrganisations),
+            44 => Some(TableId::CountryLinks),
+            52 | 53 => Some(TableId::ProductionLines),
+            60 => Some(TableId::VariantDefinitions),
+            71 => Some(TableId::LexicalTokens),
+            _ => None,
+        };
+        if let Some(table) = unavailable {
+            *frame.tables[table.index()] = TableView::Unavailable {
+                reason: "synthetic quiet-span boundary".into(),
+            };
+        }
+        if (40..43).contains(&at)
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows.last_mut().unwrap().tag = b"renamed".to_vec();
+        }
+        frame
+    };
+    let block = |first, last| (first..last).filter(|at| *at != 56).map(frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, block(0, 37))]).unwrap();
+    let replay = replay
+        .append(&[continuation_records(&replay, 1, block(37, 70))])
+        .unwrap();
+    replay
+        .append(&[continuation_records(&replay, 1, block(70, 100))])
+        .unwrap()
+}
+
+#[test]
+fn quiet_production_spans_equal_hourly_scan_bytes_across_reads_gaps_refusals_and_append() {
+    use crate::prepared::prepass::noted;
+    let replay = quiet_production_replay(32);
+    let flag = AtomicBool::new(false);
+    for holder in [None, Some((7, 9001))] {
+        let blocks = branch_blocks(&replay, 1);
+        let before = noted("production-lines.carried_line");
+        let hourly =
+            scan_blocks_mode(None, &replay, &blocks, "GER", None, holder, &flag, false).unwrap();
+        let hourly_work = noted("production-lines.carried_line") - before;
+        let before = noted("production-lines.carried_line");
+        let actual =
+            scan_blocks_mode(None, &replay, &blocks, "GER", None, holder, &flag, true).unwrap();
+        let work = noted("production-lines.carried_line") - before;
+        assert!(
+            work * 3 < hourly_work,
+            "quiet spans repeated per-hour line work: {work}/{hourly_work}"
+        );
+        let saved = |scan: &ScannedLines| {
+            serde_json::to_vec(&SavedLines::save(scan, &flag).unwrap()).unwrap()
+        };
+        assert_eq!(saved(&actual), saved(&hourly), "holder {holder:?}");
+        assert!(!actual.unread_output.is_empty());
+        for window in 0..5 {
+            assert_eq!(
+                detail_lines(&actual, FIRST + window * 24, FIRST + window * 24 + 23),
+                detail_lines(&hourly, FIRST + window * 24, FIRST + window * 24 + 23)
+            );
+        }
+        // Newest-window folds retain their own origins, not the whole branch's.
+        let newest = &blocks[blocks.len() - 1..];
+        let first =
+            scan_blocks_mode(None, &replay, newest, "GER", None, holder, &flag, true).unwrap();
+        let reference =
+            scan_blocks_mode(None, &replay, newest, "GER", None, holder, &flag, false).unwrap();
+        assert_eq!(saved(&first), saved(&reference));
+    }
+    assert_eq!(
+        scan(&replay, 1, "GER", None, &AtomicBool::new(true))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
 }

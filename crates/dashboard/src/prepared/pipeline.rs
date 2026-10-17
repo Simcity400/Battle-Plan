@@ -36,7 +36,7 @@ pub use super::coverage::{Coverage, coverage};
 pub(crate) use super::coverage::{SCHEMA, coverage_section};
 pub const MAP_PROGRESS: &str = "preparation-map-progress-v1";
 // Commit budgets, never limits on actors, hours or complete replies.
-const BATCH_BYTES: usize = 64 * 1024 * 1024;
+const BATCH_BYTES: usize = dashboard_base::prepared::pages::BATCH_BYTES;
 /// Blocks of one branch a publication batch goes through at most: a family
 /// prepared on its own commits about 26 times over a 50-year branch (663
 /// blocks), five of them early ([`Batches`]).

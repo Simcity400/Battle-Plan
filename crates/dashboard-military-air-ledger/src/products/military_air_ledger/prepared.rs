@@ -66,6 +66,7 @@ impl Events {
         from: i32,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = replay::cpu::scope_phase("military_air_ledger:query_events");
         family.leaves = self
             .leaves
             .iter()
@@ -155,6 +156,22 @@ impl Prepared {
         .ok_or_else(|| dashboard_core::invalid("Prepared military air continuation is missing"))?;
         serde_json::from_reader(zstd::stream::Decoder::new(file)?).map_err(Into::into)
     }
+    fn read_query(store: &store::Store, key: &store::SourceKey, branch: u64) -> io::Result<Self> {
+        let _cpu = replay::cpu::scope_phase("military_air_ledger:query_continuation");
+        #[derive(Deserialize)]
+        struct QueryState {
+            scan: Scan,
+        }
+        let state: QueryState =
+            series::read_reply(store, key, &format!("military-air-ledger-{branch}"), 0)?
+                .ok_or_else(|| {
+                    dashboard_core::invalid("Prepared military air continuation is missing")
+                })?;
+        Ok(Self {
+            scan: state.scan,
+            ..Default::default()
+        })
+    }
     pub fn read_catalogues(
         &mut self,
         store: &store::Store,
@@ -207,6 +224,7 @@ impl Prepared {
             params.from_hour.unwrap_or(i32::MIN),
             cancelled,
         )?;
+        let _cpu = replay::cpu::scope_phase("military_air_ledger:query_projection");
         self.scan.reply(source, params, context, cancelled)
     }
 }
@@ -232,7 +250,7 @@ pub fn query(
     let params: MilitaryAirParams = serde_json::from_value(params)?;
     MilitaryAirLedger::validate(&params).map_err(dashboard_core::invalid)?;
     let branch = params.branch_id.parse().expect("validated branch");
-    let mut state = Prepared::read(store, key, None, branch)?;
+    let mut state = Prepared::read_query(store, key, branch)?;
     if availability {
         let family = match params.family {
             MilitaryAirFamily::AirLosses => &state.scan.air,
@@ -348,6 +366,18 @@ mod tests {
                             &cancelled,
                         )
                         .unwrap();
+                    if from.is_none() && !top {
+                        let page = query(
+                            source,
+                            &fixture.store,
+                            &fixture.key,
+                            serde_json::to_value(&params).unwrap(),
+                            &context,
+                            &cancelled,
+                        )
+                        .unwrap();
+                        assert_eq!(page, serde_json::to_value(&actual).unwrap());
+                    }
                     let expected =
                         MilitaryAirLedger::load(source, &params, &context, &cancelled).unwrap();
                     assert_eq!(
@@ -425,6 +455,30 @@ mod tests {
             let mut writer = fixture.writer();
             state.flush(&mut writer, 1, &flag)?;
             writer.commit()?;
+            let scope = series::cache_scope(None);
+            let before = series::text_reads();
+            let query = Prepared::read_query(&fixture.store, &fixture.key, 1)?;
+            let full = Prepared::read(&fixture.store, &fixture.key, None, 1)?;
+            assert_eq!(
+                serde_json::to_vec(&query.scan)?,
+                serde_json::to_vec(&full.scan)?
+            );
+            assert_eq!(
+                series::text_reads() - before,
+                1,
+                "ledger continuation bypassed bulk page reads"
+            );
+            let held = scope.finish();
+            let scope = series::cache_scope(Some(&held));
+            let before = series::text_reads();
+            let next = Prepared::read_query(&fixture.store, &fixture.key, 1)?;
+            assert_eq!(series::text_reads(), before);
+            assert_eq!(
+                serde_json::to_vec(&query.scan)?,
+                serde_json::to_vec(&next.scan)?
+            );
+            drop(scope);
+
             let frames = (0..=hours)
                 .map(|offset| {
                     let mut frame = first.clone();

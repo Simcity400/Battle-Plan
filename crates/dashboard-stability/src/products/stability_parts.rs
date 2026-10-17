@@ -769,6 +769,7 @@ impl Scan {
                 .as_ref()
                 .is_some_and(|(seen, at, _)| *seen == identity && *at == read);
             if fresh {
+                let _cpu = ::replay::cpu::scope_phase("stability:parts_breakdown");
                 #[cfg(test)]
                 {
                     self.calculated_reads += 1;
@@ -1176,6 +1177,7 @@ impl Prepared {
                            values: Option<&[Value]>,
                            naming: &NamingCountry,
                            _samples: Option<&Samples>| {
+            let _cpu = ::replay::cpu::scope_phase("stability:parts_publish");
             let scanned = self.countries.entry(tag.into()).or_default();
             let measure = &mut scanned.measures[index];
             let field = ["stability", "warSupport"][index];
