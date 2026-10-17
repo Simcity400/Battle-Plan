@@ -103,7 +103,11 @@ pub fn war_frame(branch: u64, hour: i32, countries: u32) -> DecodedFrame {
             combat: 91,
             sides: [
                 LandCombatSideDetails {
-                    commander: if hour < 120 { reference(0) } else { reference(2) },
+                    commander: if hour < 120 {
+                        reference(0)
+                    } else {
+                        reference(2)
+                    },
                     ..operands(hour, 3)
                 },
                 LandCombatSideDetails {
@@ -154,7 +158,11 @@ pub fn war_frame(branch: u64, hour: i32, countries: u32) -> DecodedFrame {
         &mut frame,
         TableRows::OrdersGroups(vec![OrdersGroupRow {
             handle: 1,
-            leader: if hour < 140 { reference(0) } else { reference(4) },
+            leader: if hour < 140 {
+                reference(0)
+            } else {
+                reference(4)
+            },
             name: Recorded::Value(Some(b"First Army".to_vec())),
             ..Default::default()
         }]),

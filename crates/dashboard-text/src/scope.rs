@@ -228,8 +228,32 @@ impl Query {
                 TableRead::fields(TableId::Countries, &["canonical_slot"]),
             ],
             Query::Tag(_) | Query::Country(_) => vec![tags()],
+            // Parsing and alias lookup read the recorded tags; alias bodies
+            // themselves belong to the fixed content stack.
+            Query::Alias(_) | Query::AliasEntry(_) => vec![tags()],
+            Query::Roster => vec![TableRead::fields(TableId::Countries, &["canonical_slot"])],
+            Query::Describe(Target::Country(_)) => vec![tags()],
+            Query::Describe(Target::State(_) | Target::Character(_)) => Vec::new(),
+            Query::ResolveTag(_) => Self::tag_dependence(),
+            Query::Resolve(ScopeKey(Scope::Country(_)), _) => Self::tag_dependence(),
             _ => return None,
         })
+    }
+
+    /// Tag substitution can visit every member of the original-tag bucket,
+    /// resolving its raw reference and testing whether it owns a state.
+    fn tag_dependence() -> Vec<crate::triggers::inputs::TableRead> {
+        use crate::triggers::inputs::TableRead;
+        use replay::rows::TableId;
+        vec![
+            TableRead::fields(TableId::Countries, &["canonical_slot", "tag"]),
+            TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+            TableRead::fields(TableId::CountryCounterInputs, &["owned_state_count"]),
+            TableRead::fields(
+                TableId::ReservedCountryNaming,
+                &["owned_state_count", "original_tag_buckets"],
+            ),
+        ]
     }
 }
 

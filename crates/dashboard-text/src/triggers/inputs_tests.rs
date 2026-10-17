@@ -1772,6 +1772,11 @@ fn every_declaration_names_existing_fields() {
         Scopes::PositiveCountry(101),
         Scopes::Tag(1),
         Scopes::Country("AAA".into()),
+        Scopes::Alias("AAA".into()),
+        Scopes::AliasEntry("AAA".into()),
+        Scopes::ResolveTag("AAA".into()),
+        Scopes::Roster,
+        Scopes::Describe(crate::scope::Target::Country(1)),
     ] {
         assert!(Key::Scopes(query).dependence().is_some());
     }
@@ -1782,6 +1787,166 @@ fn every_declaration_names_existing_fields() {
     ] {
         assert!(key.dependence().is_some());
     }
+}
+
+#[test]
+fn country_scope_queries_declare_tag_substitution_and_only_the_fields_they_read() {
+    use crate::scope::{Query as Scopes, RecordedScopes, Target};
+    use installed_content::tag_aliases::{TagAlias, TagAliases};
+    use replay::rows::{CountryCounterInputRow, Recorded, ReservedCountryNamingRow};
+    let mut frame = frame(100, BASE);
+    set::<tables::CountryCounterInputs>(
+        &mut frame,
+        vec![
+            CountryCounterInputRow {
+                country: 101,
+                owned_state_count: 0,
+                ..Default::default()
+            },
+            CountryCounterInputRow {
+                country: 102,
+                owned_state_count: 1,
+                ..Default::default()
+            },
+        ],
+    );
+    set::<tables::ReservedCountryNaming>(
+        &mut frame,
+        vec![ReservedCountryNamingRow {
+            owned_state_count: Recorded::Value(Some(0)),
+            original_tag_buckets: Recorded::Value(Some(vec![vec![], vec![0, 102], vec![]])),
+            ..Default::default()
+        }],
+    );
+    let aliases = Arc::new(TagAliases {
+        entries: [(b"aaa".to_vec(), ("AAA".into(), TagAlias::default()))].into(),
+        ..Default::default()
+    });
+    let scopes = RecordedScopes::read(&frame, aliases.clone());
+    assert_eq!(
+        scopes.resolve_tag("AAA"),
+        Ok(2),
+        "nonowning country substitutes the owning bucket member"
+    );
+    let mut keys = vec![
+        Scopes::ResolveTag("AAA".into()),
+        Scopes::ResolveTag("BBB".into()),
+        Scopes::Alias("AAA".into()),
+        Scopes::AliasEntry("AAA".into()),
+        Scopes::Roster,
+        Scopes::Describe(Target::Country(1)),
+        Scopes::Describe(Target::State(1)),
+    ]
+    .into_iter()
+    .map(Key::Scopes)
+    .collect::<Vec<_>>();
+    let (_, resolved) = capture(&frame, || {
+        scopes.resolve(
+            &installed_content::scope::Scope::Country("AAA".into()),
+            &crate::scope::Context::default(),
+        )
+    });
+    keys.extend(resolved.keys().cloned());
+    let digests = |frame: &DecodedFrame, keys: &[Key]| {
+        let scopes = RecordedScopes::read(frame, aliases.clone());
+        keys.iter()
+            .map(|key| match key {
+                Key::Scopes(query) => Some(scopes.reread(query)),
+                _ => None,
+            })
+            .collect()
+    };
+    let tables = tables_each_key_reads(&frame, &keys, &digests);
+    let edits = vec![
+        Change::new(
+            TableId::ReservedCountryNaming,
+            &["owned_state_count"],
+            None,
+            |rows| {
+                if let TableRows::ReservedCountryNaming(rows) = rows {
+                    rows[0].owned_state_count = Recorded::Value(Some(1));
+                }
+            },
+        ),
+        Change::new(
+            TableId::ReservedCountryNaming,
+            &["country_array"],
+            None,
+            |rows| {
+                if let TableRows::ReservedCountryNaming(rows) = rows {
+                    rows[0].country_array = Recorded::Value(Some(vec![102, 101]));
+                }
+            },
+        ),
+        Change::new(
+            TableId::CountryCounterInputs,
+            &["owned_state_count"],
+            Some(101),
+            |rows| {
+                if let TableRows::CountryCounterInputs(rows) = rows {
+                    rows[0].owned_state_count = 1;
+                }
+            },
+        ),
+        Change::new(
+            TableId::CountryCounterInputs,
+            &["pride_of_the_fleet"],
+            None,
+            |rows| {
+                if let TableRows::CountryCounterInputs(rows) = rows {
+                    rows[0].pride_of_the_fleet = 77;
+                }
+            },
+        ),
+        Change::new(
+            TableId::ReservedCountryNaming,
+            &["original_tag_buckets"],
+            None,
+            |rows| {
+                if let TableRows::ReservedCountryNaming(rows) = rows {
+                    rows[0].original_tag_buckets =
+                        Recorded::Value(Some(vec![vec![], vec![], vec![]]));
+                }
+            },
+        ),
+        Change::new(TableId::Countries, &["tag"], Some(101), |rows| {
+            if let TableRows::Countries(rows) = rows {
+                rows[0].tag = b"ZZZ".to_vec();
+            }
+        }),
+        Change::new(TableId::Countries, &["political_power_raw"], None, |rows| {
+            if let TableRows::Countries(rows) = rows {
+                rows[0].political_power_raw = Some(-1);
+            }
+        }),
+        Change::new(
+            TableId::CountryLinks,
+            &["canonical_slot"],
+            Some(102),
+            |rows| {
+                if let TableRows::CountryLinks(rows) = rows {
+                    rows[1].canonical_slot = 1;
+                }
+            },
+        ),
+    ];
+    assert!(changes_each_key_reads(&frame, &keys, &digests, &edits) > 0);
+    check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &digests);
+    let (_, inputs) = capture(&frame, || {
+        scopes.resolve_tag("AAA").unwrap();
+        scopes.alias_entry("AAA");
+    });
+    let unchanged = Differing {
+        before: &frame,
+        after: &frame,
+    };
+    assert!(inputs.unchanged(&Since::span(
+        frame.branch,
+        frame.hour,
+        frame.hour,
+        Some(&frame),
+        &unchanged
+    )));
 }
 
 /// The scenario's countries with character 5, whose unit leader needs

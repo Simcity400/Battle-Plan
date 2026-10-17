@@ -75,6 +75,14 @@ reads changed as read again without reading it, and rereads only the others;
 `Inputs::unchanged` says whether no input needs reading, so a family can
 confirm an evaluation without building the hour's trigger world, and
 `Inputs::advance` carries one across a quiet span.
+`Inputs::keys` exposes the recorded keys in read order for measured rejection
+diagnostics; inspecting them does not confirm or advance an evaluation.
+
+Country scope declarations include tag and alias lookup, roster and diagnostic
+names. Tag substitution declares countries' slots and tags, country links,
+owned-state counts and the recorded original-tag buckets, including the reserved
+country's count. Alias bodies come from the resolved content stack; their
+evaluation records its own reached inputs.
 
 Check mode (always in tests, `BATTLE_PLAN_REUSE_CHECK` in preparation) evaluates every
 reused result anyway and counts any difference, and rereads every input a

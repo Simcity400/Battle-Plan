@@ -1264,10 +1264,7 @@ fn prepared_leaders_battle_step_after_publication_and_resume_matches_the_oracle(
     let frames: Vec<_> = (100..=170)
         .map(|hour| super::test_fixtures::war_frame(1, hour, 6))
         .collect();
-    let split = frames
-        .iter()
-        .position(|frame| frame.hour == 135)
-        .unwrap();
+    let split = frames.iter().position(|frame| frame.hour == 135).unwrap();
     let whole = replay(&frames);
     let prefix = replay(&frames[..split]);
     let fixture = Fixture::new();
@@ -1369,9 +1366,15 @@ fn prepared_leaders_battle_availability_changes_read_coverage_as_the_oracle() {
     let cancelled = AtomicBool::new(false);
     publish(&mut state, &fixture, &cancelled);
     assert_parity(&fixture, &replay);
-    let actual = query(&fixture.store, &fixture.key, &full_params("1"), None, &cancelled)
-        .unwrap()
-        .unwrap();
+    let actual = query(
+        &fixture.store,
+        &fixture.key,
+        &full_params("1"),
+        None,
+        &cancelled,
+    )
+    .unwrap()
+    .unwrap();
     assert!(
         actual
             .observed

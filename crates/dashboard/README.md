@@ -2439,7 +2439,12 @@ rest). A run reads only the scan's own tables, the trigger world's core
 (provinces and states) and, where the phase binds a catalogue, the shared
 trigger tables leader visibility's declared reads read (`block::bound`); the
 rest of the trigger kit is not read, and is taken as changed anywhere at every
-hour. At each hour read the extract takes what changed since the hour before
+hour. The content selection includes ScriptVariables entries and seed, and
+country tag resolution's owned-state counts and original-tag buckets. Counter
+rows keep only their key and owned-state count; unrelated counter fields do not
+wake the extract. These selected tables join the shared read and its deposit,
+so the family folds their reconstructed views without decoding them again.
+At each hour read the extract takes what changed since the hour before
 from the block reader (`BlockTables` of its changed tables; where it is read
 with families watching more, it finds them from the hour before's rows), and
 joins to the quiet hours (`QuietTables`) every hour whose combats changed only

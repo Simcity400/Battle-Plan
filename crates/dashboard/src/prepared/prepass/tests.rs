@@ -971,3 +971,247 @@ fn a_pool_lane_reads_by_its_runs_bound_reads_and_hands_the_readers_changed_table
     );
     assert_eq!(given, expected);
 }
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_family_thread() {
+    use crate::products::unit_leaders::{self, Content, prepared::Prepared};
+    use dashboard_base::prepared::series::tests::Fixture;
+    use dashboard_text::triggers::{Eval, Evaluator, inputs};
+    use replay::{
+        container::test_work::table_decodes,
+        frame::Frame,
+        rows::{
+            CountryCounterInputRow, CountryLinkRow, CountryRow, LexicalTokenRow, Recorded,
+            ScriptVariableEntry, ScriptVariablesRow, TableRows,
+        },
+    };
+
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30} NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/unit_leader/test.txt",
+            "leader_skills={1={type=corps_commander cost=1}} leader_traits={}",
+        ),
+        (
+            "common/characters/test.txt",
+            "characters={mod_commander={corps_commander={visible={NOT={has_war_with=AAA has_war_with=BBB} check_variable={leader_gate=1}}}}}",
+        ),
+    ]);
+    let templates = installed_content::characters::leader_templates(&catalogue.content.layers).unwrap();
+    let template = &templates[0];
+    let frames: Vec<_> = (100..=104)
+        .map(|hour| {
+            let mut frame = unit_leaders::prepared::test_fixtures::frame(hour, 1);
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows[0].canonical_slot = 1;
+                rows[0].tag = b"AAA".to_vec();
+                rows.push(CountryRow {
+                    id: 100_001,
+                    canonical_slot: 2,
+                    tag: b"BBB".to_vec(),
+                    ..Default::default()
+                });
+            }
+            if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                rows[0].canonical_slot = 1;
+                rows.push(CountryLinkRow {
+                    id: 100_001,
+                    canonical_slot: 2,
+                });
+            }
+            *frame.tables[TableId::CountryCounterInputs.index()] =
+                TableView::Complete(TableRows::CountryCounterInputs(
+                    [100_000, 100_001]
+                        .into_iter()
+                        .map(|country| CountryCounterInputRow {
+                            country,
+                            owned_state_count: 1,
+                            pride_of_the_fleet: hour as u64,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            *frame.tables[TableId::WarRelations.index()] =
+                TableView::Complete(TableRows::WarRelations(Vec::new()));
+            if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *frame.tables[TableId::UnitLeaders.index()]
+            {
+                rows[0].visibility_choice = 1;
+            }
+            if let TableView::Complete(TableRows::Characters(rows)) =
+                &mut *frame.tables[TableId::Characters.index()]
+            {
+                rows[0].template_present = 1;
+                rows[0].template_tag = 901;
+                rows[0].template_file = template.path.as_bytes().to_vec();
+                rows[0].template_line = template.line.unwrap() as i32;
+            }
+            *frame.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                    token: 901,
+                    literal: template.tag.as_bytes().to_vec(),
+                }]));
+            *frame.tables[TableId::ScriptVariables.index()] =
+                TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
+                    scope_kind: 1,
+                    scope_id: 100_000,
+                    seed: Recorded::Value(Some(7)),
+                    entries: vec![ScriptVariableEntry {
+                        name: b"leader_gate".to_vec(),
+                        value_raw: if hour == 101 { 0 } else { 100_000 },
+                    }],
+                }]));
+            frame
+        })
+        .collect();
+    let (source, context) = crate::test_fixtures::source_with_content(frames.clone(), &folder.0);
+    let catalogue = crate::catalogue::catalogue(&source, context.content().unwrap()).unwrap();
+    let content = Content::for_catalogue(&source, &context, Some(catalogue.clone()))
+        .unwrap()
+        .unwrap();
+    let scripted = catalogue.scripted_content().unwrap();
+    for (frame, expected) in frames[..2].iter().zip([Eval::True, Eval::False]) {
+        let world = scripted.recorded_world(frame).unwrap();
+        let row = &frame
+            .complete::<replay::rows::tables::UnitLeaders>()
+            .unwrap()[0];
+        let visibility = world.decoded_leader_visibility(row);
+        let (value, reads) = inputs::capture(frame, || {
+            Evaluator::new(&world, None).decide_leader_visibility(row, visibility, true)
+        });
+        assert_eq!(value, expected);
+        // Each explicit tag records these two scope reads. Before their
+        // declarations, two tags reject a kept hour with four unknown inputs.
+        for tag in ["AAA", "BBB"] {
+            assert!(reads.keys().any(|key| *key
+                == inputs::Key::Scopes(dashboard_text::scope::Query::AliasEntry(tag.into()))));
+            assert!(reads.keys().any(|key| *key
+                == inputs::Key::Scopes(dashboard_text::scope::Query::ResolveTag(tag.into()))));
+        }
+        assert!(reads.keys().all(|key| key.dependence().is_some()));
+        assert!(
+            reads
+                .keys()
+                .any(|key| key.dependence().is_some_and(|reads| {
+                    reads
+                        .iter()
+                        .any(|read| read.table == TableId::ScriptVariables)
+                }))
+        );
+    }
+
+    let replay = source.replay_ref();
+    let bound = unit_leaders::block::bound(true);
+    let readings = [
+        Reading {
+            family: &unit_leaders::block::FAMILY,
+            bound: Some(&bound),
+        },
+        Reading::of(&HOURS),
+    ];
+    // The shared reader also wants the trigger kit's recorded updates.
+    // A kept-only table is decoded but not reconstructed for an extract.
+    let mut deposited: Vec<Arc<Frame>> = Vec::new();
+    let mut deposit = |frames: &[Arc<Frame>]| deposited = frames.to_vec();
+    let (mut measured, decodes) = table_decodes(|| {
+        extract_bound(
+            replay,
+            &replay.index[0],
+            &readings,
+            &AtomicBool::new(false),
+            &Knobs::default(),
+            Some(Keep {
+                tables: dashboard_text::triggers::RECORDED_TABLES,
+                frames: &mut deposit,
+            }),
+        )
+    });
+    assert_eq!(measured.reads, 1);
+    for shared in [TableId::ScriptVariables, TableId::CountryCounterInputs] {
+        assert_eq!(
+            decodes
+                .iter()
+                .filter(|(_, _, table, _)| *table == shared)
+                .count(),
+            1,
+            "{shared:?} decoded once by the shared reader"
+        );
+    }
+    let mut supplied = 0;
+    assert!(
+        replay
+            .reconstruct_alone(
+                &deposited,
+                &[TableId::ScriptVariables],
+                |_, frame| {
+                    assert!(
+                        frame
+                            .complete::<replay::rows::tables::ScriptVariables>()
+                            .is_ok()
+                    );
+                    supplied += 1;
+                    Ok(())
+                },
+                || Ok(())
+            )
+            .unwrap()
+    );
+    assert_eq!(supplied, frames.len());
+    let (Outcome::Facts(facts), ..) = measured.outcomes.remove(0) else {
+        panic!("leaders' shared extract refused");
+    };
+
+    let mut folded = Prepared::new(replay, 1);
+    let ((fold, reached), decodes) = table_decodes(|| {
+        inputs::reusing(|| {
+            unit_leaders::block::fold(
+                &mut folded,
+                facts,
+                replay,
+                &replay.index[0],
+                Some(&content),
+                &mut |_, result| result.map(|()| true),
+                &mut || Ok(()),
+            )
+            .unwrap()
+        })
+    });
+    assert_eq!(fold, Folded::Fast);
+    assert_eq!(reached, Some(104));
+    assert!(decodes.is_empty(), "family-thread decodes: {decodes:?}");
+    assert!(bound.tables.contains(&TableId::ScriptVariables));
+
+    let mut hourly = Prepared::new(replay, 1);
+    let mut tracker = FrameChangeTracker::new();
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            unit_leaders::block::tables(),
+            |raw, frame| {
+                let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                hourly.observe(frame, replay, Some(&content), &changes)
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    let publish = |prepared: &mut Prepared| {
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        prepared
+            .flush(&mut writer, 1, Some(&content), &[], &AtomicBool::new(false))
+            .unwrap();
+        writer.commit().unwrap();
+        fixture.payloads()
+    };
+    assert_eq!(publish(&mut folded), publish(&mut hourly));
+}

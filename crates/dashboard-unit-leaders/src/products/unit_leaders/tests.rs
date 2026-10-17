@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn quiet_leader_rejections_name_the_failed_proof_without_advancing() {
+    use dashboard_base::prepared::prepass::noted;
+    let rows = prepared::test_fixtures::frame(100, 1);
+    let unchanged = block::Changes::default();
+    let ready = || Scan {
+        commands_continuous: true,
+        frontier: Some(100),
+        read_mask: Some(0),
+        ..Default::default()
+    };
+    for (first, last, commands, frontier, mask, reason) in [
+        (
+            i32::MIN,
+            i32::MIN,
+            true,
+            Some(100),
+            Some(0),
+            "leaders.reject.quiet-first-hour",
+        ),
+        (
+            101,
+            100,
+            true,
+            Some(100),
+            Some(0),
+            "leaders.reject.quiet-order",
+        ),
+        (
+            101,
+            102,
+            false,
+            Some(100),
+            Some(0),
+            "leaders.reject.quiet-commands",
+        ),
+        (
+            101,
+            102,
+            true,
+            Some(99),
+            Some(0),
+            "leaders.reject.quiet-frontier",
+        ),
+        (
+            101,
+            102,
+            true,
+            Some(100),
+            None,
+            "leaders.reject.quiet-read-mask",
+        ),
+    ] {
+        let mut scan = ready();
+        scan.commands_continuous = commands;
+        scan.frontier = frontier;
+        scan.read_mask = mask;
+        let before = noted(reason);
+        assert!(!scan.advance_quiet(first, last, &unchanged, &rows, None));
+        assert_eq!(noted(reason) - before, 1, "{reason}");
+        assert_eq!(scan.frontier, frontier, "{reason}");
+    }
+    let mut scan = ready();
+    assert!(scan.advance_quiet(101, 102, &unchanged, &rows, None));
+    assert_eq!(scan.frontier, Some(102));
+}
+
+#[test]
+fn a_kept_leader_visibility_rejection_is_counted_once_per_hour() {
+    use dashboard_base::prepared::prepass::noted;
+    use dashboard_text::triggers::inputs::{TableChange, TableChanges, capture, table};
+
+    struct Unread;
+    impl TableChanges for Unread {
+        fn table(&self, table: TableId) -> TableChange<'_> {
+            if table == TableId::ScriptVariables {
+                TableChange::Any
+            } else {
+                TableChange::Same
+            }
+        }
+    }
+
+    let frame = prepared::test_fixtures::frame(100, 1);
+    let (_, inputs) = capture(&frame, || table(&frame, TableId::ScriptVariables));
+    let reduced = Unread;
+    let kept = Kept::new(&reduced);
+    assert!(!kept.reads_whole(&inputs, &frame, frame.hour));
+    let reason = "leaders.reject.kept-inputs";
+    let before = noted(reason);
+    kept.block_inputs(&inputs, &frame);
+    kept.block_inputs(&inputs, &frame);
+    assert!(kept.blocked());
+    assert_eq!(noted(reason) - before, 1);
+
+    let unchanged = block::Changes::default();
+    let whole = Kept::new(&unchanged);
+    assert!(whole.reads_whole(&inputs, &frame, frame.hour));
+    assert!(!whole.blocked());
+    assert_eq!(noted(reason) - before, 1);
+}
+
+#[test]
 fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -2648,7 +2750,7 @@ fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
         let reduced = block::Changes::default();
         let kept = Kept::new(&reduced);
         // Another leader's verdict needs the whole frame.
-        kept.block();
+        kept.block("leaders.reject.test");
         assert!(
             !scan
                 .observe_changes(
@@ -2693,7 +2795,6 @@ fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
             "{:?}",
             expected.warnings
         );
-        dashboard_base::prepared::observer_tests::assert_reply_parity(&actual, &expected)
-            .unwrap();
+        dashboard_base::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
     });
 }

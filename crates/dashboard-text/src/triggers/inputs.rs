@@ -991,7 +991,6 @@ impl Inputs {
     }
 
     /// The keys read, in first-read order.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn keys(&self) -> impl Iterator<Item = &Key> + '_ {
         self.reads.iter().map(|read| &read.key)
     }

@@ -21,8 +21,28 @@ tables its run binds from the content, kept as whole, reduced and quiet hours
 with the block reader's change facts) and its
 fold on the carried prepared state, described in the
 [dashboard's prepared leaders](../dashboard/README.md#prepared-leaders).
+Content-bound reads select the trigger inputs listed in the narrow block
+policy. Script variables keep their entries and seed; country tag resolution
+watches countries' slots and tags, links, owned-state counts and original-tag
+buckets. Kept counter rows retain only their key and owned-state count.
+Unlisted inputs remain dropped and require whole-frame observation when read.
+
+Measured CPU notes count each fold's fallback site as `leaders.fallback.whole`,
+`.kept`, `.built` or `.quiet`, and its rejected proof as `leaders.reject.*`.
+Kept visibility counts only the first rejection in an hour. Quiet proofs name
+command continuity, frontier, reads, tables, content, core completeness or
+visibility inputs separately. `leaders.rejected-table` CPU labels name the
+tables whose declared reads defeated that proof; `undeclared-input` and
+`input-hour` notes distinguish an undeclared read from inputs last confirmed at
+another hour. `leaders.undeclared-input` labels name the exact undeclared query;
+it has no declared table or fields. `leaders.rejected-input` labels name each
+rejected declared query, its table and its field names. These diagnostics do no formatting or input-key walks
+outside CPU measurement and do not change observations or saved data.
 
 `cargo test -p dashboard-unit-leaders` builds and runs only this crate's tests.
+The dashboard's slow shared-extract regression covers variable and explicit-tag
+visibility, one shared decode per input table, no family-thread decodes and
+byte-identical publication against hourly preparation.
 The `test-support` feature compiles the outcome frames
 (`prepared::test_fixtures`) the dashboard's pipeline tests build on and the
 whole-recording loader, the parity oracle they compare against.

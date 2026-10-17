@@ -63,10 +63,10 @@ use replay::{
     format::FormatVersion,
     frame::{DecodedFrame, Metrics, SharedView, TableView},
     rows::{
-        CountryRow, LandCombatDetailsRow, LandCombatSideDetails, NavalCombatDetailsRow,
-        NavalCombatSideDetails, NavalMissionTaskForceRow, ProvinceRow, RowCodec, StateRow,
-        TableId, TableRows, TableSchema, TaskForceRow, UnitLeaderRow, WarRelationRow, full_mask,
-        tables,
+        CountryCounterInputRow, CountryRow, LandCombatDetailsRow, LandCombatSideDetails,
+        NavalCombatDetailsRow, NavalCombatSideDetails, NavalMissionTaskForceRow, ProvinceRow,
+        RowCodec, StateRow, TableId, TableRows, TableSchema, TaskForceRow, UnitLeaderRow,
+        WarRelationRow, full_mask, tables,
     },
 };
 use std::{
@@ -118,24 +118,74 @@ enum Keep {
 /// quiet and blocks fall back, never what is published.
 const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     // The scan's own tables.
-    (TableId::UnitLeaders, Watch::Leaders, Keep::Reduced, Reach::Every),
+    (
+        TableId::UnitLeaders,
+        Watch::Leaders,
+        Keep::Reduced,
+        Reach::Every,
+    ),
     (TableId::Characters, Watch::All, Keep::Whole, Reach::Every),
-    (TableId::CharacterPortraits, Watch::All, Keep::Whole, Reach::Every),
-    (TableId::LexicalTokens, Watch::All, Keep::Whole, Reach::Every),
-    (TableId::UnitLeaderTraits, Watch::All, Keep::Whole, Reach::Every),
-    (TableId::LandCombatDetails, Watch::Named(&["sides"]), Keep::Reduced, Reach::Every),
-    (TableId::NavalCombatDetails, Watch::Named(&["sides"]), Keep::Reduced, Reach::Every),
-    (TableId::LandCombatResults, Watch::All, Keep::Whole, Reach::Every),
-    (TableId::NavalResultSources, Watch::All, Keep::Whole, Reach::Every),
+    (
+        TableId::CharacterPortraits,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
+    (
+        TableId::LexicalTokens,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
+    (
+        TableId::UnitLeaderTraits,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
+    (
+        TableId::LandCombatDetails,
+        Watch::Named(&["sides"]),
+        Keep::Reduced,
+        Reach::Every,
+    ),
+    (
+        TableId::NavalCombatDetails,
+        Watch::Named(&["sides"]),
+        Keep::Reduced,
+        Reach::Every,
+    ),
+    (
+        TableId::LandCombatResults,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
+    (
+        TableId::NavalResultSources,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
     (TableId::NavalResults, Watch::All, Keep::Whole, Reach::Every),
-    (TableId::NavalCombatResultDetails, Watch::All, Keep::Whole, Reach::Every),
+    (
+        TableId::NavalCombatResultDetails,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
     (
         TableId::OrdersGroups,
         Watch::Named(&["leader", "name", "is_army_group"]),
         Keep::Whole,
         Reach::Every,
     ),
-    (TableId::OrdersGroupPlans, Watch::All, Keep::Whole, Reach::Every),
+    (
+        TableId::OrdersGroupPlans,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
     (TableId::Fleets, Watch::All, Keep::Whole, Reach::Every),
     (
         TableId::NavalMissionTaskForces,
@@ -143,7 +193,12 @@ const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
         Keep::Reduced,
         Reach::Every,
     ),
-    (TableId::TaskForces, Watch::Named(&["fleet"]), Keep::Reduced, Reach::Every),
+    (
+        TableId::TaskForces,
+        Watch::Named(&["fleet"]),
+        Keep::Reduced,
+        Reach::Every,
+    ),
     (
         TableId::Countries,
         Watch::Named(&["canonical_slot", "tag"]),
@@ -152,7 +207,12 @@ const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     ),
     (TableId::CountryLinks, Watch::All, Keep::Whole, Reach::Every),
     // The shared trigger tables declared reads read.
-    (TableId::Clock, Watch::Named(&["seed"]), Keep::Whole, Reach::Content),
+    (
+        TableId::Clock,
+        Watch::Named(&["seed"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
     (
         TableId::PoliticalParties,
         Watch::Named(&["is_ruling", "token"]),
@@ -167,11 +227,27 @@ const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     ),
     (
         TableId::ReservedCountryNaming,
-        Watch::Named(&["faction", "original_tag_reference"]),
+        Watch::Named(&[
+            "faction",
+            "original_tag_reference",
+            "owned_state_count",
+            "original_tag_buckets",
+        ]),
         Keep::Whole,
         Reach::Content,
     ),
-    (TableId::FactionMembers, Watch::Named(&["faction"]), Keep::Whole, Reach::Content),
+    (
+        TableId::CountryCounterInputs,
+        Watch::Named(&["owned_state_count"]),
+        Keep::Reduced,
+        Reach::Content,
+    ),
+    (
+        TableId::FactionMembers,
+        Watch::Named(&["faction"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
     (
         TableId::WarRelations,
         Watch::Named(&["start_hour", "end_hour"]),
@@ -184,34 +260,90 @@ const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
         Keep::Whole,
         Reach::Content,
     ),
-    (TableId::Focus, Watch::Named(&["tree"]), Keep::Whole, Reach::Content),
+    (
+        TableId::Focus,
+        Watch::Named(&["tree"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
     (
         TableId::CountryAppearance,
         Watch::Named(&["original_tag_reference"]),
         Keep::Whole,
         Reach::Content,
     ),
-    (TableId::CompletedFocuses, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
+    (
+        TableId::CompletedFocuses,
+        Watch::Named(&["token"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
     (
         TableId::Projects,
         Watch::Named(&["definition_id", "completed"]),
         Keep::Whole,
         Reach::Content,
     ),
-    (TableId::ScriptFlags, Watch::Named(&["value"]), Keep::Whole, Reach::Content),
+    (
+        TableId::ScriptFlags,
+        Watch::Named(&["value"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::ScriptVariables,
+        Watch::Named(&["entries", "seed"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
     (
         TableId::PartyLeaders,
         Watch::Named(&["character", "leader_id", "role"]),
         Keep::Whole,
         Reach::Content,
     ),
-    (TableId::CountryCharacters, Watch::Named(&["character"]), Keep::Whole, Reach::Content),
-    (TableId::CountryCivilWars, Watch::Named(&["target"]), Keep::Whole, Reach::Content),
-    (TableId::AdvisorTokens, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
-    (TableId::FactionAdvisors, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
-    (TableId::HiredAdvisors, Watch::Named(&["idea"]), Keep::Whole, Reach::Content),
-    (TableId::ActiveIdeas, Watch::Named(&["token"]), Keep::Whole, Reach::Content),
-    (TableId::CountryWars, Watch::All, Keep::Whole, Reach::Content),
+    (
+        TableId::CountryCharacters,
+        Watch::Named(&["character"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::CountryCivilWars,
+        Watch::Named(&["target"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::AdvisorTokens,
+        Watch::Named(&["token"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::FactionAdvisors,
+        Watch::Named(&["token"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::HiredAdvisors,
+        Watch::Named(&["idea"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::ActiveIdeas,
+        Watch::Named(&["token"]),
+        Keep::Whole,
+        Reach::Content,
+    ),
+    (
+        TableId::CountryWars,
+        Watch::All,
+        Keep::Whole,
+        Reach::Content,
+    ),
     // The trigger world's core tables: their keys and availability.
     (TableId::Provinces, Watch::Keys, Keep::Reduced, Reach::Every),
     (TableId::States, Watch::Keys, Keep::Reduced, Reach::Every),
@@ -254,6 +386,16 @@ pub static FAMILY: LazyLock<Family> = LazyLock::new(|| Family {
     fields: Some(fields),
     start: |format| start(format, whole()),
 });
+
+/// Count a rejected fold proof only while measuring; tests keep their own
+/// thread's counts without enabling process-wide CPU accounting.
+pub(super) fn rejected(reason: &'static str) {
+    #[cfg(any(test, feature = "test-support"))]
+    dashboard_base::prepared::prepass::note(reason);
+    if replay::cpu::enabled() {
+        replay::cpu::note(reason, FAMILY.name, replay::cpu::thread_cycles());
+    }
+}
 
 /// What a run's block reads hold.
 struct Selection {
@@ -489,8 +631,9 @@ fn reduction(experience: bool) -> Changes {
             (Keep::Reduced, TableId::UnitLeaders) => {
                 experience.then(|| Change::Fields(experience_field()))
             }
-            (Keep::Reduced, TableId::Countries) => {
-                Some(fields(table, &["canonical_slot", "tag"]))
+            (Keep::Reduced, TableId::Countries) => Some(fields(table, &["canonical_slot", "tag"])),
+            (Keep::Reduced, TableId::CountryCounterInputs) => {
+                Some(fields(table, &["owned_state_count"]))
             }
             (Keep::Reduced, TableId::WarRelations) => {
                 Some(fields(table, &["start_hour", "end_hour"]))
@@ -647,6 +790,7 @@ impl<T: TableSchema> Reducer<T> {
 struct Reducers {
     leaders: Reducer<tables::UnitLeaders>,
     countries: Reducer<tables::Countries>,
+    counters: Reducer<tables::CountryCounterInputs>,
     provinces: Reducer<tables::Provinces>,
     states: Reducer<tables::States>,
     wars: Reducer<tables::WarRelations>,
@@ -662,6 +806,7 @@ impl Reducers {
         let stale = match table {
             TableId::UnitLeaders => &mut self.leaders.stale,
             TableId::Countries => &mut self.countries.stale,
+            TableId::CountryCounterInputs => &mut self.counters.stale,
             TableId::Provinces => &mut self.provinces.stale,
             TableId::States => &mut self.states.stale,
             TableId::WarRelations => &mut self.wars.stale,
@@ -897,35 +1042,48 @@ impl BlockExtract {
             && !self.experience
             && let Ok(rows) = frame.complete::<tables::UnitLeaders>()
         {
-            had.set(
-                rows.iter()
-                    .any(|row| row.experience != Default::default()),
-            );
+            had.set(rows.iter().any(|row| row.experience != Default::default()));
         }
         self.experience |= had.get();
-        if reducers.countries.apply(&mut kept, |row: &CountryRow| CountryRow {
-            id: row.id,
-            canonical_slot: row.canonical_slot,
-            tag: row.tag.clone(),
-            ..Default::default()
-        }) {
+        if reducers
+            .countries
+            .apply(&mut kept, |row: &CountryRow| CountryRow {
+                id: row.id,
+                canonical_slot: row.canonical_slot,
+                tag: row.tag.clone(),
+                ..Default::default()
+            })
+        {
             self.work.reduced_countries += 1;
         }
-        reducers.provinces.apply(&mut kept, |row: &ProvinceRow| ProvinceRow {
-            id: row.id,
-            ..Default::default()
-        });
+        reducers
+            .counters
+            .apply(&mut kept, |row: &CountryCounterInputRow| {
+                CountryCounterInputRow {
+                    country: row.country,
+                    owned_state_count: row.owned_state_count,
+                    ..Default::default()
+                }
+            });
+        reducers
+            .provinces
+            .apply(&mut kept, |row: &ProvinceRow| ProvinceRow {
+                id: row.id,
+                ..Default::default()
+            });
         reducers.states.apply(&mut kept, |row: &StateRow| StateRow {
             id: row.id,
             ..Default::default()
         });
-        reducers.wars.apply(&mut kept, |row: &WarRelationRow| WarRelationRow {
-            first_country: row.first_country,
-            second_country: row.second_country,
-            start_hour: row.start_hour,
-            end_hour: row.end_hour,
-            ..Default::default()
-        });
+        reducers
+            .wars
+            .apply(&mut kept, |row: &WarRelationRow| WarRelationRow {
+                first_country: row.first_country,
+                second_country: row.second_country,
+                start_hour: row.start_hour,
+                end_hour: row.end_hour,
+                ..Default::default()
+            });
         reducers
             .task_forces
             .apply(&mut kept, |row: &TaskForceRow| TaskForceRow {
@@ -944,23 +1102,27 @@ impl BlockExtract {
             });
         reducers
             .land
-            .apply(&mut kept, |row: &LandCombatDetailsRow| LandCombatDetailsRow {
-                combat: row.combat,
-                sides: row.sides.each_ref().map(|side| LandCombatSideDetails {
-                    commander: side.commander,
+            .apply(&mut kept, |row: &LandCombatDetailsRow| {
+                LandCombatDetailsRow {
+                    combat: row.combat,
+                    sides: row.sides.each_ref().map(|side| LandCombatSideDetails {
+                        commander: side.commander,
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
+                }
             });
         reducers
             .navy
-            .apply(&mut kept, |row: &NavalCombatDetailsRow| NavalCombatDetailsRow {
-                combat: row.combat,
-                sides: row.sides.each_ref().map(|side| NavalCombatSideDetails {
-                    commander: side.commander,
+            .apply(&mut kept, |row: &NavalCombatDetailsRow| {
+                NavalCombatDetailsRow {
+                    combat: row.combat,
+                    sides: row.sides.each_ref().map(|side| NavalCombatSideDetails {
+                        commander: side.commander,
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
+                }
             });
         for &table in &self.selection.tables {
             if policy(table).1 == Keep::Dropped {
@@ -1213,8 +1375,7 @@ impl Extract for BlockExtract {
                         Changes::read(&QuietTables::new(watch, hours, position), selection),
                     );
                 }
-                let since =
-                    Changes::read(&QuietTables::new(watch, hours, position + 1), selection);
+                let since = Changes::read(&QuietTables::new(watch, hours, position + 1), selection);
                 let mut stale = self.stale.clone();
                 stale.merge(&since);
                 self.hours.push(Hour::Built {
@@ -1329,6 +1490,7 @@ pub fn fold(
                     prepared.observe_kept(&frame, replay, content, &changes, &changes, &unread)
                 };
                 if matches!(result, Ok(false)) {
+                    rejected("leaders.fallback.whole");
                     let reached = observe_block(
                         prepared,
                         replay,
@@ -1356,6 +1518,7 @@ pub fn fold(
                 let result =
                     prepared.observe_kept(&frame, replay, content, &changes, &since, &reduction);
                 if matches!(result, Ok(false)) {
+                    rejected("leaders.fallback.kept");
                     let reached = observe_block(
                         prepared,
                         replay,
@@ -1382,9 +1545,9 @@ pub fn fold(
                 since,
                 stale,
             } => {
-                let (rows, reduced) = base
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("A leader hour came before its block's first"))?;
+                let (rows, reduced) = base.as_ref().ok_or_else(|| {
+                    io::Error::other("A leader hour came before its block's first")
+                })?;
                 let frame = built(rows, hour, metrics, &sampled);
                 let changes =
                     FrameChanges::rebuilt(&frame, replay.format, true, |table| since.has(table));
@@ -1396,8 +1559,16 @@ pub fn fold(
                 let result =
                     prepared.observe_kept(&frame, replay, content, &changes, &since, &differ);
                 if matches!(result, Ok(false)) {
-                    let reached =
-                        observe_block(prepared, replay, index, Some(hour), content, observed, check)?;
+                    rejected("leaders.fallback.built");
+                    let reached = observe_block(
+                        prepared,
+                        replay,
+                        index,
+                        Some(hour),
+                        content,
+                        observed,
+                        check,
+                    )?;
                     return Ok((Folded::Fallback, reached));
                 }
                 reached = Some(hour);
@@ -1408,14 +1579,22 @@ pub fn fold(
                 }
             }
             Hour::Quiet { first, last, since } => {
-                let (rows, _) = base
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("A leader hour came before its block's first"))?;
+                let (rows, _) = base.as_ref().ok_or_else(|| {
+                    io::Error::other("A leader hour came before its block's first")
+                })?;
                 match prepared.advance_quiet(first, last, &since, rows, content) {
                     Ok(true) => {}
                     Ok(false) => {
-                        let reached =
-                            observe_block(prepared, replay, index, Some(first), content, observed, check)?;
+                        rejected("leaders.fallback.quiet");
+                        let reached = observe_block(
+                            prepared,
+                            replay,
+                            index,
+                            Some(first),
+                            content,
+                            observed,
+                            check,
+                        )?;
                         return Ok((Folded::Fallback, reached));
                     }
                     Err(error) => {
@@ -1463,3 +1642,6 @@ pub fn observe_block(
         },
     )
 }
+
+#[cfg(test)]
+mod tests;

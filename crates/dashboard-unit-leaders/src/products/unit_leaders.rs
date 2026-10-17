@@ -690,6 +690,66 @@ pub(crate) struct Kept<'a> {
     blocked: Cell<bool>,
 }
 
+/// The queries and table fields that defeat a visibility proof. Only a
+/// measured rejection walks the keys or formats their names.
+fn rejected_inputs(inputs: &Inputs, since: &Since<'_>) {
+    if !replay::cpu::enabled() {
+        return;
+    }
+    let mut tables = BTreeSet::new();
+    let mut declared = true;
+    for key in inputs.keys() {
+        match key.dependence() {
+            Some(reads) => {
+                for read in reads {
+                    if since.changed(&read) {
+                        tables.insert(read.table);
+                        let _input = replay::cpu::scope_named(
+                            "leaders.rejected-input",
+                            &rejected_input_label(key, Some(&read)),
+                        );
+                    }
+                }
+            }
+            None => {
+                declared = false;
+                block::rejected("leaders.reject.undeclared-input");
+                let _input = replay::cpu::scope_named(
+                    "leaders.undeclared-input",
+                    &rejected_input_label(key, None),
+                );
+            }
+        }
+    }
+    if declared && tables.is_empty() {
+        block::rejected("leaders.reject.input-hour");
+    }
+    for table in tables {
+        rejected_table(table);
+    }
+}
+
+fn rejected_input_label(
+    key: &dashboard_text::triggers::inputs::Key,
+    read: Option<&TableRead>,
+) -> String {
+    let Some(read) = read else {
+        return format!("{key:?}: no declared table/fields");
+    };
+    let fields = (0..read.table.schema().len())
+        .filter(|&field| read.fields & (1_u64 << field) != 0)
+        .filter_map(|field| read.table.field_name(field))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{key:?}: {:?}[keys,status,{fields}]", read.table)
+}
+
+fn rejected_table(table: TableId) {
+    if replay::cpu::enabled() {
+        let _input = replay::cpu::scope_named("leaders.rejected-table", &format!("{table:?}"));
+    }
+}
+
 impl<'a> Kept<'a> {
     pub(crate) fn new(reduced: &'a dyn TableChanges) -> Self {
         Self {
@@ -703,8 +763,27 @@ impl<'a> Kept<'a> {
         self.blocked.get()
     }
 
-    fn block(&self) {
-        self.blocked.set(true);
+    fn block(&self, reason: &'static str) {
+        if !self.blocked.replace(true) {
+            block::rejected(reason);
+        }
+    }
+
+    /// The first evaluation that requires the whole frame, with its
+    /// differing input tables named separately in measured CPU labels.
+    fn block_inputs(&self, inputs: &Inputs, frame: &DecodedFrame) {
+        if self.blocked() {
+            return;
+        }
+        self.block("leaders.reject.kept-inputs");
+        let since = Since::span(
+            frame.branch,
+            frame.hour,
+            frame.hour,
+            Some(frame),
+            self.reduced,
+        );
+        rejected_inputs(inputs, &since);
     }
 
     /// Whether every input of `inputs`, which last read its value at `from`
@@ -868,10 +947,12 @@ impl Reuse<'_> {
         // every value it read is the whole frame's: it then took the same
         // steps and read the same values there. Otherwise the hour is
         // observed on its whole frame.
-        if let Some(kept) = hour.kept
-            && (check_reuse() || !kept.reads_whole(&inputs, frame, frame.hour))
-        {
-            kept.block();
+        if let Some(kept) = hour.kept {
+            if check_reuse() {
+                kept.block("leaders.reject.check-mode");
+            } else if !kept.reads_whole(&inputs, frame, frame.hour) {
+                kept.block_inputs(&inputs, frame);
+            }
         }
         if confirmed {
             // Check mode: the reused evaluation, run anyway, must not change.
@@ -949,7 +1030,7 @@ fn visible_reusing(
         if let Some(kept) = hour.kept
             && !kept.identity_whole()
         {
-            kept.block();
+            kept.block("leaders.reject.identity");
             return Err(None);
         }
         *read = Some(VisibilityRead {
@@ -972,7 +1053,9 @@ fn visible_reusing(
             Some(reuse) => reuse.decide(hour, row, visibility)?,
             // Evaluated every hour, never on a kept frame.
             None if hour.kept.is_some() => {
-                hour.kept.expect("kept frame").block();
+                hour.kept
+                    .expect("kept frame")
+                    .block("leaders.reject.no-reuse");
                 return Err(None);
             }
             None => Evaluator::new(hour.get()?, None).decide_leader_visibility(
@@ -1591,25 +1674,11 @@ pub(crate) fn battle_tables<'f>(
     let land = decoded
         .complete::<tables::LandCombatDetails>()
         .ok()
-        .filter(|_| {
-            slot_read(
-                format,
-                &decoded.metrics,
-                TableId::LandCombatDetails,
-                hour,
-            )
-        });
+        .filter(|_| slot_read(format, &decoded.metrics, TableId::LandCombatDetails, hour));
     let navy = decoded
         .complete::<tables::NavalCombatDetails>()
         .ok()
-        .filter(|_| {
-            slot_read(
-                format,
-                &decoded.metrics,
-                TableId::NavalCombatDetails,
-                hour,
-            )
-        });
+        .filter(|_| slot_read(format, &decoded.metrics, TableId::NavalCombatDetails, hour));
     (land, navy)
 }
 
@@ -1729,7 +1798,11 @@ impl Scan {
     }
     /// Read the admission holders again when the countries' slots and tags
     /// or the links may have changed (`moved`); whether they changed.
-    fn refresh_holders(&mut self, frame: &DecodedFrame, moved: &dyn Fn(&TableRead) -> bool) -> bool {
+    fn refresh_holders(
+        &mut self,
+        frame: &DecodedFrame,
+        moved: &dyn Fn(&TableRead) -> bool,
+    ) -> bool {
         let [countries_read, links_read] = reads().holders;
         let links_moved = moved(&links_read);
         if self.holders.is_some() && !links_moved && !moved(&countries_read) {
@@ -1888,8 +1961,10 @@ impl Scan {
         changes: &FrameChanges,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<()> {
-        self.observe_changes(decoded, replay, params, content, changes, changes, None, admit)
-            .map(drop)
+        self.observe_changes(
+            decoded, replay, params, content, changes, changes, None, admit,
+        )
+        .map(drop)
     }
 
     /// [`Self::observe`] with what changed since the hour before as `tables`
@@ -1917,6 +1992,7 @@ impl Scan {
         // Check mode reads every reused input again, which needs the whole
         // frame.
         if kept.is_some() && content.is_some() && check_reuse() {
+            block::rejected("leaders.reject.check-mode");
             return Ok(false);
         }
         let since = Since::hour_before(decoded, tables);
@@ -1926,11 +2002,9 @@ impl Scan {
         let inputs = LEADER_TABLES
             .iter()
             .chain(COMMAND_TABLES.iter().filter(|_| career));
-        let mask = inputs
-            .enumerate()
-            .fold(0u32, |mask, (index, table)| {
-                mask | (u32::from(changes.slot_read[table.index()]) << index)
-            });
+        let mask = inputs.enumerate().fold(0u32, |mask, (index, table)| {
+            mask | (u32::from(changes.slot_read[table.index()]) << index)
+        });
         let reads = reads();
         if moved(&reads.unit_leaders) {
             self.scoped_visibility = decoded.complete::<tables::UnitLeaders>().is_ok_and(|rows| {
@@ -2077,51 +2151,74 @@ impl Scan {
         content: Option<&Content>,
     ) -> bool {
         let Some(from) = first.checked_sub(1) else {
+            block::rejected("leaders.reject.quiet-first-hour");
             return false;
         };
-        if last < first
-            || !self.commands_continuous
-            || self.frontier != Some(from)
-            || self.read_mask.is_none()
-        {
+        if last < first {
+            block::rejected("leaders.reject.quiet-order");
+            return false;
+        }
+        if !self.commands_continuous {
+            block::rejected("leaders.reject.quiet-commands");
+            return false;
+        }
+        if self.frontier != Some(from) {
+            block::rejected("leaders.reject.quiet-frontier");
+            return false;
+        }
+        if self.read_mask.is_none() {
+            block::rejected("leaders.reject.quiet-read-mask");
             return false;
         }
         let since = Since::span(rows.branch, from, last, Some(rows), tables);
         let reads = reads();
-        if reads
+        if let Some(read) = reads
             .leaders
             .iter()
             .chain(&reads.holders)
             .chain(&reads.commands)
             .chain(&reads.results)
-            .any(|read| since.changed(read))
+            .find(|read| since.changed(read))
         {
+            block::rejected("leaders.reject.quiet-tables");
+            rejected_table(read.table);
             return false;
         }
         if self.scoped_visibility && content.is_some() {
             // As `visibility_carries` decides at each hour.
             if !self.reuse_evaluations {
+                block::rejected("leaders.reject.quiet-no-reuse");
                 return false;
             }
             let gap = core_gap(rows);
             if self.read_gap.as_ref().is_some_and(|read| gap != *read) {
+                block::rejected("leaders.reject.quiet-core-changed");
                 return false;
             }
             if !self.evaluated.is_empty() {
                 let Some(content) = content else {
+                    block::rejected("leaders.reject.quiet-no-content");
                     return false;
                 };
-                if content.catalogue.scripted_content().is_err() || gap.is_some() {
+                if content.catalogue.scripted_content().is_err() {
+                    block::rejected("leaders.reject.quiet-content");
+                    return false;
+                }
+                if gap.is_some() {
+                    block::rejected("leaders.reject.quiet-core-gap");
                     return false;
                 }
                 let leaders = &self.leaders;
-                if !self.evaluated.iter().all(|&index| {
-                    leaders[index]
-                        .evaluation
-                        .as_ref()
-                        .is_some_and(|evaluation| evaluation.inputs.unchanged(&since))
-                }) {
-                    return false;
+                for &index in &self.evaluated {
+                    let Some(evaluation) = &leaders[index].evaluation else {
+                        block::rejected("leaders.reject.quiet-no-evaluation");
+                        return false;
+                    };
+                    if !evaluation.inputs.unchanged(&since) {
+                        block::rejected("leaders.reject.quiet-inputs");
+                        rejected_inputs(&evaluation.inputs, &since);
+                        return false;
+                    }
                 }
                 for &index in &self.evaluated {
                     if let Some(evaluation) = &mut self.leaders[index].evaluation {
@@ -3753,8 +3850,8 @@ fn record_battles(
                 combat,
                 side,
             ));
-            *pending_bytes = pending_bytes
-                .saturating_add(std::mem::size_of::<(i32, i32, bool, u8, u64, u8)>());
+            *pending_bytes =
+                pending_bytes.saturating_add(std::mem::size_of::<(i32, i32, bool, u8, u64, u8)>());
         }
     }
     *previous_combats = combat_sets.map(|set| set.map(|set| (hour, set)));

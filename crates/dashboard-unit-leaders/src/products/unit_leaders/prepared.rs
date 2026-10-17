@@ -173,9 +173,7 @@ impl Prepared {
         rows: &DecodedFrame,
         content: Option<&Content>,
     ) -> io::Result<bool> {
-        if !self
-            .own(|state| state.scan.advance_quiet(first, last, tables, rows, content))
-        {
+        if !self.own(|state| state.scan.advance_quiet(first, last, tables, rows, content)) {
             return Ok(false);
         }
         self.series.advance_span(first, last)?;
