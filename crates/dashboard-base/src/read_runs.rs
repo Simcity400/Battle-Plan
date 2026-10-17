@@ -14,7 +14,7 @@
 
 use crate::products::country_groups::HourSpan;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::TS;
 
 /// One recorded value held over consecutive hours while unchanged. The raw value
@@ -41,6 +41,10 @@ pub struct ReadRuns<K: Ord + Copy> {
     pub overflowed: usize,
     carried: bool,
     frontier: Option<i32>,
+    /// Optional change collection for a consumer that publishes and prunes
+    /// the runs after each step. Rebuilt by use after restore.
+    #[serde(skip)]
+    changes: Option<BTreeSet<K>>,
     #[cfg(test)]
     #[serde(skip)]
     open_visits: usize,
@@ -56,6 +60,7 @@ impl<K: Ord + Copy> ReadRuns<K> {
             overflowed: 0,
             carried: false,
             frontier: None,
+            changes: None,
             #[cfg(test)]
             open_visits: 0,
         }
@@ -110,11 +115,25 @@ impl<K: Ord + Copy> ReadRuns<K> {
                     run.last_hour = hour
                 }
                 _ => {
+                    if let Some(changes) = &mut self.changes {
+                        changes.insert(key);
+                    }
                     runs.push(AmountRun {
                         first_hour: hour,
                         last_hour: hour,
                         amount_raw: value.map(|value| value.to_string()),
                     });
+                }
+            }
+        }
+        if let Some(changes) = &mut self.changes {
+            let mut current = totals.keys().peekable();
+            for &key in self.open.keys() {
+                while current.peek().is_some_and(|&&next| next < key) {
+                    current.next();
+                }
+                if current.peek().is_none_or(|&&next| next != key) {
+                    changes.insert(key);
                 }
             }
         }
@@ -200,7 +219,24 @@ impl<K: Ord + Copy> ReadRuns<K> {
     pub fn close(&mut self) {
         self.seal();
         self.carried = false;
+        if let Some(changes) = &mut self.changes {
+            changes.extend(self.open.keys().copied());
+        }
         self.open.clear();
+    }
+
+    /// Keys whose interval started or stopped since the preceding call.
+    /// The first call (also after restore) returns none: the consumer must
+    /// inspect its current runs once before collecting changes from then on.
+    /// Extending an equal interval changes only its endpoint, never its key.
+    pub fn take_changes(&mut self) -> Option<BTreeSet<K>> {
+        self.changes.replace(BTreeSet::new())
+    }
+
+    /// Whether the current change collection contains an interval change;
+    /// none before a consumer starts collecting, including after restore.
+    pub fn has_changes(&self) -> Option<bool> {
+        self.changes.as_ref().map(|changes| !changes.is_empty())
     }
 }
 

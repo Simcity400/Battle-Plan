@@ -695,6 +695,9 @@ pub(crate) struct Scan {
     /// whole-table observation drops it.
     #[serde(skip)]
     row_index: Option<RowIndex>,
+    #[cfg(test)]
+    #[serde(skip)]
+    flow_extensions: usize,
 }
 impl Scan {
     #[cfg(test)]
@@ -725,6 +728,27 @@ impl Scan {
         self.last_hour = Some(hour);
     }
     fn seal(&mut self) {
+        if self.known
+            && let Some(through) = self.last_hour
+        {
+            for &index in &self.active {
+                if let Some(run) = self.result.flows[index]
+                    .runs
+                    .last_mut()
+                    .filter(|run| run.last_hour < through)
+                {
+                    run.last_hour = through;
+                    #[cfg(test)]
+                    {
+                        self.flow_extensions += 1;
+                    }
+                }
+            }
+        }
+        self.seal_spans();
+    }
+    /// Shared read and refusal clocks, independent of individual flow endpoints.
+    fn seal_spans(&mut self) {
         let Some((from, through)) = self
             .materialized
             .zip(self.last_hour)
@@ -733,11 +757,6 @@ impl Scan {
             return;
         };
         if self.known {
-            for &index in &self.active {
-                if let Some(run) = self.result.flows[index].runs.last_mut() {
-                    run.last_hour = through;
-                }
-            }
             if let Some(span) = self.result.known.last_mut() {
                 span.last_hour = through;
             }
@@ -782,6 +801,8 @@ impl Scan {
             materialized,
             inputs,
             row_index: _,
+            #[cfg(test)]
+                flow_extensions: _,
         } = self;
         rejected.clear();
         active.clear();
@@ -1087,7 +1108,7 @@ impl Scan {
             }
             sums.push((flow, terms));
         }
-        self.seal();
+        self.seal_spans();
         self.materialized = Some(hour);
         self.last_hour = Some(hour);
         let mut skipped = 0_u32;
@@ -1117,6 +1138,15 @@ impl Scan {
         for (flow, terms) in sums {
             let existing = flows.get(&flow).copied();
             let was_active = existing.is_some_and(|at| active.contains(&at));
+            if let Some(at) = existing.filter(|_| was_active)
+                && let Some(run) = result.flows[at].runs.last_mut()
+            {
+                run.last_hour = hour - 1;
+                #[cfg(test)]
+                {
+                    self.flow_extensions += 1;
+                }
+            }
             let Some(terms) = terms else {
                 if let Some(at) = existing.filter(|_| was_active) {
                     active.remove(&at);
@@ -1166,12 +1196,8 @@ impl Scan {
             }
             touched.insert(at, was_active);
         }
-        // Every other active flow continues with the same terms and holders.
-        for &at in active.iter() {
-            if let Some(run) = result.flows[at].runs.last_mut() {
-                run.last_hour = hour;
-            }
-        }
+        // Other active flows hold through last_hour and materialize at the
+        // next whole-table observation or publication, without a visit here.
         Ok(Some(touched))
     }
 }

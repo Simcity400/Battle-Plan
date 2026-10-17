@@ -6,6 +6,47 @@ use replay::{
 use std::sync::atomic::Ordering;
 
 #[test]
+fn country_read_keys_use_the_recorded_mask_for_balance_only_changes() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let mut frame = frame(0, 200, 3);
+    let mut encoder = replay::frame::FrameEncoder::new();
+    let mut decoder = replay::frame::FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut held = None;
+    for hour in 0..=2 {
+        frame.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            if hour == 1 {
+                rows[100].political_power_raw = Some(100);
+            }
+            if hour == 2 {
+                rows[100].tag = b"changed alias".to_vec();
+            }
+        }
+        let wire = Arc::new(encoder.encode(frame.clone(), hour == 0).unwrap());
+        let decoded = decoder.advance(&wire).unwrap();
+        let changes =
+            tracker.observe_updates(decoded, wire, replay::format::FormatVersion::CURRENT);
+        let countries = decoded.complete::<tables::Countries>().unwrap();
+        if let Some(reads) = &held {
+            let reads: &CountryReads = reads;
+            let before = reads.comparisons.load(Ordering::Relaxed);
+            assert_eq!(
+                reads.matches_changes(decoded, countries, Some(&changes)),
+                hour == 1
+            );
+            if hour == 1 {
+                assert_eq!(reads.comparisons.load(Ordering::Relaxed), before);
+            }
+        } else {
+            held = Some(CountryReads::new(decoded, countries));
+        }
+    }
+}
+
+#[test]
 fn country_reads_country_key_changes_share_the_unchanged_link_map() {
     let mut frame = frame(0, 3, 3);
     let reads = CountryReads::new(&frame, frame.complete::<tables::Countries>().unwrap());

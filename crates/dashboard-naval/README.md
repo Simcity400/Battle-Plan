@@ -30,6 +30,11 @@ at; `Scan::observe_details_read` observes a frame without the kit, where a
 ship first found stops preparation
 (`ships_sunk::battle_titles::Prepared::observe_read`).
 
+Fleet-name projection watches combat provinces and unit references, task-force
+fleet references and stored fleet names. Recorded edits to positioning, duration,
+movement or other fields do not repeat that projection. Changes of keys or
+availability and snapshots rebuild it from the accepted frame.
+
 A branch's newest naval battle window is prepared before forward preparation
 from its last block and a look-back proven to hold every fact its page carries
 ([products/naval_battles/newest.rs](src/products/naval_battles/newest.rs)),

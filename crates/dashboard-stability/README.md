@@ -10,5 +10,10 @@ at the crates that own it ([dashboard-base](../dashboard-base/README.md),
 The [dashboard](../dashboard/README.md) re-exports them at the old
 `dashboard::` paths, registers them, and prepares and queries them in its pipeline.
 
+The parts observer updates its country naming projection from recorded appearance
+row changes. Only name, cosmetic tag and original-tag operands rename parts;
+other appearance fields retain that projection. Snapshots, availability changes
+and resume rebuild it from the complete table.
+
 `cargo test -p dashboard-stability` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation for the dashboard's tests.

@@ -98,6 +98,9 @@ pub fn top_membership_exact<R>(
 }
 
 /// Publish rank positions from the same sweep and comparison used by top membership.
+/// Callbacks retain every input run boundary, in hour order and then rank
+/// order: callers select native instances at the interval's first hour, and
+/// an unseeded series batch takes its first hour from its first callback.
 pub fn rank_positions<R>(
     series: &BTreeMap<String, Vec<R>>,
     span: impl Fn(&R) -> (i32, i32),

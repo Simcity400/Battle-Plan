@@ -182,6 +182,8 @@ pub struct CountryReads {
     slots: Arc<HashMap<u32, u32>>,
     holders: BTreeMap<String, Option<(u32, u32)>>,
     partners: BTreeMap<u32, Option<String>>,
+    #[cfg(test)]
+    comparisons: std::sync::atomic::AtomicUsize,
 }
 
 impl CountryReads {
@@ -226,6 +228,8 @@ impl CountryReads {
             slots,
             holders,
             partners,
+            #[cfg(test)]
+            comparisons: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -247,6 +251,9 @@ impl CountryReads {
                 .iter()
                 .zip(countries)
                 .all(|((id, slot, tag), country)| {
+                    #[cfg(test)]
+                    self.comparisons
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     *id == country.id && *slot == country.canonical_slot && *tag == country.tag
                 })
     }
@@ -257,10 +264,20 @@ impl CountryReads {
         countries: &[CountryRow],
         changes: Option<&crate::prepared::frame_changes::FrameChanges>,
     ) -> bool {
+        static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+            crate::prepared::frame_changes::field_mask(
+                TableId::Countries,
+                &["canonical_slot", "tag"],
+            )
+        });
         self.links.is(&frame.tables[TableId::CountryLinks.index()])
             && (changes.is_some_and(|changes| {
-                !changes.rows_changed[TableId::Countries.index()]
-                    && !changes.table_read[TableId::Countries.index()]
+                self.countries.len() == countries.len()
+                    && changes
+                        .rows(TableId::Countries)
+                        .is_some_and(|(changed, deleted)| {
+                            deleted.is_empty() && changed.iter().all(|row| row.mask & *FIELDS == 0)
+                        })
             }) || self.matches(frame, countries))
     }
 }

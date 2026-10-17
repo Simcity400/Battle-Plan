@@ -42,6 +42,21 @@ lookup holds each distinct payload's BLAKE3 digest and raw length and refers
 to compressed bytes already in the batch; raw buffers are released after
 each key.
 
+Numeric keys with equal runs, incoming summaries and canonical open run also
+reuse summary construction: their input digest finds the encoded payload and
+next partial summaries already produced in that batch. Event keys build their
+payloads individually. Per-key counters remain in their own directories.
+
+Prepared rank positions use the top-membership sweep. Each input run boundary
+starts another callback interval, even when ranks stay equal: callers select
+the native country instance from that interval's first hour. Intervals publish
+in hour order, then rank order, so an unseeded series batch starts at its earliest
+ranked hour. Countries without a known value remain absent, and tags break ties
+in recorded UTF-8 order.
+Country holder joins use recorded country field masks to keep the same keys
+through balance changes; snapshots, key edits and link changes compare their
+ordinary operands.
+
 A series family adopts the dashboard's block pre-pass through shared recording
 ([prepared/series.rs](src/prepared/series.rs)). Its extract marks its accumulators `record_as`, and from
 the block's second hour every call they receive (advances as spans of

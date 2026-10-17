@@ -1,6 +1,296 @@
 use super::*;
 use dashboard_core::test_fixtures::{replay, stockpile_frame};
 
+// A synthetic authored result already held in the content binding's cache.
+fn resolved_content() -> Content {
+    let kinds = catalogue::KeyedResults::default();
+    kinds
+        .get_or_init(&"mod_equipment_1".to_owned(), |_| {
+            Ok(Kind {
+                key: "mod_equipment".into(),
+                domain: Domain::Land,
+                requires_available: false,
+            })
+        })
+        .unwrap();
+    Content {
+        database: Some(Arc::new(Database::default())),
+        kinds: Some(Arc::new(kinds)),
+    }
+}
+
+fn classification_frame(variants: bool) -> DecodedFrame {
+    use replay::rows::{LogisticsEquipmentRow, TableRows};
+    let mut frame = stockpile_frame(
+        dashboard_core::test_fixtures::slot_hour(TableId::Stockpiles),
+        true,
+        &[(10, 100)],
+        Some(&[]),
+    );
+    frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+    frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = 1;
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![]));
+    if !variants {
+        *frame.tables[TableId::Stockpiles.index()] =
+            TableView::Complete(TableRows::Stockpiles(vec![]));
+        *frame.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![]));
+    }
+    *frame.tables[TableId::LogisticsEquipment.index()] =
+        TableView::Complete(TableRows::LogisticsEquipment(vec![LogisticsEquipmentRow {
+            country: 11,
+            archetype: 1,
+            token: 1,
+            balance_raw: -5,
+            stock_raw: 7,
+            available_raw: replay::rows::Recorded::Value(Some(3)),
+        }]));
+    frame
+}
+
+#[test]
+fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
+    use replay::rows::{LexicalTokenRow, TableRows};
+    for variants in [false, true] {
+        let content = resolved_content();
+        let mut frame = classification_frame(variants);
+        let first = frame.hour;
+        let format = replay(vec![frame.clone()]).format;
+        let mut prepared = Prepared::default();
+        prepared.bind_content(&content);
+        prepared.observe(format, &frame).unwrap();
+        assert_eq!(prepared.choices.completeness["GER"][1..], [false, false]);
+        // Restoring discards runtime caches; published groups and continuation
+        // state still match preparation that keeps them.
+        let mut reference: Prepared =
+            serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        reference.bind_content(&content);
+        frame.hour += 1;
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 1,
+                literal: b"mod_equipment_1".to_vec(),
+            }]));
+        prepared.observe(format, &frame).unwrap();
+        reference.observe(format, &frame).unwrap();
+        assert_eq!(prepared.holders["GER"].tokens[&1], "mod_equipment_1");
+        assert_eq!(prepared.choices.completeness["GER"], [true; 3]);
+        let group = series::field_key("type", "mod_equipment");
+        assert!(prepared.holders["GER"].groups.contains_key(&group));
+        let projected = prepared.numbers.projected;
+        frame.hour += 1;
+        prepared.observe(format, &frame).unwrap();
+        reference.observe(format, &frame).unwrap();
+        assert_eq!(prepared.numbers.projected, projected);
+        let flag = AtomicBool::new(false);
+        let actual = dashboard_base::prepared::series::tests::Fixture::new();
+        let expected = dashboard_base::prepared::series::tests::Fixture::new();
+        for (state, fixture) in [(&mut prepared, &actual), (&mut reference, &expected)] {
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        dashboard_base::prepared::series::tests::assert_payloads_equal(
+            &actual.payloads(),
+            &expected.payloads(),
+            "learned classifications with repeating numeric runs",
+        );
+        assert_eq!(
+            serde_json::to_value(&prepared).unwrap(),
+            serde_json::to_value(&reference).unwrap(),
+        );
+        let keys = prepared.numbers.group_keys("GER", &group);
+        for (slot, expected) in [Some(if variants { 100 } else { 0 }), Some(-5), Some(8)]
+            .into_iter()
+            .enumerate()
+        {
+            let mut reader = Reader::new(
+                &actual.store,
+                &actual.key,
+                format!("stockpile-1-group-{}", MEASURES[slot]),
+                &flag,
+            )
+            .unwrap();
+            for hour in first + 1..=first + 2 {
+                assert_eq!(
+                    reader
+                        .value_at(keys[slot], hour)
+                        .unwrap()
+                        .map(|run| run.value),
+                    expected,
+                    "{} at {hour}, variants={variants}",
+                    MEASURES[slot],
+                );
+            }
+            let complete = prepared.numbers.complete_keys("GER")[slot];
+            assert_eq!(
+                reader
+                    .value_at(complete, first + 1)
+                    .unwrap()
+                    .map(|run| run.value),
+                Some(0),
+            );
+        }
+        // Losing and recovering coverage changes completeness even though
+        // every numeric operand returns with exactly its previous value.
+        let logistics = frame.tables[TableId::LogisticsEquipment.index()].clone();
+        frame.hour += 1;
+        *frame.tables[TableId::LogisticsEquipment.index()] = TableView::Unavailable {
+            reason: "synthetic missing logistics read".into(),
+        };
+        prepared.observe(format, &frame).unwrap();
+        assert_eq!(prepared.choices.completeness["GER"][1..], [false, false]);
+        frame.hour += 1;
+        frame.tables[TableId::LogisticsEquipment.index()] = logistics;
+        prepared.observe(format, &frame).unwrap();
+        assert_eq!(prepared.choices.completeness["GER"], [true; 3]);
+    }
+}
+
+#[test]
+fn repeating_reads_reclassify_a_changed_content_binding() {
+    use replay::rows::{LexicalTokenRow, TableRows};
+    for variants in [false, true] {
+        let mut frame = classification_frame(variants);
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 1,
+                literal: b"mod_equipment_1".to_vec(),
+            }]));
+        let format = replay(vec![frame.clone()]).format;
+        let mut prepared = Prepared::default();
+        prepared.observe(format, &frame).unwrap();
+        let content = resolved_content();
+        prepared.bind_content(&content);
+        // A new binding cannot be skipped as a quiet span or a repeated row read.
+        assert!(
+            !prepared
+                .advance_quiet(frame.hour + 1, frame.hour + 2)
+                .unwrap()
+        );
+        frame.hour += 1;
+        prepared.observe(format, &frame).unwrap();
+        assert_eq!(prepared.choices.completeness["GER"], [true; 3]);
+        assert!(
+            prepared.holders["GER"]
+                .groups
+                .contains_key(&series::field_key("type", "mod_equipment"))
+        );
+        let projected = prepared.numbers.projected;
+        frame.hour += 1;
+        prepared.bind_content(&content);
+        prepared.observe(format, &frame).unwrap();
+        assert_eq!(prepared.numbers.projected, projected);
+    }
+}
+
+#[test]
+fn logistics_coverage_loss_closes_known_totals_with_unchanged_completeness_across_resume() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::rows::{LexicalTokenRow, LogisticsEquipmentRow, TableRows};
+
+    let content = resolved_content();
+    let mut initial = classification_frame(false);
+    let first = initial.hour;
+    *initial.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 1,
+            literal: b"mod_equipment_1".to_vec(),
+        }]));
+    if let TableView::Complete(TableRows::LogisticsEquipment(rows)) =
+        &mut *initial.tables[TableId::LogisticsEquipment.index()]
+    {
+        rows.push(LogisticsEquipmentRow {
+            country: 11,
+            archetype: 2,
+            token: 2,
+            balance_raw: -9,
+            stock_raw: 4,
+            available_raw: replay::rows::Recorded::Value(Some(2)),
+        });
+    }
+    let frames: Vec<_> = (0..=4)
+        .map(|offset| {
+            let mut frame = initial.clone();
+            frame.hour += offset;
+            if offset > 0 {
+                frame.metrics.table_ns.fill(0);
+            }
+            if (1..=2).contains(&offset) {
+                *frame.tables[TableId::LogisticsEquipment.index()] = TableView::Unavailable {
+                    reason: "synthetic coverage loss without a supplying read".into(),
+                };
+            } else if offset == 3 {
+                frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let format = replay(frames.clone()).format;
+    let flag = AtomicBool::new(false);
+    let uninterrupted = dashboard_base::prepared::series::tests::Fixture::new();
+    let restored = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut prepared = Prepared::default();
+    let mut resumed = Prepared::default();
+    prepared.bind_content(&content);
+    resumed.bind_content(&content);
+    let mut tracker = FrameChangeTracker::new();
+    for frame in &frames {
+        let changes = tracker.observe(frame, format);
+        if (first + 1..=first + 2).contains(&frame.hour) {
+            assert!(!changes.slot_read[TableId::LogisticsEquipment.index()]);
+            assert!(!changes.slot_read[TableId::Stockpiles.index()]);
+            assert!(!changes.slot_read[TableId::VariantDefinitions.index()]);
+        }
+        for (state, fixture) in [(&mut prepared, &uninterrupted), (&mut resumed, &restored)] {
+            state.observe_changed(format, frame, &changes).unwrap();
+            assert_eq!(state.choices.completeness["GER"], [true, false, false]);
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        dashboard_base::prepared::series::tests::assert_payloads_equal(
+            &uninterrupted.payloads(),
+            &restored.payloads(),
+            "logistics coverage loss, uninterrupted versus restore after every hour",
+        );
+        assert_eq!(
+            serde_json::to_value(&prepared).unwrap(),
+            serde_json::to_value(&resumed).unwrap(),
+            "continuation state at {}",
+            frame.hour,
+        );
+        resumed = serde_json::from_slice(&serde_json::to_vec(&resumed).unwrap()).unwrap();
+        resumed.bind_content(&content);
+    }
+    let group = series::field_key("type", "mod_equipment");
+    let keys = prepared.numbers.group_keys("GER", &group);
+    for fixture in [&uninterrupted, &restored] {
+        for (slot, value) in [(1, -5), (2, 8)] {
+            let mut reader = Reader::new(
+                &fixture.store,
+                &fixture.key,
+                format!("stockpile-1-group-{}", MEASURES[slot]),
+                &flag,
+            )
+            .unwrap();
+            for offset in 0..=4 {
+                assert_eq!(
+                    reader
+                        .value_at(keys[slot], first + offset)
+                        .unwrap()
+                        .map(|run| run.value),
+                    (!(1..=2).contains(&offset)).then_some(value),
+                    "{} at {}",
+                    MEASURES[slot],
+                    first + offset,
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn logistics_representatives_preserve_absence_required_available_and_duplicate_policy() {
     let mut required = classification("required");

@@ -115,10 +115,10 @@ pub(super) struct Choices {
     logistics: BTreeMap<String, Logistics>,
     #[cfg(test)]
     #[serde(skip)]
-    work: dashboard_base::prepared::observer_tests::Work,
+    pub(super) work: dashboard_base::prepared::observer_tests::Work,
     #[serde(skip)]
     content: Content,
-    /// Each classified variant's two groups while its classification holds.
+    /// Each classified variant's two groups in the current content binding.
     #[serde(skip)]
     variant_groups: BTreeMap<u64, [String; 2]>,
 }
@@ -582,8 +582,21 @@ impl Choices {
         }
         Ok(())
     }
-    pub(super) fn bind_content(&mut self, content: &Content) {
+    pub(super) fn bind_content(&mut self, content: &Content) -> bool {
+        fn same<T>(old: &Option<Arc<T>>, new: &Option<Arc<T>>) -> bool {
+            match (old, new) {
+                (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        let changed = !same(&self.content.database, &content.database)
+            || !same(&self.content.kinds, &content.kinds);
+        if changed {
+            self.variant_groups.clear();
+        }
         self.content = content.clone();
+        changed
     }
     fn classification(&self, token: &str) -> Classification {
         let kind = self
@@ -626,12 +639,9 @@ impl Choices {
         Ok(())
     }
     fn classify_one(&mut self, id: u64, token: &str, hour: i32) -> io::Result<()> {
-        if let Some(current) = self
-            .metadata
-            .current
-            .get_mut(&id)
-            .filter(|span| span.classification.token == token)
-        {
+        if let Some(current) = self.metadata.current.get_mut(&id).filter(|span| {
+            span.classification.token == token && self.variant_groups.contains_key(&id)
+        }) {
             current.last = hour;
             return Ok(());
         }
@@ -659,10 +669,11 @@ impl Choices {
                 last: hour,
                 classification,
             };
-            self.variant_groups.remove(&id);
         } else {
             current.last = hour;
         }
+        self.variant_groups
+            .insert(id, current.classification.groups(Some(id)));
         Ok(())
     }
     /// Whether the variant's classification, and so its groups, changed at `hour`.
@@ -682,8 +693,19 @@ impl Choices {
         numbers: &mut Numbers,
     ) -> io::Result<()> {
         for &id in scanned.stock.runs.keys().chain(scanned.daily.runs.keys()) {
-            if !self.metadata.current.contains_key(&id) {
-                self.classify_one(id, names.token(id), hour)?;
+            if !self.variant_groups.contains_key(&id) {
+                let classification = self.classification(names.token(id));
+                if self
+                    .metadata
+                    .current
+                    .get(&id)
+                    .is_none_or(|span| span.classification != classification)
+                {
+                    self.classify_one(id, names.token(id), hour)?;
+                } else {
+                    self.variant_groups
+                        .insert(id, classification.groups(Some(id)));
+                }
             }
         }
         let current_logistics = self.logistics(tag, holder, scanned, hour);
@@ -702,12 +724,6 @@ impl Choices {
             })
             .copied()
             .collect();
-        for &id in &ids {
-            if !self.variant_groups.contains_key(&id) {
-                let groups = self.metadata.current[&id].classification.groups(Some(id));
-                self.variant_groups.insert(id, groups);
-            }
-        }
         let variants: Vec<(u64, &Classification, &[String; 2])> = ids
             .iter()
             .map(|id| {
@@ -745,15 +761,6 @@ impl Choices {
             .spans
             .last()
             .is_some_and(|span| span.last_hour == hour);
-        let changed = scanned.reads.last() == Some(&hour)
-            || scanned.logistics_reads.last() == Some(&hour)
-            || [&scanned.stock.spans, &scanned.balance.spans]
-                .iter()
-                .any(|spans| spans.last().is_some_and(|span| span.first_hour == hour))
-            || ids.iter().any(|id| self.metadata.current[id].first == hour)
-            || groups
-                .iter()
-                .any(|group| !holder.groups.contains_key(group));
         // Before a group first appears its stock is zero only with complete coverage.
         let complete = stock_known
             && variants.iter().all(|&(id, classification, _)| {
@@ -831,22 +838,20 @@ impl Choices {
             7 => operand(&scanned.available, id as u32, hour),
             _ => unreachable!(),
         };
-        let measured = if changed {
-            evaluate_groups(
-                &groups,
-                &variants,
-                &logistics,
-                stock_known,
-                balance_known,
-                retained,
-                &read,
-            )?
-        } else {
-            Vec::new()
-        };
+        // Coverage can change a group's totals while completeness stays the same.
+        // Every observed holder evaluates its groups, including nonsupplying hours.
+        let measured = evaluate_groups(
+            &groups,
+            &variants,
+            &logistics,
+            stock_known,
+            balance_known,
+            retained,
+            &read,
+        )?;
         // The one-pass totals are each group's own evaluation.
         #[cfg(test)]
-        if changed {
+        {
             let all: BTreeMap<_, _> = variants
                 .iter()
                 .map(|&(id, classification, _)| (id, classification.clone()))
@@ -864,13 +869,10 @@ impl Choices {
                 assert_eq!(*values, expected, "{tag} {group} at {hour}");
             }
         }
-        for (index, group) in groups.iter().enumerate() {
+        for (group, values) in groups.iter().zip(&measured) {
             if !holder.groups.contains_key(group) {
                 holder.groups.insert(group.clone(), hour);
             }
-            let Some(values) = measured.get(index) else {
-                continue;
-            };
             #[cfg(test)]
             {
                 self.work.history_visits += 1;

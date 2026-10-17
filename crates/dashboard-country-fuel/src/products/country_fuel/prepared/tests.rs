@@ -4,6 +4,35 @@ use dashboard_base::prepared::series::tests::Fixture;
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
 use replay::{container::Replay, frame::TableView, rows::TableRows};
 
+#[test]
+fn fuel_country_keys_skip_balance_only_recorded_deltas() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut frame = dashboard_base::test_fixtures::scale_frame(1, 100, 200);
+    let mut encoder = replay::frame::FrameEncoder::new();
+    let mut decoder = replay::frame::FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut scan = Scan::default();
+    for hour in 100..=102 {
+        frame.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[100].political_power_raw = Some(i64::from(hour));
+        }
+        let wire = Arc::new(encoder.encode(frame.clone(), hour == 100).unwrap());
+        let decoded = decoder.advance(&wire).unwrap();
+        let changes = tracker.observe_updates(decoded, wire, format);
+        let before = scan
+            .country_keys
+            .as_ref()
+            .map_or(0, |keys| keys.row_visits());
+        scan.observe_changes(decoded, format, &changes, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(scan.country_keys.as_ref().unwrap().row_visits(), before);
+    }
+}
+
 fn observer_work(prepared: &Prepared) -> dashboard_base::prepared::observer_tests::Work {
     use dashboard_base::prepared::observer_tests::Work;
     let scan = prepared.scan.work;
@@ -1264,7 +1293,12 @@ fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
     // Germany's fuel grows at each daily slot.
     let fuel = |hour: i32| {
         let day = i64::from((hour - slot).div_euclid(24));
-        (655_360_000 + 65_536 * day, 655_360_000 * 2, 1_000_000 + day, 65_536)
+        (
+            655_360_000 + 65_536 * day,
+            655_360_000 * 2,
+            1_000_000 + day,
+            65_536,
+        )
     };
     let (first, last) = (slot - 5, slot + 100);
     // A read off the clock (another table of the slot timed), Germany's

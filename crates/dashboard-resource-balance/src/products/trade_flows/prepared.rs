@@ -2647,10 +2647,16 @@ mod tests {
 
         frame.hour = 102;
         deal(&mut frame, u64::from(count / 2)).delivered += 1;
+        let extensions = prepared.scan.flow_extensions;
         assert_eq!(
             step(&mut prepared, &frame),
             (1, 1, 2, 0, 1),
             "only the changed deal is read and only its flow publishes its start and amount"
+        );
+        assert_eq!(
+            prepared.scan.flow_extensions - extensions,
+            1,
+            "other flows keep their deferred endpoints"
         );
 
         // Its seller's own fields change too: no country is compared.
@@ -2903,6 +2909,11 @@ mod tests {
             for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
                 let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
                 observer.observe_changed(&decoded, &changes).unwrap();
+            }
+            // Publication materializes open native endpoints. Compare that
+            // canonical state, including every untouched flow's endpoint.
+            for observer in &mut observers {
+                observer.scan.seal();
             }
             let [changed, whole] = &observers;
             assert_eq!(

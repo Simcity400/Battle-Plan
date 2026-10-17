@@ -24,6 +24,14 @@ or a change to table availability, holders or dictionary, rebuilds the whole
 projection. Continuation JSON uses the hourly branch writer's shared buffered
 compression helper.
 
+Within a continuing holder's coverage, numeric projection and pruning visit
+only the keys whose value interval started or stopped. Equal reads retain their
+dated read events and diagnostic counts without projecting unchanged numeric
+keys. Each observed holder evaluates its group totals from the current members,
+classifications and coverage, including hours without a supplying read. Runtime
+numeric change collections rebuild after restore and are not part of the saved
+state.
+
 `cargo test -p dashboard-equipment-stockpile` builds and runs only this crate's
 tests.
 

@@ -398,9 +398,81 @@ struct Scan {
     #[serde(skip)]
     appearances_read: bool,
     #[serde(skip)]
+    appearances_complete: bool,
+    #[serde(skip)]
     line_dates: BTreeMap<u32, i32>,
 }
+fn appearance(row: &replay::rows::CountryAppearanceRow) -> replay::rows::CountryAppearanceRow {
+    replay::rows::CountryAppearanceRow {
+        country: row.country,
+        name_tag: row.name_tag.clone(),
+        cosmetic_tag: row.cosmetic_tag.clone(),
+        original_tag: row.original_tag.clone(),
+        original_tag_reference: row.original_tag_reference,
+        ..Default::default()
+    }
+}
+
 impl Scan {
+    /// The naming projection of changed appearance rows. Other appearance
+    /// fields do not rename a part; a new row still enters the projection.
+    fn apply_appearances(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        delta: Option<country_stability::Delta<'_>>,
+        dirty: &mut BTreeSet<u32>,
+    ) -> bool {
+        let (true, Some((changed, deleted)), Ok(rows)) = (
+            self.appearances_complete,
+            delta,
+            decoded.complete::<tables::CountryAppearance>(),
+        ) else {
+            return false;
+        };
+        static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+            dashboard_base::prepared::frame_changes::field_mask(
+                TableId::CountryAppearance,
+                &[
+                    "name_tag",
+                    "cosmetic_tag",
+                    "original_tag",
+                    "original_tag_reference",
+                ],
+            )
+        });
+        let found = changed
+            .iter()
+            .filter_map(|row| {
+                (row.mask & *FIELDS != 0 || !self.appearances.contains_key(&(row.key as u32)))
+                    .then_some(row.key)
+            })
+            .map(|key| {
+                rows.binary_search_by_key(&(key as u32), |row| row.country)
+                    .ok()
+                    .map(|at| &rows[at])
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(found) = found else {
+            return false;
+        };
+        #[cfg(test)]
+        {
+            self.native.work.row_visits += found.len();
+        }
+        for row in found {
+            let next = appearance(row);
+            if self.appearances.get(&row.country) != Some(&next) {
+                self.appearances.insert(row.country, next);
+                dirty.insert(row.country);
+            }
+        }
+        for &key in deleted {
+            if self.appearances.remove(&(key as u32)).is_some() {
+                dirty.insert(key as u32);
+            }
+        }
+        true
+    }
     /// This hour's stability lines from the hour's recorded changes to them
     /// (`delta`), when the hour before's lines are held: only the countries
     /// those rows name are grouped again from this hour's rows, and those
@@ -558,7 +630,13 @@ impl Scan {
             self.lines = next;
         }
         let mut naming_changed = BTreeSet::new();
-        if changed(TableId::CountryAppearance) {
+        if changed(TableId::CountryAppearance)
+            && !self.apply_appearances(
+                decoded,
+                delta(TableId::CountryAppearance),
+                &mut naming_changed,
+            )
+        {
             let rows = decoded.complete::<tables::CountryAppearance>().ok();
             #[cfg(test)]
             {
@@ -567,19 +645,7 @@ impl Scan {
             let next: BTreeMap<_, _> = rows
                 .into_iter()
                 .flatten()
-                .map(|row| {
-                    (
-                        row.country,
-                        replay::rows::CountryAppearanceRow {
-                            country: row.country,
-                            name_tag: row.name_tag.clone(),
-                            cosmetic_tag: row.cosmetic_tag.clone(),
-                            original_tag: row.original_tag.clone(),
-                            original_tag_reference: row.original_tag_reference,
-                            ..Default::default()
-                        },
-                    )
-                })
+                .map(|row| (row.country, appearance(row)))
                 .collect();
             if self.appearances_read {
                 naming_changed.extend(
@@ -596,6 +662,7 @@ impl Scan {
                 self.appearances_read = true;
             }
             self.appearances = next;
+            self.appearances_complete = rows.is_some();
         }
         if changed(TableId::ReservedCountryNaming) {
             naming_changed.extend(self.native.slots.get(&0).into_iter().flatten().copied());

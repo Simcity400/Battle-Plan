@@ -6,6 +6,53 @@ use replay::{
 };
 
 #[test]
+fn appearance_projection_visits_only_changed_naming_rows() {
+    use super::*;
+    use dashboard_base::prepared::frame_changes::field_mask;
+    use replay::rows::{CountryAppearanceRow, DeltaRow};
+    let mut scan = Scan {
+        appearances_read: true,
+        appearances_complete: true,
+        appearances: (0..200)
+            .map(|country| {
+                (
+                    country,
+                    CountryAppearanceRow {
+                        country,
+                        cosmetic_tag: b"original".to_vec(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut frame = appearance_frame(100, true, None);
+    let mut rows: Vec<_> = scan.appearances.values().cloned().collect();
+    rows[7].cosmetic_tag = b"changed".to_vec();
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(rows));
+    let row = DeltaRow {
+        key: 7,
+        mask: field_mask(TableId::CountryAppearance, &["cosmetic_tag"]),
+        format: replay::format::FormatVersion::CURRENT.version(),
+        recorded_fields: 0,
+        values: Vec::new(),
+    };
+    let mut dirty = BTreeSet::new();
+    assert!(scan.apply_appearances(&frame, Some((&[row], &[])), &mut dirty));
+    assert_eq!(dirty, BTreeSet::from([7]));
+    assert_eq!(scan.native.work.row_visits, 1);
+    assert_eq!(scan.appearances[&7].cosmetic_tag, b"changed");
+    dirty.clear();
+    assert!(scan.apply_appearances(&frame, Some((&[], &[8])), &mut dirty));
+    assert_eq!(dirty, BTreeSet::from([8]));
+    assert!(!scan.appearances.contains_key(&8));
+    scan.appearances_complete = false;
+    assert!(!scan.apply_appearances(&frame, Some((&[], &[])), &mut dirty));
+}
+
+#[test]
 fn stability_parts_add_up_to_the_value_and_are_known_only_where_recorded() {
     use crate::products::stability_parts::scan_parts;
     use dashboard_base::products::country_groups::HourSpan;

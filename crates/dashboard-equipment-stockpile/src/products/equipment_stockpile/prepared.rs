@@ -50,6 +50,9 @@ struct Numbers {
     /// spelling their names; rebuilt by use after restore.
     #[serde(skip)]
     resolved: BTreeMap<String, HolderKeys>,
+    #[cfg(test)]
+    #[serde(skip)]
+    projected: usize,
 }
 
 /// One holder's series keys. Keys allocated together here are allocated
@@ -62,6 +65,7 @@ struct HolderKeys {
     operands: [BTreeMap<u64, u64>; 8],
     complete: Option<[u64; 3]>,
     groups: BTreeMap<String, [u64; 4]>,
+    known: [Option<bool>; 8],
 }
 
 /// The key named `field` of `tag`, allocated in first-use order.
@@ -656,7 +660,10 @@ impl Prepared {
         choices::Content::load(source, content)
     }
     pub fn bind_content(&mut self, content: &choices::Content) {
-        self.choices.bind_content(content);
+        if self.choices.bind_content(content) {
+            // Repeated rows can still resolve to different groups in a new binding.
+            self.rows = None;
+        }
     }
 
     pub fn flush(
@@ -1057,11 +1064,16 @@ impl Numbers {
             resolved,
             ..
         } = self;
-        let resolved = &mut holder_keys(resolved, tag).operands[field];
+        let changes = rows.take_changes();
         let span = rows.spans.last().filter(|span| span.last_hour == hour);
         let starts = span.is_some_and(|span| span.first_hour == hour);
-        let changed: BTreeSet<_> = if span.is_none() || starts {
+        let holder = holder_keys(resolved, tag);
+        let coverage_changed = holder.known[field].replace(span.is_some()) != Some(span.is_some());
+        let resolved = &mut holder.operands[field];
+        let changed: BTreeSet<_> = if coverage_changed || starts {
             ids.clone()
+        } else if let Some(changes) = changes {
+            changes.into_iter().chain(added.iter().copied()).collect()
         } else {
             // Within a continuing span a value that neither started nor ended
             // at this hour is the one already carried: only the others change.
@@ -1076,6 +1088,10 @@ impl Numbers {
                 .collect()
         };
         for id in &changed {
+            #[cfg(test)]
+            {
+                self.projected += 1;
+            }
             let key = *resolved
                 .entry((*id).into())
                 .or_insert_with(|| allocate(keys, tag, &format!("{}:{id}", FIELDS[field])));
@@ -1130,13 +1146,16 @@ impl Numbers {
         }
         // ReadRuns retains its own open/carry state. Closed history is already in
         // Accumulator; retaining one current interval is sufficient for the step.
-        rows.runs.retain(|_, runs| {
+        for id in &changed {
+            let Some(runs) = rows.runs.get_mut(id) else {
+                continue;
+            };
             if runs.last().is_none_or(|run| run.last_hour != hour) {
-                return false;
+                rows.runs.remove(id);
+            } else {
+                runs.drain(..runs.len().saturating_sub(1));
             }
-            runs.drain(..runs.len().saturating_sub(1));
-            true
-        });
+        }
         rows.spans.drain(..rows.spans.len().saturating_sub(1));
     }
 

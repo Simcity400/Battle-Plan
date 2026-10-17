@@ -18,5 +18,10 @@ keep their dashboard paths and name what they use at the crates that own it
 `dashboard::products::` paths, registers them, and prepares and queries them in
 its pipeline.
 
+Changed trade exchanges update only their flows' native endpoints. Other active
+flows hold through the accepted frontier and materialize before a whole-table
+observation or publication. Shared coverage and refusal clocks advance separately.
+Hourly signed trade integrals still consume every active flow's terms.
+
 `cargo test -p dashboard-resource-balance` builds and runs only this crate's
 tests.

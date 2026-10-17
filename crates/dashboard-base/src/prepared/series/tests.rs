@@ -1650,10 +1650,11 @@ fn series_flush_reuses_equal_payloads_after_restore_and_append() {
             fixture.writer()
         };
         let before = BLOB_WORK.with(|work| *work.borrow());
+        let built = PAYLOAD_WORK.with(std::cell::Cell::get);
         values.flush(&mut writer, "repeated", 0, &flag).unwrap();
         let after = BLOB_WORK.with(|work| *work.borrow());
         assert!(
-            after.1 > before.1,
+            after.1 > before.1 || PAYLOAD_WORK.with(std::cell::Cell::get) - built < 128,
             "batch {batch} reused no compressed bytes"
         );
         writer.commit().unwrap();
@@ -2316,4 +2317,51 @@ fn constant_open_buckets_save_as_alignments_and_publish_as_whole_buckets_do() {
         "constant key saved {compact} vs whole {kept} bytes"
     );
     assert!(saved.len() < whole_saved.len());
+}
+
+#[test]
+fn equal_numeric_inputs_build_one_payload_before_summary_work() {
+    let mut accumulator = Accumulator::default();
+    accumulator.advance(10).unwrap();
+    for key in 0..200 {
+        accumulator.observe(key, 10, Some(0), false);
+    }
+    accumulator.advance_span(11, 1000).unwrap();
+    PAYLOAD_WORK.with(|work| work.set(0));
+    published(&mut accumulator);
+    assert_eq!(PAYLOAD_WORK.with(std::cell::Cell::get), 1);
+}
+
+#[test]
+fn reused_numeric_payloads_keep_batch_bytes_and_restored_summaries() {
+    let prepare = |whole| {
+        WHOLE_PAYLOADS.with(|cell| cell.set(whole));
+        let mut accumulator = Accumulator::default();
+        let mut results = Vec::new();
+        for (first, last) in [(-7, 35), (36, 70), (72, 106)] {
+            for hour in first..=last {
+                accumulator.advance(hour).unwrap();
+                for key in 0..128 {
+                    let value = match key % 5 {
+                        0 => Some(0),
+                        1 => Some(i128::from(i64::MAX) + 123),
+                        2 => Some(i128::from(i64::MIN) - 123),
+                        3 => (hour % 11 != 0).then_some(i128::from(hour / 3)),
+                        _ => Some(i128::from(hour)),
+                    };
+                    accumulator.observe(key, hour, value, hour % 23 == 0);
+                    if key % 5 == 4 && hour % 7 == 0 {
+                        accumulator.event(key, hour, &(key, hour)).unwrap();
+                    }
+                }
+            }
+            let (_, pages) = published(&mut accumulator);
+            let saved = serde_json::to_vec(&accumulator).unwrap();
+            results.push((pages, saved.clone()));
+            accumulator = serde_json::from_slice(&saved).unwrap();
+        }
+        WHOLE_PAYLOADS.with(|cell| cell.set(false));
+        results
+    };
+    assert_eq!(prepare(false), prepare(true));
 }

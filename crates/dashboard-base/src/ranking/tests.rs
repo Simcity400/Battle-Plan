@@ -137,6 +137,91 @@ fn clipping_visits_borrowed_values_once_and_propagates_refusal_and_cancellation(
 use std::cell::Cell;
 
 #[test]
+fn rank_callbacks_preserve_adjacent_country_instances_at_the_same_position() {
+    let series = BTreeMap::from([("tag".to_owned(), vec![(0, 0, 10, 7_u64), (1, 1, 10, 8)])]);
+    let mut callbacks = Vec::new();
+    rank_positions(
+        &series,
+        |sample| (sample.0, sample.1),
+        |sample| Some(sample.2),
+        &AtomicBool::new(false),
+        |rank, tag, first, last| {
+            let instance = series[tag]
+                .iter()
+                .find(|sample| sample.0 <= first && first <= sample.1)
+                .unwrap()
+                .3;
+            callbacks.push((rank, first, last, instance));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(callbacks, [(0, 0, 0, 7), (0, 1, 1, 8)]);
+}
+
+#[test]
+fn rank_callbacks_publish_unseeded_batch_bytes_in_hour_then_rank_order() {
+    use crate::prepared::series::{Accumulator, Reader, Run, tests::Fixture};
+    let series = BTreeMap::from([
+        ("z".to_owned(), vec![(0, 10, 10_i128)]),
+        ("a".to_owned(), vec![(5, 10, 5)]),
+    ]);
+    let mut callbacks = Vec::new();
+    let flag = AtomicBool::new(false);
+    rank_positions(
+        &series,
+        |run| (run.0, run.1),
+        |run| Some(run.2),
+        &flag,
+        |rank, tag, first, last| {
+            callbacks.push((rank, tag.to_owned(), first, last));
+            Ok(())
+        },
+    )
+    .unwrap();
+    let expected = vec![
+        (0, "z".to_owned(), 0, 4),
+        (0, "z".to_owned(), 5, 10),
+        (1, "a".to_owned(), 5, 10),
+    ];
+    // The naval rank writer does not seed its first hour. Each callback
+    // writes the tag at its rank, then that tag's inverse rank.
+    let publish = |callbacks: &[(usize, String, i32, i32)]| {
+        let fixture = Fixture::new();
+        let mut ranks = Accumulator::default();
+        for (rank, tag, first, last) in callbacks {
+            let key = if tag == "a" { 0_u64 } else { 1 };
+            ranks.push(
+                *rank as u64 * 2,
+                Run::new(*first, *last, i128::from(key), false),
+            );
+            ranks.push(
+                key * 2 + 1,
+                Run::new(*first, *last, *rank as i128 + 1, false),
+            );
+        }
+        ranks.through(10);
+        let mut writer = fixture.writer();
+        ranks.flush(&mut writer, "ranks", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        (fixture, serde_json::to_vec(&ranks).unwrap())
+    };
+    let (actual, state) = publish(&callbacks);
+    let (expected_pages, expected_state) = publish(&expected);
+    let pages = actual.payloads();
+    let header = &pages[&("ranks".to_owned(), 0)];
+    assert_eq!(i32::from_le_bytes(header[..4].try_into().unwrap()), 0);
+    assert_eq!(i32::from_le_bytes(header[4..8].try_into().unwrap()), 10);
+    assert_eq!(pages, expected_pages.payloads());
+    assert_eq!(state, expected_state);
+    assert_eq!(callbacks, expected);
+    let mut reader = Reader::new(&actual.store, &actual.key, "ranks".to_owned(), &flag).unwrap();
+    for hour in 0..=4 {
+        assert_eq!(reader.value_at(0, hour).unwrap().unwrap().value, 1);
+    }
+}
+
+#[test]
 fn ranking_sparse_changes_read_each_run_once_at_many_boundaries() {
     let mut series: BTreeMap<_, _> = (0..5000)
         .map(|index| (format!("country/{index:04}"), vec![(0, 15, Some(0i128))]))

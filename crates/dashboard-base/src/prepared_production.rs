@@ -1159,7 +1159,7 @@ impl ProductionAccumulator {
             let same = rows.is_some_and(|rows| {
                 self.country_reads
                     .as_ref()
-                    .is_some_and(|seen| seen.matches(frame, rows))
+                    .is_some_and(|seen| seen.matches_changes(frame, rows, Some(changes)))
             });
             if !same {
                 self.country_reads = rows.map(|rows| {

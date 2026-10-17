@@ -845,6 +845,8 @@ struct Scan {
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
     #[serde(skip)]
+    country_count: Option<usize>,
+    #[serde(skip)]
     slots: Option<std::collections::HashMap<u32, u32>>,
     #[serde(skip)]
     state_owners: Option<Vec<u32>>,
@@ -905,6 +907,23 @@ impl Scan {
                 changes.rows_changed[TableId::Countries.index()]
                     && countries.is_none_or(|countries| {
                         self.country_keys.as_ref().is_none_or(|keys| {
+                            static FIELDS: std::sync::LazyLock<u64> =
+                                std::sync::LazyLock::new(|| {
+                                    dashboard_base::prepared::frame_changes::field_mask(
+                                        TableId::Countries,
+                                        &["canonical_slot", "tag"],
+                                    )
+                                });
+                            if self.country_count == Some(countries.len())
+                                && changes.rows(TableId::Countries).is_some_and(
+                                    |(changed, deleted)| {
+                                        deleted.is_empty()
+                                            && changed.iter().all(|row| row.mask & *FIELDS == 0)
+                                    },
+                                )
+                            {
+                                return false;
+                            }
                             #[cfg(any(test, feature = "test-support"))]
                             let before = keys.row_visits();
                             let same = keys.same(countries);
@@ -917,6 +936,7 @@ impl Scan {
                     })
             });
         if countries_changed {
+            self.country_count = countries.map(<[_]>::len);
             self.country_keys = countries.map(|countries| {
                 #[cfg(any(test, feature = "test-support"))]
                 {

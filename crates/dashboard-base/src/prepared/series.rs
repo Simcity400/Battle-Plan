@@ -1153,6 +1153,8 @@ impl Batch {
         put(&mut bytes, 8, &(self.keys.len() as u64).to_le_bytes());
         let mut states = BTreeMap::new();
         let mut blobs = HashMap::new();
+        let mut payloads = HashMap::<[u8; 32], (usize, usize, [Option<Partial>; 4])>::new();
+        let mut identity = Vec::new();
         for (index, (key, mut rows)) in self.keys.into_iter().enumerate() {
             check_cancel(cancelled)?;
             let at = HEADER as usize + index * DIRECTORY as usize;
@@ -1178,6 +1180,28 @@ impl Batch {
                     .map_or(first, |run| run.last_hour)
                     .to_le_bytes(),
             );
+            // Numeric keys often hold the same runs and incoming summaries.
+            // Reuse their payload before building its buckets, keeping every
+            // key's directory, canonical counters and separate byte extent.
+            let input = rows
+                .events
+                .is_empty()
+                .then(|| payload_input(&rows, decimals, &mut identity));
+            #[cfg(test)]
+            let input = input.filter(|_| !WHOLE_PAYLOADS.with(std::cell::Cell::get));
+            if let Some((start, length, partial)) =
+                input.and_then(|input| payloads.get(&input).copied())
+            {
+                let offset = bytes.len();
+                bytes.extend_from_within(start..start + length);
+                put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
+                rows.state.partial = partial;
+                states.insert(key, rows.state);
+                continue;
+            }
+            #[cfg(test)]
+            PAYLOAD_WORK.with(|work| work.set(work.get() + 1));
             let mut raw = Vec::new();
             let (mut hour, mut value) = (0_i128, 0_i128);
             for run in &rows.runs {
@@ -1266,13 +1290,49 @@ impl Batch {
                     previous = aligned;
                 }
             }
+            let offset = bytes.len();
             blob(&mut bytes, at + 8, raw, &mut blobs)?;
+            if let Some(input) = input {
+                payloads.insert(input, (offset, bytes.len() - offset, rows.state.partial));
+            }
             states.insert(key, rows.state);
         }
         check_cancel(cancelled)?;
         writer.write(section, bytes.as_slice())?;
         Ok(states)
     }
+}
+
+/// Identity of the operands that produce a numeric key's payload and next
+/// partial summaries. Batch bounds and decimals are shared by every key.
+/// Canonical counters live only in the directory, not in the payload.
+fn payload_input(rows: &Rows, decimals: u8, bytes: &mut Vec<u8>) -> [u8; 32] {
+    bytes.clear();
+    bytes.extend_from_slice(&(rows.runs.len() as u64).to_le_bytes());
+    for run in rows.runs.iter().copied().chain(rows.state.last) {
+        bytes.extend_from_slice(&run.first_hour.to_le_bytes());
+        bytes.extend_from_slice(&run.last_hour.to_le_bytes());
+        bytes.extend_from_slice(&run.value.to_le_bytes());
+        bytes.push(u8::from(run.break_before));
+    }
+    bytes.push(u8::from(rows.state.last.is_some()));
+    for partial in rows.state.partial {
+        bytes.push(u8::from(partial.is_some()));
+        if let Some(partial) = partial {
+            let aligned = partial.aligned();
+            bytes.extend_from_slice(&aligned.to_le_bytes());
+            encode_bucket(bytes, Some(partial.bucket(decimals)), aligned);
+        }
+    }
+    *blake3::hash(bytes).as_bytes()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Build every key's payload, including repeated numeric inputs.
+    static WHOLE_PAYLOADS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Key payloads actually built, before compression reuse.
+    static PAYLOAD_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
     bytes[at..at + value.len()].copy_from_slice(value);

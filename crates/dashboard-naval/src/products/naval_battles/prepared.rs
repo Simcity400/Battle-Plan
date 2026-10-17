@@ -51,8 +51,52 @@ pub(super) struct DetailPreparation {
     retention: Option<sinkings::RetentionProgress>,
     #[serde(skip)]
     configured: bool,
+    #[serde(skip)]
+    fleet_inputs: Option<[Option<usize>; 4]>,
 }
 impl DetailPreparation {
+    /// Fleet labels read combat province and unit references, task-force
+    /// fleet references and stored fleet names. Moving ships and changing
+    /// combat quantities do not rename those fleets.
+    fn fleet_inputs_changed(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
+        const TABLES: [TableId; 4] = [
+            TableId::NavalCombats,
+            TableId::NavalCombatDetails,
+            TableId::TaskForces,
+            TableId::Fleets,
+        ];
+        static FIELDS: std::sync::LazyLock<[u64; 4]> = std::sync::LazyLock::new(|| {
+            use dashboard_base::prepared::frame_changes::field_mask;
+            [
+                field_mask(TABLES[0], &["province"]),
+                field_mask(TABLES[1], &["province", "sides"]),
+                field_mask(TABLES[2], &["fleet"]),
+                field_mask(TABLES[3], &["name"]),
+            ]
+        });
+        let counts = [
+            frame
+                .complete::<tables::NavalCombats>()
+                .ok()
+                .map(<[_]>::len),
+            frame
+                .complete::<tables::NavalCombatDetails>()
+                .ok()
+                .map(<[_]>::len),
+            frame.complete::<tables::TaskForces>().ok().map(<[_]>::len),
+            frame.complete::<tables::Fleets>().ok().map(<[_]>::len),
+        ];
+        let changed = self.fleet_inputs.is_none_or(|before| {
+            before != counts
+                || TABLES.into_iter().zip(*FIELDS).any(|(table, fields)| {
+                    changes.rows(table).is_none_or(|(changed, deleted)| {
+                        !deleted.is_empty() || changed.iter().any(|row| row.mask & fields != 0)
+                    })
+                })
+        });
+        self.fleet_inputs = Some(counts);
+        changed
+    }
     fn configure(
         &mut self,
         source: &Source,
@@ -268,18 +312,9 @@ impl Scan {
         }
         details.ships.scan.ship_reads.clear();
         details.ships.scan.convoy_reads.clear();
-        let fleet_tables = [
-            TableId::NavalCombats,
-            TableId::NavalCombatDetails,
-            TableId::TaskForces,
-            TableId::Fleets,
-        ];
         // Equal acquisitions still supply census/read proof above, but cannot
         // change this fixed-content name projection. Rebuild only changed rows.
-        if !fleet_tables
-            .iter()
-            .any(|table| frame_changes.rows_changed[table.index()])
-        {
+        if !details.fleet_inputs_changed(frame, frame_changes) {
             return Ok(());
         }
         for (&combat, &index) in &self.combats {
@@ -885,4 +920,81 @@ fn missing_fleets(reason: &str) -> [NavalBattleFleetNames; 2] {
         names: Vec::new(),
         unknown: Some(reason.into()),
     })
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use replay::{
+        frame::TableView,
+        rows::{FleetRow, NavalCombatDetailsRow, NavalCombatRow, TableRows, TaskForceRow},
+    };
+
+    #[test]
+    fn fleet_projection_ignores_movement_and_combat_quantity_deltas() {
+        let mut frame = dashboard_base::test_fixtures::source(1, 8, Some(1));
+        *frame.tables[TableId::NavalCombats.index()] =
+            TableView::Complete(TableRows::NavalCombats(vec![NavalCombatRow {
+                id: 1,
+                province: 45,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::NavalCombatDetails.index()] =
+            TableView::Complete(TableRows::NavalCombatDetails(vec![NavalCombatDetailsRow {
+                combat: 1,
+                province: 45,
+                custom_sea: Some(vec![]),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::TaskForces.index()] =
+            TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
+                id: 1,
+                fleet: 1,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::Fleets.index()] =
+            TableView::Complete(TableRows::Fleets(vec![FleetRow {
+                id: 1,
+                ..Default::default()
+            }]));
+        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut decoder = replay::frame::FrameDecoder::new();
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        let mut details = DetailPreparation::default();
+        for hour in 8..=10 {
+            frame.hour = hour;
+            if hour == 9 {
+                if let TableView::Complete(TableRows::NavalCombats(rows)) =
+                    &mut *frame.tables[TableId::NavalCombats.index()]
+                {
+                    rows[0].attacker_positioning += 1;
+                }
+                if let TableView::Complete(TableRows::NavalCombatDetails(rows)) =
+                    &mut *frame.tables[TableId::NavalCombatDetails.index()]
+                {
+                    rows[0].duration += 1;
+                }
+                if let TableView::Complete(TableRows::TaskForces(rows)) =
+                    &mut *frame.tables[TableId::TaskForces.index()]
+                {
+                    rows[0].province += 1;
+                }
+                if let TableView::Complete(TableRows::Fleets(rows)) =
+                    &mut *frame.tables[TableId::Fleets.index()]
+                {
+                    rows[0].home_base += 1;
+                }
+            } else if hour == 10
+                && let TableView::Complete(TableRows::TaskForces(rows)) =
+                    &mut *frame.tables[TableId::TaskForces.index()]
+            {
+                rows[0].fleet += 1;
+            }
+            let wire = Arc::new(encoder.encode(frame.clone(), hour == 8).unwrap());
+            let decoded = decoder.advance(&wire).unwrap();
+            let changes =
+                tracker.observe_updates(decoded, wire, replay::format::FormatVersion::CURRENT);
+            assert_eq!(details.fleet_inputs_changed(decoded, &changes), hour != 9);
+        }
+    }
 }

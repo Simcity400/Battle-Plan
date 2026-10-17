@@ -6,6 +6,70 @@ use replay::{
 };
 
 #[test]
+fn numeric_projection_visits_only_keys_whose_interval_changed() {
+    let ids: BTreeSet<u64> = (0..200).collect();
+    let mut numbers = Numbers::default();
+    let mut rows = ReadRuns::new();
+    rows.read(10, ids.iter().map(|&id| (id, Some(7))));
+    numbers.advance(10).unwrap();
+    numbers.values("mod holder", 0, 10, &mut rows, &ids, &ids);
+    assert_eq!(numbers.projected, 200);
+    for hour in 11..=20 {
+        rows.read(
+            hour,
+            ids.iter()
+                .map(|&id| (id, Some(if id == 0 { i64::from(hour) } else { 7 }))),
+        );
+        numbers.advance(hour).unwrap();
+        let before = numbers.projected;
+        numbers.values("mod holder", 0, hour, &mut rows, &ids, &BTreeSet::new());
+        assert_eq!(numbers.projected - before, 1);
+        assert!(rows.runs.values().all(|runs| runs.len() == 1));
+    }
+    // Missing rows become known absence once, and do not keep revisiting
+    // retired keys on subsequent continuing reads.
+    rows.read(21, [(0, Some(21))]);
+    numbers.advance(21).unwrap();
+    numbers.values("mod holder", 0, 21, &mut rows, &ids, &BTreeSet::new());
+    assert_eq!(rows.runs.len(), 1);
+    rows.read(22, [(0, Some(22))]);
+    numbers.advance(22).unwrap();
+    let before = numbers.projected;
+    numbers.values("mod holder", 0, 22, &mut rows, &ids, &BTreeSet::new());
+    assert_eq!(numbers.projected - before, 1);
+}
+
+#[test]
+fn repeated_numeric_reads_skip_numeric_projection_and_evaluate_groups() {
+    let first = slot_hour(TableId::Stockpiles);
+    let mut frame = stockpile_frame(first, true, &[(10, 100)], Some(&[(10, 100, 1, 0)]));
+    frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+    frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = 1;
+    *frame.tables[TableId::LogisticsEquipment.index()] =
+        TableView::Complete(TableRows::LogisticsEquipment(vec![LogisticsEquipmentRow {
+            country: 11,
+            archetype: 1,
+            token: 1,
+            balance_raw: -5,
+            stock_raw: 7,
+            available_raw: replay::rows::Recorded::Value(Some(3)),
+        }]));
+    let format = replay(vec![frame.clone()]).format;
+    let mut prepared = Prepared::default();
+    prepared.observe(format, &frame).unwrap();
+    let before = prepared.choices.work.history_visits;
+    let projected = prepared.numbers.projected;
+    for offset in 1..=10 {
+        frame.hour = first + offset;
+        // Whole-table observation exercises the projection even when every
+        // numeric value repeats; reads still have their own dated events.
+        prepared.observe(format, &frame).unwrap();
+    }
+    assert_eq!(prepared.numbers.projected, projected);
+    assert!(prepared.choices.work.history_visits > before);
+}
+
+#[test]
 fn stockpile_observer_work_is_flat_over_carried_hours_and_retired_country_aliases() {
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker,

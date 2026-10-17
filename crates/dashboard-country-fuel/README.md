@@ -14,6 +14,10 @@ at the crates that own it ([dashboard-base](../dashboard-base/README.md),
 re-exports the module at `dashboard::products::country_fuel`, registers it, and
 prepares and queries it in its pipeline.
 
+The country-key join uses recorded row field masks to retain its keys through
+balance-only country changes. Country key edits, link changes and snapshots
+rebuild or compare the ordinary join; runtime joins rebuild after restore.
+
 `cargo test -p dashboard-country-fuel` builds and runs only these products'
 tests. The `test-support` feature compiles their test oracles and instrumentation
 for the dashboard's tests.
