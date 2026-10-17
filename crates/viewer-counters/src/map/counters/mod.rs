@@ -118,6 +118,8 @@ use {
 };
 
 mod base_windows;
+/// How many base icon families the counters draw, one pool view each.
+pub const BASE_FAMILIES: usize = base_windows::FAMILIES;
 mod bases;
 pub mod combat_markers;
 pub mod faction_pings;
@@ -159,6 +161,9 @@ pub const LAND_WINDOW: &str = "unit_counter";
 use viewer_foundation::map::native_windows::NAVY_WINDOW;
 pub const STACK_WINDOW: &str = "unit_mapicon";
 use viewer_foundation::map::native_windows::AIR_BASE_WINDOW;
+use viewer_foundation::map::native_windows::{
+    GUN_EMPLACEMENT_WINDOW, RADAR_WINDOW, ROCKET_SITE_WINDOW,
+};
 /// its `bg_btn` is replaced per facility.
 use viewer_foundation::map::native_windows::FACILITY_WINDOW;
 use viewer_foundation::map::native_windows::NAVAL_BASE_WINDOW;
@@ -268,6 +273,8 @@ pub struct CounterDefines {
     pub land_combat_cutoff: f32,
     /// `NGraphics.NAVAL_COMBAT_DISTANCE_CUTOFF`.
     pub naval_combat_cutoff: f32,
+    /// `NGraphics.RADAR_ICON_DISTANCE_CUTOFF`: radar icons draw strictly below it.
+    pub radar_cutoff: f32,
     /// Select coarse grouping strictly above the content distance threshold:
     /// `MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE`, and `..._STRATEGIC` in the map modes with
     /// strategic grouping ([`Visibility::strategic_grouping`]).
@@ -305,6 +312,7 @@ impl CounterDefines {
                 as f32,
             land_combat_cutoff: number("LAND_COMBAT_DISTANCE_CUTOFF")?,
             naval_combat_cutoff: number("NAVAL_COMBAT_DISTANCE_CUTOFF")?,
+            radar_cutoff: number("RADAR_ICON_DISTANCE_CUTOFF")?,
             coarse_distance: [
                 int("MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE")?,
                 int("MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE_STRATEGIC")?,
@@ -355,10 +363,12 @@ impl CounterDefines {
         naval_mission_cutoff: 1500.0,
         land_combat_cutoff: 1500.0,
         naval_combat_cutoff: 1500.0,
+        radar_cutoff: 1100.0,
         coarse_distance: [350.0, 350.0],
         // The default table's: units, groups, victory points, air and naval bases, naval
-        // headquarters, facilities, land and naval combats, naval results and missions, capitals.
-        priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5]),
+        // headquarters, facilities, land and naval combats, naval results and missions, capitals,
+        // rocket sites, gun emplacements and strategic locations.
+        priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10]),
         groups: GroupDefines::VANILLA,
         split_selected_limit: 12,
         naval_counts: viewer_foundation::map::naval_count_approx::Defines::VANILLA,
@@ -1172,10 +1182,11 @@ pub struct CounterContent {
     /// Each province's anchor for every slot `map/unitstacks.txt` leaves out
     /// ([`CounterContent::seed_default_anchors`]).
     pub default_anchors: Arc<BTreeMap<u32, [f32; 3]>>,
-    /// Each air-base province's icon, by province: every province with an
-    /// admitted `map/buildings.txt` record whose bucket holds an `air_base`
-    /// type owns one ([`SiteSlots::air_base_icons`]).
-    pub air_bases: BTreeMap<u32, building_facts::AirBaseIcon>,
+    /// Each listed province's air-base, rocket-site and gun-emplacement icon,
+    /// by base kind and province: every province with an admitted
+    /// `map/buildings.txt` record whose bucket holds a type of the kind owns
+    /// one ([`SiteSlots::site_icons`]).
+    pub site_icons: Arc<[BTreeMap<u32, building_facts::SiteIcon>; building_facts::ICON_KINDS]>,
     /// First is_port building slot in province order.
     ports: BTreeMap<u32, [f32; 3]>,
     /// The naval-HQ and special-facility icons' templates and anchor records.
@@ -1273,7 +1284,13 @@ impl CounterContent {
             |x, z| provinces.at(x, z),
             |spawn, slot, province| admit(spawn, slot, province) == SlotAdmission::Admitted,
         );
-        let air_bases = sites.air_base_icons().clone();
+        let site_icons = Arc::new([
+            building_facts::AIR_BASE,
+            building_facts::ROCKET_SITE,
+            building_facts::GUN_EMPLACEMENT,
+            building_facts::RADAR,
+        ]
+        .map(|kind| sites.site_icons(kind).clone()));
         let building_icons = BuildingIconContent::load(
             &definitions,
             &building_slots,
@@ -1338,7 +1355,7 @@ impl CounterContent {
             anchors: Arc::new(anchors),
             stack_scales,
             default_anchors: Arc::new(BTreeMap::new()),
-            air_bases,
+            site_icons,
             ports,
             building_icons,
             kinds: Arc::new(
@@ -1427,13 +1444,15 @@ impl CounterContent {
         self.default_anchors.contains_key(&province) && seeded_only(&self.anchors, province, kind)
     }
 
-    /// Every air-base province's icon: its province, the state whose base it
-    /// shows, and its world anchor, or why it has none. An icon no record
-    /// places stands on the province's unit-stack slot 0.
-    pub fn air_base_icons(
+    /// Every listed province's icon of base `kind`: its province, the state
+    /// whose base of that kind it shows, and its world anchor, or why it has
+    /// none. An icon no record places stands on the province's unit-stack
+    /// slot 0.
+    pub fn site_icons(
         &self,
+        kind: usize,
     ) -> impl Iterator<Item = (u32, u32, Result<[f32; 3], String>)> + '_ {
-        self.air_bases.iter().map(|(&province, icon)| {
+        self.site_icons[kind].iter().map(|(&province, icon)| {
             let anchor = match &icon.anchor {
                 Ok(building_facts::IconAnchor::Record(at)) => Ok(*at),
                 Ok(building_facts::IconAnchor::Province) => self
@@ -1857,12 +1876,15 @@ pub struct CounterReport {
     /// no participant on either side is shown to this perspective.
     pub no_intel_combats: usize,
     pub air_bases: usize,
-    /// All offered air-base icons the viewing country's fog of war hides, including
-    /// off-screen anchors ([`Vision::sees_air_base`]).
+    /// All offered air-base, rocket-site and gun-emplacement icons the viewing country's
+    /// fog of war hides, including off-screen anchors ([`Vision::sees_air_base`]).
     pub hidden_air_bases: usize,
     pub naval_bases: usize,
     pub naval_headquarters: usize,
     pub facilities: usize,
+    pub rocket_sites: usize,
+    pub gun_emplacements: usize,
+    pub radars: usize,
     /// Naval base, naval-HQ and facility icons an unknown or refused input kept from being
     /// drawn, by reason.
     pub unknown_bases: BaseUnknowns,
@@ -1958,6 +1980,9 @@ impl CounterReport {
             + self.naval_bases
             + self.naval_headquarters
             + self.facilities
+            + self.rocket_sites
+            + self.gun_emplacements
+            + self.radars
             + self.naval_counters) as u32
     }
 
@@ -2206,6 +2231,9 @@ impl CounterReport {
             naval_bases,
             naval_headquarters,
             facilities,
+            rocket_sites,
+            gun_emplacements,
+            radars,
             unknown_bases,
             unresolved_facility_sprites,
             icon_gui_notes,
@@ -2287,6 +2315,9 @@ impl CounterReport {
         self.naval_bases = *naval_bases;
         self.naval_headquarters = *naval_headquarters;
         self.facilities = *facilities;
+        self.rocket_sites = *rocket_sites;
+        self.gun_emplacements = *gun_emplacements;
+        self.radars = *radars;
         // Both change only when an icon's reason or sprite does; compare first so unchanged
         // maps cost no allocation.
         if self.unknown_bases != *unknown_bases {
@@ -2927,7 +2958,7 @@ impl PreparedCounters {
         time: f32,
         naval: &mut naval_windows::Windows,
         pings: &mut PoolView,
-        bases: &mut [PoolView; 3],
+        bases: &mut [PoolView; base_windows::FAMILIES],
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
         let Self { fixed, land, drawn } = self;

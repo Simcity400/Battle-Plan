@@ -3144,6 +3144,12 @@ struct Slot {
 pub enum MapIconPool {
     /// Type 5, the air base icon: 0xC0.
     AirBase,
+    /// Type 6, the rocket site icon: 0x80.
+    RocketSite,
+    /// Type 7, the gun emplacement icon: 0x80.
+    GunEmplacement,
+    /// Type 17, the radar icon: 0x40.
+    Radar,
     /// Type 8, the naval base icon: 0xC0.
     Base,
     /// Type 9, the naval combat icon: 0x20.
@@ -3175,8 +3181,13 @@ impl MapIconPool {
             Self::Label => 0xA0,
             Self::AirBase | Self::Base | Self::Capital => 0xC0,
             Self::Combat => 0x20,
-            Self::CombatResults | Self::Mission | Self::Headquarter => 0x40,
-            Self::Raid | Self::Ping | Self::Facility | Self::LandCombat => 0x80,
+            Self::CombatResults | Self::Mission | Self::Headquarter | Self::Radar => 0x40,
+            Self::Raid
+            | Self::Ping
+            | Self::Facility
+            | Self::LandCombat
+            | Self::RocketSite
+            | Self::GunEmplacement => 0x80,
         }
     }
 }

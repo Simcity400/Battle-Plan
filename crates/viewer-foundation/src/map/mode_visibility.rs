@@ -75,10 +75,13 @@ pub enum PriorityIcon {
     NavalCombatResults,
     NavalMission,
     Capital,
+    RocketSite,
+    GunEmplacement,
+    StrategicLocation,
 }
 
 impl PriorityIcon {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 15] = [
         Self::UnitsStack,
         Self::UnitsStackGroup,
         Self::VictoryPoints,
@@ -91,6 +94,9 @@ impl PriorityIcon {
         Self::NavalCombatResults,
         Self::NavalMission,
         Self::Capital,
+        Self::RocketSite,
+        Self::GunEmplacement,
+        Self::StrategicLocation,
     ];
 
     pub fn suffix(self) -> &'static str {
@@ -107,6 +113,9 @@ impl PriorityIcon {
             Self::NavalCombatResults => "NAVAL_COMBAT_RESULTS",
             Self::NavalMission => "NAVAL_MISSION",
             Self::Capital => "CAPITAL",
+            Self::RocketSite => "ROCKET_SITE",
+            Self::GunEmplacement => "GUN_EMPLACEMENT",
+            Self::StrategicLocation => "STRATEGIC_LOCATION",
         }
     }
 }

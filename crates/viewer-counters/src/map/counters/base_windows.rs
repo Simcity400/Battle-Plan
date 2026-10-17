@@ -1,4 +1,5 @@
-//! Air-base, headquarters and facility windows, on the native map-icon pools.
+//! Air-base, rocket-site, gun-emplacement, headquarters and facility windows, on the
+//! native map-icon pools.
 
 use super::*;
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ use viewer_foundation::map::{
 
 #[derive(Default)]
 pub(super) struct PreparedBases {
-    placed: [Vec<Placed>; 3],
+    placed: [Vec<Placed>; FAMILIES],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,17 @@ pub(super) enum Family {
     AirBase,
     Headquarter,
     Facility,
+    RocketSite,
+    GunEmplacement,
+    Radar,
 }
+
+/// How many [`Family`] kinds there are, one pool view each.
+pub(super) const FAMILIES: usize = 6;
+
+/// The radar icon's priority: the game's per-mode priority tables leave the
+/// radar icon's entry zero in every mode, and no define sets it.
+pub(super) const RADAR_PRIORITY: i8 = 0;
 
 struct Placed {
     id: u32,
@@ -60,7 +71,10 @@ impl PreparedBases {
             return;
         };
         let cutoff = match family {
-            Family::AirBase => inputs.content.defines.air_base_cutoff,
+            Family::AirBase | Family::RocketSite | Family::GunEmplacement => {
+                inputs.content.defines.air_base_cutoff
+            }
+            Family::Radar => inputs.content.defines.radar_cutoff,
             Family::Headquarter | Family::Facility => inputs.content.defines.facility_cutoff,
         };
         self.placed[family as usize].push(Placed {
@@ -76,7 +90,7 @@ impl PreparedBases {
     pub(super) fn draw(
         &self,
         inputs: &CounterInputs<'_>,
-        views: &mut [PoolView; 3],
+        views: &mut [PoolView; FAMILIES],
         time: f32,
         countries: Option<&Countries>,
         batch: &mut Batch,
@@ -110,6 +124,19 @@ impl PreparedBases {
                 MapIconPool::Facility,
                 inputs.priority(PriorityIcon::Facility),
             ),
+            (
+                Family::RocketSite,
+                ROCKET_SITE_WINDOW,
+                MapIconPool::RocketSite,
+                inputs.priority(PriorityIcon::RocketSite),
+            ),
+            (
+                Family::GunEmplacement,
+                GUN_EMPLACEMENT_WINDOW,
+                MapIconPool::GunEmplacement,
+                inputs.priority(PriorityIcon::GunEmplacement),
+            ),
+            (Family::Radar, RADAR_WINDOW, MapIconPool::Radar, RADAR_PRIORITY),
         ];
         let mut layouts = Vec::new();
         for &(family, name, kind, priority) in &families {
@@ -169,6 +196,9 @@ impl PreparedBases {
                         Family::AirBase => report.air_bases += 1,
                         Family::Headquarter => report.naval_headquarters += 1,
                         Family::Facility => report.facilities += 1,
+                        Family::RocketSite => report.rocket_sites += 1,
+                        Family::GunEmplacement => report.gun_emplacements += 1,
+                        Family::Radar => report.radars += 1,
                     }
                 }
                 Err(why) => count_refused(&mut report.icon_gui_notes, name, &[why]),
@@ -212,6 +242,13 @@ struct Controls<'a> {
 }
 
 fn bind(root: &native::Element, family: Family) -> Result<Controls<'_>, String> {
+    if family == Family::Radar {
+        // The radar window's one control is its efficiency icon.
+        let button = root
+            .find(native::Kind::Icon, RADAR_WINDOW)
+            .ok_or_else(|| format!("no icon named {RADAR_WINDOW}"))?;
+        return Ok(Controls { button, air: None });
+    }
     // Air-base, headquarters and facility controls use window-local lookup.
     let button = root
         .find(native::Kind::Button, "bg_btn")
@@ -241,6 +278,21 @@ fn update(
     state: &State,
 ) -> Result<(), String> {
     let Controls { button, air } = bind(root, family)?;
+    if matches!(family, Family::RocketSite | Family::GunEmplacement) {
+        // The political-map branch: the large strategic button hides, and
+        // both buttons take the frame and enabled state.
+        let strategic = root
+            .find(native::Kind::Button, "bg_strat_btn")
+            .ok_or("no button named bg_strat_btn")?;
+        instance.hide(root, strategic)?;
+        instance.set_frame(root, strategic, state.frame)?;
+        instance.control(root, strategic)?.enabled = Some(state.enabled);
+        if family == Family::RocketSite
+            && let Some(rockets) = root.find(native::Kind::Grid, "rockets_box")
+        {
+            instance.hide(root, rockets)?;
+        }
+    }
     if let Some([strategic, wings, permission_count, permission_bg]) = air {
         // Political-map visibility branch.
         instance.hide(root, strategic)?;
@@ -249,6 +301,10 @@ fn update(
         for control in [wings, permission_count, permission_bg] {
             instance.hide(root, control)?;
         }
+    }
+    if family == Family::Radar {
+        // The game shows the icon in its default frame and writes nothing else.
+        return instance.show(root, button);
     }
     // Air-base and headquarters updates write frames; facilities retain them.
     if family != Family::Facility {
@@ -277,6 +333,82 @@ mod tests {
     fn window(children: &str) -> native::Element {
         native::read(format!("guiTypes = {{ containerWindowType = {{ name = test size = {{ width = 50 height = 40 }} {children} }} }}").as_bytes())
             .template("test").unwrap().clone()
+    }
+
+    #[test]
+    fn radar_preparation_in_free_views_keeps_nearby_elevated_anchors() {
+        use super::super::tests::{action_gui, wings_frame, with_counter_inputs_fixture};
+        use replay::{
+            frame::TableView,
+            rows::{RadarCoverageRow, StateRow, TableId, TableRows},
+        };
+        use viewer_foundation::map::camera::{Free, Lens, Pose};
+
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (mut frame, vision) =
+            wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+        *frame.tables[TableId::RadarCoverage.index()] =
+            TableView::Complete(TableRows::RadarCoverage(vec![RadarCoverageRow {
+                country: 100,
+                ordinal: 0,
+                state: Some(7),
+                provinces: Vec::new(),
+            }]));
+        *frame.tables[TableId::States.index()] =
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 7,
+                controller: 100,
+                ..Default::default()
+            }]));
+        let anchor = [2.0, 50.0, 2.0];
+        with_counter_inputs_fixture(
+            action_gui(false),
+            |_| {},
+            |content| {
+                content.defines.radar_cutoff = 100.0;
+                Arc::make_mut(&mut content.site_icons)[building_facts::RADAR].insert(
+                    9,
+                    building_facts::SiteIcon {
+                        state: 7,
+                        anchor: Ok(building_facts::IconAnchor::Record(anchor)),
+                    },
+                );
+            },
+            |mut inputs| {
+                inputs.camera.height = 120.0;
+                inputs.camera.pose =
+                    Pose::Free(Free::looking_at([2.0, 120.0, 2.0], anchor, Lens::MAP));
+                assert_eq!(inputs.camera.icon_distance(anchor), 70.0);
+                let mut out = CounterFrame::default();
+                bases::radars(&inputs, &frame, &vision, &mut out).unwrap();
+                let placed = &out.native_bases.placed[Family::Radar as usize];
+                // An absolute-height gate loses this icon before the free view can show it.
+                assert_eq!(placed.len(), 1);
+                assert_eq!(
+                    placed[0].anchor,
+                    Some(IconAnchor {
+                        world: anchor,
+                        cutoff: 100.0,
+                        family: IconFamily::Bases,
+                    })
+                );
+
+                // Free presentation does not bypass the map mode's province-icon gate.
+                inputs.visibility.province_icons = false;
+                let mut out = CounterFrame::default();
+                bases::radars(&inputs, &frame, &vision, &mut out).unwrap();
+                assert!(out.native_bases.placed[Family::Radar as usize].is_empty());
+
+                // The game's camera still removes radar at the cutoff itself.
+                inputs.visibility.province_icons = true;
+                inputs.camera.pose = Pose::Map;
+                inputs.camera.height = 100.0;
+                let mut out = CounterFrame::default();
+                bases::radars(&inputs, &frame, &vision, &mut out).unwrap();
+                assert!(out.native_bases.placed[Family::Radar as usize].is_empty());
+            },
+        );
     }
 
     #[test]
@@ -324,6 +456,96 @@ mod tests {
         assert_eq!(control.enabled, Some(false));
         assert!(
             matches!(&layout.parts[1].kind, PartKind::Sprite { geometry, .. } if geometry.rect[..2] == [14., 16.])
+        );
+    }
+
+    /// The political-map branch of a rocket site or gun emplacement shows
+    /// only `bg_btn`; both buttons take the frame and enabled state, and the
+    /// rocket site's `rockets_box` hides. Before, neither icon was drawn.
+    #[test]
+    fn site_updates_show_the_plain_button_with_the_site_frame() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let root = window(
+            r#"
+                buttonType = { name = bg_btn quadTextureSprite = GFX_even }
+                buttonType = { name = bg_strat_btn quadTextureSprite = GFX_even }
+                gridboxtype = { name = rockets_box position = { x = -26 y = 35 } slotsize = { width = 58 height = 23 } }
+            "#,
+        );
+        let resources = fixture();
+        for family in [Family::RocketSite, Family::GunEmplacement] {
+            let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+            instance.gui_show(&root, &root).unwrap();
+            update(
+                &mut instance,
+                &root,
+                family,
+                &State {
+                    frame: 3,
+                    enabled: false,
+                    sprite: None,
+                },
+            )
+            .unwrap();
+            instance
+                .tick(&root, &resources, Tick { time: 0., dt: 0. })
+                .unwrap();
+            let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+            let names: Vec<_> = layout
+                .parts
+                .iter()
+                .map(|p| p.path.rsplit('.').next().unwrap())
+                .collect();
+            assert_eq!(names, ["bg_btn"]);
+            for name in ["bg_btn", "bg_strat_btn"] {
+                let button = root.find(native::Kind::Button, name).unwrap();
+                let control = instance.control(&root, button).unwrap();
+                assert_eq!((control.frame, control.enabled), (Some(3), Some(false)));
+            }
+        }
+        // A window without the strategic button is refused by name.
+        let bare = window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even }"#);
+        let mut instance = Instance::construct(&bare, [800, 600], &resources).unwrap();
+        let state = State {
+            frame: 1,
+            enabled: true,
+            sprite: None,
+        };
+        assert!(
+            update(&mut instance, &bare, Family::RocketSite, &state)
+                .unwrap_err()
+                .contains("bg_strat_btn")
+        );
+    }
+
+    /// The radar window shows its one efficiency icon in its authored frame.
+    #[test]
+    fn radar_update_shows_its_icon() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let root = window(
+            r#"iconType = { name = radar_mapicon spriteType = GFX_even frame = 2 }"#,
+        );
+        let resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let state = State {
+            frame: 0,
+            enabled: true,
+            sprite: None,
+        };
+        update(&mut instance, &root, Family::Radar, &state).unwrap();
+        let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+        assert_eq!(layout.parts.len(), 1);
+        let icon = root.find(native::Kind::Icon, RADAR_WINDOW).unwrap();
+        assert_eq!(instance.control(&root, icon).unwrap().frame, None);
+        let bare = window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even }"#);
+        let mut instance = Instance::construct(&bare, [800, 600], &resources).unwrap();
+        assert!(
+            update(&mut instance, &bare, Family::Radar, &state)
+                .unwrap_err()
+                .contains(RADAR_WINDOW)
         );
     }
 

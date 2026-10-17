@@ -14,6 +14,9 @@ pub const TINY_UNIT_COUNTER_WINDOW: &str = "GFX_mapicon_tiny_unit_counter";
 pub const NAVAL_BASE_WINDOW: &str = "naval_base_mapicon";
 pub const NAVAL_RESULT_WINDOW: &str = "naval_combat_results_mapicon";
 pub const AIR_BASE_WINDOW: &str = "air_base_mapicon";
+pub const ROCKET_SITE_WINDOW: &str = "rocket_site_mapicon";
+pub const GUN_EMPLACEMENT_WINDOW: &str = "gun_emplacement_mapicon";
+pub const RADAR_WINDOW: &str = "radar_mapicon";
 pub const NAVAL_HEADQUARTER_WINDOW: &str = "naval_headquarter_mapicon";
 pub const FACILITY_WINDOW: &str = "special_facility_mapicon";
 pub const LAND_COMBAT_WINDOW: &str = "land_combat_mapicon";
@@ -193,6 +196,9 @@ impl NativeWindows {
             FACTION_PING_WINDOW.as_bytes(),
             RAID_WINDOW.as_bytes(),
             AIR_BASE_WINDOW.as_bytes(),
+            ROCKET_SITE_WINDOW.as_bytes(),
+            GUN_EMPLACEMENT_WINDOW.as_bytes(),
+            RADAR_WINDOW.as_bytes(),
             NAVAL_HEADQUARTER_WINDOW.as_bytes(),
             FACILITY_WINDOW.as_bytes(),
             LAND_COMBAT_WINDOW.as_bytes(),

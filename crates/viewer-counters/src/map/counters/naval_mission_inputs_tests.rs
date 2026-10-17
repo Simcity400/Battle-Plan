@@ -69,7 +69,7 @@ fn anchors() -> CounterContent {
         anchors: Arc::new(BTreeMap::new()),
         stack_scales: BTreeMap::new(),
         default_anchors: Arc::new(BTreeMap::new()),
-        air_bases: BTreeMap::new(),
+        site_icons: Default::default(),
         ports: BTreeMap::new(),
         building_icons: BuildingIconContent::default(),
         kinds: Arc::new(BTreeMap::new()),

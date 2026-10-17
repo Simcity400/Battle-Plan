@@ -419,7 +419,7 @@ fn the_flag_union_is_rebuilt_only_when_it_changes() {
 /// One state (7) with one base (0xB0) holding one wing (0xC1) of five
 /// planes, viewed as slot 0 (raw country 100, the recorded player).
 /// `flags` controls the `StateFlags` table state under test.
-fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
+pub(super) fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
     const HOUR: Hour = 60_832_633;
     let mut views = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed for the wings box".into(),
@@ -486,11 +486,11 @@ fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
     (frame, vision)
 }
 
-/// The air-base icon follows the state's recorded ordinary air base,
+/// Each base kind's icon follows the state's recorded base of that kind,
 /// whatever building type raised it: a mod's `mod_airfield` shows its
-/// state's icon, a state that holds a type named `air_base` but no ordinary
-/// base shows none, and a rocket site's base shows none. Before, the icon
-/// followed the type named `air_base`: it showed state 8 and not state 7.
+/// state's air-base icon, a state that holds a type named `air_base` but no
+/// ordinary base shows none, and a rocket site's base shows the rocket-site
+/// icon, not the air-base one.
 #[test]
 fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
     use replay::rows::{AirBaseRow, BuildingRow, LexicalTokenRow};
@@ -551,15 +551,201 @@ fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
     };
     *frame.tables[TableId::AirBases.index()] =
         bases(vec![ordinary.clone(), site.clone(), carrier], None);
-    assert_eq!(
-        air_base_icon_states(&frame).unwrap(),
-        (BTreeSet::from([7]), true)
-    );
+    let expected = [BTreeSet::from([7]), BTreeSet::from([9]), BTreeSet::new()];
+    assert_eq!(site_icon_states(&frame).unwrap(), (expected.clone(), true));
     // A truncated hour still places the bases it recorded, and says so.
     *frame.tables[TableId::AirBases.index()] = bases(vec![ordinary, site], Some(1));
+    assert_eq!(site_icon_states(&frame).unwrap(), (expected, false));
+}
+
+/// A radar icon is admitted when the viewer, a member of its faction, a
+/// direct subject or its direct overlord keeps a radar group hosted in the
+/// state, and stays while the state's controller keeps one there; a group
+/// counts whatever it covers. Before, no radar icon was drawn.
+#[test]
+fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
+    use replay::rows::{CountryAppearanceRow, FactionMemberRow, RadarCoverageRow, Recorded, StateRow};
+    let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+    // Raw countries 100 (the viewer), 101, 102 and 103 at slots 0 to 3.
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (0..4)
+            .map(|slot| CountryLinkRow {
+                id: 100 + slot,
+                canonical_slot: slot,
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    ));
+    let group = |country, ordinal, state| RadarCoverageRow {
+        country,
+        ordinal,
+        state: Some(state),
+        provinces: Vec::new(),
+    };
+    *frame.tables[TableId::RadarCoverage.index()] = TableView::Complete(TableRows::RadarCoverage(
+        vec![
+            group(100, 0, 9),
+            group(101, 0, 7),
+            group(101, 1, 10),
+            group(102, 0, 8),
+            group(103, 0, 11),
+        ]
+        .into(),
+    ));
+    let state = |id, controller| StateRow {
+        id,
+        controller,
+        ..Default::default()
+    };
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        vec![
+            state(7, 101),
+            state(8, 102),
+            state(9, 100),
+            state(10, 102),
+            state(11, 103),
+        ]
+        .into(),
+    ));
+    let member = |country, ordinal| FactionMemberRow {
+        country,
+        faction: 1,
+        ordinal,
+    };
+    let members = |rows: Vec<FactionMemberRow>, missing: Option<u32>| match missing {
+        None => TableView::Complete(TableRows::FactionMembers(rows.into())),
+        Some(missing) => TableView::Truncated {
+            rows: TableRows::FactionMembers(rows.into()),
+            missing,
+        },
+    };
+    let appearance = |overlord: i32, subjects: Vec<i32>| {
+        TableView::Complete(TableRows::CountryAppearance(
+            vec![CountryAppearanceRow {
+                country: 100,
+                subjects: Recorded::Value(subjects),
+                overlord,
+                ..Default::default()
+            }]
+            .into(),
+        ))
+    };
+    *frame.tables[TableId::FactionMembers.index()] =
+        members(vec![member(100, 0), member(101, 1)], None);
+    *frame.tables[TableId::CountryAppearance.index()] = appearance(0, Vec::new());
+    // The viewer's own group and its faction partner's show; a stranger's
+    // does not, nor a group whose state another country now controls.
     assert_eq!(
-        air_base_icon_states(&frame).unwrap(),
-        (BTreeSet::from([7]), false)
+        radar_states(&frame, 0).unwrap().shown,
+        BTreeSet::from([7, 9])
+    );
+    // The direct overlord and direct subjects are searched too.
+    *frame.tables[TableId::CountryAppearance.index()] = appearance(102, vec![103]);
+    assert_eq!(
+        radar_states(&frame, 0).unwrap().shown,
+        BTreeSet::from([7, 8, 9, 11])
+    );
+    // A truncated faction roster cannot admit the partner it lost: those
+    // icons are withheld and the input named, never guessed.
+    *frame.tables[TableId::CountryAppearance.index()] = appearance(0, Vec::new());
+    *frame.tables[TableId::FactionMembers.index()] = members(vec![member(100, 0)], Some(1));
+    let radar = radar_states(&frame, 0).unwrap();
+    assert_eq!(radar.shown, BTreeSet::from([9]));
+    assert_eq!(
+        radar.notes,
+        ["3 radar host states are not drawn: the viewer's relations are not all recorded (FactionMembers)"]
+    );
+}
+
+/// A base is occupied only while a registered wing holds a plane: a site
+/// whose registered wings are all empty shows the empty frame. A wing a
+/// partial AirWings leaves out leaves occupancy undecided. Before, any
+/// registered wing occupied the base.
+#[test]
+fn a_base_holding_only_empty_wings_is_not_occupied() {
+    let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+    let wings = |planes: i32| {
+        TableRows::AirWings(vec![AirWingRow {
+            id: 0xC1,
+            air_base: 0xB0,
+            planes,
+            ..Default::default()
+        }])
+    };
+    let occupied = |frame: &DecodedFrame| {
+        wings_per_site(frame, &vision).unwrap()[&(7, building_facts::AIR_BASE)].occupied
+    };
+    assert_eq!(occupied(&frame), Some(true));
+    *frame.tables[TableId::AirWings.index()] = TableView::Complete(wings(0));
+    assert_eq!(occupied(&frame), Some(false));
+    let count = wings_per_site(&frame, &vision).unwrap()[&(7, building_facts::AIR_BASE)];
+    assert_eq!(site_frame(&count), 1);
+    *frame.tables[TableId::AirWings.index()] = TableView::Truncated {
+        rows: TableRows::AirWings(Vec::new()),
+        missing: 1,
+    };
+    assert_eq!(occupied(&frame), None);
+}
+
+/// The base icons need a province with a controller: a positive raw
+/// controller shows, controller zero does not, and a province the hour does
+/// not record is withheld. Before, a province with no controller kept its
+/// icon.
+#[test]
+fn base_icons_need_a_controlled_province() {
+    let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+    let province = |id, controller| ProvinceRow {
+        id,
+        controller,
+        ..Default::default()
+    };
+    *frame.tables[TableId::Provinces.index()] =
+        TableView::Complete(TableRows::Provinces(vec![province(9, 100), province(10, 0)]));
+    let controlled = province_controlled(&frame).unwrap();
+    assert_eq!(
+        (controlled(9), controlled(10), controlled(11)),
+        (Some(true), Some(false), None)
+    );
+}
+
+/// A state holding an air base and a rocket site keeps their counts apart:
+/// the air-base icon reads only the air base, and the rocket-site icon only
+/// the rocket site. Before, every recorded base of a state was merged into
+/// the air-base icon's count.
+#[test]
+fn each_base_icon_reads_its_own_state_base() {
+    use replay::rows::AirBaseRow;
+    let (mut frame, vision) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+    *frame.tables[TableId::AirBases.index()] = TableView::Complete(TableRows::AirBases(vec![
+        AirBaseRow {
+            id: 0xB0,
+            state: Some(7),
+            capacity: 10,
+            ..Default::default()
+        },
+        AirBaseRow {
+            id: 0xB1,
+            state: Some(7),
+            capacity: 4,
+            kind: 1,
+            ..Default::default()
+        },
+    ]));
+    let sites = wings_per_site(&frame, &vision).unwrap();
+    let air = sites[&(7, building_facts::AIR_BASE)];
+    let rocket = sites[&(7, building_facts::ROCKET_SITE)];
+    assert_eq!((air.capacity, air.planes), (10, 5));
+    assert_eq!((rocket.capacity, rocket.planes), (4, 0));
+    assert!(air.shown && !rocket.shown);
+    assert_eq!(rocket.occupied, Some(false));
+    // Without access a site's buttons take frame 3; with it, frame 2 while
+    // it holds a wing and frame 1 otherwise.
+    assert_eq!(site_frame(&rocket), 3);
+    assert_eq!(site_frame(&AirBaseCount { shown: true, occupied: Some(true), ..rocket }), 2);
+    assert_eq!(site_frame(&AirBaseCount { shown: true, ..rocket }), 1);
+    assert_eq!(
+        site_frame(&AirBaseCount { shown: true, occupied: None, planes: 1, ..rocket }),
+        2
     );
 }
 
@@ -576,8 +762,8 @@ fn truncated_state_flags_hide_every_box_and_fall_back_the_badge() {
         }]),
         missing: 1,
     });
-    let states = wings_per_state(&frame, &vision).unwrap();
-    let count = states.get(&7).copied().unwrap_or_default();
+    let states = wings_per_site(&frame, &vision).unwrap();
+    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
     assert!(!count.shown, "a missing state could be demilitarized");
     assert_eq!(count.stationed, Some(true));
     assert_eq!(count.occupied, Some(true));
@@ -599,8 +785,8 @@ fn unavailable_state_flags_do_not_invent_a_non_demilitarized_base() {
     let (frame, vision) = wings_frame(TableView::Unavailable {
         reason: "state flags capture failed".into(),
     });
-    let states = wings_per_state(&frame, &vision).unwrap();
-    let count = states.get(&7).copied().unwrap_or_default();
+    let states = wings_per_site(&frame, &vision).unwrap();
+    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
     assert!(!count.shown);
     assert_eq!(count.stationed, Some(true));
 }
@@ -625,8 +811,8 @@ fn recorded_states_read_their_own_flag_row() {
         panic!("fixture holds complete registrations");
     };
     registrations[0].wings.clear();
-    let states = wings_per_state(&frame, &vision).unwrap();
-    let count = states.get(&7).copied().unwrap_or_default();
+    let states = wings_per_site(&frame, &vision).unwrap();
+    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
     assert!(count.shown, "state 7 is recorded non-demilitarised");
     assert_eq!(count.stationed, Some(false));
     assert_eq!(
@@ -647,8 +833,8 @@ fn complete_state_flags_show_an_accessed_base() {
             ..Default::default()
         },
     ])));
-    let states = wings_per_state(&frame, &vision).unwrap();
-    let count = states.get(&7).copied().unwrap_or_default();
+    let states = wings_per_site(&frame, &vision).unwrap();
+    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
     assert!(count.shown);
     assert_eq!(count.stationed, Some(true));
     assert_eq!(count.occupied, Some(true));
@@ -686,8 +872,8 @@ fn another_countrys_wings_take_the_flag_frame() {
         panic!("fixture holds complete wings");
     };
     wings[0].id = 0xC2;
-    let states = wings_per_state(&frame, &vision).unwrap();
-    let count = states.get(&7).copied().unwrap_or_default();
+    let states = wings_per_site(&frame, &vision).unwrap();
+    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
     assert!(count.shown, "our access row is still recorded");
     assert_eq!(count.stationed, Some(false));
     assert_eq!(count.foreign, Some(true));
@@ -716,14 +902,14 @@ fn a_container_without_capacity_gives_no_access() {
             ..Default::default()
         },
     ])));
-    assert!(wings_per_state(&frame, &vision).unwrap()[&7].shown);
+    assert!(wings_per_site(&frame, &vision).unwrap()[&(7, building_facts::AIR_BASE)].shown);
     let TableView::Complete(TableRows::AirBaseRegistrations(registrations)) =
         &mut *frame.tables[TableId::AirBaseRegistrations.index()]
     else {
         panic!("fixture holds complete registrations");
     };
     registrations[0].capacity_raw = 0;
-    let count = wings_per_state(&frame, &vision).unwrap()[&7];
+    let count = wings_per_site(&frame, &vision).unwrap()[&(7, building_facts::AIR_BASE)];
     assert!(!count.shown);
     assert_eq!(
         count.stationed,
@@ -779,8 +965,8 @@ fn truncated_registrations_keep_surviving_rows_decided() {
     };
     *frame.tables[TableId::AirBaseRegistrations.index()] =
         TableView::Truncated { rows, missing: 3 };
-    let states = wings_per_state(&frame, &vision).unwrap();
-    let count = states.get(&7).copied().unwrap_or_default();
+    let states = wings_per_site(&frame, &vision).unwrap();
+    let count = states.get(&(7, building_facts::AIR_BASE)).copied().unwrap_or_default();
     assert!(count.shown, "our access row survived the truncation");
     assert_eq!(
         count.stationed,
@@ -973,7 +1159,7 @@ fn counter_action_anchor_draws_the_authored_child_frame_and_white_tint() {
     }
 }
 
-fn action_gui(centered: bool) -> native::Guis {
+pub(super) fn action_gui(centered: bool) -> native::Guis {
     layout_gui(
         format!(
             r#"guiTypes={{
@@ -1089,6 +1275,89 @@ fn draw_land_action_fixture_with(
     abilities: &AbilityInputs,
     configure: impl FnOnce(&mut CounterAssets),
 ) -> (Batch, CounterReport) {
+    with_counter_inputs_fixture(
+        guis,
+        configure,
+        |_| {},
+        |inputs| {
+            let countries = Arc::new(Countries::default());
+            let templates = Arc::new(TemplateIcons::default());
+            let vision = Arc::new(Vision::sharing(1, []));
+            let tables = CounterTables {
+                type_tints: &Default::default(),
+                countries: &countries,
+                icons: &templates,
+                status: &Default::default(),
+                movement: &Default::default(),
+                actions: &Default::default(),
+                vision: &vision,
+                order: None,
+                native: &Default::default(),
+                orders: &Default::default(),
+                guns: &Default::default(),
+                abilities,
+                task_forces: &Default::default(),
+                hq_providers: &Default::default(),
+                portraits: &Default::default(),
+                icon_inputs: &Default::default(),
+            };
+            let members: Vec<_> = members.iter().collect();
+            let stack = land::land_stack(
+                &members,
+                &tables,
+                &Default::default(),
+                false,
+                &|_| false,
+                coarse,
+            );
+            let style = land::stack_style(&inputs, &stack);
+            let mut land = PreparedLand {
+                stacks: vec![stack],
+                styles: vec![style],
+                sprites: vec![None],
+                flotillas: Vec::new(),
+                positions: Vec::new(),
+                icons: Vec::new(),
+                source_kinds: Vec::new(),
+                groups: Vec::new(),
+                items: Vec::new(),
+                hovered: Vec::new(),
+                levels: Vec::new(),
+                extents: Default::default(),
+                countries,
+                templates,
+                vision,
+                order: Vec::new(),
+            };
+            let mut report = CounterReport::default();
+            let batch = land
+                .land_plate(
+                    &inputs,
+                    &mut report,
+                    &mut Vec::new(),
+                    0,
+                    [100.0, 200.0],
+                    [81.0, 29.0],
+                    inputs
+                        .content
+                        .defines
+                        .stack_priority(inputs.camera.height, PriorityTable::Default),
+                )
+                .unwrap()
+                .unwrap()
+                .clone();
+            (batch, report)
+        },
+    )
+}
+
+/// Shared synthetic inputs for production counter passes, without a renderer or game assets.
+pub(super) fn with_counter_inputs_fixture<R>(
+    guis: native::Guis,
+    configure: impl FnOnce(&mut CounterAssets),
+    configure_content: impl FnOnce(&mut CounterContent),
+    run: impl FnOnce(CounterInputs<'_>) -> R,
+) -> R {
     let mut layouts = layouts();
     layouts.land = land_counter(&guis, &mut Vec::new()).map_err(|error| error.to_string());
     let sheets: BTreeMap<_, _> = [
@@ -1118,7 +1387,7 @@ fn draw_land_action_fixture_with(
         assets.sheets.get(&child.sprite),
     ));
     configure(&mut assets);
-    let content = CounterContent {
+    let mut content = CounterContent {
         terrain: Default::default(),
         mission_content: Err("not needed".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
@@ -1126,7 +1395,7 @@ fn draw_land_action_fixture_with(
         ),
         anchors: Arc::new(Default::default()),
         default_anchors: Arc::new(Default::default()),
-        air_bases: Default::default(),
+        site_icons: Default::default(),
         ports: Default::default(),
         building_icons: Default::default(),
         kinds: Arc::new(Default::default()),
@@ -1149,6 +1418,7 @@ fn draw_land_action_fixture_with(
         ideologies: Default::default(),
         stack_scales: Default::default(),
     };
+    configure_content(&mut content);
     let map = MapData {
         width: 4,
         height: 4,
@@ -1188,73 +1458,7 @@ fn draw_land_action_fixture_with(
         schedule: &schedule,
         visibility: Visibility::POLITICAL,
     };
-    let countries = Arc::new(Countries::default());
-    let templates = Arc::new(TemplateIcons::default());
-    let vision = Arc::new(Vision::sharing(1, []));
-    let tables = CounterTables {
-        type_tints: &Default::default(),
-        countries: &countries,
-        icons: &templates,
-        status: &Default::default(),
-        movement: &Default::default(),
-        actions: &Default::default(),
-        vision: &vision,
-        order: None,
-        native: &Default::default(),
-        orders: &Default::default(),
-        guns: &Default::default(),
-        abilities,
-        task_forces: &Default::default(),
-        hq_providers: &Default::default(),
-        portraits: &Default::default(),
-        icon_inputs: &Default::default(),
-    };
-    let members: Vec<_> = members.iter().collect();
-    let stack = land::land_stack(
-        &members,
-        &tables,
-        &Default::default(),
-        false,
-        &|_| false,
-        coarse,
-    );
-    let style = land::stack_style(&inputs, &stack);
-    let mut land = PreparedLand {
-        stacks: vec![stack],
-        styles: vec![style],
-        sprites: vec![None],
-        flotillas: Vec::new(),
-        positions: Vec::new(),
-        icons: Vec::new(),
-        source_kinds: Vec::new(),
-        groups: Vec::new(),
-        items: Vec::new(),
-        hovered: Vec::new(),
-        levels: Vec::new(),
-        extents: Default::default(),
-        countries,
-        templates,
-        vision,
-        order: Vec::new(),
-    };
-    let mut report = CounterReport::default();
-    let batch = land
-        .land_plate(
-            &inputs,
-            &mut report,
-            &mut Vec::new(),
-            0,
-            [100.0, 200.0],
-            [81.0, 29.0],
-            inputs
-                .content
-                .defines
-                .stack_priority(inputs.camera.height, PriorityTable::Default),
-        )
-        .unwrap()
-        .unwrap()
-        .clone();
-    (batch, report)
+    run(inputs)
 }
 
 #[test]
@@ -3824,6 +4028,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 FACILITY_DISTANCE_CUTOFF = 900,
                 LAND_COMBAT_DISTANCE_CUTOFF = 1500,
                 NAVAL_COMBAT_DISTANCE_CUTOFF = 1500,
+                RADAR_ICON_DISTANCE_CUTOFF = 1100,
                 MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE = 500.9,
                 MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE_STRATEGIC = 350.4,
                 MAP_ICONS_GROUP_CAM_DISTANCE = 90,
@@ -3864,6 +4069,9 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 DEFAULT_PRIORITY_NAVAL_MISSION = 13,
                 DEFAULT_PRIORITY_VICTORY_POINTS = 5,
                 DEFAULT_PRIORITY_CAPITAL = 6,
+                DEFAULT_PRIORITY_ROCKET_SITE = 7,
+                DEFAULT_PRIORITY_GUN_EMPLACEMENT = 8,
+                DEFAULT_PRIORITY_STRATEGIC_LOCATION = 9,
                 OTHER_TABLES
                 HOME_BASE_MAP_ICON_SCALE_DEFAULT = 1.25,
             },
@@ -3905,6 +4113,14 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     assert_eq!(read.naval_base_scale, 1.25);
     assert_eq!(default(PriorityIcon::NavalCombatResults), 19);
     assert_eq!(default(PriorityIcon::NavalCombat), 20);
+    assert_eq!(
+        (
+            default(PriorityIcon::RocketSite),
+            default(PriorityIcon::GunEmplacement),
+            default(PriorityIcon::StrategicLocation)
+        ),
+        (7, 8, 9)
+    );
     // Each map mode's table is its own: the navy table is the second after the default one.
     assert_eq!(
         read.priorities

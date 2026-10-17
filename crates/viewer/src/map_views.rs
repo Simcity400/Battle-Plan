@@ -152,7 +152,7 @@ pub struct Views {
     pub labels: viewer_world::map::labels::LabelView,
     pub pings: PoolView,
     pub raids: PoolView,
-    pub bases: [PoolView; 3],
+    pub bases: [PoolView; viewer_counters::map::counters::BASE_FAMILIES],
     pub land_combats: viewer_counters::map::counters::land_windows::View,
 }
 
