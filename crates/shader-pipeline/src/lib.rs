@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
-use installed_content::pdxshader::program::{Program, Stage, Technique};
+use installed_content_core::pdxshader::program::{Program, Stage, Technique};
 
 pub mod artwork;
 pub mod cache;

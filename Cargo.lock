@@ -3525,7 +3525,7 @@ name = "installed-content-regions"
 version = "0.1.0"
 dependencies = [
  "installed-content-core",
- "replay",
+ "weather-period",
 ]
 
 [[package]]
@@ -3560,7 +3560,7 @@ dependencies = [
 name = "installed-content-sound"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
  "symphonia",
 ]
@@ -6887,6 +6887,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "replay-identity",
+ "weather-period",
  "zstd",
 ]
 
@@ -7328,7 +7329,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "engine-executable",
- "installed-content",
+ "installed-content-core",
  "naga",
  "pollster 0.4.0",
  "serde",
@@ -8944,6 +8945,10 @@ dependencies = [
  "once_cell",
  "pkg-config",
 ]
+
+[[package]]
+name = "weather-period"
+version = "0.1.0"
 
 [[package]]
 name = "web-sys"

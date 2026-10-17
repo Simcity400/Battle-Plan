@@ -11,7 +11,7 @@ doctest = false
 
 [dependencies]
 installed-content-core.workspace = true
-replay.workspace = true
+weather-period.workspace = true
 
 [dev-dependencies]
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }

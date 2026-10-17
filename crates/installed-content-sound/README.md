@@ -14,6 +14,8 @@ Resolve every authored input through the recorded `ResolvedLayers` content stack
 - A music track (`music/**/*.asset`) reads `name`, `file` and `volume`; any other field, or a block where a scalar belongs, is refused by name.
 - Unknown fields, malformed values and unsupported WAVE forms (other compressed encodings, 64-bit float, more than two channels) are refused by name and counted.
 
+Runtime metadata tests depend directly on `engine-executable`, keeping the native reader and replay chains out of audio builds and test builds.
+
 ## Tests
 
 Synthetic tests live beside the readers and decoders, with layered fixtures from the core; the song-list test reads trigger names, so it needs `BATTLE_PLAN_GAME_DIR`. `installed_sounds_resolve_and_decode` and `installed_music_resolves_and_decodes` are ignored and read-only: set `BATTLE_PLAN_GAME_DIR` and run `cargo test -p installed-content-sound installed -- --ignored --nocapture`. See the [installed-content contracts](../installed-content/README.md) and [project rules](../../AGENTS.md).

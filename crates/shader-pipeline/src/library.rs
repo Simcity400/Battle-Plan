@@ -1,6 +1,6 @@
 //! Content-scoped lazy effect assets. Parsing happens on load; only selected techniques compile.
 use super::{Compiled, cache};
-use installed_content::{
+use installed_content_core::{
     ResolvedLayers,
     image::native::Decode,
     pdxshader::program::{self, Program},
@@ -271,7 +271,7 @@ impl Effect {
 /// nearest with ties to even, as Rust's `{:.3}`.
 ///
 /// Power-of-two scales use the client's `force_pow2_textures` (`decode`, the same [`Decode`]
-/// its textures load under, [`installed_content::settings::SettingsKeys::texture_decode`]): off, all
+/// its textures load under, `settings::SettingsKeys::texture_decode`): off, all
 /// four are `1.0`, `MAP_POW2_X`, `MAP_POW2_Y`, `FOW_POW2_X`, `FOW_POW2_Y` in that order; on,
 /// `FOW_POW2_X`/`_Y` first, each fog side (the map's over `6.0`) over the next power of two of
 /// its truncation, then `MAP_POW2_X`/`_Y`, each map side over the next power of two of its
@@ -481,7 +481,7 @@ mod tests {
             fn compile(
                 &self,
                 source: &Program,
-                technique: &installed_content::pdxshader::program::Technique,
+                technique: &installed_content_core::pdxshader::program::Technique,
                 defines: &[String],
             ) -> Result<super::super::Compiled, String> {
                 if source.identity == self.1 && defines.iter().any(|define| define == "ANIMATED") {

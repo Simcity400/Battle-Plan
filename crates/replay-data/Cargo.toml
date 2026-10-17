@@ -15,6 +15,7 @@ slow-tests = []
 test-support = []
 
 [dependencies]
+weather-period.workspace = true
 engine.workspace = true
 replay-identity.workspace = true
 

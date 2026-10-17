@@ -1,0 +1,10 @@
+[package]
+name = "weather-period"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false

@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use installed_content::{
+use installed_content_core::{
     ResolvedLayers,
     image::{Rgba8Image, dds, native::Decode},
     pdxshader::program::{self, Stage},
@@ -128,10 +128,12 @@ fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, Strin
     let size = inputs
         .map_size
         .get_or_init(|| {
-            let files = installed_content::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
+            let files =
+                installed_content_core::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
             let path = files.file("provinces").map_err(|e| e.to_string())?;
             let (prefix, length) = layers.read_prefix(&path, 138).map_err(|e| e.to_string())?;
-            installed_content::image::bmp::rgb_dimensions_prefix(&prefix, length).map_err(|e| e.to_string())
+            installed_content_core::image::bmp::rgb_dimensions_prefix(&prefix, length)
+                .map_err(|e| e.to_string())
         })
         .clone()?;
     Ok(library::globals(size, decode))

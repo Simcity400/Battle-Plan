@@ -1,6 +1,6 @@
 //! Strategic regions from `map/strategicregions/*.txt`: identity, membership,
 //! naval terrain and the weather periods' dates and temperature ranges, which
-//! playback's temperature pass reads ([`replay::temperature`]). The other
+//! playback's temperature pass reads ([`weather_period`]). The other
 //! weather chances drive simulation the replay records, so they are not read.
 //!
 //! The database lists the directory's own `.txt` files without recursion
@@ -33,7 +33,7 @@ pub struct StrategicRegion {
     pub static_modifier_names: Vec<String>,
     /// The template's weather periods in authored order: append one weather period per `period`,
     /// across repeated `weather` blocks.
-    pub periods: Vec<replay::temperature::Period>,
+    pub periods: Vec<weather_period::Period>,
     /// Why a period's bounds cannot be ported; the periods are then unknown.
     pub periods_refused: Option<String>,
 }
@@ -181,8 +181,8 @@ fn parse_region(root: &crate::parser::Item) -> io::Result<(i32, StrategicRegion)
 /// setters cannot take.
 fn parse_period(
     period: &crate::parser::Item,
-) -> io::Result<Result<replay::temperature::Period, String>> {
-    use replay::temperature::{PERIOD_DEFAULT_DATE, PERIOD_DEFAULT_TEMPERATURE, apply_bound};
+) -> io::Result<Result<weather_period::Period, String>> {
+    use weather_period::{PERIOD_DEFAULT_DATE, PERIOD_DEFAULT_TEMPERATURE, apply_bound};
     let [mut minimum, mut maximum] = PERIOD_DEFAULT_TEMPERATURE;
     let mut bounds = [PERIOD_DEFAULT_DATE; 2];
     for field in block(&period.value, "region weather period")? {
@@ -235,7 +235,7 @@ fn parse_period(
             }
         }
     }
-    Ok(Ok(replay::temperature::Period {
+    Ok(Ok(weather_period::Period {
         start: bounds[0],
         end: bounds[1],
         minimum,
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn weather_periods_keep_their_order_bounds_and_temperature_ranges() {
-        use replay::temperature::{PERIOD_DEFAULT_DATE as YEAR_ONE, Period};
+        use weather_period::{PERIOD_DEFAULT_DATE as YEAR_ONE, Period};
         let day = |days: i32| YEAR_ONE + days * 24;
         let region = parse_region(
             br#"strategic_region={ id=1 name=R provinces={}

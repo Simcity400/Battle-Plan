@@ -1,6 +1,8 @@
 # shader-pipeline
 
-Shared executable PdxShader backend for map passes and native GUI. [installed_content::pdxshader](../installed-content-core/src/pdxshader/mod.rs) owns parsing and DX11 source assembly; DXC emits SPIR-V and naga validates/translates it to WGSL. This crate has no GUI layout dependency and never chooses a substitute program by effect filename.
+Shared executable PdxShader backend for map passes and native GUI. [installed_content_core::pdxshader](../installed-content-core/src/pdxshader/mod.rs) owns parsing and DX11 source assembly; DXC emits SPIR-V and naga validates/translates it to WGSL. This crate has no GUI layout dependency and never chooses a substitute program by effect filename.
+
+Its content dependency is `installed-content-core`; it does not depend on the `installed-content` facade or recorded frames, so engine and replay edits do not rebuild it.
 
 ## Source map
 

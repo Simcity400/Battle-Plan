@@ -2,7 +2,7 @@
 //! naga's generated WGSL, then the device validates the resulting module. Authored code is
 //! parsed by the compiler and naga before it reaches this pass.
 
-use installed_content::pdxshader::{
+use installed_content_core::pdxshader::{
     Address,
     program::{Filter, Sampler},
 };
@@ -465,7 +465,7 @@ fn arguments(source: &str, paren: usize) -> Result<(usize, Vec<String>), String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content::pdxshader::program::Filter;
+    use installed_content_core::pdxshader::program::Filter;
 
     #[test]
     fn mirror_once_gathers_and_offsets_lower_to_native_addressing() {

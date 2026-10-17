@@ -11,6 +11,7 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
+weather-period = { path = "crates/weather-period" }
 recorder-oracle-weather = { path = "crates/recorder-oracle-weather" }
 recorder-oracle-wars = { path = "crates/recorder-oracle-wars" }
 recorder-oracle-visibility = { path = "crates/recorder-oracle-visibility" }

@@ -18,7 +18,9 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers sh
 | Map and movement | The map, province graph and movement in [installed-content-core](../installed-content-core/README.md), [installed-content-states](../installed-content-states/README.md), and the land/naval path and raid crates. |
 | Preferences | [installed-content-settings](../installed-content-settings/README.md): read-only local preferences. |
 
-Dashboard, viewer and shader-pipeline use `installed_content::image`, a re-export of `installed_content_image`. Recorder-app imports `installed_content_image` directly.
+Frame-free readers depend on the content foundations, executable metadata and identity types without depending on native readers or replay. The `installed-content` facade also exports readers of recorded rows, so frame-free consumers such as shader-pipeline depend on `installed-content-core` directly.
+
+Dashboard and viewer use `installed_content::image`, a re-export of `installed_content_image`. Shader-pipeline uses the same image types through `installed-content-core`; recorder-app imports `installed_content_image` directly.
 
 [installed-content-sound](../installed-content-sound/README.md) (sound and music definitions, `NSound` defines, WAVE and Ogg Vorbis samples) is not re-exported: only the viewer and [viewer-audio](../viewer-audio/README.md) depend on it, so its audio decoder stays out of the recorder's builds.
 

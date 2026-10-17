@@ -232,6 +232,12 @@ validates container and compressed-block framing and uses checked growth; the
 [cargo-fuzz targets](fuzz/README.md) exercise opening, partial trailers, blocks,
 frames and recording metadata without a game installation.
 
+Check the frame-free content boundary after workspace dependency changes (Python 3.11+):
+
+```powershell
+python tools/check-content-dependencies.py
+```
+
 Run dependency checks after lockfile/dependency changes and before releases:
 
 ```powershell

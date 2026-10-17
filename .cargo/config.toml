@@ -21,6 +21,9 @@ opt-level = 2
 [profile.dev.package.replay-identity]
 opt-level = 2
 
+[profile.dev.package.weather-period]
+opt-level = 2
+
 # Native readers stay optimised in dev for interactive runs.
 [profile.dev.package.engine]
 opt-level = 2
@@ -307,6 +310,9 @@ opt-level = 0
 [profile.test.package.replay-identity]
 opt-level = 0
 
+[profile.test.package.weather-period]
+opt-level = 0
+
 [profile.test.package.engine]
 opt-level = 0
 
@@ -572,6 +578,9 @@ opt-level = 2
 opt-level = 2
 
 [profile.full.package.replay-identity]
+opt-level = 2
+
+[profile.full.package.weather-period]
 opt-level = 2
 
 [profile.full.package.engine]

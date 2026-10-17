@@ -395,7 +395,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
     }
 
     fn engine_tables() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     }
 }
@@ -405,7 +405,7 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
 #[test]
 #[ignore = "reads the installation named by BATTLE_PLAN_GAME_DIR"]
 fn installed_music_resolves_and_decodes() {
-    engine::executable_tables::initialize_for_tests().unwrap();
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
     let layers = ResolvedLayers::from_folders(&[(&game, &[])]).unwrap();
     let music = Music::read(&layers).unwrap();

@@ -2,7 +2,7 @@
 //! semantics, so changing an effect's uniform names never changes what the engine uploads.
 
 use super::{Buffer, Compiled};
-use installed_content::pdxshader::{
+use installed_content_core::pdxshader::{
     Address, DepthStencilState, RasterizerState,
     program::{Filter, Program, Sampler, Stage, Technique},
 };

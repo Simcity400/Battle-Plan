@@ -14,7 +14,7 @@ doctest = false
 test-support = []
 
 [dependencies]
-installed-content.workspace = true
+installed-content-core.workspace = true
 wgpu = "30.0.0"
 # Exact: the persistent cache ABI names this translator version.
 naga = { version = "=30.0.1", features = ["spv-in", "wgsl-out"] }
@@ -27,4 +27,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 engine-executable.workspace = true
-installed-content = { workspace = true, features = ["test-support"] }
+installed-content-core = { workspace = true, features = ["test-support"] }

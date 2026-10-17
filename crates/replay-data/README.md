@@ -5,7 +5,7 @@ values, content identity and their bounded codecs. Frame, spool and container
 implementations consume these definitions; this crate depends only on `engine`
 for native value types and checked allocation, and on
 [replay-identity](../replay-identity/README.md) for the content identity types
-its `identity` module writes and reads.
+its `identity` module writes and reads. [weather-period](../weather-period/README.md) supplies the shared weather-period types and calendar arithmetic, re-exported by `temperature`.
 
 | Source | Responsibility |
 |---|---|

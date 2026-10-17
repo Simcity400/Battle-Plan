@@ -1,6 +1,6 @@
 //! Persistent CPU program cache. GPU objects remain device-local in `gpu::Cache`.
 use super::{Compiled, Compiler};
-use installed_content::pdxshader::program::{Program, Technique};
+use installed_content_core::pdxshader::program::{Program, Technique};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -122,8 +122,8 @@ impl Cache {
         hash.update(source.identity);
         // Include emitted source as well: callers constructing Program directly are supported.
         for stage in [
-            installed_content::pdxshader::program::Stage::Vertex,
-            installed_content::pdxshader::program::Stage::Pixel,
+            installed_content_core::pdxshader::program::Stage::Vertex,
+            installed_content_core::pdxshader::program::Stage::Pixel,
         ] {
             let text = source.hlsl(technique, stage, defines)?;
             hash.update((text.len() as u64).to_le_bytes());
@@ -245,7 +245,7 @@ pub(crate) mod tests {
     }
     pub(crate) fn source(include: &str) -> Program {
         crate::tests::initialize_runtime_tables();
-        installed_content::pdxshader::program::read_with(b"vanilla.shader", &|path| Some(match path {
+        installed_content_core::pdxshader::program::read_with(b"vanilla.shader", &|path| Some(match path {
             b"vanilla.shader" => b"Includes = { common.fxh }\nVertexShader = { MainCode V [[ float4 main() : SV_POSITION { return C; } ]] }\nPixelShader = { MainCode P [[ float4 main() : SV_TARGET { return C; } ]] }\nEffect Up { VertexShader = V PixelShader = P }\nEffect Unused { VertexShader = Missing PixelShader = Missing }\n".to_vec(),
             b"gfx/FX/common.fxh" => format!("Code [[ {include} ]]\n").into_bytes(),
             _ => Vec::new(),
@@ -361,7 +361,8 @@ pub(crate) mod tests {
     fn absent_effect_is_the_null_record_without_compiler_or_header() {
         let compiler = Arc::new(Count(AtomicUsize::new(0)));
         let cache = Arc::new(Cache::new(None, compiler.clone()));
-        let source = installed_content::pdxshader::program::read_with(b"missing.lua", &|_| None).unwrap();
+        let source =
+            installed_content_core::pdxshader::program::read_with(b"missing.lua", &|_| None).unwrap();
         assert_eq!(source.dependencies, [b"missing.shader"]);
         assert!(source.warnings[0].contains("empty technique record"));
         let effect = super::super::library::Effect::new(Arc::new(source), vec![], cache.clone());
