@@ -192,7 +192,7 @@ fn deferred_parity<F: Family>() {
         let raw = updates_changed(&next, F::TABLES, Some(&changes), F::applied(&lazy));
         F::step(
             &mut lazy,
-            &raw,
+            raw.as_ref(),
             &next,
             FormatVersion::CURRENT,
             &flag,
@@ -329,9 +329,19 @@ fn recorded_deltas<F: Family>() {
         if hour == 101 {
             let adapted = updates_changed(&next, F::TABLES, Some(&changes), Some(100));
             assert!(
-                matches!(adapted, std::borrow::Cow::Borrowed(_)),
+                matches!(&adapted, std::borrow::Cow::Borrowed(_)),
                 "row deltas became snapshots"
             );
+            let recorded = changes.recorded().unwrap();
+            for &table in F::TABLES {
+                assert!(
+                    std::ptr::eq(
+                        &adapted.tables[table.index()],
+                        &recorded.tables[table.index()]
+                    ),
+                    "{table:?}: the census must borrow the shared update cell"
+                );
+            }
             assert_eq!(
                 F::work(&scan).history_visits - before,
                 1,

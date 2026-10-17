@@ -69,6 +69,34 @@ measurement compares this entry with temporally patched prepared update ranges.
 `container::patch::{diff_with, apply_with}` expose the existing lossless byte
 patches for prepared packets; recording codecs and their prediction remain unchanged.
 
+`Replay::cache_decoded_sections` enables revision-local reuse of grouped
+sections' decoded updates. Full, watched, prefix and keyframe reads share each
+block/table's successful section work across selections and threads. Each table's
+largest measured column size (including row, delta and nested allocation
+capacities) contributes to the retained budget. Their sum is multiplied by the
+inclusive block span from the furthest-behind registered consumer to the furthest
+ahead block scheduled by a live consumer, including its read-ahead.
+`Replay::section_consumer` registers a reader's next block; advancing or dropping
+it shrinks the span; a finished query releases its own read-ahead immediately.
+With no registered reader, the budget is one measured block's
+table working set. LRU eviction handles selections and future queries whose next
+reads cannot be predicted; there is no chosen byte or country cap.
+
+A longer admitted prefix supplies shorter reads; a keyframe-only admission supplies
+only keyframes. Each reader runs its selection-aware table refusal checks once
+before looking up admitted updates. Refusal values never enter the cache, and the
+cached decoder does not use the selection. Block verification and reconstruction
+remain each reader's own. A failed extension preserves any earlier admitted prefix;
+a short read never decodes extra hours for caching. Retention defaults off.
+
+The `read_block_recorded_*`, `read_keyframe_recorded`, watched and recorded stream
+APIs return immutable `RecordedFrame` operands. Their hours retain only their own
+`Arc<TableUpdate>` cells, shared across readers, rather than whole block columns.
+`FrameDecoder` reads them through `FrameSource` without copying. Owned wire-frame
+APIs materialize `Frame` through an explicit adapter, moving unique cells and
+copying only still-shared cells. In-flight reads, reader-held cells and each
+reader's reconstruction baselines are separate from cache retention.
+
 `ReplayStream` reconstructs selected tables in source-block order and commits its
 cursor and decoder accumulator only after the whole block succeeds. Grouped blocks
 use the ordinary selected read once, finishing its verification before invoking

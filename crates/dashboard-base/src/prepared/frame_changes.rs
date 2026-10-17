@@ -2,7 +2,10 @@
 use replay::{
     BranchId, Hour,
     format::FormatVersion,
-    frame::{DecodedFrame, Frame, TABLE_COUNT, TableUpdate, TableView, ViewIdentity},
+    frame::{
+        DecodedFrame, IntoRecordedFrame, RecordedFrame, TABLE_COUNT, TableUpdate, TableView,
+        ViewIdentity,
+    },
     rows::{DeltaRow, TableId},
 };
 use std::sync::Arc;
@@ -22,7 +25,7 @@ pub struct FrameChanges {
 /// An hour's recorded updates and the tables whose decoded rows are the
 /// previous hour's changed by exactly their delta.
 pub struct RowUpdates {
-    frame: Arc<Frame>,
+    frame: Arc<RecordedFrame>,
     exact: [bool; TABLE_COUNT],
 }
 
@@ -45,9 +48,9 @@ pub fn field_mask(table: TableId, names: &[&str]) -> u64 {
 }
 
 impl FrameChanges {
-    /// The hour's recorded updates, which every hour of one read shares
-    /// none of: what keeping these facts keeps alive besides its flags.
-    pub fn recorded(&self) -> Option<&Arc<replay::frame::Frame>> {
+    /// The hour's recorded updates. Readers share immutable update cells;
+    /// keeping these facts retains this hour's cells, not its entire block.
+    pub fn recorded(&self) -> Option<&Arc<RecordedFrame>> {
         self.updates.as_ref().map(|updates| &updates.frame)
     }
 
@@ -155,9 +158,10 @@ impl FrameChangeTracker {
     pub fn observe_updates(
         &mut self,
         frame: &DecodedFrame,
-        updates: Arc<Frame>,
+        updates: impl IntoRecordedFrame,
         format: FormatVersion,
     ) -> FrameChanges {
+        let updates = updates.into_recorded();
         let continuous = self.continues(frame);
         let mut changes = self.observe(frame, format);
         if continuous && updates.branch == frame.branch && updates.hour == frame.hour {

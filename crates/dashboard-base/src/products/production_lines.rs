@@ -769,7 +769,7 @@ fn extract_block(
     holder: Option<(u32, u32)>,
     cancelled: &AtomicBool,
 ) -> io::Result<Extracted> {
-    let frames = replay.read_block_selected(block, selected)?;
+    let frames = replay.read_block_recorded_selected(block, selected)?;
     let mut decoder = FrameDecoder::for_tables(selected);
     let mut hours = engine::allocation::vec(frames.len())?;
     let mut lost_from = None;
@@ -934,6 +934,12 @@ fn scan_blocks_cached(
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|scanned| {
         scanned.extend(blocks.iter().map(|block| block.offset));
     });
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
     // Only the newest-window overlap is retained. The whole scan still folds
     // every hour from its own start; its earlier extracts never evict the first
     // view's before it reaches them, or retain a recording's decoded history.
@@ -955,6 +961,9 @@ fn scan_blocks_cached(
     });
     let tables: Vec<_> = selected.iter().map(|table| *table as u16).collect();
     let extract = |block: &BlockIndex| {
+        if let Some(position) = replay.block_position(block) {
+            consumer.reading(position);
+        }
         let read = || extract_block(replay, block, &selected, tag, holder, cancelled);
         match cache
             .as_ref()
@@ -989,6 +998,9 @@ fn scan_blocks_cached(
         &extract,
         |blocks| {
             for (block, extracted) in blocks {
+                if let Some(position) = replay.block_position(block) {
+                    consumer.at(position);
+                }
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }

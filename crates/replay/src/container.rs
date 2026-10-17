@@ -26,6 +26,8 @@ const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
 mod changes;
+mod decoded_sections;
+pub use decoded_sections::SectionConsumer;
 mod file_backed;
 mod stream;
 #[cfg(any(test, feature = "test-support"))]
@@ -111,6 +113,7 @@ impl RecoveryNote {
 /// The byte backing can later become a mapping without changing block semantics.
 pub struct Replay {
     bytes: Vec<u8>,
+    decoded_sections: decoded_sections::Cache,
     file: Option<std::sync::Mutex<File>>,
     /// The header version, validated before decoding any frames.
     pub format: FormatVersion,
@@ -921,6 +924,7 @@ impl Replay {
         }
         Ok(Self {
             bytes: Vec::new(),
+            decoded_sections: decoded_sections::Cache::default(),
             file: None,
             format,
             campaign_id,
@@ -1544,8 +1548,9 @@ impl Replay {
         Self::open(replay.bytes)
     }
 
-    /// Validated block extents have increasing offsets even across skipped bytes.
-    fn block_position(&self, index: &BlockIndex) -> Option<usize> {
+    /// The index position of this validated block. Extents have increasing
+    /// offsets even across skipped bytes.
+    pub fn block_position(&self, index: &BlockIndex) -> Option<usize> {
         self.index
             .binary_search_by_key(&index.offset, |entry| entry.offset)
             .ok()
@@ -2442,19 +2447,19 @@ impl<'a> BlockOrder<'a> {
         }
     }
 
-    fn next(&mut self, frame: &Frame) -> io::Result<()> {
-        if frame.branch != self.index.branch
-            || frame.hour < self.index.first_hour
-            || frame.hour > self.index.last_hour
-            || frame.keyframe != self.last.is_none()
-            || self.last.is_some_and(|hour| frame.hour <= hour)
+    fn next(&mut self, frame: &(impl crate::frame::FrameSource + ?Sized)) -> io::Result<()> {
+        if frame.branch() != self.index.branch
+            || frame.hour() < self.index.first_hour
+            || frame.hour() > self.index.last_hour
+            || frame.keyframe() != self.last.is_none()
+            || self.last.is_some_and(|hour| frame.hour() <= hour)
         {
             return Err(invalid(
                 "block frame branch, keyframe, or hour ordering mismatch",
             ));
         }
-        self.first.get_or_insert(frame.hour);
-        self.last = Some(frame.hour);
+        self.first.get_or_insert(frame.hour());
+        self.last = Some(frame.hour());
         Ok(())
     }
 

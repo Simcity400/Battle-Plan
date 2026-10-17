@@ -78,7 +78,7 @@ pub fn after<T: Send + Sync + 'static>(
         cancelled,
         bytes,
         &|block| {
-            let keyframe = source.replay_ref().read_keyframe_selected(block, tables)?;
+            let keyframe = source.replay_ref().read_keyframe_recorded(block, tables)?;
             let mut decoder = FrameDecoder::for_tables(tables);
             sample(decoder.advance(&keyframe)?)
         },
@@ -127,12 +127,22 @@ pub fn blocks_after<T: Send + Sync + 'static>(
     if blocks.is_empty() {
         return Ok(Vec::new());
     }
+    let consumer = replay.section_consumer(
+        blocks
+            .iter()
+            .filter_map(|(block, _)| replay.block_position(block))
+            .min()
+            .unwrap_or(0),
+    );
     let cache = super::observations::scope(source, product, binding);
     let mut selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
     selected.sort_unstable();
     selected.dedup();
     blocks.sort_by_key(|(block, _)| block.first_hour);
     let read = |block: &BlockIndex| -> io::Result<Arc<Option<T>>> {
+        if let Some(position) = replay.block_position(block) {
+            consumer.reading(position);
+        }
         cache.get(
             block,
             &(&selected, params),
@@ -169,6 +179,9 @@ pub fn blocks_after<T: Send + Sync + 'static>(
         // Cache-only requests stay on this thread so a miss cannot decode or
         // wait on a worker. The observation cache refuses missing or busy slots.
         for (block, _) in &blocks {
+            if let Some(position) = replay.block_position(block) {
+                consumer.at(position);
+            }
             let observation = read(block)?;
             accept(block, &observation)?;
         }
@@ -180,6 +193,9 @@ pub fn blocks_after<T: Send + Sync + 'static>(
             &read,
             |reads| {
                 for (block, observation) in reads {
+                    if let Some(position) = replay.block_position(block) {
+                        consumer.at(position);
+                    }
                     check_cancel(cancelled)?;
                     // An unreadable keyframe samples nothing: its hours stay pending.
                     if let Ok(observation) = observation {

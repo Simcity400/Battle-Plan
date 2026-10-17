@@ -34,7 +34,7 @@ use dashboard_text::metadata::{
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, Frame, TableUpdate},
+    frame::{DecodedFrame, TableUpdate},
     rows::{CountryLinkRow, DeltaRow, DivisionCensusRow, DivisionRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
@@ -405,7 +405,13 @@ struct ScanState {
 
 impl ScanState {
     #[cfg(any(test, feature = "test-support"))]
-    fn step(&mut self, result: &mut Scan, frame: &Frame, decoded: &DecodedFrame, replay: &Replay) {
+    fn step(
+        &mut self,
+        result: &mut Scan,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
+        decoded: &DecodedFrame,
+        replay: &Replay,
+    ) {
         self.step_changes(result, frame, decoded, replay, None);
         result.seal();
     }
@@ -413,7 +419,7 @@ impl ScanState {
     fn step_changes(
         &mut self,
         result: &mut Scan,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         replay: &Replay,
         changes: Option<&FrameChanges>,
@@ -561,7 +567,11 @@ impl ScanState {
             ..Default::default()
         }
     }
-    fn apply_changes(&mut self, frame: &Frame, decoded: &DecodedFrame) {
+    fn apply_changes(
+        &mut self,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
+        decoded: &DecodedFrame,
+    ) {
         self.apply_updates(Updates::recorded(frame), decoded);
     }
     fn apply_updates(&mut self, updates: Updates<'_>, decoded: &DecodedFrame) {
@@ -823,7 +833,7 @@ fn census_edit(
 fn observe_totals(
     result: &mut Scan,
     decoded: &DecodedFrame,
-    frame: &Frame,
+    frame: &(impl replay::frame::FrameSource + ?Sized),
     format: replay::format::FormatVersion,
     gap: bool,
     state: &mut ScanState,

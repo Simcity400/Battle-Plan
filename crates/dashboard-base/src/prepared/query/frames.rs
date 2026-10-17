@@ -24,7 +24,10 @@
 use crate::{Source, metadata::check_cancel};
 use replay::{
     container::{BlockIndex, SeekResult},
-    frame::{DecodedFrame, Frame, FrameDecoder, SharedView, TABLE_COUNT, TableUpdate, TableView},
+    frame::{
+        DecodedFrame, FrameDecoder, RecordedFrame as Frame, SharedView, TABLE_COUNT, TableUpdate,
+        TableView,
+    },
     rows::{TableId, TableRows},
 };
 use std::{
@@ -288,7 +291,11 @@ impl BlockDecoder {
             Some(reads) => reads,
             None => vec![BlockRead {
                 tables: tables.to_vec(),
-                frames: Arc::new(source.replay_ref().read_block_selected(index, tables)?),
+                frames: Arc::new(
+                    source
+                        .replay_ref()
+                        .read_block_recorded_selected(index, tables)?,
+                ),
             }],
         };
         let decoders = reads
@@ -589,12 +596,12 @@ pub(crate) fn update_bytes(update: &TableUpdate) -> usize {
 /// What a read's frames keep alive: each frame whole (every table's update
 /// and the hour's metrics) and what each update holds.
 fn frames_bytes(frames: &Vec<Frame>) -> usize {
-    frames.capacity() * std::mem::size_of::<Frame>()
-        + frames
-            .iter()
-            .flat_map(|frame| &frame.tables)
-            .map(update_bytes)
-            .sum::<usize>()
+    let mut bytes = crate::prepared::prepass::HeldBytes::default();
+    bytes.add(frames.capacity() * size_of::<Frame>());
+    for frame in frames {
+        bytes.heap(frame);
+    }
+    bytes.total() as usize
 }
 
 /// What one table's view keeps alive: its shared allocation and its rows or reason.
@@ -675,7 +682,9 @@ pub fn block(
         .collect::<Vec<_>>();
     let added = missing(&sorted(&have), &wanted);
     count(source, 1, 0);
-    let frames = source.replay_ref().read_block_selected(block, &added);
+    let frames = source
+        .replay_ref()
+        .read_block_recorded_selected(block, &added);
     // Every read lists the same frames; a keyframe the decoder would refuse
     // with these tables selected is read with the request's tables alone.
     let usable = frames.ok().filter(|frames| {

@@ -6,7 +6,7 @@
 
 use replay::{
     container::{BlockIndex, Replay},
-    frame::{Frame, TABLE_COUNT},
+    frame::{RecordedFrame, TABLE_COUNT},
     rows::TableId,
 };
 use std::{
@@ -31,7 +31,7 @@ thread_local! {
 }
 
 /// One block as a scan receives it: what [`Replay::read_block_selected`] returned.
-pub type BlockRead<'a> = (&'a BlockIndex, io::Result<Vec<Frame>>);
+pub type BlockRead<'a> = (&'a BlockIndex, io::Result<Vec<RecordedFrame>>);
 
 /// The tables a scan reads from each block: one list for every block, or [`PerBlock`].
 pub trait BlockTables: Sync {
@@ -103,12 +103,30 @@ pub fn scan_blocks<'a, R>(
     } else {
         AHEAD
     };
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
     scan_blocks_by(
         blocks,
         ahead,
         cancelled,
-        &|block| replay.read_block_selected(block, tables.of(block)),
-        scan,
+        &|block| {
+            if let Some(position) = replay.block_position(block) {
+                consumer.reading(position);
+            }
+            replay.read_block_recorded_selected(block, tables.of(block))
+        },
+        |reads| {
+            scan(&mut reads.map(|(block, frames)| {
+                if let Some(position) = replay.block_position(block) {
+                    consumer.at(position);
+                }
+                (block, frames)
+            }))
+        },
     )
 }
 

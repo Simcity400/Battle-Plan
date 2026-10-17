@@ -448,3 +448,54 @@ fn block_change_facts_alone_equal_the_facts_preparation_observes() {
     }
     assert_eq!(*observed.lock().unwrap(), alone);
 }
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn shared_section_consumers_decode_once_and_publish_the_uncached_hourly_bytes() {
+    use replay::container::test_work::table_decodes;
+    let replay = crate::products::army_size::prepared::block::test_fixtures::recording();
+    let mut fixture = Fixture::new(&replay);
+    let tables = crate::products::army_size::prepared::TABLES;
+    let mut reference = None;
+    for cached in [false, true] {
+        let source = fixture.source("section-cache-hourly");
+        let replay = source.replay_ref();
+        replay.cache_decoded_sections(false);
+        if cached {
+            replay.cache_decoded_sections(true);
+        }
+        let (_, decodes) = table_decodes(|| {
+            for index in &replay.index {
+                for _ in 0..2 {
+                    replay.read_block_selected(index, tables).unwrap();
+                }
+            }
+        });
+        for index in &replay.index {
+            for &table in tables {
+                assert_eq!(
+                    decodes
+                        .iter()
+                        .filter(|row| row.0 == index.branch
+                            && row.1 == index.first_hour
+                            && row.2 == table)
+                        .count(),
+                    if cached { 1 } else { 2 },
+                    "{table:?}: one decode per section for both consumers",
+                );
+            }
+        }
+        independent::with_test_hourly(|| {
+            prepass::with_test_sequential(|| run(&source, None, &AtomicBool::new(false), |_| {}))
+        })
+        .unwrap();
+        let actual = payloads(&source, None);
+        match &reference {
+            None => reference = Some(actual),
+            Some(expected) => {
+                assert_payloads_equal(&actual, expected, "shared sections, hourly bytes")
+            }
+        }
+        clear(source);
+    }
+}

@@ -122,6 +122,45 @@ fn with_extra_control(replay: &Replay) -> (BlockIndex, Vec<u8>) {
 }
 
 #[test]
+fn cached_prefix_does_not_admit_a_malformed_extension_or_lose_its_valid_prefix() {
+    let replay = fixture();
+    replay.cache_decoded_sections(true);
+    let (index, bytes) = with_extra_control(&replay);
+    let ((first, second), decodes) = super::super::test_work::table_decodes(|| {
+        let prefix = || {
+            read_through(
+                &replay,
+                &index,
+                &bytes,
+                Some(&[TableId::Clock]),
+                None,
+                Some(12),
+            )
+            .unwrap()
+        };
+        let first = prefix();
+        assert!(
+            read_through(
+                &replay,
+                &index,
+                &bytes,
+                Some(&[TableId::Clock]),
+                None,
+                Some(13)
+            )
+            .is_err()
+        );
+        (first, prefix())
+    });
+    assert_eq!(first, second);
+    assert_eq!(
+        decodes,
+        [(1, 10, TableId::Clock, 2), (1, 10, TableId::Clock, 3)]
+    );
+    assert!(!replay.is_verified(&index));
+}
+
+#[test]
 fn prefix_does_not_verify_later_grammar_but_whole_read_does() {
     let replay = fixture();
     let (index, bytes) = with_extra_control(&replay);

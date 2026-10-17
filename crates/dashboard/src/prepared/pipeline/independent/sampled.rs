@@ -79,7 +79,7 @@ use std::{
     collections::BTreeMap,
     io,
     marker::PhantomData,
-    sync::{Arc, LazyLock, atomic::AtomicBool},
+    sync::{LazyLock, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -1078,11 +1078,11 @@ where
     // The carried scan continued as the worker's from its tail's hour: the
     // read stops there.
     let mut handed = false;
-    let read = block.replay.read_block_alone(
+    let read = block.replay.read_block_recorded_alone(
         block.index,
         tables,
         |raw, frame| {
-            let changes = tracker.observe_updates(frame, Arc::new(raw), format);
+            let changes = tracker.observe_updates(frame, raw, format);
             if frame.hour == block.index.last_hour {
                 last = Some(frame.clone());
             }

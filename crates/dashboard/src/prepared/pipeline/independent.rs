@@ -70,7 +70,7 @@ use dashboard_base::prepared::pages::{Committed, HeldPages, Pages};
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
     container::{BlockIndex, Replay},
-    frame::{DecodedFrame, Frame},
+    frame::DecodedFrame,
     rows::TableId,
 };
 use serde::{Deserialize, Serialize};
@@ -231,7 +231,7 @@ impl Block<'_> {
     pub(super) fn read_alone(
         &self,
         tables: &[TableId],
-        visit: impl FnMut(Arc<Frame>, &DecodedFrame) -> io::Result<()>,
+        visit: impl FnMut(Arc<replay::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         shared::read_alone(
@@ -252,7 +252,7 @@ impl Block<'_> {
         &self,
         tables: &[TableId],
         last: i32,
-        visit: impl FnMut(Arc<Frame>, &DecodedFrame) -> io::Result<()>,
+        visit: impl FnMut(Arc<replay::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         shared::read_alone(
@@ -1307,6 +1307,11 @@ pub(super) fn prepare(
         .iter()
         .map(|run| (run.own.shared_tables(phase), run.progress.next_block))
         .collect();
+    // Register every family before the pool can read ahead of its startup.
+    let section_consumers: Vec<_> = runs
+        .iter()
+        .map(|run| replay.section_consumer(run.progress.next_block))
+        .collect();
     let shared = if runs.is_empty() {
         None
     } else {
@@ -1431,7 +1436,7 @@ pub(super) fn prepare(
         }
         let ran: Vec<std::thread::Result<Ran>> = if !at_once {
             let mut ran = Vec::with_capacity(runs.len());
-            for run in runs {
+            for (run, section_consumer) in runs.into_iter().zip(section_consumers) {
                 let (mut own_timings, mut own_workers) = local();
                 let member = shared
                     .as_ref()
@@ -1440,6 +1445,7 @@ pub(super) fn prepare(
                     phase,
                     pool.as_ref().expect("the families' pool"),
                     member,
+                    section_consumer,
                     run,
                     &commits,
                     atomic,
@@ -1465,7 +1471,7 @@ pub(super) fn prepare(
             ran
         } else {
             let mut started = Vec::with_capacity(runs.len());
-            for run in runs {
+            for (run, section_consumer) in runs.into_iter().zip(section_consumers) {
                 let sender = sender.clone();
                 let (pool, commits) = (pool.as_ref().expect("the families' pool"), &commits);
                 let (mut own_timings, mut own_workers) = local();
@@ -1491,6 +1497,7 @@ pub(super) fn prepare(
                         phase,
                         pool,
                         member,
+                        section_consumer,
                         run,
                         commits,
                         atomic,
@@ -1649,6 +1656,7 @@ fn prepare_family(
     phase: &Phase<'_>,
     pool: &Pool,
     member: Option<shared::Member<'_>>,
+    section_consumer: replay::container::SectionConsumer,
     run: Run,
     commits: &Group<'_>,
     atomic: bool,
@@ -1676,6 +1684,7 @@ fn prepare_family(
     let mut pages = HeldPages::default();
     let mut touched = BTreeSet::new();
     for block in progress.next_block..replay.index.len() {
+        section_consumer.at(block);
         check_cancel(phase.cancelled)?;
         let index = &replay.index[block];
         let branch = index.branch;

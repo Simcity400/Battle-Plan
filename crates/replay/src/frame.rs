@@ -14,6 +14,8 @@ pub(crate) mod checkpoint;
 mod decoder;
 mod encoder;
 mod provenance;
+pub(crate) mod recorded;
+pub use recorded::{FrameSource, IntoRecordedFrame, RecordedFrame, RecordedTables};
 mod wire;
 
 #[cfg(test)]

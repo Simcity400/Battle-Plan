@@ -14,7 +14,7 @@ use std::{
 use replay::{
     BranchId, Hour,
     codec::Decoder,
-    frame::{DecodedFrame, Frame, FrameDecoder, TableView},
+    frame::{DecodedFrame, FrameDecoder, FrameSource, TableView},
     rows::TableId,
 };
 use store::{SourceKey, Store, Writer};
@@ -314,11 +314,11 @@ impl Builder {
     pub fn accept(
         &mut self,
         writer: &mut Writer,
-        source: &Frame,
+        source: &(impl FrameSource + ?Sized),
         frame: &DecodedFrame,
         position: Position,
     ) -> io::Result<()> {
-        if source.branch != frame.branch || source.hour != frame.hour {
+        if source.branch() != frame.branch || source.hour() != frame.hour {
             return Err(invalid("map update differs from its accepted decoded hour"));
         }
         let mut branch = self
@@ -358,12 +358,12 @@ impl Builder {
         &mut self,
         writer: &mut Writer,
         replay: &replay::container::Replay,
-        source: &Frame,
+        source: &(impl FrameSource + ?Sized),
         frame: &DecodedFrame,
         position: Position,
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
-        if source.branch != frame.branch || source.hour != frame.hour {
+        if source.branch() != frame.branch || source.hour() != frame.hour {
             return Err(invalid("map update differs from its accepted decoded hour"));
         }
         let checkpoint = self
@@ -387,9 +387,9 @@ impl Builder {
             })
             .ok_or_else(|| invalid("map checkpoint cursor differs from its accepted hour"))?;
         let frames = if frame.hour == index.first_hour {
-            vec![replay.read_keyframe_selected(index, &self.selected)?]
+            vec![replay.read_keyframe_recorded(index, &self.selected)?]
         } else {
-            replay.read_block_selected_through(index, Some(&self.selected), frame.hour, None)?
+            replay.read_block_recorded_through(index, &self.selected, frame.hour)?
         };
         if frames.len() != position.next_frame {
             return Err(invalid(

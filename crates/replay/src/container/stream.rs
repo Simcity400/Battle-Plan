@@ -1,6 +1,7 @@
 //! Selected preparation with an accepted block cursor and decoder accumulator.
 
 use super::*;
+use crate::frame::{FrameSource, RecordedFrame};
 use std::sync::{Arc, mpsc};
 
 #[cfg(test)]
@@ -71,14 +72,27 @@ impl ReplayStream {
         replay: &Replay,
         mut visit: impl FnMut(&DecodedFrame) -> io::Result<()>,
     ) -> io::Result<bool> {
-        self.next_block_with(replay, |_, decoded| visit(decoded), || Ok(()))
+        self.next_block_recorded_with(replay, |_, decoded| visit(decoded), || Ok(()))
     }
 
     /// Check cancellation during admission and reconstruction, once per payload.
     pub fn next_block_with(
         &mut self,
         replay: &Replay,
-        visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
+        mut visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
+        check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<bool> {
+        self.next_block_recorded_with(
+            replay,
+            |raw, frame| visit(raw.into_owned_frame()?, frame),
+            check,
+        )
+    }
+    /// The selected stream with immutable recorded updates, shared between readers.
+    pub fn next_block_recorded_with(
+        &mut self,
+        replay: &Replay,
+        visit: impl FnMut(RecordedFrame, &DecodedFrame) -> io::Result<()>,
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
         check()?;
@@ -88,7 +102,7 @@ impl ReplayStream {
         };
         let tables = &self.tables;
         let current = &self.decoder;
-        let decoder = reconstruct_block(
+        let decoder = reconstruct_recorded_block(
             replay,
             index,
             tables,
@@ -117,10 +131,23 @@ impl ReplayStream {
         &mut self,
         replay: &Arc<Replay>,
         mut visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
+        check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<bool> {
+        self.next_block_recorded_parallel_with(
+            replay,
+            |raw, frame| visit(raw.into_owned_frame()?, frame),
+            check,
+        )
+    }
+    /// Parallel admission with shared immutable updates and local reconstruction.
+    pub fn next_block_recorded_parallel_with(
+        &mut self,
+        replay: &Arc<Replay>,
+        mut visit: impl FnMut(RecordedFrame, &DecodedFrame) -> io::Result<()>,
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
         if std::thread::available_parallelism().map_or(1, usize::from) == 1 {
-            return self.next_block_with(replay, visit, check);
+            return self.next_block_recorded_with(replay, visit, check);
         }
         check()?;
         self.check_prefix(replay)?;
@@ -169,7 +196,7 @@ impl ReplayStream {
                         workers: super::pack::workers(),
                         on_worker: &lower,
                     };
-                    Some(replay.read_block_selected_parallel(index, tables, &parallel)?)
+                    Some(replay.read_block_recorded_selected_parallel(index, tables, &parallel)?)
                 } else {
                     // Admission verifies a malformed tail before observers see it.
                     replay.visit_block(index, Some(tables), |_| {
@@ -179,11 +206,11 @@ impl ReplayStream {
                     None
                 };
                 check()?;
-                let mut send = |frame: Frame| {
+                let mut send = |frame: RecordedFrame| {
                     check()?;
                     #[cfg(test)]
                     if let Some(hook) = &on_read {
-                        hook(&frame);
+                        hook(&frame.to_owned_frame()?);
                     }
                     sender
                         .send(frame)
@@ -196,7 +223,7 @@ impl ReplayStream {
                             send(frame)?;
                         }
                     }
-                    None => replay.visit_block(index, Some(tables), &mut send)?,
+                    None => replay.visit_block(index, Some(tables), |frame| send(frame.into()))?,
                 }
                 Ok(())
             })?;
@@ -278,6 +305,45 @@ impl Replay {
         .map(|_| ())
     }
 
+    /// Reconstruct shared recorded updates without materializing owned wire frames.
+    pub fn read_block_recorded_alone(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        mut visit: impl FnMut(Arc<RecordedFrame>, &DecodedFrame) -> io::Result<()>,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        check()?;
+        let grouped = if self.is_file_backed() {
+            self.held_grouped(index)?
+        } else {
+            self.grouped_block(index)?.is_some()
+        };
+        if !grouped {
+            return self.read_block_alone(
+                index,
+                tables,
+                |raw, frame| visit(Arc::new(raw.into()), frame),
+                check,
+            );
+        }
+        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        if !selected.contains(&TableId::Campaign) {
+            engine::allocation::reserve(&mut selected, 1)?;
+            selected.push(TableId::Campaign);
+        }
+        let frames = self.read_block_recorded_selected(index, &selected)?;
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in frames {
+            check()?;
+            let frame = Arc::new(frame);
+            let decoded = decoder.advance(&frame)?;
+            validate_campaign(decoded, &self.campaign_id)?;
+            visit(frame, decoded)?;
+        }
+        Ok(())
+    }
+
     /// [`Replay::read_block_alone`] of a block already read: `frames` are the
     /// block's frames as [`Replay::read_block_selected`] returned them for a
     /// selection holding `tables`, here reconstructed with `tables` (and
@@ -293,7 +359,7 @@ impl Replay {
     /// them: when one fails it the block is not reconstructed and nothing is
     /// visited (false), and the caller reads it alone. A prefix of a block's
     /// frames reconstructs its hours through the prefix's last.
-    pub fn reconstruct_alone<F: std::borrow::Borrow<Frame>>(
+    pub fn reconstruct_alone<F: FrameSource>(
         &self,
         frames: &[F],
         tables: &[TableId],
@@ -313,11 +379,10 @@ impl Replay {
         // A read of `tables` alone holds an unselected table as unavailable,
         // which a keyframe may hold.
         let unselected_dependent = frames.iter().any(|frame| {
-            let frame = frame.borrow();
-            frame.keyframe
+            frame.keyframe()
                 && TableId::ALL.iter().any(|table| {
                     !chosen[table.index()]
-                        && !crate::frame::keyframe_update(&frame.tables[table.index()])
+                        && !crate::frame::keyframe_update(frame.update(table.index()))
                 })
         });
         if unselected_dependent {
@@ -326,12 +391,47 @@ impl Replay {
         let mut decoder = FrameDecoder::for_tables(&selected);
         for frame in frames {
             check()?;
-            let decoded = decoder.advance(frame.borrow())?;
+            let decoded = decoder.advance(frame)?;
             validate_campaign(decoded, &self.campaign_id)?;
             visit(frame, decoded)?;
         }
         Ok(true)
     }
+}
+
+fn reconstruct_recorded_block(
+    replay: &Replay,
+    index: &BlockIndex,
+    tables: &[TableId],
+    decoder: impl FnOnce() -> io::Result<FrameDecoder>,
+    mut visit: impl FnMut(RecordedFrame, &DecodedFrame) -> io::Result<()>,
+    mut check: impl FnMut() -> io::Result<()>,
+) -> io::Result<FrameDecoder> {
+    let grouped = if replay.is_file_backed() {
+        replay.held_grouped(index)?
+    } else {
+        replay.grouped_block(index)?.is_some()
+    };
+    if !grouped {
+        return reconstruct_block(
+            replay,
+            index,
+            tables,
+            decoder,
+            |raw, frame| visit(raw.into(), frame),
+            check,
+        );
+    }
+    let frames = replay.read_block_recorded_selected(index, tables)?;
+    check()?;
+    let mut decoder = decoder()?;
+    for frame in frames {
+        check()?;
+        let decoded = decoder.advance(&frame)?;
+        validate_campaign(decoded, &replay.campaign_id)?;
+        visit(frame, decoded)?;
+    }
+    Ok(decoder)
 }
 
 /// Read a block's selected frames and reconstruct them with the decoder

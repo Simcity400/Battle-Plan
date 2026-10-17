@@ -4,7 +4,7 @@ use super::super::tests::{CAMPAIGN, interleaved_copy, records, source};
 use super::*;
 use crate::{
     frame::FrameEncoder,
-    rows::{CountryRow, SunkShipsRow},
+    rows::{CountryRow, DivisionRow, SunkShipsRow},
 };
 
 /// Two blocks of one branch, the first with a recorded gap (hours 10 and 11
@@ -149,18 +149,23 @@ impl Log {
         }
     }
 
-    fn hour(&mut self, own: &[TableId], updates: &Frame, frame: &DecodedFrame) {
+    fn hour(
+        &mut self,
+        own: &[TableId],
+        updates: &(impl crate::frame::FrameSource + ?Sized),
+        frame: &DecodedFrame,
+    ) {
         self.frames.push(frame.clone());
         self.steps.push(Step::Hour {
             frame: checkpoint(frame),
             decoded: frame.clone(),
             sampled: sampled(frame),
             updates: (
-                updates.hour,
-                updates.keyframe,
-                updates.metrics.clone(),
+                updates.hour(),
+                updates.keyframe(),
+                updates.metrics().clone(),
                 own.iter()
-                    .map(|table| updates.tables[table.index()].clone())
+                    .map(|table| updates.update(table.index()).clone())
                     .collect(),
             ),
         });
@@ -441,23 +446,55 @@ fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
         .remove(0);
     assert!(frame.keyframe);
     for keyframe in [Keyframe::Grouped(false), Keyframe::Interleaved] {
-        assert!(!tables.refuses_keyframe(&clock, &frame, keyframe));
-        assert!(!tables.refuses_keyframe(&ships, &frame, keyframe));
+        assert!(!tables.refuses_keyframe(
+            &clock,
+            &crate::frame::RecordedFrame::from(frame.clone()),
+            keyframe
+        ));
+        assert!(!tables.refuses_keyframe(
+            &ships,
+            &crate::frame::RecordedFrame::from(frame.clone()),
+            keyframe
+        ));
     }
-    assert!(tables.refuses_keyframe(&clock, &frame, Keyframe::Grouped(true)));
+    assert!(tables.refuses_keyframe(
+        &clock,
+        &crate::frame::RecordedFrame::from(frame.clone()),
+        Keyframe::Grouped(true)
+    ));
     frame.tables[TableId::SunkShips.index()] = TableUpdate::Unchanged { baseline: 0 };
     for keyframe in [Keyframe::Grouped(false), Keyframe::Interleaved] {
-        assert!(!tables.refuses_keyframe(&clock, &frame, keyframe));
-        assert!(tables.refuses_keyframe(&ships, &frame, keyframe));
+        assert!(!tables.refuses_keyframe(
+            &clock,
+            &crate::frame::RecordedFrame::from(frame.clone()),
+            keyframe
+        ));
+        assert!(tables.refuses_keyframe(
+            &ships,
+            &crate::frame::RecordedFrame::from(frame.clone()),
+            keyframe
+        ));
     }
     frame.tables[TableId::SunkShips.index()] = TableUpdate::Delta {
         baseline: 0,
         changed: Vec::new(),
         deleted: Vec::new(),
     };
-    assert!(!tables.refuses_keyframe(&clock, &frame, Keyframe::Grouped(false)));
-    assert!(tables.refuses_keyframe(&clock, &frame, Keyframe::Interleaved));
-    assert!(tables.refuses_keyframe(&ships, &frame, Keyframe::Grouped(false)));
+    assert!(!tables.refuses_keyframe(
+        &clock,
+        &crate::frame::RecordedFrame::from(frame.clone()),
+        Keyframe::Grouped(false)
+    ));
+    assert!(tables.refuses_keyframe(
+        &clock,
+        &crate::frame::RecordedFrame::from(frame.clone()),
+        Keyframe::Interleaved
+    ));
+    assert!(tables.refuses_keyframe(
+        &ships,
+        &crate::frame::RecordedFrame::from(frame.clone()),
+        Keyframe::Grouped(false)
+    ));
 }
 
 /// A read keeping a grouped block's frames for another reader hands it,
@@ -478,7 +515,7 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
         for index in &replay.index {
             let mut logs: Vec<Log> = watchings.iter().map(|_| Log::default()).collect();
             let owns: Vec<Vec<TableId>> = watchings.iter().map(|&watching| own(watching)).collect();
-            let mut kept: Option<Vec<Arc<Frame>>> = None;
+            let mut kept: Option<Vec<Arc<RecordedFrame>>> = None;
             let mut visited_before_kept = false;
             {
                 let visited = std::cell::Cell::new(false);
@@ -501,7 +538,7 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
                         })
                     })
                     .collect();
-                let mut keep = |frames: &[Arc<Frame>]| {
+                let mut keep = |frames: &[Arc<RecordedFrame>]| {
                     visited_before_kept = visited.get();
                     kept = Some(frames.to_vec());
                 };
@@ -619,5 +656,96 @@ fn kept_only_tables_have_no_reconstructed_views() {
         let expected = alone(&replay, index, Watching::Every(&own));
         assert_eq!(log.steps, expected.steps);
         assert_eq!(log.shared(), expected.shared());
+    }
+}
+
+#[test]
+fn clock_hours_keep_no_change_only_division_updates_in_either_layout() {
+    let mut captured = records(1, &[1]);
+    captured.pop();
+    let mut encoder = FrameEncoder::new();
+    for hour in 1..=3 {
+        let mut frame = source(1, hour);
+        *frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+                id: 1,
+                roster_owner: 1,
+                logical_owner: 1,
+                province: hour as u32,
+                ..Default::default()
+            }]));
+        frame.metrics.table_ns[TableId::Clock.index()] = 1;
+        captured.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+    }
+    let grouped = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
+    let interleaved = interleaved_copy(&grouped);
+    let clock_tables = [TableId::Campaign, TableId::Clock];
+    let fields = [TableFields::named(TableId::Divisions, &["province"]).unwrap()];
+    for replay in [&grouped, &interleaved] {
+        for index in &replay.index {
+            let raw = replay
+                .read_block_selected(index, &[TableId::Clock, TableId::Divisions])
+                .unwrap();
+            assert!(matches!(
+                raw[0].tables[TableId::Divisions.index()],
+                TableUpdate::Snapshot(_)
+            ));
+            assert!(raw[1..].iter().any(|frame| matches!(
+                frame.tables[TableId::Divisions.index()],
+                TableUpdate::Delta { .. }
+            )));
+            let mut clock = Log::default();
+            let mut divisions = Log::default();
+            let mut saved = Vec::new();
+            {
+                let mut watches = [
+                    BlockWatch::new(Watching::Every(&[TableId::Clock]), |step| {
+                        let Watched::Hour { updates, frame } = step else {
+                            unreachable!("a watch of every hour")
+                        };
+                        clock.hour(&clock_tables, updates, frame);
+                        saved.push(Arc::clone(updates));
+                        Ok(())
+                    }),
+                    BlockWatch::new(Watching::Changes(&fields), |step| {
+                        let Watched::Change(change) = step else {
+                            unreachable!("a watch of changes")
+                        };
+                        divisions.change(change);
+                        Ok(())
+                    }),
+                ];
+                replay
+                    .read_block_watched(index, &mut watches, || Ok(()))
+                    .unwrap();
+                for watch in watches {
+                    watch.finish().unwrap();
+                }
+            }
+            assert_eq!(
+                clock.steps,
+                alone(replay, index, Watching::Every(&[TableId::Clock])).steps
+            );
+            assert_eq!(
+                divisions.steps,
+                alone(replay, index, Watching::Changes(&fields)).steps
+            );
+            let expected = replay.read_block_selected(index, &clock_tables).unwrap();
+            assert_eq!(saved.len(), expected.len());
+            for (saved, expected) in saved.iter().zip(&expected) {
+                for table in TableId::ALL {
+                    if clock_tables.contains(&table) {
+                        assert_eq!(saved.tables[table.index()], expected.tables[table.index()]);
+                    } else {
+                        assert!(
+                            matches!(&saved.tables[table.index()],
+                                TableUpdate::Unavailable { reason } if reason.is_empty()
+                            ),
+                            "{table:?}: hourly facts retain a table used only by the change watch"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

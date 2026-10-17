@@ -8,7 +8,7 @@ use dashboard_base::products::{
 use dashboard_text::metadata::{IdentityTrack, slot_read, validate_campaign};
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, Frame, FrameDecoder},
+    frame::{DecodedFrame, FrameDecoder},
     rows::{AirWingRow, TableId, WingEquipmentRow, tables},
 };
 use std::{
@@ -412,9 +412,9 @@ struct Census {
     reconciled: usize,
 }
 
-struct Inputs<'a> {
+struct Inputs<'a, F: replay::frame::FrameSource + ?Sized> {
     decoded: &'a DecodedFrame,
-    frame: &'a Frame,
+    frame: &'a F,
     variants: &'a VariantCatalogue,
     countries: &'a Countries,
     rebuild: bool,
@@ -479,7 +479,7 @@ impl Census {
 
     fn update(
         &mut self,
-        inputs: Inputs<'_>,
+        inputs: Inputs<'_, impl replay::frame::FrameSource + ?Sized>,
         result: &mut ScannedAir,
         pool: &mut HashSet<Arc<Counts>>,
         cancelled: &AtomicBool,
@@ -515,14 +515,14 @@ impl Census {
             && !rebuild
             && !evidence_changed
             && changed_ids(
-                &frame.tables[TableId::AirWings.index()],
+                frame.update(TableId::AirWings.index()),
                 0,
                 &mut ids,
                 |row| row.mask & fields != 0 || !self.wings.contains_key(&(row.key as u64)),
             )
             && (entries.is_none()
                 || changed_ids(
-                    &frame.tables[TableId::WingEquipment.index()],
+                    frame.update(TableId::WingEquipment.index()),
                     32,
                     &mut ids,
                     |_| true,
@@ -719,7 +719,7 @@ impl Scan {
     /// Rebuild transient joins from the committed decoder frame without repeating its history or counters.
     pub(super) fn rejoin(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         format: replay::format::FormatVersion,
         cancelled: &AtomicBool,
@@ -741,7 +741,7 @@ impl Scan {
     }
     pub(super) fn step_changes(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         format: replay::format::FormatVersion,
         cancelled: &AtomicBool,
@@ -820,7 +820,7 @@ impl Scan {
     }
     pub(super) fn step(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         format: replay::format::FormatVersion,
         cancelled: &AtomicBool,

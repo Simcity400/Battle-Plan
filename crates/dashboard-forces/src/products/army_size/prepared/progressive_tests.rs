@@ -175,7 +175,7 @@ fn phase_b_army_deferred_native_runs_match_eager_after_checkpoints_resume_append
             Some(&changes),
             lazy_state.applied,
         );
-        lazy_state.step_changes(&mut lazy, &raw, &next, &replay, Some(&changes));
+        lazy_state.step_changes(&mut lazy, raw.as_ref(), &next, &replay, Some(&changes));
         if hour == 103 || hour == 108 {
             lazy.seal();
             lazy = serde_json::from_slice(&serde_json::to_vec(&lazy).unwrap()).unwrap();

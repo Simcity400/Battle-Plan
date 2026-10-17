@@ -135,7 +135,7 @@ pub(crate) trait Depot: Send + Sync {
     /// being read for them until [`Self::deposit`] or [`Self::withdraw`].
     fn offer(&self, block: usize) -> Option<Vec<TableId>>;
     /// The offered block's frames, with every offered table's updates.
-    fn deposit(&self, block: usize, frames: Vec<Arc<replay::frame::Frame>>);
+    fn deposit(&self, block: usize, frames: Vec<Arc<replay::frame::RecordedFrame>>);
     /// The offered block was not read for the readers.
     fn withdraw(&self, block: usize);
 }
@@ -165,6 +165,7 @@ struct State {
 }
 
 struct Shared {
+    section_consumer: replay::container::SectionConsumer,
     state: Mutex<State>,
     changed: Condvar,
     stop: AtomicBool,
@@ -188,6 +189,7 @@ impl Shared {
                 && (state.next == state.handed || state.in_flight + size <= state.budget)
             {
                 state.in_flight += size;
+                self.section_consumer.reading(state.next);
                 state.next += 1;
                 state.peak = state.peak.max(state.next - state.handed);
                 return Some(state.next - 1);
@@ -241,8 +243,10 @@ impl PrePass {
         workers: usize,
         knobs: Knobs,
     ) -> Self {
+        let section_consumer = replay.section_consumer(from);
         let count = workers.max(1);
         let shared = Arc::new(Shared {
+            section_consumer,
             state: Mutex::new(State {
                 next: from,
                 handed: from,
@@ -298,6 +302,7 @@ impl PrePass {
         position: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<Vec<Extracted>> {
+        self.shared.section_consumer.at(position);
         let mut state = self.shared.lock();
         if position != state.handed {
             return Err(io::Error::other("Pre-pass blocks taken out of order"));
@@ -387,6 +392,7 @@ fn sequential(families: &[&'static Family]) -> Vec<Outcome> {
 /// One family's blocks in a [`Pool`]: claimed in block order from its first
 /// block, and taken in that order by the family alone.
 struct Lane {
+    section_consumer: Option<replay::container::SectionConsumer>,
     family: &'static Family,
     /// The reads its run chose from the bound content, if it chose any.
     bound: Option<Arc<Bound>>,
@@ -596,6 +602,9 @@ impl PoolShared {
                     let expected = state.lanes[position].expected();
                     state.in_flight += expected;
                     let lane = &mut state.lanes[position];
+                    if let Some(consumer) = &lane.section_consumer {
+                        consumer.reading(block);
+                    }
                     lane.reserved.insert(block, expected);
                     lane.next += 1;
                     task.members
@@ -689,6 +698,7 @@ impl Pool {
                 lanes: lanes
                     .into_iter()
                     .map(|(family, from, binding)| Lane {
+                        section_consumer: (from < end).then(|| replay.section_consumer(from)),
                         family,
                         bound: None,
                         binding,
@@ -748,6 +758,9 @@ impl Pool {
         cancelled: &AtomicBool,
     ) -> io::Result<Extracted> {
         let mut state = self.shared.lock();
+        if let Some(consumer) = &state.lanes[lane].section_consumer {
+            consumer.at(position);
+        }
         if position != state.lanes[lane].handed {
             return Err(io::Error::other("Pre-pass blocks taken out of order"));
         }
@@ -804,6 +817,7 @@ impl Pool {
         let left: Vec<(usize, u64)> = {
             let lane = &mut state.lanes[lane];
             lane.retired = true;
+            lane.section_consumer = None;
             lane.binding = false;
             lane.end = lane.next;
             std::mem::take(&mut lane.done)
@@ -869,7 +883,7 @@ fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
             let kept = offer
                 .as_mut()
                 .map(|offer| std::mem::take(&mut offer.tables));
-            let mut deposit = |frames: &[Arc<replay::frame::Frame>]| {
+            let mut deposit = |frames: &[Arc<replay::frame::RecordedFrame>]| {
                 if let Some(offer) = &mut offer {
                     offer.depot.deposit(offer.block, frames.to_vec());
                     offer.deposited = true;

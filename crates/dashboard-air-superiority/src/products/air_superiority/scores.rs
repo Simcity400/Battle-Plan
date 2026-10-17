@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 use {
     replay::{
-        frame::{Frame, TableUpdate},
+        frame::TableUpdate,
         rows::{TableId, TableRows},
     },
     std::{collections::HashSet, io},
@@ -46,7 +46,11 @@ impl ScoreRead {
 
     // A failed table becomes unavailable, just as in FrameDecoder. No partial
     // mutation may contribute regions or lend a baseline to the following hour.
-    pub fn observe(&mut self, frame: &Frame, regions: &mut HashSet<u32>) -> usize {
+    pub fn observe(
+        &mut self,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
+        regions: &mut HashSet<u32>,
+    ) -> usize {
         match self.update(frame, regions) {
             Ok((added, examined)) => {
                 regions.extend(added);
@@ -65,11 +69,11 @@ impl ScoreRead {
 
     fn update(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         regions: &HashSet<u32>,
     ) -> io::Result<(HashSet<u32>, usize)> {
-        let update = &frame.tables[TableId::RaidAirScores.index()];
-        if frame.keyframe {
+        let update = frame.update(TableId::RaidAirScores.index());
+        if frame.keyframe() {
             self.baseline = None;
         }
         let mut added = HashSet::new();
@@ -170,12 +174,16 @@ impl ScoreRead {
                 ));
             }
         }
-        self.baseline = self.complete.then_some((frame.branch, frame.hour));
+        self.baseline = self.complete.then_some((frame.branch(), frame.hour()));
         Ok((added, examined))
     }
 
-    fn check_baseline(&self, frame: &Frame, baseline: i32) -> io::Result<()> {
-        if self.baseline == Some((frame.branch, baseline)) && baseline < frame.hour {
+    fn check_baseline(
+        &self,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
+        baseline: i32,
+    ) -> io::Result<()> {
+        if self.baseline == Some((frame.branch(), baseline)) && baseline < frame.hour() {
             Ok(())
         } else {
             Err(super::invalid(format!(

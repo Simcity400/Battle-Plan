@@ -47,6 +47,8 @@ and projection bases only after its scan settles and its fold will keep them.
 The first hour and air's hours before its variant names settle keep only the
 scan step and boundary state; their fold observes those hours itself.
 
+Force censuses borrow recorded updates through `FrameSource`, accepting owned wire frames and immutable shared recorded frames with the same delta and baseline rules. Query scans share section payloads with preparation without copying on a cache hit.
+
 Army, air and navy rank publication coalesces adjacent unchanged positions
 before writing accumulator runs. Their channels share numeric payload
 construction within a flush, while retaining each section's ordinary bytes

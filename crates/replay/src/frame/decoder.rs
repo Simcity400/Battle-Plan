@@ -1,5 +1,5 @@
 use super::{
-    DecodedFrame, Frame, SharedView, TABLE_COUNT, TableUpdate, TableView, validate_applied,
+    DecodedFrame, SharedView, TABLE_COUNT, TableUpdate, TableView, validate_applied,
     validate_complete, validate_delta, validate_rows, validate_singleton,
 };
 use crate::{Hour, codec::invalid, rows::TableId};
@@ -35,13 +35,19 @@ impl FrameDecoder {
     /// Decode an hour and return a frame callers can retain. It shares every
     /// table with the decoder, so it copies no rows; a table is copied only
     /// when either side writes to it.
-    pub fn apply(&mut self, frame: &Frame) -> io::Result<DecodedFrame> {
+    pub fn apply(
+        &mut self,
+        frame: &(impl super::FrameSource + ?Sized),
+    ) -> io::Result<DecodedFrame> {
         self.advance(frame).cloned()
     }
 
     /// Advance the same decoder without copying its rows into a separate output.
     /// The borrowed hour remains available for validation before the next advance.
-    pub fn advance(&mut self, frame: &Frame) -> io::Result<&DecodedFrame> {
+    pub fn advance(
+        &mut self,
+        frame: &(impl super::FrameSource + ?Sized),
+    ) -> io::Result<&DecodedFrame> {
         // Measurement only: each table's reconstruct cycles, when enabled.
         let _cpu = crate::cpu::scope("reconstruct", None);
         let measured = crate::cpu::enabled();
@@ -49,13 +55,13 @@ impl FrameDecoder {
         if self
             .current
             .as_ref()
-            .is_some_and(|current| current.branch == frame.branch && current.hour >= frame.hour)
+            .is_some_and(|current| current.branch == frame.branch() && current.hour >= frame.hour())
         {
             return Err(invalid("frame hour did not advance on its branch"));
         }
         // Reject frame-wide errors before moving any baseline. From here onward,
         // a failed update clears only its table and becomes a named unavailable view.
-        if frame.keyframe && !frame.tables.iter().all(keyframe_update) {
+        if frame.keyframe() && !(0..TABLE_COUNT).all(|index| keyframe_update(frame.update(index))) {
             return Err(invalid("keyframe contains a dependent or partial table"));
         }
         let selected = |index: usize| {
@@ -70,10 +76,10 @@ impl FrameDecoder {
         let current = self.current.take();
         let continues = current
             .as_ref()
-            .is_some_and(|current| !frame.keyframe && current.branch == frame.branch);
+            .is_some_and(|current| !frame.keyframe() && current.branch == frame.branch());
         let (previous_hour, mut held) = match current {
             Some(current) => (current.hour, current.tables.map(Some)),
-            None => (frame.hour, std::array::from_fn(|_| None)),
+            None => (frame.hour(), std::array::from_fn(|_| None)),
         };
         if !continues {
             for (index, view) in held.iter_mut().enumerate() {
@@ -100,10 +106,10 @@ impl FrameDecoder {
             let started = if measured { crate::cpu::stamp() } else { 0 };
             let advanced = advance_table(
                 table,
-                &frame.tables[index],
+                frame.update(index),
                 previous,
-                frame.hour,
-                frame.metrics.table_ns[index] != 0,
+                frame.hour(),
+                frame.metrics().table_ns[index] != 0,
             );
             if measured {
                 spent.push((index, crate::cpu::stamp().wrapping_sub(started)));
@@ -117,16 +123,16 @@ impl FrameDecoder {
             }
         });
         if measured {
-            crate::cpu::reconstructed(frame.hour, &spent);
+            crate::cpu::reconstructed(frame.hour(), &spent);
         }
         if let Some(error) = allocation_failure {
             return Err(error);
         }
         self.current = Some(DecodedFrame {
-            branch: frame.branch,
-            hour: frame.hour,
+            branch: frame.branch(),
+            hour: frame.hour(),
             tables,
-            metrics: frame.metrics.clone(),
+            metrics: frame.metrics().clone(),
         });
         Ok(self.current.as_ref().unwrap())
     }

@@ -7,9 +7,12 @@ use dashboard_base::products::{
 use dashboard_text::metadata::validate_campaign;
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, Frame, FrameDecoder, ViewIdentity},
+    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
     rows::{ShipRow, TableId, tables},
 };
+
+#[cfg(test)]
+use replay::frame::Frame;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Ship {
@@ -254,7 +257,7 @@ impl Census {
     fn update(
         &mut self,
         decoded: &DecodedFrame,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         countries: &Countries,
         countries_changed: bool,
         result: &mut ScannedNavy,
@@ -321,12 +324,12 @@ impl Census {
             && !owners_changed
             && !names_changed
             && !evidence_changed
-            && changed_ids(&frame.tables[TableId::Ships.index()], 0, &mut ids, |row| {
+            && changed_ids(frame.update(TableId::Ships.index()), 0, &mut ids, |row| {
                 row.mask & fields != 0 || !self.ships.contains_key(&(row.key as u64))
             })
             && (models.is_none()
                 || changed_ids(
-                    &frame.tables[TableId::ShipModels.index()],
+                    frame.update(TableId::ShipModels.index()),
                     0,
                     &mut ids,
                     |_| true,
@@ -476,7 +479,7 @@ pub struct Scan {
 impl Scan {
     pub(super) fn rejoin(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -504,7 +507,7 @@ impl Scan {
     }
     pub(super) fn step_changes(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         cancelled: &AtomicBool,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
@@ -579,7 +582,7 @@ impl Scan {
     }
     pub(super) fn step(
         &mut self,
-        frame: &Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -700,10 +703,10 @@ impl Scan {
                 &mut track.segments,
                 &mut track.last_identity,
                 identity,
-                frame.hour,
+                frame.hour(),
             );
             let identity_continuous = track.last.is_some_and(|(seen, at)| {
-                seen == identity && at.checked_add(1) == Some(frame.hour)
+                seen == identity && at.checked_add(1) == Some(frame.hour())
             });
             for (owner, exact) in exact.into_iter().enumerate() {
                 let summary = census.totals[owner].get_mut(&identity.0).map_or_else(
@@ -739,16 +742,16 @@ impl Scan {
                     match runs.last_mut() {
                         Some(run)
                             if identity_continuous
-                                && run.last_hour.checked_add(1) == Some(frame.hour)
+                                && run.last_hour.checked_add(1) == Some(frame.hour())
                                 && run.total == total
                                 && run.classes == classes
                                 && run.reference_total == reference_total =>
                         {
-                            run.last_hour = frame.hour;
+                            run.last_hour = frame.hour();
                         }
                         _ => runs.push(RawNavyRun {
-                            first_hour: frame.hour,
-                            last_hour: frame.hour,
+                            first_hour: frame.hour(),
+                            last_hour: frame.hour(),
                             starts_segment,
                             total,
                             classes,
@@ -757,12 +760,10 @@ impl Scan {
                     }
                 }
             }
-            if track
-                .runs
-                .iter()
-                .chain(&track.strength_runs)
-                .any(|runs| runs.last().is_some_and(|run| run.first_hour == frame.hour))
-            {
+            if track.runs.iter().chain(&track.strength_runs).any(|runs| {
+                runs.last()
+                    .is_some_and(|run| run.first_hour == frame.hour())
+            }) {
                 observed.push(tag.to_owned());
             }
             let before_notes = notes
@@ -774,7 +775,7 @@ impl Scan {
                 note_totals.1[owner] =
                     note_totals.1[owner] + after_notes.1[owner] - before_notes.1[owner];
             }
-            track.last = Some((identity, frame.hour));
+            track.last = Some((identity, frame.hour()));
         }
         for owner in 0..2 {
             result.refused_strength[owner] += note_totals.0[owner];
@@ -1072,7 +1073,10 @@ impl Numbering {
             .unwrap_or_else(|error| error.into_inner());
         self.carried.len()
             + self.full.len()
-            + between.values().map(|catalogue| catalogue.len()).sum::<usize>()
+            + between
+                .values()
+                .map(|catalogue| catalogue.len())
+                .sum::<usize>()
     }
 }
 
@@ -1203,13 +1207,11 @@ impl Scan {
     pub(super) fn continues(&self, tail: &Tail, block: &Scan, numbering: &Numbering) -> bool {
         let hour = tail.hour;
         self.decision() == tail.decision
-            && self
-                .track_tails(hour)
-                .iter()
-                .zip(&tail.tracks)
-                .all(|((tag, carried), (other, extracted))| {
+            && self.track_tails(hour).iter().zip(&tail.tracks).all(
+                |((tag, carried), (other, extracted))| {
                     tag == other && *carried == extracted.renumbered(numbering)
-                })
+                },
+            )
             && tail.tracks.iter().all(|(tag, _)| {
                 block.tracks.get(tag).is_some_and(|track| {
                     track
@@ -1322,10 +1324,11 @@ fn carry_track(carried: &mut Track, extracted: Track, opened: bool, hour: i32) {
         mut segments,
         last_identity,
     } = extracted;
-    let lists = runs
-        .into_iter()
-        .zip(carried.runs.iter_mut())
-        .chain(strength_runs.into_iter().zip(carried.strength_runs.iter_mut()));
+    let lists = runs.into_iter().zip(carried.runs.iter_mut()).chain(
+        strength_runs
+            .into_iter()
+            .zip(carried.strength_runs.iter_mut()),
+    );
     for (mut runs, held) in lists {
         if opened
             && runs.first().is_some_and(|run| run.first_hour == hour)

@@ -75,6 +75,16 @@ cached replies; prepared query replies gain them, with the stack's
 artwork-effect notes, where they are served. Preserve independent known values
 when a name or image refuses.
 
+Preparation and recording queries share the opened source's decoded-section
+cache ([dashboard-base](../dashboard-base/README.md#sampled-reads)). Retention is
+sized from measured table columns and the live span between preparation, pre-pass
+and query reader frontiers. Repeated reads of an admitted grouped block/table
+prefix share immutable update cells across families and threads without copying
+rows or deltas on a hit; each reader keeps its own selection and reconstruction.
+The shared-extract regression also compares every published hourly payload with
+section retention disabled and enabled, counting one section decode for a
+consumer group while retained.
+
 Keep caches in `source.state::<YourState>()`. Share scans between consumers of
 the same inputs instead of decoding a branch again. Read a branch's blocks through
 `blocks::scan_blocks`, which reads ahead in parallel; read one hour with

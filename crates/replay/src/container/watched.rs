@@ -27,6 +27,7 @@
 //! A watch whose visit fails stops there with its error, and the others go on.
 
 use super::*;
+use crate::frame::{IntoRecordedFrame, RecordedFrame, recorded::Updates};
 use crate::{
     BranchId,
     frame::{SharedView, TableUpdate, advance_table, keyframe_update, not_selected},
@@ -64,7 +65,7 @@ pub enum Watched<'a> {
     /// watches' or none, which change facts never read for a table whose
     /// reconstructed view is not complete.
     Hour {
-        updates: &'a Arc<Frame>,
+        updates: &'a Arc<RecordedFrame>,
         frame: &'a DecodedFrame,
     },
 }
@@ -124,7 +125,7 @@ impl<'v> BlockWatch<'v> {
 /// reconstructs its own views.
 pub struct Keep<'k> {
     pub tables: &'k [TableId],
-    pub frames: &'k mut dyn FnMut(&[Arc<Frame>]),
+    pub frames: &'k mut dyn FnMut(&[Arc<RecordedFrame>]),
 }
 
 impl Replay {
@@ -180,7 +181,7 @@ impl Replay {
             let super::grouped::SelectedUpdates {
                 hours,
                 metrics,
-                mut updates,
+                updates,
                 dependent_keyframe,
             } = read;
             let keyframe = Keyframe::Grouped(dependent_keyframe);
@@ -189,17 +190,22 @@ impl Replay {
                 let frames = engine::allocation::collect_vec(
                     hours.into_iter().zip(metrics).enumerate().map(
                         |(position, (hour, metrics))| {
-                            Arc::new(reading.tables.take_frame(
-                                index.branch,
-                                hour,
-                                position == 0,
-                                metrics,
-                                &mut updates,
-                                position,
-                            ))
+                            reading
+                                .tables
+                                .take_frame(
+                                    index.branch,
+                                    hour,
+                                    position == 0,
+                                    metrics,
+                                    &updates,
+                                    position,
+                                )
+                                .map(Arc::new)
                         },
                     ),
-                )?;
+                )?
+                .into_iter()
+                .collect::<io::Result<Vec<_>>>()?;
                 drop(updates);
                 (keep.frames)(&frames);
                 for frame in frames {
@@ -218,10 +224,10 @@ impl Replay {
                     hour,
                     position == 0,
                     metrics,
-                    &mut updates,
+                    &updates,
                     position,
-                );
-                if !reading.hour(Arc::new(frame), keyframe)? {
+                )?;
+                if !reading.hour(frame, keyframe)? {
                     break;
                 }
             }
@@ -238,7 +244,7 @@ impl Replay {
         check()?;
         self.visit_block(index, Some(&tables), |frame| {
             check()?;
-            reading.hour(Arc::new(frame), Keyframe::Interleaved)
+            reading.hour(frame, Keyframe::Interleaved)
         })?;
         reading.flush();
         Ok(())
@@ -260,7 +266,7 @@ impl Replay {
         index: &BlockIndex,
         tables: &[TableId],
         mut check: impl FnMut() -> io::Result<()>,
-    ) -> io::Result<Vec<Arc<Frame>>> {
+    ) -> io::Result<Vec<Arc<RecordedFrame>>> {
         check()?;
         let mut chosen = [false; TABLE_COUNT];
         chosen[TableId::Campaign.index()] = true;
@@ -284,21 +290,24 @@ impl Replay {
             let super::grouped::SelectedUpdates {
                 hours,
                 metrics,
-                mut updates,
+                updates,
                 ..
             } = selected;
             let mut frames = Vec::new();
             engine::allocation::reserve(&mut frames, hours.len())?;
             for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
                 check()?;
-                frames.push(Arc::new(read.take_frame(
-                    index.branch,
-                    hour,
-                    position == 0,
-                    metrics,
-                    &mut updates,
-                    position,
-                )));
+                frames.push(
+                    read.take_frame(
+                        index.branch,
+                        hour,
+                        position == 0,
+                        metrics,
+                        &updates,
+                        position,
+                    )?
+                    .into_recorded(),
+                );
             }
             return Ok(frames);
         }
@@ -311,7 +320,7 @@ impl Replay {
         self.visit_block(index, Some(&selected), |frame| {
             check()?;
             engine::allocation::reserve(&mut frames, 1)?;
-            frames.push(Arc::new(frame));
+            frames.push(Arc::new(frame.into()));
             Ok(true)
         })?;
         Ok(frames)
@@ -337,7 +346,7 @@ struct BlockTables<'r> {
     /// The tables read, Campaign included, in table order, and each one's
     /// position among them by table index.
     tables: Vec<TableId>,
-    slots: Vec<Option<usize>>,
+    slots: Arc<[Option<usize>; TABLE_COUNT]>,
     views: Vec<Option<SharedView>>,
     last_hour: Option<Hour>,
     /// This hour, by position: whether the update rebuilt the view; the
@@ -359,7 +368,7 @@ impl<'r> BlockTables<'r> {
                 .into_iter()
                 .filter(|table| chosen[table.index()]),
         )?;
-        let mut slots = engine::allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
+        let mut slots = [None; TABLE_COUNT];
         for (position, table) in tables.iter().enumerate() {
             slots[table.index()] = Some(position);
         }
@@ -371,7 +380,7 @@ impl<'r> BlockTables<'r> {
             count: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
             before: engine::allocation::collect_vec(tables.iter().map(|_| None))?,
             tables,
-            slots,
+            slots: Arc::new(slots),
             last_hour: None,
         })
     }
@@ -385,28 +394,28 @@ impl<'r> BlockTables<'r> {
         hour: Hour,
         keyframe: bool,
         metrics: Metrics,
-        updates: &mut [Vec<TableUpdate>],
+        updates: &[Updates],
         position: usize,
-    ) -> Frame {
-        let none = || TableUpdate::Unavailable {
-            reason: String::new(),
-        };
-        Frame {
+    ) -> io::Result<RecordedFrame> {
+        let slots = Arc::clone(&self.slots);
+        RecordedFrame::from_columns(
             branch,
             hour,
             keyframe,
             metrics,
-            tables: std::array::from_fn(|index| match self.slots[index] {
-                Some(at) => std::mem::replace(&mut updates[at][position], none()),
-                None => none(),
+            slots,
+            updates,
+            position,
+            Arc::new(TableUpdate::Unavailable {
+                reason: String::new(),
             }),
-        }
+        )
     }
 
     /// Whether a watch reading `own` (positions among the tables) is refused
     /// this keyframe by its own read: one of its tables holds an update no
     /// keyframe may hold, or another table its own read checks does.
-    fn refuses_keyframe(&self, own: &[usize], frame: &Frame, keyframe: Keyframe) -> bool {
+    fn refuses_keyframe(&self, own: &[usize], frame: &RecordedFrame, keyframe: Keyframe) -> bool {
         let version = self.format.version();
         TableId::ALL.into_iter().any(|table| {
             let update = &frame.tables[table.index()];
@@ -438,7 +447,7 @@ impl<'r> BlockTables<'r> {
     /// Advance the watches' tables to `frame`'s hour from their updates,
     /// exactly as `FrameDecoder::advance` advances them, and check the
     /// campaign. Tables decoded only for another reader stay unreconstructed.
-    fn advance(&mut self, frame: &Frame, reconstructed: &[usize]) -> io::Result<()> {
+    fn advance(&mut self, frame: &RecordedFrame, reconstructed: &[usize]) -> io::Result<()> {
         // Measurement only: each table's reconstruct cycles, when enabled.
         let _cpu = crate::cpu::scope("reconstruct", None);
         let measured = crate::cpu::enabled();
@@ -695,7 +704,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
     /// watched fields. A failed delta makes that complete view unavailable,
     /// which also visits. Other cases keep their views until the normal
     /// decision, including unwatched deltas in a quiet span.
-    fn visits_before(&self, consumer: &Consumer, frame: &Frame) -> bool {
+    fn visits_before(&self, consumer: &Consumer, frame: &RecordedFrame) -> bool {
         let Some(changes) = &consumer.changes else {
             return true;
         };
@@ -726,7 +735,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
             })
     }
 
-    fn release_visiting(&mut self, frame: &Frame) {
+    fn release_visiting(&mut self, frame: &RecordedFrame) {
         for index in 0..self.consumers.len() {
             if self.watches[index].stopped()
                 || !self.watches[index].releasing
@@ -757,7 +766,8 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
 
     /// Reconstruct one hour and hand it to every watch still reading;
     /// whether any still reads.
-    fn hour(&mut self, mut frame: Arc<Frame>, keyframe: Keyframe) -> io::Result<bool> {
+    fn hour(&mut self, frame: impl IntoRecordedFrame, keyframe: Keyframe) -> io::Result<bool> {
+        let mut frame = frame.into_recorded();
         if frame.keyframe {
             for (consumer, watch) in self.consumers.iter().zip(self.watches.iter_mut()) {
                 if !watch.stopped()
@@ -832,13 +842,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
         }
         self.tables.release_before();
         if let Some(owned) = Arc::get_mut(&mut frame) {
-            for &table in &self.tables.tables {
-                if !self.kept[table.index()] {
-                    owned.tables[table.index()] = TableUpdate::Unavailable {
-                        reason: String::new(),
-                    };
-                }
-            }
+            owned.retain_updates(&self.kept)?;
         }
         for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter_mut()) {
             if watch.stopped() {
@@ -926,7 +930,7 @@ fn project<'f>(
     tables: &BlockTables<'_>,
     own: &[usize],
     branch: BranchId,
-    frame: &Frame,
+    frame: &RecordedFrame,
 ) -> &'f DecodedFrame {
     let view = |position: usize| tables.views[position].clone().unwrap_or_else(not_selected);
     match kept {

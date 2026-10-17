@@ -74,11 +74,10 @@
 //! a block's branch wants nothing.
 
 use crate::prepared::prepass;
-use dashboard_base::prepared::prepass::recorded_bytes;
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, Frame, TABLE_COUNT},
+    frame::{DecodedFrame, RecordedFrame as Frame, TABLE_COUNT},
     rows::TableId,
 };
 use std::{
@@ -117,11 +116,8 @@ pub(in crate::prepared::pipeline) const SHARED_ALONE: &str = "independent.shared
 
 /// What a block's frames hold decoded.
 fn frames_bytes(frames: &[Arc<Frame>]) -> u64 {
-    let list = (frames.len() * size_of::<Arc<Frame>>()) as u64;
-    frames
-        .iter()
-        .map(|frame| recorded_bytes(frame))
-        .fold(list, u64::saturating_add)
+    let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
+    held.add(size_of_val(frames)).heap(frames).total()
 }
 
 /// Bytes charged while their block is alive, released when it is dropped.
@@ -886,16 +882,16 @@ pub(super) fn read_alone(
         prepass::note(SHARED_ALONE);
     }
     let Some(last) = last else {
-        return replay.read_block_alone(
+        return replay.read_block_recorded_alone(
             index,
             tables,
-            |raw, frame| visit(Arc::new(raw), frame),
+            |raw, frame| visit(raw, frame),
             check,
         );
     };
     // Through `last`: the hours after it are not visited.
     let mut passed = false;
-    let read = replay.read_block_alone(
+    let read = replay.read_block_recorded_alone(
         index,
         tables,
         |raw, frame| {
@@ -903,7 +899,7 @@ pub(super) fn read_alone(
                 passed = true;
                 return Err(io::Error::other("Read through its last hour"));
             }
-            visit(Arc::new(raw), frame)
+            visit(raw, frame)
         },
         check,
     );
@@ -921,7 +917,7 @@ pub(super) fn read_last(
     tables: &[TableId],
 ) -> io::Result<Option<DecodedFrame>> {
     let mut last = None;
-    replay.read_block_alone(
+    replay.read_block_recorded_alone(
         index,
         tables,
         |_, frame| {
@@ -1688,7 +1684,7 @@ mod tests {
     ) -> io::Result<()> {
         let index = &replay.index[block];
         let mut alone = Vec::new();
-        replay.read_block_alone(
+        replay.read_block_recorded_alone(
             index,
             tables,
             |_, frame| {

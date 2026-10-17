@@ -14,7 +14,7 @@ use dashboard_core::{config::LoadContext, protocol::validate_tag};
 use replay::{
     container::Replay,
     format::FormatVersion,
-    frame::{DecodedFrame, Frame, TableUpdate, TableView},
+    frame::{DecodedFrame, Frame, FrameSource, RecordedFrame, TableUpdate, TableView},
     rows::TableId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -89,7 +89,7 @@ pub trait Family {
     fn projection_scan(scan: &Self::Scan) -> Self::Scanned;
     fn step(
         scan: &mut Self::Scan,
-        raw: &Frame,
+        raw: &(impl FrameSource + ?Sized),
         frame: &DecodedFrame,
         format: FormatVersion,
         cancelled: &AtomicBool,
@@ -97,7 +97,7 @@ pub trait Family {
     ) -> io::Result<()>;
     fn resume(
         scan: &mut Self::Scan,
-        raw: &Frame,
+        raw: &(impl FrameSource + ?Sized),
         frame: &DecodedFrame,
         format: FormatVersion,
         cancelled: &AtomicBool,
@@ -246,14 +246,14 @@ fn mix_section<F: Family>(branch: u64, index: usize) -> String {
     }
 }
 pub(super) fn updates(frame: &DecodedFrame, tables: &[TableId]) -> Frame {
-    updates_changed(frame, tables, None, None).into_owned()
+    owned_updates(frame, tables, None, None)
 }
 pub(super) fn updates_changed<'a>(
     frame: &DecodedFrame,
     tables: &[TableId],
     changes: Option<&'a dashboard_base::prepared::frame_changes::FrameChanges>,
     baseline: Option<i32>,
-) -> Cow<'a, Frame> {
+) -> Cow<'a, RecordedFrame> {
     // The census already holds the preceding decoded rows. Keep their exact
     // row deltas instead of turning every changed table into a snapshot.
     if baseline.is_some()
@@ -261,8 +261,17 @@ pub(super) fn updates_changed<'a>(
         && let Some(recorded) = changes.recorded()
         && tables.iter().all(|&table| changes.rows(table).is_some())
     {
-        return Cow::Borrowed(recorded);
+        return Cow::Borrowed(recorded.as_ref());
     }
+    Cow::Owned(owned_updates(frame, tables, changes, baseline).into())
+}
+
+fn owned_updates(
+    frame: &DecodedFrame,
+    tables: &[TableId],
+    changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    baseline: Option<i32>,
+) -> Frame {
     let mut result = Frame {
         branch: frame.branch,
         hour: frame.hour,
@@ -307,7 +316,7 @@ pub(super) fn updates_changed<'a>(
             },
         };
     }
-    Cow::Owned(result)
+    result
 }
 
 /// Stateless point reads use the native census; preparation projects its already updated census.
@@ -462,7 +471,7 @@ fn step_scan<F: Family>(
     changes: &dashboard_base::prepared::frame_changes::FrameChanges,
 ) -> io::Result<()> {
     let raw = updates_changed(frame, F::TABLES, Some(changes), F::applied(scan));
-    F::step(scan, &raw, frame, format, cancelled, Some(changes))
+    F::step(scan, raw.as_ref(), frame, format, cancelled, Some(changes))
 }
 
 /// Step the scan and keep the rows and projection bases its observer uses.

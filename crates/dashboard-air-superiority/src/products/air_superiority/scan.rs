@@ -1040,7 +1040,7 @@ impl DayReads {
 
     pub(super) fn observe(
         &mut self,
-        frame: &replay::frame::Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         include_auxiliary: bool,
     ) -> io::Result<Option<Arc<Auxiliary>>> {
@@ -1071,7 +1071,7 @@ impl DayReads {
     // are not part of the requested view. Validate labels only when sampled.
     fn observe_tables(
         &mut self,
-        frame: &replay::frame::Frame,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         include_auxiliary: bool,
     ) -> Option<Arc<Auxiliary>> {
@@ -1080,11 +1080,11 @@ impl DayReads {
         self.available |= scores.complete || !scores.rows.is_empty();
         if self
             .previous_hour
-            .is_some_and(|hour| hour.checked_add(1) != Some(frame.hour))
+            .is_some_and(|hour| hour.checked_add(1) != Some(frame.hour()))
         {
             self.theatre_read = None;
         }
-        self.previous_hour = Some(frame.hour);
+        self.previous_hour = Some(frame.hour());
         if !include_auxiliary {
             return None;
         }

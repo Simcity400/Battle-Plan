@@ -54,6 +54,8 @@ have no accepted observations or rows. A committed page's geometry is marked
 approximate until complete, since later terminal reads can repair earlier rows.
 The log follows the newest covered window and refreshes as its gate moves.
 
+Newest-window look-backs and division-log manifests borrow immutable recorded updates from replay's shared section cache. Their reader frontiers contribute to its live block span; reconstruction and window proofs remain local to each scan.
+
 Land battle duration changes reuse the preceding run's distinct participant
 counts when an exact recorded delta leaves both rosters unchanged. Roster
 edits, snapshots, gaps and newly opened combats count the recorded handles

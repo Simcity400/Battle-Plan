@@ -22,6 +22,8 @@ these types and re-exports each module at its old path.
 The `test-support` feature exposes `test_fixtures` and the scanned-block log
 (`blocks::SCANNED_BLOCKS`) to the tests of crates above this one.
 
+Whole-branch scans return immutable recorded frames and register their block frontier with replay. Concurrent scans share decoded section cells; each scan still reconstructs its own selected tables in block order.
+
 `DataCommand::PreparedQuery` carries an optional `refresh` boolean, false when
 omitted. A caller sets it only after showing a reply for the same request;
 first views and user changes keep first-ask priority. The service retains this

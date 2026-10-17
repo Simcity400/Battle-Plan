@@ -56,8 +56,8 @@ use crate::{
     codec::{Decoder, invalid, invalid_static, put_varint},
     format::FormatVersion,
     frame::{
-        DecodedFrame, Frame, Metrics, READ_TIME_NOT_RECORDED, SharedView, TABLE_COUNT, TableUpdate,
-        TableView, decode_update,
+        DecodedFrame, Frame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, SharedView,
+        TABLE_COUNT, TableUpdate, TableView, decode_update,
     },
     rows::{
         Change, Kind, TableId, TableRows, Token,
@@ -71,6 +71,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[cfg(test)]
+#[path = "decoded_section_tests.rs"]
+mod decoded_section_tests;
 mod keyed;
 mod modelled;
 mod predicted;
@@ -79,6 +82,9 @@ mod ramp;
 mod test_recording;
 #[cfg(test)]
 mod through_tests;
+
+use crate::frame::recorded::Updates;
+use std::sync::Arc;
 
 use keyed::{KeyChanges, KeyReader, KeySet, KeyWriter, MaskList, RowCoding, RowRun};
 use modelled::Model;
@@ -2598,6 +2604,17 @@ impl Replay {
         index: &BlockIndex,
         tables: &[TableId],
     ) -> io::Result<Frame> {
+        self.read_keyframe_recorded(index, tables)?
+            .into_owned_frame()
+    }
+
+    /// The selected keyframe with immutable shared update cells.
+    pub fn read_keyframe_recorded(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+    ) -> io::Result<RecordedFrame> {
+        let _consumer = self.section_consumer(self.block_position(index).unwrap_or(0));
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -2607,6 +2624,7 @@ impl Replay {
                 .read_block_selected(index, tables)?
                 .into_iter()
                 .next()
+                .map(RecordedFrame::from)
                 .ok_or_else(|| invalid("empty block"));
         }
         if self.format.version() < GROUPED_FORMAT {
@@ -2639,35 +2657,106 @@ impl Replay {
         };
         let updates = engine::allocation::collect_vec(TableId::ALL.iter().map(|&table| {
             if let Some(update) = keyframe_refusal(&directory, self.format, Some(tables), table)? {
-                return Ok(update);
+                return Updates::new(vec![update]);
             }
-            let raw = directory
-                .read_raw(self, index, keyframe_section(table))?
-                .ok_or_else(|| {
-                    invalid(format!("grouped block has no keyframe entry for {table:?}"))
-                })?;
-            #[cfg(any(test, feature = "test-support"))]
-            super::test_work::decoded(index, table, 1);
-            Ok(keyframe_update(
-                self,
-                &from,
-                table,
-                &raw,
-                &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
-            )?
-            .update)
+            self.decoded_sections.read(
+                super::decoded_sections::Key::new(self, index, table),
+                1,
+                true,
+                || {
+                    let raw = directory
+                        .read_raw(self, index, keyframe_section(table))?
+                        .ok_or_else(|| {
+                            invalid(format!("grouped block has no keyframe entry for {table:?}"))
+                        })?;
+                    #[cfg(any(test, feature = "test-support"))]
+                    super::test_work::decoded(index, table, 1);
+                    Ok(vec![
+                        keyframe_update(
+                            self,
+                            &from,
+                            table,
+                            &raw,
+                            &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
+                        )?
+                        .update,
+                    ])
+                },
+            )
         }))?;
-        Ok(Frame {
-            branch: index.branch,
-            hour: index.first_hour,
-            keyframe: true,
+        let columns = updates.into_iter().collect::<io::Result<Vec<_>>>()?;
+        RecordedFrame::from_columns(
+            index.branch,
+            index.first_hour,
+            true,
             metrics,
-            tables: updates
-                .into_iter()
-                .collect::<io::Result<Vec<_>>>()?
-                .try_into()
-                .unwrap(),
-        })
+            Arc::new(std::array::from_fn(Some)),
+            &columns,
+            0,
+            Arc::new(TableUpdate::Unavailable {
+                reason: String::new(),
+            }),
+        )
+    }
+
+    /// Selected recorded updates shared without materializing owned wire frames.
+    pub fn read_block_recorded_selected(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+    ) -> io::Result<Vec<RecordedFrame>> {
+        self.read_block_recorded_through(index, tables, index.last_hour)
+    }
+
+    /// The selected prefix as immutable updates. A prefix never admits later grammar.
+    pub fn read_block_recorded_through(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        through: Hour,
+    ) -> io::Result<Vec<RecordedFrame>> {
+        self.read_block_recorded_inner(index, tables, through, None)
+    }
+    /// Shared updates decoded on caller-owned spare workers.
+    pub fn read_block_recorded_selected_parallel(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        parallel: &Parallel<'_>,
+    ) -> io::Result<Vec<RecordedFrame>> {
+        self.read_block_recorded_inner(index, tables, index.last_hour, Some(parallel))
+    }
+    fn read_block_recorded_inner(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        through: Hour,
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<Vec<RecordedFrame>> {
+        let _consumer = self.section_consumer(self.block_position(index).unwrap_or(0));
+        if let Some(block) = self.grouped_block(index)? {
+            let frames =
+                read_recorded_through(self, index, &block, Some(tables), parallel, Some(through))?;
+            let mut order = super::BlockOrder::new(index);
+            for frame in &frames {
+                order.next(frame)?;
+            }
+            if frames
+                .last()
+                .is_some_and(|frame| frame.hour == index.last_hour)
+            {
+                order.finish()?;
+                if !self.is_verified(index) {
+                    verify(&block, index)?;
+                }
+                self.mark_verified(index);
+            }
+            return Ok(frames);
+        }
+        self.read_block_selected_through(index, Some(tables), through, None)?
+            .into_iter()
+            .map(|frame| Ok(frame.into()))
+            .collect()
     }
 
     /// Read selected tables through `through`, including an equal hour.
@@ -2731,14 +2820,15 @@ pub(crate) fn read(
 
 /// The same column reader, optionally stopping at a recorded hour. Parallel
 /// work uses the caller's existing table workers and preserves table order.
-fn read_through(
+fn read_recorded_through(
     replay: &Replay,
     index: &BlockIndex,
     block: &[u8],
     selected: Option<&[TableId]>,
     parallel: Option<&Parallel<'_>>,
     through: Option<Hour>,
-) -> io::Result<Vec<Frame>> {
+) -> io::Result<Vec<RecordedFrame>> {
+    let _consumer = replay.section_consumer(replay.block_position(index).unwrap_or(0));
     let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
@@ -2783,23 +2873,39 @@ fn read_through(
         Some(parallel) => parallel_map(&TableId::ALL, parallel, decode)?,
         None => engine::allocation::collect_vec(TableId::ALL.iter().map(decode))?,
     };
-    let mut columns = Vec::with_capacity(TABLE_COUNT);
-    for updates in decoded {
-        columns.push(updates?.into_iter());
-    }
-    let mut out = Vec::with_capacity(keep);
+    let columns = decoded.into_iter().collect::<io::Result<Vec<_>>>()?;
+    let slots = Arc::new(std::array::from_fn(Some));
+    let unselected = Arc::new(TableUpdate::Unavailable {
+        reason: String::new(),
+    });
+    let mut out = engine::allocation::vec(keep)?;
     for (position, (hour, metrics)) in hours.iter().zip(metrics).enumerate() {
-        out.push(Frame {
-            branch: index.branch,
-            hour: *hour,
-            keyframe: position == 0,
+        out.push(RecordedFrame::from_columns(
+            index.branch,
+            *hour,
+            position == 0,
             metrics,
-            tables: std::array::from_fn(|table| {
-                columns[table].next().expect("one update per frame")
-            }),
-        });
+            Arc::clone(&slots),
+            &columns,
+            position,
+            Arc::clone(&unselected),
+        )?);
     }
     Ok(out)
+}
+
+fn read_through(
+    replay: &Replay,
+    index: &BlockIndex,
+    block: &[u8],
+    selected: Option<&[TableId]>,
+    parallel: Option<&Parallel<'_>>,
+    through: Option<Hour>,
+) -> io::Result<Vec<Frame>> {
+    read_recorded_through(replay, index, block, selected, parallel, through)?
+        .into_iter()
+        .map(RecordedFrame::into_owned_frame)
+        .collect()
 }
 
 /// A grouped block's hours, metrics and its selected tables' updates at
@@ -2810,7 +2916,7 @@ pub(crate) struct SelectedUpdates {
     pub(crate) hours: Vec<Hour>,
     pub(crate) metrics: Vec<Metrics>,
     /// Each selected table's update at every hour, in the selection's order.
-    pub(crate) updates: Vec<Vec<TableUpdate>>,
+    pub(crate) updates: Vec<Updates>,
     /// An unselected table [`read`] still decodes (a catalogued layout gap)
     /// has a first update no keyframe may hold.
     pub(crate) dependent_keyframe: bool,
@@ -2828,6 +2934,7 @@ pub(crate) fn read_selected_updates(
     selected: &[TableId],
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<SelectedUpdates> {
+    let _consumer = replay.section_consumer(replay.block_position(index).unwrap_or(0));
     let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
@@ -2860,20 +2967,20 @@ pub(crate) fn read_selected_updates(
         selected: Some(selected),
         complete: true,
     };
-    let mut updates: Vec<Option<Vec<TableUpdate>>> =
+    let mut updates: Vec<Option<Updates>> =
         engine::allocation::collect_vec(selected.iter().map(|_| None))?;
     let mut dependent_keyframe = false;
     for table in TableId::ALL {
         check()?;
         let wanted = selected.iter().position(|selected| *selected == table);
-        // `read` repeats an unselected table's refusal at every hour, and
-        // nothing reconstructs it; a table it decodes anyway is decoded here.
-        if wanted.is_none()
-            && keyframe_refusal(&directory, format, Some(selected), table)?.is_some()
-        {
-            continue;
-        }
-        let decoded = table_updates(&context, table)?;
+        // One selection-aware admission per table. A present layout gap
+        // still reaches the ordinary decoder even when not selected.
+        let refusal = keyframe_refusal(&directory, format, Some(selected), table)?;
+        let decoded = match (wanted, refusal) {
+            (None, Some(_)) => continue,
+            (Some(_), Some(update)) => Updates::repeat(update, frames)?,
+            (_, None) => table_updates_admitted(&context, table)?,
+        };
         match wanted {
             Some(position) => updates[position] = Some(decoded),
             None => {
@@ -3003,6 +3110,8 @@ fn keyframe_refusal(
     selected: Option<&[TableId]>,
     table: TableId,
 ) -> io::Result<Option<TableUpdate>> {
+    #[cfg(test)]
+    decoded_section_tests::admitted(table);
     let version = format.version();
     let change = &HISTORY[table.index()];
     let key_id = keyframe_section(table);
@@ -3100,24 +3209,43 @@ fn keyframe_update(
     })
 }
 
-fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
-    // Measurement only: each selected table section's decode, by block.
-    let _cpu = crate::cpu::scope("decode", None);
-    let started = crate::cpu::thread_cycles();
-    let decoded = table_updates_inner(context, table);
-    if crate::cpu::enabled()
-        && context
-            .selected
-            .is_none_or(|selected| selected.contains(&table))
+fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+    // Unselected tables keep their own compatibility and framing checks.
+    if let Some(update) =
+        keyframe_refusal(context.directory, context.format, context.selected, table)?
     {
-        crate::cpu::decoded(
-            context.index.branch,
-            context.index.first_hour,
-            table,
-            crate::cpu::thread_cycles().saturating_sub(started),
-        );
+        return Updates::repeat(update, context.hours.len());
     }
-    decoded
+    table_updates_admitted(context, table)
+}
+
+// The cached decoder receives only admitted sections. No selection-dependent
+// value can enter the cache; selected tables and unselected layout gaps use
+// this identical decoder. Selection below only attributes CPU measurements.
+fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+    context.replay.decoded_sections.read(
+        super::decoded_sections::Key::new(context.replay, context.index, table),
+        context.hours.len(),
+        false,
+        || {
+            let _cpu = crate::cpu::scope("decode", None);
+            let started = crate::cpu::thread_cycles();
+            let decoded = table_updates_inner(context, table);
+            if crate::cpu::enabled()
+                && context
+                    .selected
+                    .is_none_or(|selected| selected.contains(&table))
+            {
+                crate::cpu::decoded(
+                    context.index.branch,
+                    context.index.first_hour,
+                    table,
+                    crate::cpu::thread_cycles().saturating_sub(started),
+                );
+            }
+            decoded
+        },
+    )
 }
 
 fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
@@ -3127,9 +3255,6 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
     let frames = context.hours.len();
     let key_id = keyframe_section(table);
     let later_id = later_section(table);
-    if let Some(update) = keyframe_refusal(context.directory, format, context.selected, table)? {
-        return Ok(vec![update; frames]);
-    }
     #[cfg(test)]
     super::watched::note_decoded();
     #[cfg(any(test, feature = "test-support"))]

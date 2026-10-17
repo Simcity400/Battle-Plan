@@ -242,6 +242,22 @@ evicting each other. A caller can use the same cache for a stockpile block's
 immutable read facts, fold/anchor state or proved at-hour reply, with the
 selection and end hour in its parameters.
 
+Every source enables one decoded-section cache on its held replay revision.
+Preparation's Depot, pre-pass extracts, the hourly walk and independent query
+readers share immutable grouped-table updates, including overlapping selections,
+prefixes and concurrent requests. Its byte budget is the sum of each table's
+largest measured column allocation multiplied by the live consumer block span;
+family, pre-pass and query readers register their progress with replay. LRU
+retention shrinks as trailing readers advance or finish, and falls to one measured
+block's table set when none remain. Future query selections are not known.
+There is no fixed byte or country bound for this cache.
+Readers reconstruct their own baselines and keep their own selected availability
+and supplying hours. Frames retain their hour's shared update cells without deep
+copying a cache hit or keeping the other hours alive. `HeldBytes` deduplicates these
+cells when sizing extracts and frame-cache entries. Keyframe-only admissions never
+supply ordinary table reads. This retention is separate from the query frame cache
+below; revisions share neither cache.
+
 Each source keeps a cache of what these reads decode
 ([prepared/query/frames.rs](src/prepared/query/frames.rs)): a block's frames as
 read for the tables asked of it, and one hour's reconstructed frame with the union

@@ -896,14 +896,23 @@ fn look_back(
         window_first: window.first_hour,
         ..Check::default()
     });
+    let consumer = replay.section_consumer(blocks[0]);
     let indices = blocks.iter().map(|&block| &replay.index[block]).collect();
     dashboard_core::blocks::scan_blocks_by(
         indices,
         workers().saturating_sub(1),
         cancelled,
-        &|index| replay.read_block_selected(index, &CENSUS_TABLES),
+        &|index| {
+            if let Some(position) = replay.block_position(index) {
+                consumer.reading(position);
+            }
+            replay.read_block_recorded_selected(index, &CENSUS_TABLES)
+        },
         |reads| {
             for (index, read) in reads {
+                if let Some(position) = replay.block_position(index) {
+                    consumer.at(position);
+                }
                 let frames = read?;
                 if !replay.reconstruct_alone(
                     &frames,
@@ -911,7 +920,7 @@ fn look_back(
                     |_, frame| census.observe(frame),
                     || check_cancel(cancelled),
                 )? {
-                    replay.read_block_alone(
+                    replay.read_block_recorded_alone(
                         index,
                         &CENSUS_TABLES,
                         |_, frame| census.observe(frame),
@@ -1150,19 +1159,26 @@ pub(super) fn variant_reads(
     cancelled: &AtomicBool,
 ) -> io::Result<VariantCatalogue> {
     let fields = naming_fields()?;
+    let consumer = replay.section_consumer(blocks.first().copied().unwrap_or(0));
     let indices = blocks.iter().map(|&block| &replay.index[block]).collect();
     dashboard_core::blocks::scan_blocks_by(
         indices,
         workers.saturating_sub(1),
         cancelled,
         &|index| {
+            if let Some(position) = replay.block_position(index) {
+                consumer.reading(position);
+            }
             let mut variants = VariantCatalogue::default();
             block_variant_reads(replay, index, &fields, &mut variants, cancelled)?;
             Ok(variants)
         },
         |reads| {
             let mut variants = VariantCatalogue::default();
-            for (_, read) in reads {
+            for (index, read) in reads {
+                if let Some(position) = replay.block_position(index) {
+                    consumer.at(position);
+                }
                 for (id, versions) in read?.versions {
                     let held = variants.versions.entry(id).or_default();
                     let mut versions = versions.into_iter().peekable();

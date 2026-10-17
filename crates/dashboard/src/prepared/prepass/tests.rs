@@ -191,6 +191,7 @@ fn prepass_cancellation_ends_the_wait_and_dropping_it_joins_the_workers() {
 /// A pool lane as the scheduling tests build it.
 fn lane(next: usize, handed: usize, spent_ms: u64, measured: u32) -> Lane {
     Lane {
+        section_consumer: None,
         family: &HOURS,
         bound: None,
         binding: false,
@@ -980,7 +981,6 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     use dashboard_text::triggers::{Eval, Evaluator, inputs};
     use replay::{
         container::test_work::table_decodes,
-        frame::Frame,
         rows::{
             CountryCounterInputRow, CountryLinkRow, CountryRow, LexicalTokenRow, Recorded,
             ScriptVariableEntry, ScriptVariablesRow, TableRows,
@@ -1121,8 +1121,8 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     ];
     // The shared reader also wants the trigger kit's recorded updates.
     // A kept-only table is decoded but not reconstructed for an extract.
-    let mut deposited: Vec<Arc<Frame>> = Vec::new();
-    let mut deposit = |frames: &[Arc<Frame>]| deposited = frames.to_vec();
+    let mut deposited: Vec<Arc<replay::frame::RecordedFrame>> = Vec::new();
+    let mut deposit = |frames: &[Arc<replay::frame::RecordedFrame>]| deposited = frames.to_vec();
     let (mut measured, decodes) = table_decodes(|| {
         extract_bound(
             replay,

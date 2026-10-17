@@ -558,7 +558,18 @@ fn observe_window(
     let mut identities = dashboard_base::products::country_history::HistoryScan::new(false, &[]);
     prepared.configure(source, context);
     let tables = observed_tables(prepared.reads_trigger_world());
-    let read = |block: &replay::container::BlockIndex| replay.read_block_selected(block, &tables);
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
+    let read = |block: &replay::container::BlockIndex| {
+        if let Some(position) = replay.block_position(block) {
+            consumer.reading(position);
+        }
+        replay.read_block_recorded_selected(block, &tables)
+    };
     let count = blocks.len();
     dashboard_core::blocks::scan_blocks_by(
         blocks.to_vec(),
@@ -571,6 +582,9 @@ fn observe_window(
         |reads| {
             let mut anchored = from_start;
             for (position, (block, frames)) in reads.enumerate() {
+                if let Some(at) = replay.block_position(block) {
+                    consumer.at(at);
+                }
                 dashboard_base::prepared::prepass::note("occupation.look-back");
                 let target = position + 1 == count;
                 let Ok(frames) = frames else {

@@ -46,12 +46,7 @@ use replay::{
     rows::TableId,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::{
-    any::Any,
-    io,
-    ops::Range,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 
 /// One hour of a block's facts for a ledger, in hour order.
 enum Hour {
@@ -369,11 +364,11 @@ fn observe_block(
     let mut failure = None;
     // The hour before `from` in this read, which the fold already observed.
     let mut before: Option<DecodedFrame> = None;
-    let read = block.replay.read_block_alone(
+    let read = block.replay.read_block_recorded_alone(
         block.index,
         family.tables,
         |raw, frame| {
-            let facts = tracker.observe_updates(frame, Arc::new(raw), format);
+            let facts = tracker.observe_updates(frame, raw, format);
             if stopped {
                 return Ok(());
             }

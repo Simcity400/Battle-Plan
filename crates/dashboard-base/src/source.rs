@@ -85,6 +85,7 @@ impl Source {
     pub fn open(key: SourceKey, path: PathBuf, cancelled: &AtomicBool) -> io::Result<Self> {
         metadata::check_cancel(cancelled)?;
         let replay = Arc::new(Replay::open_path(&path)?);
+        replay.cache_decoded_sections(true);
         metadata::check_cancel(cancelled)?;
         if let Ok(Some(restored)) = metadata_cache::read(&path, &replay, cancelled) {
             metadata::check_cancel(cancelled)?;
@@ -110,6 +111,7 @@ impl Source {
         replay: Arc<Replay>,
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
+        replay.cache_decoded_sections(true);
         let metadata = metadata::read(&replay, &path, cancelled)?;
         Ok(Self {
             key,

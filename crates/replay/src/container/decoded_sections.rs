@@ -1,0 +1,399 @@
+//! Revision-local section reuse, sized by measured columns and live reader frontiers.
+use super::{BlockIndex, Replay};
+use crate::{
+    frame::{TableUpdate, recorded::Updates},
+    rows::TableId,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::{Arc, Condvar, Mutex, MutexGuard},
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Key {
+    format: u16,
+    branch: u64,
+    first: i32,
+    last: i32,
+    offset: u64,
+    length: u64,
+    raw_length: u64,
+    table: usize,
+    block: usize,
+}
+
+impl Key {
+    pub(super) fn new(replay: &Replay, index: &BlockIndex, table: TableId) -> Self {
+        Self {
+            format: replay.format.version(),
+            branch: index.branch,
+            first: index.first_hour,
+            last: index.last_hour,
+            offset: index.offset,
+            length: index.length,
+            raw_length: index.raw_length,
+            table: table.index(),
+            block: replay.block_position(index).unwrap_or(0),
+        }
+    }
+}
+
+struct Column {
+    updates: Updates,
+    bytes: usize,
+    table_read: bool,
+}
+#[derive(Default)]
+struct Entry {
+    value: Option<Arc<Column>>,
+    reading: bool,
+    used: u64,
+}
+struct Frontier {
+    next: usize,
+    ahead: usize,
+}
+#[derive(Default)]
+struct State {
+    entries: BTreeMap<Key, Entry>,
+    lru: BTreeSet<(u64, Key)>,
+    largest: BTreeMap<usize, usize>,
+    consumers: BTreeMap<u64, Frontier>,
+    next_consumer: u64,
+    enabled: bool,
+    bytes: usize,
+    clock: u64,
+}
+impl State {
+    fn span(&self) -> usize {
+        let Some(first) = self.consumers.values().map(|reader| reader.next).min() else {
+            return 1;
+        };
+        self.consumers
+            .values()
+            .map(|reader| reader.ahead)
+            .max()
+            .unwrap_or(first)
+            .saturating_sub(first)
+            .saturating_add(1)
+    }
+    fn budget(&self) -> usize {
+        if !self.enabled {
+            return 0;
+        }
+        self.largest
+            .values()
+            .fold(0usize, |sum, size| sum.saturating_add(*size))
+            .saturating_mul(self.span())
+    }
+}
+const ENTRY_BYTES: usize = size_of::<Column>()
+    + 2 * size_of::<usize>()
+    + 2 * size_of::<(Key, Entry)>()
+    + 2 * size_of::<(u64, Key)>();
+#[derive(Default)]
+struct Inner {
+    state: Mutex<State>,
+    changed: Condvar,
+}
+#[derive(Clone, Default)]
+pub(super) struct Cache(Arc<Inner>);
+impl Cache {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+    pub(super) fn enable(&self, enabled: bool) {
+        let mut state = self.lock();
+        state.enabled = enabled;
+        Self::prune(&mut state);
+    }
+    fn prune(state: &mut State) {
+        let budget = state.budget();
+        while state.bytes > budget {
+            let Some((_, key)) = state.lru.pop_first() else {
+                break;
+            };
+            let entry = state.entries.get_mut(&key).unwrap();
+            state.bytes -= entry.value.take().unwrap().bytes;
+            if !entry.reading {
+                state.entries.remove(&key);
+            }
+        }
+    }
+    fn consumer(&self, block: usize) -> SectionConsumer {
+        let mut state = self.lock();
+        let id = state.next_consumer;
+        state.next_consumer += 1;
+        state.consumers.insert(
+            id,
+            Frontier {
+                next: block,
+                ahead: block,
+            },
+        );
+        SectionConsumer {
+            cache: self.clone(),
+            id,
+        }
+    }
+    pub(super) fn read(
+        &self,
+        key: Key,
+        hours: usize,
+        keyframe_only: bool,
+        decode: impl FnOnce() -> io::Result<Vec<TableUpdate>>,
+    ) -> io::Result<Updates> {
+        let mut state = self.lock();
+        loop {
+            if !state.enabled {
+                drop(state);
+                return Updates::new(decode()?);
+            }
+            state.clock = state.clock.saturating_add(1);
+            let used = state.clock;
+            if let Some(previous) = state
+                .entries
+                .get(&key)
+                .filter(|entry| entry.value.is_some())
+                .map(|entry| entry.used)
+            {
+                state.lru.remove(&(previous, key));
+                state.lru.insert((used, key));
+            }
+            let entry = state.entries.entry(key).or_default();
+            entry.used = used;
+            if let Some(value) = &entry.value
+                && value.updates.len() >= hours
+                && (keyframe_only || value.table_read)
+            {
+                return Ok(value.updates.prefix(hours));
+            }
+            if !entry.reading {
+                entry.reading = true;
+                break;
+            }
+            state = self
+                .0
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        drop(state);
+        let reading = Reading { cache: self, key };
+        let updates = Updates::new(decode()?)?;
+        let bytes = ENTRY_BYTES.saturating_add(updates.bytes());
+        let value = Arc::new(Column {
+            updates: updates.clone(),
+            bytes,
+            table_read: !keyframe_only,
+        });
+        let mut state = self.lock();
+        if state.enabled {
+            let largest = state.largest.entry(key.table).or_default();
+            *largest = (*largest).max(bytes);
+            let entry = state.entries.get_mut(&key).unwrap();
+            let old = entry.value.replace(value);
+            let used = entry.used;
+            state.lru.insert((used, key));
+            state.bytes = state
+                .bytes
+                .saturating_sub(old.map_or(0, |old| old.bytes))
+                .saturating_add(bytes);
+            Self::prune(&mut state);
+        }
+        drop(state);
+        drop(reading);
+        Ok(updates)
+    }
+}
+struct Reading<'a> {
+    cache: &'a Cache,
+    key: Key,
+}
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        let mut state = self.cache.lock();
+        let entry = state.entries.get_mut(&self.key).unwrap();
+        entry.reading = false;
+        if entry.value.is_none() {
+            state.entries.remove(&self.key);
+        }
+        drop(state);
+        self.cache.0.changed.notify_all();
+    }
+}
+/// A consumer's next block until its read or preparation finishes. Reader
+/// tasks extend the far frontier; advancing or dropping consumers shrinks it.
+pub struct SectionConsumer {
+    cache: Cache,
+    id: u64,
+}
+impl SectionConsumer {
+    pub fn at(&self, block: usize) {
+        let mut state = self.cache.lock();
+        let frontier = state.consumers.get_mut(&self.id).unwrap();
+        frontier.next = block;
+        frontier.ahead = frontier.ahead.max(block);
+        Cache::prune(&mut state);
+    }
+    /// Extend this reader's frontier to a block it schedules ahead. The
+    /// extension lasts until it is passed or this consumer finishes.
+    pub fn reading(&self, block: usize) {
+        let mut state = self.cache.lock();
+        let frontier = state.consumers.get_mut(&self.id).unwrap();
+        frontier.ahead = frontier.ahead.max(block);
+    }
+}
+impl Drop for SectionConsumer {
+    fn drop(&mut self) {
+        let mut state = self.cache.lock();
+        state.consumers.remove(&self.id);
+        Cache::prune(&mut state);
+    }
+}
+impl Replay {
+    /// Enable revision-local section reuse. Each table's largest measured
+    /// column is retained for the live span between reader frontiers. When
+    /// no multi-block consumer remains, retention falls to one block's set
+    /// of columns. LRU handles future query reads whose blocks are unknown.
+    pub fn cache_decoded_sections(&self, enabled: bool) {
+        self.decoded_sections.enable(enabled);
+    }
+    /// Register a consumer at its next block; advance it at block boundaries.
+    pub fn section_consumer(&self, next_block: usize) -> SectionConsumer {
+        self.decoded_sections.consumer(next_block)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rows::{CountryRow, TableRows};
+    fn key(block: usize) -> Key {
+        Key {
+            format: 1,
+            branch: 1,
+            first: block as i32,
+            last: block as i32,
+            offset: block as u64,
+            length: 1,
+            raw_length: 1,
+            table: 0,
+            block,
+        }
+    }
+    fn rows(countries: usize) -> Vec<TableUpdate> {
+        vec![TableUpdate::Snapshot(TableRows::Countries(
+            (0..countries)
+                .map(|id| CountryRow {
+                    id: id as u32,
+                    ..Default::default()
+                })
+                .collect(),
+        ))]
+    }
+    #[test]
+    fn measured_country_sizes_and_live_block_span_set_the_budget() {
+        let mut previous = 0;
+        for countries in [1, 1_500, 5_000] {
+            let cache = Cache::default();
+            cache.enable(true);
+            let behind = cache.consumer(0);
+            let ahead = cache.consumer(4);
+            for block in 0..5 {
+                cache
+                    .read(key(block), 1, false, || Ok(rows(countries)))
+                    .unwrap();
+            }
+            let largest = cache.lock().largest[&0];
+            assert!(largest > previous, "country growth must grow the bound");
+            previous = largest;
+            assert_eq!(cache.lock().budget(), largest * 5);
+            assert_eq!(cache.lock().bytes, largest * 5);
+            behind.at(3);
+            assert_eq!(cache.lock().budget(), largest * 2);
+            assert_eq!(
+                cache.lock().entries.len(),
+                2,
+                "retire LRU entries as the live span shrinks"
+            );
+            drop(ahead);
+            behind.at(5);
+            assert_eq!(cache.lock().entries.len(), 1);
+            cache.enable(false);
+            assert!(cache.lock().entries.is_empty());
+        }
+    }
+    #[test]
+    fn finished_query_releases_its_read_ahead_span_while_preparation_stays_behind() {
+        let cache = Cache::default();
+        cache.enable(true);
+        let preparation = cache.consumer(0);
+        let query = cache.consumer(2);
+        query.reading(7);
+        for block in 0..8 {
+            cache
+                .read(key(block), 1, false, || Ok(rows(1_500)))
+                .unwrap();
+        }
+        let largest = cache.lock().largest[&0];
+        assert_eq!(cache.lock().budget(), largest * 8);
+        assert_eq!(cache.lock().entries.len(), 8);
+        drop(query);
+        assert_eq!(cache.lock().budget(), largest);
+        assert_eq!(cache.lock().entries.len(), 1);
+        preparation.reading(2);
+        assert_eq!(cache.lock().budget(), largest * 3);
+        preparation.at(2);
+        assert_eq!(cache.lock().budget(), largest);
+    }
+    #[test]
+    fn hits_share_cells_and_keyframe_admission_never_supplies_a_table_read() {
+        let cache = Cache::default();
+        cache.enable(true);
+        let first = cache.read(key(0), 1, true, || Ok(rows(2))).unwrap();
+        let second = cache
+            .read(key(0), 1, true, || panic!("keyframe decoded twice"))
+            .unwrap();
+        assert!(Arc::ptr_eq(first.get(0), second.get(0)));
+        let mut called = false;
+        cache
+            .read(key(0), 1, false, || {
+                called = true;
+                Ok(rows(2))
+            })
+            .unwrap();
+        assert!(
+            called,
+            "a table read must admit its later section even in a one-frame block"
+        );
+    }
+    #[test]
+    fn failed_and_panicked_extensions_preserve_the_earlier_prefix_and_release_the_slot() {
+        let cache = Cache::default();
+        cache.enable(true);
+        let first = cache.read(key(0), 1, false, || Ok(rows(2))).unwrap();
+        assert!(
+            cache
+                .read(key(0), 2, false, || Err(io::Error::other(
+                    "synthetic refusal"
+                )))
+                .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _ = cache.read(key(0), 2, false, || panic!("synthetic panic"));
+            })
+            .is_err()
+        );
+        let second = cache
+            .read(key(0), 1, false, || panic!("prefix lost"))
+            .unwrap();
+        assert!(Arc::ptr_eq(first.get(0), second.get(0)));
+        assert!(!cache.lock().entries[&key(0)].reading);
+    }
+}

@@ -2724,10 +2724,12 @@ fn run_inner(
             knobs,
         )
     });
+    let section_consumer = replay.section_consumer(stream.cursor().next_block);
     loop {
         let block_started = start_timing(&family_timings);
         check_cancel(cancelled)?;
         let block = stream.cursor().next_block;
+        section_consumer.at(block);
         if block == replay.index.len() && !metadata_dirty {
             finish_timing(&mut family_timings, block_started, "block.overhead", false);
             break;
@@ -2885,7 +2887,7 @@ fn run_inner(
         let mut progress_output = Duration::ZERO;
         let stream_started = start_timing(&family_timings);
         let got = if branch.is_none() {
-            stream.next_block_with(
+            stream.next_block_recorded_with(
                 replay,
                 |_, _| Err(invalid("Missing prepared branch accumulator")),
                 || check_cancel(cancelled),
@@ -3523,7 +3525,7 @@ fn run_inner(
                 if let Some(value) = &mut measurement {
                     value.timings.worker_lanes = lanes.count();
                 }
-                let mut observe = |updates: replay::frame::Frame, frame: &DecodedFrame| {
+                let mut observe = |updates: replay::frame::RecordedFrame, frame: &DecodedFrame| {
                     let frame_started = start_timing(&family_timings);
                     let observing_started = measured.then(Instant::now);
                     check_cancel(cancelled)?;
@@ -3774,9 +3776,10 @@ fn run_inner(
                 };
 
                 let result = if serial {
-                    stream.next_block_with(replay, &mut observe, || check_cancel(cancelled))
+                    stream
+                        .next_block_recorded_with(replay, &mut observe, || check_cancel(cancelled))
                 } else {
-                    stream.next_block_parallel_with(&shared_replay, &mut observe, || {
+                    stream.next_block_recorded_parallel_with(&shared_replay, &mut observe, || {
                         check_cancel(cancelled)
                     })
                 };

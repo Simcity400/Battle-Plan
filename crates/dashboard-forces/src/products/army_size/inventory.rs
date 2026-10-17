@@ -3,7 +3,7 @@
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use replay::{
-    frame::{DecodedFrame, Frame, TableView, ViewIdentity},
+    frame::{DecodedFrame, TableView, ViewIdentity},
     rows::{DeltaRow, RowCodec, TableSchema},
 };
 use std::collections::HashSet;
@@ -45,8 +45,8 @@ pub(super) struct Updates<'a> {
 
 impl<'a> Updates<'a> {
     /// A recorded frame's updates.
-    pub fn recorded(frame: &'a Frame) -> Self {
-        let update = move |table: TableId| Update::Recorded(&frame.tables[table.index()]);
+    pub fn recorded(frame: &'a (impl replay::frame::FrameSource + ?Sized)) -> Self {
+        let update = move |table: TableId| Update::Recorded(frame.update(table.index()));
         Self {
             divisions: update(TableId::Divisions),
             templates: update(TableId::DivisionTemplateIcons),
@@ -272,8 +272,12 @@ impl<T: TableSchema> Sparse<T> {
     }
 
     #[cfg(test)]
-    fn update(&mut self, frame: &Frame, compare_snapshot: bool) -> Applied<T::Row> {
-        self.update_table(&frame.tables[T::ID.index()], frame.hour, compare_snapshot)
+    fn update(
+        &mut self,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
+        compare_snapshot: bool,
+    ) -> Applied<T::Row> {
+        self.update_table(frame.update(T::ID.index()), frame.hour(), compare_snapshot)
     }
 
     fn update_table(
@@ -599,7 +603,11 @@ fn edit_parts(parts: &mut HashMap<u32, Parts>, slot: u32, counts: [i128; 2], val
 impl Inventory {
     /// The recorded updates of `frame` applied, as the oracle reads them.
     #[cfg(test)]
-    pub fn apply_changes(&mut self, frame: &Frame, decoded: &DecodedFrame) {
+    pub fn apply_changes(
+        &mut self,
+        frame: &(impl replay::frame::FrameSource + ?Sized),
+        decoded: &DecodedFrame,
+    ) {
         self.apply_updates(Updates::recorded(frame), decoded);
     }
 

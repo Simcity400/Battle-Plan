@@ -322,6 +322,14 @@ impl Held for dashboard_text::metadata::LinkTags {
     }
 }
 
+impl Held for replay::frame::RecordedFrame {
+    fn held(&self, bytes: &mut HeldBytes) {
+        self.allocations(|pointer, size| {
+            bytes.shared(pointer, size);
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -164,10 +164,8 @@ impl HeldBytes {
 
     /// Change facts' recorded updates, once however many keep them.
     fn recorded(&mut self, changes: &FrameChanges) -> &mut Self {
-        if let Some(frame) = changes.recorded()
-            && self.once(std::sync::Arc::as_ptr(frame))
-        {
-            self.total = self.total.saturating_add(recorded_bytes(frame));
+        if let Some(frame) = changes.recorded() {
+            self.value(frame);
         }
         self
     }

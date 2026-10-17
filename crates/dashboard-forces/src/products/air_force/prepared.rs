@@ -3,7 +3,7 @@ use super::*;
 use crate::products::parts_race_prepared as shared;
 use replay::{
     format::FormatVersion,
-    frame::{DecodedFrame, Frame},
+    frame::{DecodedFrame, FrameSource},
     rows::TableId,
 };
 use serde_json::Value;
@@ -111,7 +111,7 @@ impl shared::Family for Air {
     }
     fn step(
         scan: &mut Self::Scan,
-        raw: &Frame,
+        raw: &(impl FrameSource + ?Sized),
         frame: &DecodedFrame,
         format: FormatVersion,
         cancelled: &AtomicBool,
@@ -121,7 +121,7 @@ impl shared::Family for Air {
     }
     fn resume(
         scan: &mut Self::Scan,
-        raw: &Frame,
+        raw: &(impl FrameSource + ?Sized),
         frame: &DecodedFrame,
         format: FormatVersion,
         cancelled: &AtomicBool,

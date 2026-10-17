@@ -7,7 +7,7 @@ use crate::{
 };
 use replay::{
     container::SeekResult,
-    frame::{DecodedFrame, Frame, FrameDecoder, TableUpdate},
+    frame::{DecodedFrame, FrameDecoder, RecordedFrame as Frame, TableUpdate},
     rows::TableId,
 };
 use std::{
@@ -320,7 +320,7 @@ pub fn histories(
         use replay::rows::tables;
         check_cancel(cancelled)?;
         let selected = [TableId::Countries, TableId::CountryLinks];
-        let keyframe = replay.read_keyframe_selected(first, &selected)?;
+        let keyframe = replay.read_keyframe_recorded(first, &selected)?;
         let mut decoder = FrameDecoder::for_tables(&selected);
         let frame = decoder.advance(&keyframe)?;
         check_cancel(cancelled)?;
@@ -606,7 +606,16 @@ fn supplying_read(
     let mut expected = hour;
     let mut validate_carry = table == TableId::Clock;
     let mut supplying = None;
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
     'search: for block in blocks {
+        if let Some(position) = replay.block_position(block) {
+            consumer.at(position);
+        }
         check_cancel(cancelled)?;
         let Some(reads) =
             super::frames::block(source, block, &[TableId::Campaign, table], cancelled)?
@@ -824,7 +833,17 @@ fn tail_cached_selected(
     keys.dedup();
     let wanted: std::collections::BTreeSet<_> = requested.iter().collect();
     let mut result = TailData::default();
+    let replay = source.replay_ref();
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
     for block in blocks {
+        if let Some(position) = replay.block_position(block) {
+            consumer.at(position);
+        }
         check_cancel(cancelled)?;
         if source.replay_ref().gaps.iter().any(|gap| {
             gap.branch == branch
@@ -843,7 +862,7 @@ fn tail_cached_selected(
                 bytes.total() as usize
             },
             || {
-                let keyframe = source.replay_ref().read_keyframe_selected(block, tables)?;
+                let keyframe = source.replay_ref().read_keyframe_recorded(block, tables)?;
                 let mut decoder = FrameDecoder::for_tables(tables);
                 sample(
                     decoder.advance(&keyframe)?,
@@ -1318,9 +1337,24 @@ pub fn tail_first_read(
         );
     }
     let mut result = TailData::default();
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
+    let first_sample_read = |block: &replay::container::BlockIndex| {
+        if let Some(position) = replay.block_position(block) {
+            consumer.reading(position);
+        }
+        first_sample(block)
+    };
     let read_ahead =
         std::thread::available_parallelism().map_or(1, |threads| (threads.get() / 2).max(1));
     let mut accept = |block: &replay::container::BlockIndex, observed: Samples| -> io::Result<()> {
+        if let Some(position) = replay.block_position(block) {
+            consumer.at(position);
+        }
         check_cancel(cancelled)?;
         if !observed.values().any(|(_, value)| value.is_some()) {
             return Ok(());
@@ -1342,7 +1376,7 @@ pub fn tail_first_read(
             blocks,
             read_ahead,
             cancelled,
-            first_sample,
+            &first_sample_read,
             |reads| {
                 for (block, read) in reads {
                     accept(block, read?)?;
@@ -1465,7 +1499,17 @@ fn cached_recorded_blocks(
     let mut keys = cached_requested.to_vec();
     keys.sort();
     keys.dedup();
+    let replay = source.replay_ref();
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
     for block in blocks {
+        if let Some(position) = replay.block_position(block) {
+            consumer.at(position);
+        }
         let whole = (&selected, &keys, cadence, all, None::<(i64, i32)>);
         let extent = bounded
             .then_some((
@@ -1672,11 +1716,20 @@ fn sample_blocks_recorded(
             }
         }
     }
+    let consumer = replay.section_consumer(
+        blocks
+            .first()
+            .and_then(|block| replay.block_position(block))
+            .unwrap_or(0),
+    );
     if exact {
         // Blocks are read ahead on spare cores (or found in the source's frame
         // cache) while their hours are decoded and sampled here, in block order.
         let read =
             |block: &replay::container::BlockIndex| -> io::Result<Vec<super::frames::BlockRead>> {
+                if let Some(position) = replay.block_position(block) {
+                    consumer.reading(position);
+                }
                 Ok(
                     match super::frames::block(source, block, tables, cancelled)? {
                         Some(reads) => reads,
@@ -1686,7 +1739,9 @@ fn sample_blocks_recorded(
                             selected.dedup();
                             vec![super::frames::BlockRead {
                                 tables: selected,
-                                frames: Arc::new(replay.read_block_selected(block, tables)?),
+                                frames: Arc::new(
+                                    replay.read_block_recorded_selected(block, tables)?,
+                                ),
                             }]
                         }
                     },
@@ -1699,6 +1754,9 @@ fn sample_blocks_recorded(
             &read,
             |reads| {
                 for (block, read) in reads {
+                    if let Some(position) = replay.block_position(block) {
+                        consumer.at(position);
+                    }
                     check_cancel(cancelled)?;
                     let start = i64::from(block.first_hour).max(first) as i32;
                     let end = block.last_hour.min(window.1);
@@ -1798,11 +1856,14 @@ fn sample_blocks_recorded(
         return Ok((runs, approximate, identities));
     }
     for block in blocks {
+        if let Some(position) = replay.block_position(block) {
+            consumer.at(position);
+        }
         check_cancel(cancelled)?;
         let start = i64::from(block.first_hour).max(first) as i32;
         let end = block.last_hour.min(window.1);
         // Only the block's keyframe sections are read: no decode through the block.
-        let keyframe = replay.read_keyframe_selected(block, tables)?;
+        let keyframe = replay.read_keyframe_recorded(block, tables)?;
         let mut decoder = FrameDecoder::for_tables(tables);
         let frame = decoder.advance(&keyframe)?;
         let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
@@ -1999,7 +2060,7 @@ fn sample_blocks_serial(
             }
         } else {
             // Only the block's keyframe sections are read: no decode through the block.
-            let keyframe = replay.read_keyframe_selected(block, tables)?;
+            let keyframe = replay.read_keyframe_recorded(block, tables)?;
             let mut decoder = FrameDecoder::for_tables(tables);
             let frame = decoder.advance(&keyframe)?;
             let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
@@ -2480,7 +2541,7 @@ mod tests {
         let mut replay = renamed_seed_recording();
         let selected = [TableId::Countries, TableId::CountryLinks];
         let first = replay.index.iter().find(|block| block.branch == 1).unwrap();
-        let keyframe = replay.read_keyframe_selected(first, &selected).unwrap();
+        let keyframe = replay.read_keyframe_recorded(first, &selected).unwrap();
         let mut decoder = FrameDecoder::for_tables(&selected);
         let mut prefix = HistoryScan::new(false, &[]);
         prefix.observe(decoder.advance(&keyframe).unwrap());
@@ -2499,7 +2560,7 @@ mod tests {
         }
         let first = replay.index.iter().find(|block| block.branch == 1).unwrap();
         assert!(
-            replay.read_keyframe_selected(first, &selected).is_err(),
+            replay.read_keyframe_recorded(first, &selected).is_err(),
             "the seed read must fail if attempted"
         );
         let coverage = Coverage {
