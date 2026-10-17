@@ -1116,11 +1116,10 @@ fn banked_experience_after_the_prepared_prefix_is_read_as_preparation_reads_it()
     });
 }
 
-/// A long tail samples each block at its first daily read: that read stands
-/// for the block's hours, approximate, and a block without a read is not
-/// sampled; gains still wait for preparation.
+/// Summaries publish the exact accepted prefix without reading the recording.
+/// Reached values remain independent; preparation supplies the remaining chart.
 #[test]
-fn banked_experience_samples_each_block_of_a_long_tail_at_its_first_read() {
+fn banked_experience_summaries_draw_the_prefix_without_decoding_the_tail() {
     independent::with_test_hourly(|| {
         let replay = daily_scenario();
         let mut fixture = Fixture::new(&replay);
@@ -1128,38 +1127,96 @@ fn banked_experience_samples_each_block_of_a_long_tail_at_its_first_read() {
         let (store, key) = super::super::super::files(&source, None).unwrap();
         let format = source.replay_ref().format;
         let mut accumulator = crate::prepared_stability::ExperienceAccumulator::default();
-        let mut writer = store.replace(key.clone()).unwrap();
-        commit_experience(&mut writer, &mut accumulator, format, 0..=5, 5, false);
-        writer.commit().unwrap();
         let tag = serde_json::to_string(&("000", 0, COUNTRY)).unwrap();
-        let summary = |measure: &str| {
-            query(
-                &source,
-                "series-summary",
-                serde_json::json!({
-                    "branchId": "1",
-                    "family": { "kind": "country-experience", "measure": measure },
-                    "tags": [tag],
-                    "from": BASE,
-                    "to": BASE + 83,
-                    "width": 84,
-                    "withMarks": false,
-                }),
-            )
-            .unwrap()
+        let params = |measure: &str| {
+            serde_json::json!({
+                "branchId": "1",
+                "family": { "kind": "country-experience", "measure": measure },
+                "tags": [tag],
+                "from": BASE,
+                "to": BASE + 83,
+                "width": 84,
+                "withMarks": false,
+            })
         };
-        let banked = summary("army-banked");
-        assert!(!banked.is_null(), "the long tail answers before completion");
-        // The third, seventh and eleventh blocks hold a daily read.
-        let span = |first: i32, last: i32| serde_json::json!({ "firstHour": BASE + first, "lastHour": BASE + last });
-        assert_eq!(
-            banked["series"][0]["summary"]["approximate"],
-            serde_json::json!([span(12, 17), span(36, 41), span(60, 65)])
-        );
+        let summary = |measure: &str| {
+            let (reply, decoded) =
+                crate::prepared::query::progressive::without_block_decodes(|| {
+                    query(&source, "series-summary", params(measure))
+                });
+            assert!(!decoded, "a summary must not wait for tail decodes");
+            reply.unwrap()
+        };
+        let span = |first: i32, last: i32| {
+            serde_json::json!({ "firstHour": BASE + first, "lastHour": BASE + last })
+        };
+        for measure in crate::products::country_experience::SAMPLED_MEASURES {
+            let cold = summary(measure);
+            assert_eq!(cold["coverage"]["lastHour"], BASE - 1);
+            assert_eq!(cold["pending"], serde_json::json!([span(0, 83)]));
+            let chart = &cold["series"][0]["summary"];
+            assert_eq!(chart["runs"], serde_json::json!([]));
+            assert!(
+                chart["buckets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(serde_json::Value::is_null)
+            );
+        }
+        let mut writer = store.replace(key.clone()).unwrap();
+        commit_experience(&mut writer, &mut accumulator, format, 0..=23, 23, false);
+        writer.commit().unwrap();
+        for measure in crate::products::country_experience::SAMPLED_MEASURES {
+            let prefix = summary(measure);
+            assert_eq!(prefix["coverage"]["lastHour"], BASE + 23);
+            assert_eq!(prefix["pending"], serde_json::json!([span(24, 83)]));
+            let expected = crate::prepared_measure::query::query(
+                "series-summary",
+                params(measure),
+                &store,
+                &key,
+                None,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            let chart = &prefix["series"][0]["summary"];
+            let prepared = &expected["series"][0]["summary"];
+            assert_eq!(chart["runs"], prepared["runs"], "exact prefix values");
+            let known = |chart: &serde_json::Value| {
+                chart["buckets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|bucket| !bucket.is_null())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(known(chart), known(prepared));
+            assert_eq!(chart["approximate"], serde_json::json!([]));
+        }
         assert!(
             summary("army-gain").is_null(),
             "daily gains need every hour of a day"
         );
+        let mut writer = store.extend(&key).unwrap();
+        commit_experience(&mut writer, &mut accumulator, format, 24..=83, 83, true);
+        writer.commit().unwrap();
+        for measure in crate::products::country_experience::SAMPLED_MEASURES {
+            let complete = summary(measure);
+            let mut expected = crate::prepared_measure::query::query(
+                "series-summary",
+                params(measure),
+                &store,
+                &key,
+                None,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            expected["coverage"] = complete["coverage"].clone();
+            assert_eq!(complete, expected, "the complete reply is unchanged");
+            assert_eq!(complete["coverage"]["complete"], true);
+        }
         clear(source);
     });
 }

@@ -60,8 +60,10 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
   };
   const coverageKey = (value: ReturnType<typeof coverage>) => value ? [value.firstHour, value.lastHour, value.complete] : null;
   const presentationKey = (reply: unknown) => {
-    const fields = reply as { exact?: unknown; pending?: unknown; approximate?: unknown; preparing?: unknown };
-    return JSON.stringify([fields.exact, fields.pending ?? [], fields.approximate ?? [], fields.preparing ?? []]);
+    const fields = reply as { exact?: unknown; pending?: unknown; approximate?: unknown; preparing?: unknown; selectionCoverage?: unknown };
+    // Selection can gain holders while numeric coverage stays put. Compare its
+    // published extent without walking potentially transport-sized row arrays.
+    return JSON.stringify([fields.exact, fields.pending ?? [], fields.approximate ?? [], fields.preparing ?? [], fields.selectionCoverage]);
   };
   const branchesKey = (map: Record<string, PreparedCoverage>) => branch ? coverageKey(map[branch] ?? null)
     : Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([id, value]) => [id, coverageKey(value)]);

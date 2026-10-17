@@ -33,8 +33,24 @@ supplying blocks when their episode boundaries are witnessed locally. Inherited
 episodes and unmatched late completions for earlier handles remain pending.
 Day replies, per-block earlier keys and compressed newest proofs use the shared
 source-revision observation cache. Recording/content binding changes invalidate
-them; moving preparation coverage only clips their use. Each product shares the
-cache's live-block retention bound across its request variants, without a separate
+them; moving preparation coverage clips their use. Roster day cache keys also
+include accepted identity coverage, so a pending selection is reconsidered as
+that history advances. Each product shares the cache's live-block retention
+bound across its request variants, without a separate
 screen budget. Coverage re-asks reuse observations while retained.
 
-The cold operative roster selects requested native holders from the witnessed identities before reply construction and budget checks.
+The cold operative roster selects holders named for the requested tags by the
+day's identities and accepted identity history. A later alias can add a holder
+to an earlier day's selection, so only identity coverage complete for the whole
+branch makes that selection final. Until then the reply names `countries` as
+preparing and supplying reads leave pending hours intact. Prepared day values
+carry the same provisional-selection mark while identities are incomplete.
+The reply publishes the accepted identities extent as `selectionCoverage` (null
+before acceptance). Mounted clients replace the roster when that extent moves,
+even if numeric coverage and the pending/preparing marks stay unchanged. Its
+reply gate follows incomplete identities as well as intelligence preparation.
+The roster projects known selected holders and their aliases through the shared
+frame cache. Its rows and string dictionaries use the same holder selection
+before reply construction and budget checks. The reply carries the witnessed
+identity spans covering its roster observations. Join and departure dates remain
+preparing until the joint intelligence and identity prefix reaches them.

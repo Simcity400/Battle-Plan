@@ -197,6 +197,17 @@ pub fn query(
     let accepted =
         (prefix.coverage.first_hour <= prefix.coverage.last_hour).then(|| prefix.coverage.clone());
     let (store, key) = prepared::files(source, context.content.as_ref())?;
+    let identity_coverage = if product == "operatives-roster" {
+        prepared::coverage::product_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            dashboard_base::products::country_history::IDENTITIES_PRODUCT,
+            cancelled,
+        )?
+    } else {
+        None
+    };
     let last = requested.unwrap_or(end);
     let from = params
         .get("firstHour")
@@ -311,12 +322,18 @@ pub fn query(
             "operatives-roster" => "operatives-roster:day",
             _ => unreachable!("screen product"),
         };
+        let mut screen_params = day_params.clone();
+        if product == "operatives-roster" {
+            // Historical holder selection follows the accepted identity page.
+            // A pending day must be reconsidered when that prefix advances.
+            screen_params["identityCoverage"] = serde_json::to_value(&identity_coverage)?;
+        }
         data = Some(screen(
             source,
             &key,
             cache_product,
             branch,
-            &day_params,
+            &screen_params,
             cancelled,
             || {
                 Ok(match product {
@@ -366,6 +383,29 @@ pub fn query(
         }
     }
     let mut data = data.unwrap_or_else(|| empty(product, branch));
+    if product == "operatives-roster" {
+        // New aliases can add rows without moving the numeric frontier.
+        data["selectionCoverage"] = serde_json::to_value(&identity_coverage)?;
+    }
+    if product == "operatives-roster"
+        && !operatives_roster::prepared::selection_complete(
+            source,
+            branch,
+            identity_coverage.as_ref(),
+        )
+    {
+        // Prepared day values can be ready before the branch-wide selection.
+        let preparing = data
+            .as_object_mut()
+            .expect("roster reply")
+            .entry("preparing")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .expect("roster preparing fields");
+        if !preparing.iter().any(|field| field == "countries") {
+            preparing.push(json!("countries"));
+        }
+    }
     // These products already use coverage for captured read evidence.
     prefix.mark_coverage(&mut data, "preparedCoverage")?;
     Ok(data)

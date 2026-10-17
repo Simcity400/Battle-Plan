@@ -24,6 +24,15 @@ test('event pages keep huge ordinals and duplicate dates; malformed geometry is 
     series: [{ tag: 'opaque', summary: { from: 0, to: 100, width: 1, buckets: Array(5).fill(null) }, marks: null }] }));
 });
 
+test('summary pending hours stay independent of geometry and reject malformed spans', () => {
+  const reply = {branchId:'3',measure:'army-banked',decimals:0,warnings:[],series:[],
+    coverage:{firstHour:0,lastHour:-1,complete:false},pending:[{firstHour:0,lastHour:9},{firstHour:11,lastHour:20}]};
+  assert.deepEqual(validateMeasureSummaries(reply).pending,reply.pending);
+  for (const pending of [[{firstHour:0,lastHour:-1}], [{firstHour:0.5,lastHour:9}],
+    [{firstHour:0,lastHour:9},{firstHour:9,lastHour:20}], null])
+    assert.throws(() => validateMeasureSummaries({...reply,pending}));
+});
+
 
 test('stability and maximum command power retain supplying reads even when the formula is unknown', () => {
   for (const measure of ['stability', 'warSupport', 'maxCommandPower']) {

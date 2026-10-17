@@ -1635,12 +1635,16 @@ fn query_data(
                     other => other?,
                 };
             // Banked experience is a daily read held until the next: its
-            // sampler carries its own scan from hour to hour, and a long tail
-            // samples each block at its first read. Gains and changes need
+            // sampler carries its own scan from hour to hour, and navigation
+            // samples a long tail at each block's first read. Gains and changes need
             // every hour of a day, so only preparation answers them.
             let experience = (family == Some("country-experience")
                 && banked_experience(&request.params))
             .then(|| crate::products::country_experience::Sampler::new(source.replay_ref().format));
+            // A summary draws the accepted prefix immediately. Sampling every
+            // remaining block would compete with preparation before it can draw.
+            // Reached values still read their own supplying block below.
+            let experience_prefix = experience.is_some() && product == "series-summary";
             let experience_sample = |frame: &replay::frame::DecodedFrame,
                                      requested: Option<&[(String, String)]>|
              -> io::Result<progressive::Samples> {
@@ -1714,6 +1718,7 @@ fn query_data(
 
             if let Some((tables, sample)) = sampler
                 && partial
+                && !experience_prefix
                 && matches!(
                     product,
                     "series-state" | "series-summary" | "series-next-change"
@@ -2151,11 +2156,11 @@ fn query_data(
                     }
                 }
             }
-            // An event list holds accepted events only: the requested hours
-            // after its prefix are pending, never sampled.
+            // Accepted-only replies keep the requested hours after their
+            // prefix pending.
             let pending = match state_prefix {
                 Some(prefix) => Some(prefix.pending),
-                None if partial_events => Some(
+                None if partial_events || experience_prefix && partial => Some(
                     super::prefix::Prefix::new(
                         source,
                         branch,

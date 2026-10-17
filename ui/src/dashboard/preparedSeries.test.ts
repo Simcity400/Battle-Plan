@@ -377,6 +377,41 @@ test('mounted replies publish improved presentation without waiting for a longer
   }
 });
 
+test('mounted roster publishes new holders when only incomplete identity coverage advances', async () => {
+  const at = (lastHour: number) => ({ firstHour: 0, lastHour, complete: false });
+  const before = { preparedCoverage: at(48), selectionCoverage: at(48),
+    pending: [{ firstHour: 49, lastHour: 71 }], preparing: ['countries'],
+    countries: [{ tag: 'B', operatives: [{ id: '1' }] }] };
+  const after = { ...before, selectionCoverage: at(96),
+    countries: [...before.countries, { tag: 'C', operatives: [{ id: '2' }] }] };
+  const values = [before, structuredClone(before), after];
+  const published: unknown[] = [];
+  const controller = new AbortController();
+  let reads = 0, statuses = 0;
+  const client = {
+    preparedQuery: async (_source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions) => {
+      assert.equal(product, 'operatives-roster');
+      assert.deepEqual(params, { branchId: '1', tags: ['A'], firstHour: 48, lastHour: 71, includeDeparted: false });
+      assert.ok(reads < values.length, 'one read per identity commit');
+      options.gate?.(['identities', 'intelligence']);
+      return values[reads++];
+    },
+    preparationStatus: async (request: object) => {
+      assert.ok(++statuses <= 2);
+      return familyStatus(request, { intelligence: { '1': at(48) }, identities: { '1': at(statuses === 1 ? 48 : 96) } });
+    },
+  } as unknown as DashboardClient;
+  await assert.rejects(preparedSeriesQuery(client, source, 'operatives-roster',
+    { branchId: '1', tags: ['A'], firstHour: 48, lastHour: 71, includeDeparted: false }, controller.signal,
+    false, undefined, async () => {
+      assert.deepEqual(published, statuses === 1 ? [before] : [before, after],
+        'publish the new rows before another family or forward coverage moves; suppress identical replies');
+      if (statuses === 2) controller.abort();
+    }, value => published.push(value)), { name: 'AbortError' });
+  assert.deepEqual({ reads, statuses }, { reads: 3, statuses: 2 });
+  assert.deepEqual(published, [before, after]);
+});
+
 test('a pending reply waiting on a family prepared on its own is asked again when that family moves', { timeout: 2000 }, async () => {
   const exact = { coverage: { firstHour: 0, lastHour: 29, complete: true }, series: ['exact'] };
   let queries = 0, statuses = 0;

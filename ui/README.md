@@ -55,8 +55,10 @@ The [dashboard architecture](../docs/dashboard.md) and [Rust dashboard guide](..
 - Dated fact queues retain their exact pending chunks between successful replies. Demand, admission, ordering and retry changes rebuild the plan; completion starts the next chunk without scanning the full history again. Two requests run at once, and completed missing values, failures, cancellation and exact hour/tag ownership remain distinct.
 
 Mounted prepared products publish their initial covered or approximate reply immediately
-and replace it when accepted coverage or the presented exact, pending, approximate
-or preparing fields change. Partial replies belong to
+and replace it when accepted coverage or the presented exact, pending, approximate,
+preparing or `selectionCoverage` fields change. The selection extent lets identity
+progress publish new roster rows while numeric coverage stays unchanged, without
+comparing entire row arrays. Partial replies belong to
 the mount and never become shared cached results. Completed replies, and replies
 without preparation metadata, use the bounded product cache. Null preparation
 coverage and pending or approximate spans keep a reply out of that cache and

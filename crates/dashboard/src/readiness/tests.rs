@@ -341,6 +341,16 @@ fn table_requests_name_their_first_view_class() {
     };
     assert_eq!(class("casualties"), [Some(FirstView::Prefix)]);
     assert_eq!(class("event-feed"), [Some(FirstView::Prefix)]);
+    assert_eq!(
+        class("experience"),
+        [
+            Some(FirstView::Sampled),
+            Some(FirstView::Prefix),
+            Some(FirstView::Prefix),
+            Some(FirstView::Prefix),
+            Some(FirstView::Sampled),
+        ]
+    );
     let named = |class: &str| {
         widgets(&format!(
             r#"{{"widgets": [{{"kind": "x", "requests": [{{"product": "wars", "route": "prepared", "firstView": "{class}", "params": {{}}}}]}}]}}"#

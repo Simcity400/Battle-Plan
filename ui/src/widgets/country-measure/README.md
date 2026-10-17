@@ -12,7 +12,9 @@ Shared Political power/Command power balances and income/spending drills; this f
 
 Prepared-query clients supply selected-country balance charts with width-bounded summaries and exact reached hours for the playhead, hover and visible line ends. Campaign, Follow, Pin and range time modes share these queries. Chart drawing and actor picks share summary geometry; picks require an exact known balance. Balance changes open a windowed exact event list with stable decimal ordinals, duplicate dates and playback cutoff filtering. Group selection and income/spending-only breakdowns use the history products. The command-power ceiling shares prepared stability series and exact reached reads. Accounting and maximum details load when hover or drill reaches them.
 
-Pending preparation is separate from recorded missing values. Balances merge
+Pending preparation is separate from recorded missing values. The shared hook
+carries summaries' root pending spans independently of reached-hour availability;
+consumers can draw the shared pending band and key. Balances merge
 committed prepared runs with transient samples for the unprepared tail. A wide
 view uses each unprepared block's keyframe; faded dashed spans and one Approximate
 key identify that geometry. A viewport touching at most thirteen unprepared

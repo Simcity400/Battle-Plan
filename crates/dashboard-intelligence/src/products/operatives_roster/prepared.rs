@@ -733,6 +733,31 @@ fn query_history(
 #[cfg(test)]
 mod tests;
 
+/// Later aliases can add holders to a manual tag selection at any earlier day.
+pub(crate) fn selection_complete(
+    source: &Source,
+    branch: u64,
+    coverage: Option<&dashboard_base::prepared::coverage::Coverage>,
+) -> bool {
+    let replay = source.replay_ref();
+    let last = replay
+        .index
+        .iter()
+        .filter(|block| block.branch == branch)
+        .map(|block| block.last_hour)
+        .chain(
+            replay
+                .gaps
+                .iter()
+                .filter(|gap| gap.branch == branch)
+                .map(|gap| gap.last_hour),
+        )
+        .max();
+    coverage.is_some_and(|coverage| {
+        coverage.complete && last.is_some_and(|last| coverage.last_hour >= last)
+    })
+}
+
 pub(crate) fn first_view(
     source: &Source,
     params: &Params,
@@ -755,12 +780,6 @@ pub(crate) fn first_view(
     {
         return Err(content.err().expect("interrupted content"));
     }
-    let mut scan = Scan::new(
-        &[],
-        content.as_ref().ok().and_then(|content| content.as_deref()),
-        content.as_ref().err().map(ToString::to_string),
-        true,
-    )?;
     let branch_first = source
         .block_windows(branch)
         .first()
@@ -769,6 +788,63 @@ pub(crate) fn first_view(
     let mut identities = dashboard_base::products::country_history::HistoryScan::new(false, &[]);
     let mut supplying = None;
     let mut operations_supply = None;
+    // Project the holders known from the day and accepted identity history.
+    // The selection remains provisional until the whole branch is prepared.
+    super::super::intelligence_prepared::first_views::day(
+        source,
+        branch,
+        first,
+        last,
+        &[TableId::Campaign, TableId::Countries, TableId::CountryLinks],
+        cancelled,
+        |frame| {
+            identities.observe(frame);
+            Ok(())
+        },
+    )?;
+    let identities = identities.finish();
+    let mut selected =
+        dashboard_base::products::country_history::selected_identities(&identities, &params.tags);
+    let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
+        source,
+        context.content.as_ref(),
+        branch,
+        dashboard_base::products::country_history::IDENTITIES_PRODUCT,
+        cancelled,
+    )?;
+    let history = dashboard_base::prepared::query::progressive::histories(
+        &store,
+        &key,
+        branch,
+        coverage.as_ref(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        source.replay_ref(),
+        &[],
+        cancelled,
+    )?;
+    selected.extend(
+        dashboard_base::products::country_history::selected_identities(&history, &params.tags),
+    );
+    let selection_pending = !selection_complete(source, branch, coverage.as_ref());
+    let tags: Vec<_> = identities
+        .countries
+        .iter()
+        .filter(|(_, country)| {
+            country
+                .identities
+                .iter()
+                .any(|identity| selected.contains(&(identity.slot, identity.country_id)))
+        })
+        .map(|(tag, _)| tag.clone())
+        .collect();
+    let mut scan = Scan::new(
+        &tags,
+        content.as_ref().ok().and_then(|content| content.as_deref()),
+        content.as_ref().err().map(ToString::to_string),
+        true,
+    )?;
     let mut countries = super::super::operative_rows::CountryInputs::default();
     super::super::intelligence_prepared::first_views::day(
         source,
@@ -784,13 +860,11 @@ pub(crate) fn first_view(
             if frame.hour == branch_first || super::super::operative_rows::operations_read(frame) {
                 operations_supply.get_or_insert(frame.hour);
             }
-            identities.observe(frame);
             countries.update(frame, None);
-            scan.add_tags(&countries);
             scan.observe_indices(
                 frame,
                 content.as_ref().ok().and_then(|content| content.as_deref()),
-                None,
+                Some(&selected),
                 None,
                 None,
                 (false, true),
@@ -809,15 +883,14 @@ pub(crate) fn first_view(
         },
     )?;
     for history in &mut scan.histories {
+        if let Some(recorded) = identities.countries.get(&history.reply.tag) {
+            history.reply.identities = recorded.identities.as_ref().clone();
+        }
         history.reply.operatives.retain(|entry| {
             entry.runs.iter().any(|run| run.last_hour >= first)
                 || params.include_departed && entry.departed_hour.is_some_and(|hour| hour <= last)
         });
     }
-    let selected = dashboard_base::products::country_history::selected_identities(
-        &identities.finish(),
-        &params.tags,
-    );
     let mut data = serde_json::to_value(scan.reply(branch, Some(&selected))?)?;
     for country in data["countries"]
         .as_array_mut()
@@ -832,11 +905,19 @@ pub(crate) fn first_view(
     }
     data["sampledFrom"] = serde_json::to_value(
         supplying
+            .filter(|_| !selection_pending)
             .zip(operations_supply)
             .map(|(roster, operations)| roster.max(operations)),
     )?;
-    if params.include_departed {
-        data["preparing"] = serde_json::json!(["departed"]);
+    let preparing: Vec<_> = [
+        params.include_departed.then_some("departed"),
+        selection_pending.then_some("countries"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !preparing.is_empty() {
+        data["preparing"] = serde_json::to_value(preparing)?;
     }
     Ok(data)
 }

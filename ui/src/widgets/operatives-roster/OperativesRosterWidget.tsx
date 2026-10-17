@@ -59,8 +59,9 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   const view = useMemo(() => data && match.ready ? rosterAt(data, hour, widget.time.mode === 'campaign' && options.departed === true,
     match.matches) : null, [data, hour, widget.time.mode, options.departed, match]);
   const rows = view?.rows ?? EMPTY_ROWS;
+  const preparing = fieldPreparing(data, 'countries') || pendingAt(preparedPrefix(data), hour);
   const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'table', label: 'Operative roster values', complete: Boolean(data && view && match.ready), total: rows.length,
+  useParityRows(root, () => ({ kind: 'table', label: 'Operative roster values', complete: Boolean(data && view && match.ready && !preparing), total: rows.length,
     rows: rows.map(row => ({ key: row.key, country: row.country, joinedHour: row.entry.joinedHour, departedHour: row.departed ? row.entry.departedHour : null,
       value: row.run.value, readHour: row.readHour, assignmentReadHour: row.assignmentReadHour, moments: operativeMoments(row) })),
   }));
@@ -150,7 +151,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (membershipUnknown) body = <WidgetState kind="unavailable" message="This group's members were not recorded at this moment." />;
   else if (!data || !view) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
-  else if (pendingAt(preparedPrefix(data), hour)) body = <WidgetState kind="loading" label="This range is still being prepared." />;
+  else if (preparing && !rows.length) body = <WidgetState kind="loading" label="This roster is still being prepared." />;
   else if (!rows.length && runAt(data.agencyAbsent, hour)) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
   else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." />;
   else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
@@ -161,6 +162,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
       menu={row => operativeMoments(row).map(moment => ({ ...jumpItem(runtime, track.id, moment.hour), label: moment.label }))}
       tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
   return <div ref={root} className="operatives-roster">
+    {preparing && rows.length > 0 && <p className="chart-line-key">This roster is still being prepared.</p>}
     {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unavailable.</p>}
     {data?.countries.some(country => country.operatives.some(entry => fieldPreparing(entry, 'joinedHour'))) && <p className="chart-line-key">First presence, departure and earlier departed operatives are still being prepared.</p>}
     {body}

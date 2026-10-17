@@ -188,6 +188,8 @@ struct Tracked {
     /// When its reply became exact (or unavailable): no later preparation
     /// changes it. A ready reply is asked again until then.
     exact_ms: Option<f64>,
+    /// A product's explicit whole-history follow-up, as its widget requests it.
+    exact_request: Option<usize>,
     /// Start and duration of the query whose reply settled it.
     settle_asked_ms: Option<f64>,
     settle_query_ms: Option<f64>,
@@ -393,6 +395,7 @@ impl Probe<'_> {
             first_view: template.first_view,
             settled_ms: None,
             exact_ms: None,
+            exact_request: None,
             settle_asked_ms: None,
             settle_query_ms: None,
             error: None,
@@ -481,6 +484,7 @@ impl Probe<'_> {
         spent: f64,
     ) {
         let now = self.now_ms();
+        let mut exact_params = None;
         let tracked = &mut self.tracked[index];
         let data = reply.and_then(|text| {
             serde_json::from_str::<Value>(&text)
@@ -511,6 +515,18 @@ impl Probe<'_> {
                 let finished = finished || tracked.route == Route::Product;
                 let outcome =
                     readiness::classify(&tracked.product, &tracked.params, &data, finished);
+                // Production's first view is immutable. Its widget requests a
+                // separate whole history rather than waiting for a moving gate.
+                if tracked.product == "production-lines"
+                    && tracked.params["exact"] != true
+                    && data["approximate"]
+                        .as_array()
+                        .is_some_and(|spans| !spans.is_empty())
+                {
+                    let mut params = tracked.params.clone();
+                    params["exact"] = json!(true);
+                    exact_params = Some(params);
+                }
                 tracked.error = None;
                 tracked.outcome = Some(outcome);
                 if tracked.keep {
@@ -547,6 +563,16 @@ impl Probe<'_> {
                 tracked.error = Some(error);
             }
         }
+        if let Some(params) = exact_params {
+            let template = readiness::Template {
+                product: "production-lines".into(),
+                route: Route::Product,
+                params: params.clone(),
+                first_view: None,
+            };
+            let follow_up = self.track(&template, params, false);
+            self.tracked[index].exact_request = Some(follow_up);
+        }
     }
 
     fn describe(&self, index: usize) -> Value {
@@ -558,6 +584,7 @@ impl Probe<'_> {
             "outcome": tracked.outcome.map(Outcome::name), "settledMs": tracked.settled_ms,
             "firstView": tracked.first_view.map(readiness::FirstView::name),
             "firstViewMs": tracked.settled_ms, "exactMs": tracked.exact_ms,
+            "exactRequest": tracked.exact_request,
             "settleAskedMs": tracked.settle_asked_ms, "settleQueryMs": tracked.settle_query_ms,
             "firstAskedMs": tracked.first_asked_ms, "error": tracked.error,
             "inFlightSinceMs": tracked.in_flight.as_ref().map(|asked| asked.at_ms),
@@ -583,7 +610,14 @@ fn settled(probe: &Probe, slots: &[Slot]) -> Option<(f64, Option<usize>)> {
 
 /// When every slot's reply was exact, with the request that became so last.
 fn exact(probe: &Probe, slots: &[Slot]) -> Option<(f64, Option<usize>)> {
-    reached(probe, slots, |tracked| tracked.exact_ms)
+    let slots: Vec<_> = slots
+        .iter()
+        .map(|slot| match *slot {
+            Slot::Request(index) => Slot::Request(probe.tracked[index].exact_request.unwrap_or(index)),
+            other => other,
+        })
+        .collect();
+    reached(probe, &slots, |tracked| tracked.exact_ms)
 }
 
 fn reached(
@@ -907,7 +941,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
         // Every request not yet answered is in flight, as mounted widgets keep
         // theirs; a pending prepared reply is asked again once the coverage it
         // waits for moves ([`progress_key`]).
-        let active: HashSet<usize> = widgets
+        let mut active: HashSet<usize> = widgets
             .iter()
             .flat_map(|widget| {
                 widget
@@ -920,6 +954,11 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                     .chain(widget.auxiliary.iter().copied())
             })
             .collect();
+        let follow_ups: Vec<_> = active
+            .iter()
+            .filter_map(|&index| probe.tracked[index].exact_request)
+            .collect();
+        active.extend(follow_ups);
         for index in 0..probe.tracked.len() {
             if !active.contains(&index) {
                 continue;
@@ -1080,6 +1119,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                 "outcome": tracked.outcome.map(Outcome::name), "settledMs": tracked.settled_ms,
                 "firstView": tracked.first_view.map(readiness::FirstView::name),
                 "firstViewMs": tracked.settled_ms, "exactMs": tracked.exact_ms,
+                "exactRequest": tracked.exact_request,
                 "settleAskedMs": tracked.settle_asked_ms, "settleQueryMs": tracked.settle_query_ms,
                 "error": tracked.error, "queries": tracked.queries, "firstAskedMs": tracked.first_asked_ms,
                 "inFlightSinceMs": tracked.in_flight.as_ref().map(|asked| asked.at_ms),

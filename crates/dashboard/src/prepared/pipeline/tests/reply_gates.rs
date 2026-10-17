@@ -9,11 +9,15 @@ use serde_json::{Value, json};
 
 /// The whole prepared reply of `product` on `branch`, gate included.
 fn envelope(source: &Source, product: &str, branch: &str) -> Value {
+    envelope_params(source, product, json!({ "branchId": branch }))
+}
+
+fn envelope_params(source: &Source, product: &str, params: Value) -> Value {
     let request = crate::transport::ProductRequest {
         source_id: source.key().source_id.clone(),
         revision: source.key().revision.clone(),
         product: product.into(),
-        params: json!({ "branchId": branch }),
+        params,
     };
     let reply =
         super::super::super::query::query(source, &request, None, &AtomicBool::new(false)).unwrap();
@@ -135,6 +139,57 @@ fn pending_replies_name_the_coverage_they_wait_for() {
                 assert_eq!(pending["gate"], json!([WALK]), "branch {branch}: hourly");
             });
         }
+        clear(source);
+    });
+}
+
+#[test]
+fn roster_replies_follow_incomplete_identities_after_intelligence_completes() {
+    independent::with_test_only(&["intelligence", "identities"], || {
+        assert_eq!(gate("operatives-roster"), ["identities", "intelligence"]);
+        independent::with_test_hourly(|| {
+            assert_eq!(gate("operatives-roster"), [WALK]);
+        });
+        let replay = scenario(6, false);
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("roster-identity-gate");
+        let params = json!({ "branchId": "1", "tags": ["AAA"], "includeDeparted": false });
+        let cold = envelope_params(&source, "operatives-roster", params.clone());
+        assert_eq!(cold["gate"], json!(["identities", "intelligence"]));
+        assert_eq!(cold["data"]["preparing"], json!(["countries"]));
+        assert!(
+            cold["data"]
+                .as_object()
+                .unwrap()
+                .contains_key("selectionCoverage")
+        );
+        assert!(cold["data"]["selectionCoverage"].is_null());
+
+        // Roster values can finish before the branch-wide holder selection.
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let mut writer = store.replace(key).unwrap();
+        for (family, last_hour, complete) in
+            [("intelligence", 125, true), ("identities", 103, false)]
+        {
+            let coverage = Coverage {
+                schema: SCHEMA,
+                first_hour: 100,
+                last_hour,
+                complete,
+            };
+            writer
+                .write_at(
+                    &independent::coverage_section(family, 1),
+                    0,
+                    serde_json::to_vec(&coverage).unwrap().as_slice(),
+                )
+                .unwrap();
+        }
+        writer.commit().unwrap();
+        let pending = envelope_params(&source, "operatives-roster", params);
+        assert_eq!(pending["gate"], json!(["identities"]));
+        assert_eq!(pending["data"]["selectionCoverage"]["lastHour"], 103);
+        assert_eq!(pending["data"]["preparing"], json!(["countries"]));
         clear(source);
     });
 }

@@ -71,6 +71,38 @@ fn groups(countries: &[u32], complete: bool) -> Value {
 }
 
 #[test]
+fn production_lines_follows_its_first_view_with_the_widgets_exact_request() {
+    with_probe(|probe| {
+        let entry = readiness::widgets(readiness::WIDGETS)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == "production-lines")
+            .unwrap();
+        let mut widget = widget(entry);
+        widget.refresh(probe, &bindings()).unwrap();
+        let first = request(&widget, 0);
+        let data = json!({"approximate": [{"firstHour": 0, "lastHour": 15}]});
+        answer(probe, first, data.clone());
+        let first_view = settled(probe, &widget.slots).unwrap();
+        assert!(exact(probe, &widget.slots).is_none());
+        let follow_up = probe.tracked[first]
+            .exact_request
+            .expect("whole history follow-up");
+        assert_eq!(probe.tracked[follow_up].route, Route::Product);
+        let mut expected = probe.tracked[first].params.clone();
+        expected["exact"] = json!(true);
+        assert_eq!(probe.tracked[follow_up].params, expected);
+        answer(probe, first, data);
+        assert_eq!(probe.tracked[first].exact_request, Some(follow_up));
+        assert_eq!(probe.tracked.len(), 2, "one shared follow-up");
+        answer(probe, follow_up, json!({"approximate": []}));
+        assert_eq!(settled(probe, &widget.slots).unwrap(), first_view);
+        assert_eq!(exact(probe, &widget.slots).unwrap().1, Some(follow_up));
+        assert_eq!(probe.tracked.len(), 2, "an exact reply needs no follow-up");
+    });
+}
+
+#[test]
 fn experience_exactness_waits_for_requests_from_the_final_holder_history() {
     with_probe(|probe| {
         let entry = readiness::widgets(readiness::WIDGETS)

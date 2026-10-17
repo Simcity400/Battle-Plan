@@ -14,6 +14,7 @@ test('experience widget reads only viewport summaries and reached hours while pr
   const tag = 'opaque / country', raw = '9223372036854775807';
   const fixture = { cursor: 0, slots: [] as Slot[], effects: [] as (() => void)[], chart: undefined as TimeChartProps | undefined,
     groupError: undefined as string | undefined,
+    prefix: undefined as number | undefined,
     histories: [{tag,identities:[{slot:7,countryId:11,firstHour:0,lastHour:100}]}],
     products: [] as { product: string; active: boolean }[], queries: [] as { product: string; params: Record<string, unknown>; signal: AbortSignal }[],
     tokens: { surface: '#000', muted: '#888', lineWidth: { series: 2 }, countryColours: 'raw', categories: ['#123'] } as unknown as ChartTokens,
@@ -83,13 +84,20 @@ test('experience widget reads only viewport summaries and reached hours while pr
       assert.equal(product, 'series-summary');
       if (Number(params.to) > 100) return null;
       const width = params.width as number;
-      return { branchId: 'branch', measure: family.measure, decimals: 0, warnings: [], series: (params.tags as string[]).map(tag => { const spans = (params.within as Record<string,{firstHour:number;lastHour:number}[]>)[tag]; return ({ tag,
+      const prefix = fixture.prefix;
+      return { branchId: 'branch', measure: family.measure, decimals: 0, warnings: [],
+        ...(prefix === undefined ? {} : { coverage: {firstHour:0,lastHour:prefix,complete:false},
+          pending: [{firstHour:0,lastHour:49},{firstHour:51,lastHour:100}]
+            .map(span => ({...span,firstHour:Math.max(span.firstHour,prefix+1)})).filter(span => span.firstHour<=span.lastHour) }),
+        series: (params.tags as string[]).map(tag => { const spans = (params.within as Record<string,{firstHour:number;lastHour:number}[]>)[tag]; return ({ tag,
         summary: { from: params.from, to: params.to, width,
           runs: [{ firstHour: 0, lastHour: 49, value: Number(raw), breakBefore: true },
-            { firstHour: 51, lastHour: 100, value: Number(raw), breakBefore: true }].filter(run=>spans.some(span=>span.firstHour<=run.firstHour && run.lastHour<=span.lastHour)),
+            { firstHour: 51, lastHour: 100, value: Number(raw), breakBefore: true }]
+            .map(run => ({...run,lastHour:Math.min(run.lastHour,prefix??100)}))
+            .filter(run=>run.firstHour<=run.lastHour && spans.some(span=>span.firstHour<=run.firstHour && run.lastHour<=span.lastHour)),
           buckets: Array.from({ length: Math.floor(Number(params.to)) - Math.floor(Number(params.from)) + 1 }, (_, index) => {
             const hour = Math.floor(Number(params.from)) + index;
-            return hour === 50 || !spans.some(span=>span.firstHour<=hour&&hour<=span.lastHour) ? null : { firstHour: hour, lastHour: hour,
+            return hour > (prefix??100) || hour === 50 || !spans.some(span=>span.firstHour<=hour&&hour<=span.lastHour) ? null : { firstHour: hour, lastHour: hour,
             firstValue: Number(raw), lastValue: Number(raw), lastValueHour: hour,
             minHour: hour, minValue: Number(raw), maxHour: hour, maxValue: Number(raw),
             firstBreak: hour === 0 || hour === 51, hasBreak: false }; }) }, marks: null }); }) };
@@ -131,6 +139,25 @@ test('experience widget reads only viewport summaries and reached hours while pr
     assert.match(fixture.chart!.label,/renamed/,'the head uses the current alias');
     const aliases = new Set(fixture.queries.filter(query=>query.product==='series-state').flatMap(query=>(query.params.reads as {tag:string}[]).map(read=>JSON.parse(read.tag)[0])));
     assert.ok(aliases.has('renamed')); assert.ok(!aliases.has('unrelated'),'unrelated reuse never enters the query');
+    // Exact reached amounts remain usable while history is empty or partial.
+    Object.assign(props.widget.options!, {navy:true,air:true});
+    for (const [prefix, width, expected] of [
+      [-1, 101, [[0,50],[51,49]]], [39, 102, [[40,10],[51,49]]],
+    ] as const) {
+      fixture.prefix = prefix;
+      fixture.chart!.onSummaryView!({from:0,to:100,width}); render(); await settle();
+      assert.match(render(), /Still being prepared/);
+      assert.equal(fixture.chart!.tooltip!(90,frame,[])!.rows[0].value,formatExperience(raw,32768));
+      const bands: number[][] = [];
+      const bandContext = {save(){},restore(){},fillRect(x:number,_y:number,width:number){bands.push([x,width]);}} as unknown as CanvasRenderingContext2D;
+      fixture.chart!.layers[0].draw(bandContext,frame,fixture.tokens,{playhead:null});
+      assert.deepEqual(bands, expected, 'pending hours are banded once, excluding the recorded gap');
+    }
+    Object.assign(props.widget.options!, {navy:false,air:false});
+    fixture.prefix = undefined;
+    fixture.chart!.onSummaryView!({from:0,to:100,width:103}); render(); await settle();
+    assert.doesNotMatch(render(), /Still being prepared/);
+    assert.equal(fixture.chart!.layers.length,1,'the band disappears with exact history');
     fixture.groupError='Identity catalogue unavailable'; render();
     assert.ok(fixture.products.some(request=>request.product==='country-experience'&&request.active),'missing marker metadata does not hide independent experience');
   } finally {

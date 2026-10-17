@@ -184,12 +184,17 @@ that lane instead of waiting for another extraction.
 Subjects keep compact relation/level observations for each keyframe. Banked
 experience keeps all three banks and the read hour once per native holder at a
 block's first fresh read; measure and country selection only project it. Its
-exact state and short-window queries cache each whole block's selected observations
+exact state queries cache each whole block's selected observations
 with its supplying-read predecessor, shared by all bank measures, and clip them
 for each reached hour or moving prefix. Changing a requested hour inside an
 already held block therefore needs no new observation.
 Held first-read observations also answer long experience tails on the prepared
 lane, without scheduling keyframe workers.
+
+The widget's banked summaries draw the exact prepared prefix and name the
+remaining recorded hours pending. They read no unprepared blocks, so their
+first reply does not wait for a whole-branch first-read survey. Reached values
+continue to use their independent supplying-block observations.
 
 Capacity charges use actual vector and string capacities. On a 64-bit target a
 banked holder's compact observation has 64 inline bytes plus its fitted native

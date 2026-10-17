@@ -93,6 +93,7 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
   const data = useMemo(() => enabled && currentStates ? reachedMeasureReply(branchId!, measure, tags, currentStates) : undefined,
     [owner, enabled, currentStates]);
   return { enabled, owner, data, states: currentStates, summaries: currentSummaries, summaryByTag, onSummaryView, onNavigateHour, exactAt,
+    pending: currentSummaries?.pending,
     preparing: active && (pendingSummary?.owner === owner && pendingSummary.pending || pendingStates?.owner === owner && pendingStates.pending),
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
     keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,

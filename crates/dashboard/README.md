@@ -2223,8 +2223,10 @@ read held until the next: beyond coverage its sampler steps the experience scan
 through the hours it is given, starting afresh at an hour that does not follow
 the last, so an hour answers each bank as its last read at or before it holds
 it, dated by that read (`tail_first_read`, `state_tail_recorded`). All three banks
-share a compact cached first-read observation of each block. Exact state and
-short-window requests share cached whole-block observations of their selected
+share a compact cached first-read observation of each block for navigation.
+Banked summaries answer from the exact prepared prefix, including an empty
+prefix, with the remaining recorded hours pending; they decode no tail blocks.
+Exact state requests share cached whole-block observations of their selected
 native holders, including all banks and read hours, and clip those observations
 after coverage moves. Daily gain and
 change per day keep the coverage gate: they need every hourly interval of a day,
@@ -3658,3 +3660,7 @@ The probe retains the latest dependency replies and instantiates dependent
 requests again from them, including selections already resolved or absent.
 A widget's exact time waits for its final dependency replies and the exact
 requests built from those replies; replaced selections are no longer polled.
+Production lines follows its immutable first view with the widget's separate
+`exact: true` product request. Its first-view time belongs to the first reply;
+its exact time waits for that whole-history follow-up, independently of family
+preparation coverage.

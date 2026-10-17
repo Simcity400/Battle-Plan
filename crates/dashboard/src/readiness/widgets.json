@@ -231,12 +231,12 @@
       "kind": "experience",
       "requests": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
-        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "navy-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "air-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "navy-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "air-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
         {"product": "series-state", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "reads": "$experienceReads:0"}}
       ],
-      "note": "Prepared experience reads start once the country groups reply is present."
+      "note": "Experience summaries draw the prepared prefix with the rest pending; reached values read their supplying blocks after country groups select native holders."
     },
     {
       "kind": "factions",

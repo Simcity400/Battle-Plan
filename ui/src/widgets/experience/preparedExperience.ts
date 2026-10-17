@@ -40,6 +40,7 @@ export function usePreparedExperience(client: DashboardClient, source: Dashboard
   const summaries = useMemo(() => channels.map(channel => new Map([...channel.summaryByTag].map(([key, row]) => [key,
     data ? scaleSummary(row.summary, 1 / data.scale) : row.summary]))), [army.summaryByTag, navy.summaryByTag, air.summaryByTag, data?.scale]);
   return { ...army, enabled: !!client.preparedQuery, data, keys, within: selection.within,
+    pending: (branch: typeof BRANCHES[number]) => channels[BRANCHES.indexOf(branch)].pending ?? [],
     error: channels.find(channel => channel.error)?.error, retry: () => channels.forEach(channel => channel.retry()),
     segmentAt: (tag: string, hour: number) => states?.states.find(state => JSON.parse(state.tag)[0] === tag
       && state.experience && state.experience.firstHour <= hour && hour <= state.experience.lastHour)?.segmentFirstHour ?? null,

@@ -6,6 +6,8 @@ import { drawLine, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import LineSwatch from '../../charts/LineSwatch';
+import { PreparedKey } from '../../charts/PreparedKey';
+import { pendingLayer } from '../../charts/prepared';
 import { lineDashes, lineStyles } from '../../charts/palette';
 import { clipToSpans, extentOf, lineEndHour, runAt, stretchAt, stretchStarts } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
@@ -93,6 +95,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const playback = options.playback as PlaybackMode;
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const branches = BRANCHES.filter(branch => options[branch] === true);
+  const pending = prepared.enabled ? clipToSpans([{ firstHour: extent[0], lastHour: extent[1] }],
+    branches.flatMap(branch => prepared.pending(branch))) : [];
   const single = useMemo(() => experienceHolderCount(selectedSeries) === 1, [selectedSeries]);
   const branchStyles = useMemo(() => lineStyles(BRANCHES.map((key, preferred) => ({ key, preferred })), tokens.categories), [tokens.categories]);
   const tipScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries, extent]);
@@ -224,17 +228,18 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     {!single && <p className="chart-line-key">{branches.map(branch => <span key={branch}>
       <LineSwatch dash={branchDash(branch)} />{BRANCH_LABELS[branch]}
     </span>)}</p>}
-    {prepared.enabled && lines.some(line => line.parts.some(part => prepared.summary(part.country.tag, part.country.identities?.[0], line.branch)?.approximate?.length))
-      && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
+    {prepared.enabled && <PreparedKey pending={pending} approximate={lines.flatMap(line => line.parts.flatMap(part =>
+      prepared.summary(part.country.tag, part.country.identities?.[0], line.branch)?.approximate ?? []))} />}
     <div className="experience-chart">
       <TimeChart label={`Experience of ${headCountries.map(country => country.identityKnown ? country.name : 'Country name unavailable').join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays) * 24}
         hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }} fitValues={shown => shown}
-        padding={{ right: options.endLabels ? (single ? END_LABEL_ROOM : COMPARE_LABEL_ROOM) : 14 }} layers={layers} keyHours={keyHours} badges={badges}
+        padding={{ right: options.endLabels ? (single ? END_LABEL_ROOM : COMPARE_LABEL_ROOM) : 14 }}
+        layers={pending.length ? [pendingLayer(pending), ...layers] : layers} keyHours={keyHours} badges={badges}
         onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined} onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined}
         keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision}
-        active={active} revision={{ head, data, lines, viewport, labels: labels.revision, endNames }}
+        active={active} revision={{ head, data, lines, pending, viewport, labels: labels.revision, endNames }}
         onHover={hour => { if (hour === null) showTip(null); }}
         tooltip={(hour, _frame, hovered) => {
           if (hour < extent[0] || hour > extent[1]) { showTip(null); return null; }

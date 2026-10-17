@@ -34,3 +34,7 @@ operative values from the supplying block and its predecessor. First presence
 and departure are marked Still being prepared and their jump actions are
 withheld; a recorded native capture date still supplies its jump. The prepared
 reply replaces these provisional episode dates when history reaches the day.
+Country selection stays marked **Still being prepared** until the whole branch's
+identity history is complete: a later alias can add another holder of a selected
+tag. Known rows remain visible with that note. With no known rows, the widget
+shows preparation rather than claiming there are no operatives.

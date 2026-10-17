@@ -312,6 +312,11 @@ look-backs, failed checks and outcomes), each request's first-view (`firstViewMs
 gating request, the map, and the overall time, until every widget is exact or
 `--readiness-limit` seconds (default 1200) pass.
 
+The probe follows an approximate production-lines reply with the widget's
+separate `exact: true` product request. The first request keeps its first-view
+time and names the follow-up as `exactRequest`; the widget's exact time waits
+for that whole-history request, independently of preparation coverage.
+
 The CPU snapshot at `allReady` records the first-view milestone. The final snapshot
 records the end of the exactness probe. With `BATTLE_PLAN_READINESS_CPU_UNTIL_PREPARED`
 set, the probe also waits for preparation to end before its final snapshot.

@@ -1,6 +1,7 @@
 import { isPreparationExtent } from '../../dashboard/preparedPrefix.ts';
+import { isOrderedSpans } from '../../charts/series.ts';
 import type { PreparedCoverage } from '../../shell/preparation/contract';
-import type { BalanceDrop, FixedRun, MeasureReply, ExperienceRead } from '../../generated/dashboard';
+import type { BalanceDrop, FixedRun, MeasureReply, ExperienceRead, HourSpan } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { MarkSummary } from '../../charts/markSummary';
 import { isChartSummary } from '../../charts/chartSummary.ts';
@@ -31,6 +32,7 @@ export interface MeasureStates {
 }
 export interface MeasureSummaries {
   coverage?: PreparedCoverage;
+  pending?: readonly HourSpan[];
   branchId: string;
   measure: string;
   decimals: number;
@@ -83,6 +85,7 @@ export function validateMeasureStates(value: unknown): MeasureStates {
 
 export function validateMeasureSummaries(value: unknown): MeasureSummaries {
   if (!object(value) || !validCoverage(value) || typeof value.branchId !== 'string' || !measure(value.measure) || value.decimals !== decimals(value.measure)
+    || value.pending !== undefined && !isOrderedSpans(value.pending)
     || !warnings(value.warnings) || !Array.isArray(value.series) || !value.series.every(series => {
       if (!object(series) || typeof series.tag !== 'string' || !isChartSummary(series.summary)) return false;
       const summary = series.summary;

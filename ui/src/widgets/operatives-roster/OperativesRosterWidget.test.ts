@@ -76,6 +76,28 @@ test('registered roster identifies multiple native owners selected by one reused
     assert.match(compared, /src="flag-Y-at-20"/);
     assert.equal((compared.match(/class="art-fallback"/g) ?? []).length, 2);
 
+    // A provisional holder selection shows known rows while its inventory grows.
+    const provisional = { ...data, preparing: ['countries'],
+      preparedCoverage: {firstHour:0,lastHour:9,complete:false}, pending:[{firstHour:10,lastHour:20}] };
+    state.data = provisional;
+    const partial = render();
+    assert.match(partial, /Operative X/);
+    assert.match(partial, /Operative Y/);
+    assert.match(partial, /This roster is still being prepared/);
+    // Identity selection can still be pending when numeric coverage reaches the day.
+    const reached = {...provisional,preparedCoverage:{firstHour:0,lastHour:20,complete:false},pending:[]};
+    state.data = reached;
+    assert.match(render(), /Operative X/);
+    assert.match(render(), /This roster is still being prepared/);
+    const noneKnown = {...reached,countries:data.countries.map(country => ({...country,operatives:[]}))};
+    state.data = noneKnown;
+    assert.match(render(), /This roster is still being prepared/);
+    assert.doesNotMatch(render(), /No operatives in the selected roster/);
+    const completeEmpty = {...data,countries:noneKnown.countries};
+    state.data = completeEmpty;
+    assert.match(render(), /No operatives in the selected roster/);
+    state.data = data;
+
     // Two aliases of one native owner must not manufacture a comparison.
     state.groups = { ...groups, countryIdentities: groups.countryIdentities.map(history => ({ ...history,
       identities: [{ firstHour: 0, lastHour: 20, slot: 1, countryId: 7 }] })) };
