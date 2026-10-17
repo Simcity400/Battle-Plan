@@ -101,7 +101,7 @@ Inspection establishes no save agreement. Set `$oracleHour`/`$branchId` to the r
 
    This asks the next hourly sample to read every scheduled table; it sends nothing to the game. A keyframe re-encodes held rows and is not a full refresh.
 3. Set the intended game speed before making a new text save through the game UI while paused at `H`. Hold speed and all other state unchanged through the supplying callback; pause separately. If any setting or command changes after the save, repeat the save and refresh request. Match the instant: a later same-hour save can differ, and allocation counters do not prove unchanged state.
-4. Step exactly one game hour, pause and wait for the collector to post `H` at its end-of-hour boundary. Detach and wait for finalization. Retain the session's `status.json` and `completed.json`.
+4. Let the game advance until the collector posts `H` at its end-of-hour boundary. Any number of hours may pass after the save. The oracle compares recorded hour `H` with the save made while paused at `H`. Detach and wait for finalization. Retain the session's `status.json` and `completed.json`.
 5. Inspect the replay. Set `$branchId` to its actual branch, `$oracleHour` to `H`, `$saveFile` to the fresh save and `$gameDirectory` to the matching installation. Run the offline oracle:
 
    ```powershell
@@ -113,7 +113,7 @@ Inspection establishes no save agreement. Set `$oracleHour`/`$branchId` to the r
 
 ### Load check
 
-With your recorder attached, load through the game menu. Pause at the load hour, make a **new** text save, step one hour, detach and compare on the new `LoadSignal` branch. Loading reruns weather, so the loaded file cannot substitute. Retain each event family's first-interval coverage verdict; a full refresh cannot supply events from before observation began. Use a fully observed subsequent hour with a requested refresh and a new matched save for the complete check.
+With your recorder attached, load through the game menu. Pause at the load hour `H` and make a **new** text save. Let the game advance until the collector posts `H` at its end-of-hour boundary. Any number of hours may pass after the save. Detach and compare recorded hour `H` with that save on the new `LoadSignal` branch. Loading reruns weather, so the loaded file cannot substitute. Retain each event family's first-interval coverage verdict; a full refresh cannot supply events from before observation began. Use a fully observed subsequent hour with a requested refresh and a new matched save for the complete check.
 
 ### Comparison boundaries
 
