@@ -19,6 +19,13 @@ at the crates that own it ([dashboard-base](../dashboard-base/README.md),
 their old `dashboard::products::` paths, registers them, and prepares and
 queries them in its pipeline.
 
+Casualty-only war observations reuse the normalized relation topology and
+its counter keys in native relation order. A new join rebuilds those keys;
+block folds invalidate the extract's local numbering. The casualty scan
+likewise retains its supplying-pair set until its joined lifetime keys
+change, including across a non-read hour. Hourly counter, unknown-loss and
+coverage steps still run with their original supplying evidence.
+
 `cargo test -p dashboard-wars` builds and runs only these products' tests. The
 `test-support` feature compiles their test oracles, instrumentation and the
 casualty fixtures (`war_casualties::test_fixtures`) for the dashboard's tests.

@@ -19,6 +19,14 @@ at the crates that own it (dashboard-base, dashboard-text and dashboard-core). T
 `dashboard::products::<name>`, registers them, and prepares and queries them in
 its pipeline. The crate implements `ReplyWarnings` for its four replies.
 
+Air and navy preparation pass exact recorded row deltas to their native
+censuses. A changed wing revisits its owner, effective owner and plane count;
+a changed ship revisits its task force, strength and class. Other changed
+fields do not recount an existing unit. Equipment and model deltas include
+deletions; snapshots, gaps and changed joins or naming evidence rebuild the
+census. Air equipment spellings hold until that rebuild. These transient
+caches do not change the saved series or continuations.
+
 `cargo test -p dashboard-forces` builds and runs only these products' tests.
 The `test-support` feature compiles the army's synthetic frame and the force
 families' synthetic recording and prepared store for the dashboard's pipeline

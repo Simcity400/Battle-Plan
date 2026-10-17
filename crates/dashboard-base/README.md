@@ -229,7 +229,10 @@ and modifier definition (packed together whenever either changes), the
 appearance fields a holder is named by, and the civil-war lists, enemy
 vectors, war operands and owned state counts a new holding's naming reads.
 Kept frames hold countries, characters and country counters reduced to those
-fields. Each hour read is observed as hourly preparation observes it; the
+fields. A reduced table is built only when its source view changes; carried
+views reuse the reduction with the current supplying date. Country reductions
+copy their keys directly without an intermediate key catalogue.
+Each hour read is observed as hourly preparation observes it; the
 hours between visit no holder, so they advance the frontier at once, keep an
 hour without its inputs unobserved and date missing character-template
 refusals at their last hour. One `idea-history-{branch}` range holds its

@@ -718,6 +718,7 @@ impl Follow {
             relation_keys,
             endpoints,
             supplying_pairs,
+            supplying_keys_current,
             pending_relations,
             name_views,
             ..
@@ -754,6 +755,7 @@ impl Follow {
                 .map(|key| carried_key(&self.countries, key).0)
                 .collect()
         });
+        carried.supplying_keys_current = supplying_keys_current;
         carried.pending_relations = pending_relations;
         carried.name_views = name_views;
         carried.changed_tags.clear();

@@ -34,6 +34,12 @@ pub struct Observer {
     pub(super) frame: Option<DecodedFrame>,
     #[serde(skip)]
     pub(super) inputs: Option<Hour>,
+    /// Counter keys and endpoint order of the current native relation join.
+    #[serde(skip)]
+    pub(super) counter_keys: Vec<(u64, bool)>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) counter_key_builds: usize,
     pub(super) next_capitulation: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
@@ -122,6 +128,11 @@ impl Observer {
                     return old.tables[index].clone();
                 }
                 if table == TableId::WarRelations {
+                    if let Some(old) = &self.frame
+                        && same_relation_structure(&old.tables[index], &frame.tables[index])
+                    {
+                        return old.tables[index].clone();
+                    }
                     let mut view = frame.tables[index].clone();
                     let rows = match &mut *view {
                         TableView::Complete(rows) | TableView::Truncated { rows, .. } => Some(rows),
@@ -256,6 +267,33 @@ impl Observer {
             self.frame = Some(current);
             return Ok(());
         }
+        let refresh = same_structure
+            && self
+                .inputs
+                .as_mut()
+                .is_some_and(|inputs| inputs.refresh_losses(frame));
+        if refresh
+            && let Some(inputs) = &self.inputs
+            && self.counter_keys.len() == inputs.relation_order.len()
+        {
+            for (&pair, &(index, reversed)) in inputs.relation_order.iter().zip(&self.counter_keys)
+            {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += 1;
+                }
+                let row = &inputs.world.relations[&pair];
+                let raw = [
+                    row.first_casualties,
+                    row.first_unknown_casualties,
+                    row.second_casualties,
+                    row.second_unknown_casualties,
+                ];
+                observe_counters(&mut self.batch, index, raw, reversed, frame.hour, false);
+            }
+            self.frame = Some(current);
+            return Ok(());
+        }
         let previous: std::collections::BTreeSet<_> = match &self.inputs {
             Some(inputs) => inputs
                 .world
@@ -283,11 +321,6 @@ impl Observer {
         };
         let mut present = std::collections::BTreeSet::new();
         // Canonical endpoint identity, not raw references or a selected viewpoint.
-        let refresh = same_structure
-            && self
-                .inputs
-                .as_mut()
-                .is_some_and(|inputs| inputs.refresh_losses(frame));
         if !refresh {
             self.inputs = Hour::read(
                 frame,
@@ -299,6 +332,7 @@ impl Observer {
             )
             .ok();
         }
+        self.counter_keys.clear();
         if let Some(inputs) = &self.inputs {
             // New lifetimes are numbered in recorded row order: the joined
             // map's hash order differs between processes.
@@ -317,6 +351,10 @@ impl Observer {
                     row.start_hour,
                 );
                 let name = serde_json::to_string(&identity)?;
+                #[cfg(test)]
+                {
+                    self.counter_key_builds += 1;
+                }
                 let next = self.indices.len() as u64;
                 let index = *self.indices.entry(name).or_insert_with(|| {
                     self.first_reads.push(frame.hour);
@@ -329,25 +367,16 @@ impl Observer {
                     row.second_casualties,
                     row.second_unknown_casualties,
                 ];
-                let order = if inputs.identities[&row.first_country] == identity.first {
-                    [0, 1, 2, 3]
-                } else {
-                    [2, 3, 0, 1]
-                };
-                for (field, raw) in order.into_iter().map(|field| raw[field]).enumerate() {
-                    let key = 1 + index * 4 + field as u64;
-                    if gap
-                        || !previous.contains(&index)
-                        || self
-                            .batch
-                            .state(key)
-                            .and_then(|state| state.last)
-                            .is_none_or(|run| run.value != i128::from(raw))
-                    {
-                        self.batch
-                            .observe(key, frame.hour, Some(i128::from(raw)), false);
-                    }
-                }
+                let reversed = inputs.identities[&row.first_country] != identity.first;
+                self.counter_keys.push((index, reversed));
+                observe_counters(
+                    &mut self.batch,
+                    index,
+                    raw,
+                    reversed,
+                    frame.hour,
+                    gap || !previous.contains(&index),
+                );
             }
         }
         for index in previous.difference(&present) {
@@ -421,6 +450,69 @@ impl Observer {
         }
         series::write_catalogue(writer, "wars", branch, &self.indices, self)
     }
+}
+
+/// Observe a relation's four counters in canonical endpoint order.
+fn observe_counters(
+    batch: &mut Accumulator,
+    index: u64,
+    raw: [i64; 4],
+    reversed: bool,
+    hour: i32,
+    force: bool,
+) {
+    let order = if reversed { [2, 3, 0, 1] } else { [0, 1, 2, 3] };
+    for (field, raw) in order.into_iter().map(|field| raw[field]).enumerate() {
+        let key = 1 + index * 4 + field as u64;
+        if force
+            || batch
+                .state(key)
+                .and_then(|state| state.last)
+                .is_none_or(|run| run.value != i128::from(raw))
+        {
+            batch.observe(key, hour, Some(i128::from(raw)), false);
+        }
+    }
+}
+
+/// Equality after removing the casualty counters, without copying the rows.
+/// Truncated evidence still compares its missing count.
+fn same_relation_structure(a: &SharedView, b: &SharedView) -> bool {
+    let (a, b) = match (&**a, &**b) {
+        (TableView::Complete(a), TableView::Complete(b)) => (a, b),
+        (
+            TableView::Truncated {
+                rows: a,
+                missing: am,
+            },
+            TableView::Truncated {
+                rows: b,
+                missing: bm,
+            },
+        ) if am == bm => (a, b),
+        _ => return false,
+    };
+    let (rows::TableRows::WarRelations(a), rows::TableRows::WarRelations(b)) = (a, b) else {
+        return false;
+    };
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            (
+                a.first_country,
+                a.second_country,
+                a.start_hour,
+                a.end_hour,
+                a.cancel,
+                a.first_was_instigator,
+            ) == (
+                b.first_country,
+                b.second_country,
+                b.start_hour,
+                b.end_hour,
+                b.cancel,
+                b.first_was_instigator,
+            )
+        })
 }
 
 /// Whether two views of an input `table` agree on every field the observer

@@ -1,4 +1,5 @@
 use super::*;
+use dashboard_base::prepared::frame_changes::field_mask;
 use dashboard_base::products::{
     country_history::observe_identity,
     force_census::{Countries, changed_ids},
@@ -313,13 +314,23 @@ impl Census {
         let evidence_changed = self.models_complete != Some(models.is_some());
         self.models_complete = Some(models.is_some());
         let mut ids = Vec::new();
+        static FIELDS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let fields = *FIELDS
+            .get_or_init(|| field_mask(TableId::Ships, &["task_force", "strength", "class_id"]));
         let sparse = self.ready
             && !owners_changed
             && !names_changed
             && !evidence_changed
-            && changed_ids(&frame.tables[TableId::Ships.index()], 0, &mut ids)
+            && changed_ids(&frame.tables[TableId::Ships.index()], 0, &mut ids, |row| {
+                row.mask & fields != 0 || !self.ships.contains_key(&(row.key as u64))
+            })
             && (models.is_none()
-                || changed_ids(&frame.tables[TableId::ShipModels.index()], 0, &mut ids));
+                || changed_ids(
+                    &frame.tables[TableId::ShipModels.index()],
+                    0,
+                    &mut ids,
+                    |_| true,
+                ));
         let models = models.unwrap_or_default();
         // Maximum strength clamps the model word to 100 (fixed5).
         if sparse {

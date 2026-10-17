@@ -110,8 +110,10 @@ counters, the rest of the block is observed hour by hour.
 The shared frame fact guards native relation normalisation and semantic input
 comparisons. Unchanged hours advance the accumulator frontier; balance-only
 country changes preserve resolved operands. Changed casualties refresh the held
-native join and observe only changed, new or removed counters. Naming-only
-changes publish their event without revisiting unchanged relation counters. A stored future
+native join and observe only changed, new or removed counters. Casualty-only changes compare
+topology without copying and zeroing the relation rows. The four counters
+reuse each relation's key and canonical endpoint order until the join changes.
+Naming-only changes publish their event without revisiting unchanged relation counters. A stored future
 capitulation date still becomes usable when the accepted clock reaches it.
 
 A query applies its viewpoint or LocalPlayer through the same native observation,

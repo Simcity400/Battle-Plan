@@ -6,7 +6,7 @@ use crate::{
 };
 use replay::{
     frame::{DecodedFrame, TableUpdate, ViewIdentity},
-    rows::{TableId, tables},
+    rows::{DeltaRow, TableId, tables},
 };
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -122,7 +122,13 @@ impl Countries {
 
 /// Only use sparse keys after complete reconstruction. Snapshots and missing
 /// evidence require a full rebuild; deltas include removals as well as changes.
-pub fn changed_ids(update: &TableUpdate, shift: u32, ids: &mut Vec<u64>) -> bool {
+/// `keep` selects changed fields; it must also keep every newly inserted row.
+pub fn changed_ids(
+    update: &TableUpdate,
+    shift: u32,
+    ids: &mut Vec<u64>,
+    keep: impl Fn(&DeltaRow) -> bool,
+) -> bool {
     match update {
         TableUpdate::Unchanged { .. } => true,
         TableUpdate::Delta {
@@ -130,6 +136,7 @@ pub fn changed_ids(update: &TableUpdate, shift: u32, ids: &mut Vec<u64>) -> bool
         } => {
             let mut changed = changed
                 .iter()
+                .filter(|row| keep(row))
                 .map(|row| (row.key >> shift) as u64)
                 .peekable();
             let mut deleted = deleted.iter().map(|key| (key >> shift) as u64).peekable();

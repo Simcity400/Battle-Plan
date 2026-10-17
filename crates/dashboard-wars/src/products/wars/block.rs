@@ -250,6 +250,7 @@ impl Extract for BlockExtract {
             .add(observer.indices.keys().map(String::capacity).sum())
             .heap(&observer.first_reads)
             .heap(&observer.recorded)
+            .heap(&observer.counter_keys)
             .heap(&observer.inputs);
         if let Some(first) = &self.first {
             held.frame(&first.frame).changes(&first.changes);
@@ -511,6 +512,8 @@ fn carry(
         carried.hour = hour;
     }
     observer.inputs = inputs;
+    // The extract's counter numbers are local to its block.
+    observer.counter_keys.clear();
     observer.next_capitulation = next_capitulation;
     if let Some(walk) = published {
         for Step {

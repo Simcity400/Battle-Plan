@@ -13,6 +13,45 @@ fn params(count: u32) -> CasualtyParams {
 }
 
 #[test]
+fn supplying_pair_keys_hold_through_counter_changes_and_rebuild_at_a_new_lifetime() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::rows::TableRows;
+    let replay = research_replay(vec![casualty_frame(100, Some((10, 3)), 0)]);
+    let mut builder = ScanFrames::new(&replay, 1);
+    let mut oracle = ScanFrames::new(&replay, 1);
+    let mut tracker = FrameChangeTracker::new();
+    let mut held = std::ptr::null();
+    for hour in 100..106 {
+        let mut frame = casualty_frame(hour, Some((10 + i64::from(hour - 100), 3)), 0);
+        if hour >= 103
+            && let TableView::Complete(TableRows::WarRelations(rows)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            rows[0].start_hour = 101;
+        }
+        let changes = tracker.observe(&frame, replay.format);
+        builder.frame_changes(&frame, &replay, &changes);
+        // A builder with its join rebuilt follows the same hourly proof.
+        oracle.supplying_keys_current = false;
+        oracle.frame_changes(&frame, &replay, &changes);
+        let current = builder.supplying_pairs.as_ref().unwrap().first().unwrap() as *const PairKey;
+        if hour == 101 || hour == 102 || hour == 104 || hour == 105 {
+            assert_eq!(
+                current, held,
+                "unchanged supplying keys were allocated again"
+            );
+        }
+        held = current;
+        assert_eq!(
+            serde_json::to_vec(&builder).unwrap(),
+            serde_json::to_vec(&oracle).unwrap()
+        );
+        assert_eq!(builder.changed_pairs, oracle.changed_pairs);
+        assert_eq!(builder.changed_tags, oracle.changed_tags);
+    }
+}
+
+#[test]
 fn shared_country_run_walk_matches_point_reads_at_gaps_and_native_endpoints() {
     let wide = i128::from(i64::MAX) * 2;
     let mut track = Track::default();

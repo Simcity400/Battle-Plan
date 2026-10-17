@@ -1,4 +1,5 @@
 use super::*;
+use dashboard_base::prepared::frame_changes::field_mask;
 use dashboard_base::products::{
     country_history::{Identity, observe_identity},
     equipment::VariantCatalogue,
@@ -400,6 +401,7 @@ struct WingCounts {
 #[derive(Default)]
 struct Census {
     wings: HashMap<u64, WingCounts>,
+    tokens: HashMap<u64, String>,
     totals: [HashMap<u32, CountryCounts>; 2],
     unattributed: [i64; 2],
     notes: [i64; 3],
@@ -505,14 +507,29 @@ impl Census {
         let evidence_changed = self.equipment_complete != Some(entries.is_some());
         self.equipment_complete = Some(entries.is_some());
         let mut ids = Vec::new();
+        static FIELDS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let fields = *FIELDS.get_or_init(|| {
+            field_mask(TableId::AirWings, &["owner", "country_override", "planes"])
+        });
         let sparse = self.ready
             && !rebuild
             && !evidence_changed
-            && changed_ids(&frame.tables[TableId::AirWings.index()], 0, &mut ids)
+            && changed_ids(
+                &frame.tables[TableId::AirWings.index()],
+                0,
+                &mut ids,
+                |row| row.mask & fields != 0 || !self.wings.contains_key(&(row.key as u64)),
+            )
             && (entries.is_none()
-                || changed_ids(&frame.tables[TableId::WingEquipment.index()], 32, &mut ids));
+                || changed_ids(
+                    &frame.tables[TableId::WingEquipment.index()],
+                    32,
+                    &mut ids,
+                    |_| true,
+                ));
         if !sparse {
             self.wings.clear();
+            self.tokens.clear();
             // A full read can remove a country's last wing without a delta key.
             self.dirty
                 .extend(self.totals.iter().flat_map(|totals| totals.keys()).copied());
@@ -522,8 +539,7 @@ impl Census {
             ids.clear();
             ids.extend(wings.iter().map(|wing| wing.id));
         }
-        // One token allocation per changed design, not per equipment row.
-        let mut tokens = HashMap::new();
+        // Spellings hold with the census's variant names, including refusals.
         let mut single_designs = HashMap::new();
         let dense = !sparse || ids.len() >= wings.len();
         let mut wing_index = 0;
@@ -570,7 +586,7 @@ impl Census {
                 &rows[first..last]
             });
             for entry in equipment.into_iter().flatten() {
-                tokens.entry(entry.variant).or_insert_with(|| {
+                self.tokens.entry(entry.variant).or_insert_with(|| {
                     let token = variants
                         .current(entry.variant)
                         .map_or("", |raw| raw.token.as_str());
@@ -590,14 +606,19 @@ impl Census {
                 match single_designs.entry((wing.planes, entry.variant)) {
                     std::collections::hash_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
                     std::collections::hash_map::Entry::Vacant(entry) => {
-                        let counts =
-                            shared_counts(wing_counts(wing, equipment, &tokens, &mut notes)?, pool);
+                        let counts = shared_counts(
+                            wing_counts(wing, equipment, &self.tokens, &mut notes)?,
+                            pool,
+                        );
                         entry.insert(Arc::clone(&counts));
                         counts
                     }
                 }
             } else {
-                shared_counts(wing_counts(wing, equipment, &tokens, &mut notes)?, pool)
+                shared_counts(
+                    wing_counts(wing, equipment, &self.tokens, &mut notes)?,
+                    pool,
+                )
             };
             // The effective country uses a signed-positive override.
             let effective = if wing.country_override > 0 {
@@ -1443,6 +1464,7 @@ mod held {
         fn held(&self, bytes: &mut HeldBytes) {
             bytes
                 .heap(&self.wings)
+                .heap(&self.tokens)
                 .heap(&self.totals)
                 .heap(&self.dirty);
         }

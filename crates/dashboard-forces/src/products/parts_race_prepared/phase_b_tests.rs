@@ -230,3 +230,137 @@ fn phase_b_air_deferred_runs_match_native_across_checkpoints_resume_append_gaps_
 fn phase_b_navy_deferred_runs_match_native_across_checkpoints_resume_append_gaps_and_aliases() {
     deferred_parity::<crate::products::navy::prepared::Navy>();
 }
+
+fn recorded_deltas<F: Family>() {
+    use replay::frame::FrameEncoder;
+    use std::sync::Arc;
+    let mut scan = F::Scan::default();
+    let mut oracle = F::Scan::default();
+    let mut encoder = FrameEncoder::default();
+    let mut tracker = FrameChangeTracker::new();
+    let flag = AtomicBool::new(false);
+    let mut next = frame(100, 32);
+    for hour in 100..108 {
+        next.hour = hour;
+        let table = if F::NAME == "air" {
+            TableId::AirWings
+        } else {
+            TableId::Ships
+        };
+        match hour {
+            101 | 105 => match &mut *next.tables[table.index()] {
+                TableView::Complete(TableRows::AirWings(rows)) => rows[0].planes += 1,
+                TableView::Complete(TableRows::Ships(rows)) => rows[0].strength += 1,
+                _ => unreachable!(),
+            },
+            102 => match &mut *next.tables[table.index()] {
+                TableView::Complete(TableRows::AirWings(rows)) => rows[0].mission_mask = 1,
+                TableView::Complete(TableRows::Ships(rows)) => rows[0].organisation += 1,
+                _ => unreachable!(),
+            },
+            103 => match &mut *next.tables[table.index()] {
+                TableView::Complete(TableRows::AirWings(rows)) => {
+                    rows.remove(0);
+                }
+                TableView::Complete(TableRows::Ships(rows)) => {
+                    rows.remove(0);
+                }
+                _ => unreachable!(),
+            },
+            104 => match &mut *next.tables[table.index()] {
+                TableView::Complete(TableRows::AirWings(rows)) => {
+                    let mut added = rows[0].clone();
+                    added.id = 1000;
+                    rows.push(added);
+                }
+                TableView::Complete(TableRows::Ships(rows)) => {
+                    let mut added = rows[0].clone();
+                    added.id = 1000;
+                    rows.push(added);
+                }
+                _ => unreachable!(),
+            },
+            106 => {
+                let companion = if F::NAME == "air" {
+                    TableId::WingEquipment
+                } else {
+                    TableId::ShipModels
+                };
+                *next.tables[companion.index()] = TableView::Unavailable {
+                    reason: "synthetic missing companion".into(),
+                };
+            }
+            107 => {
+                next.hour += 1;
+                let companion = if F::NAME == "air" {
+                    TableId::WingEquipment
+                } else {
+                    TableId::ShipModels
+                };
+                next.tables[companion.index()] = frame(100, 32).tables[companion.index()].clone();
+            }
+            _ => {}
+        }
+        let raw = Arc::new(
+            encoder
+                .encode(next.clone(), hour == 100 || hour == 105)
+                .unwrap(),
+        );
+        let changes = tracker.observe_updates(&next, Arc::clone(&raw), FormatVersion::CURRENT);
+        let before = F::work(&scan).history_visits;
+        step_rows::<F>(
+            &mut scan,
+            hour != 100,
+            &next,
+            FormatVersion::CURRENT,
+            &flag,
+            &changes,
+        )
+        .unwrap();
+        F::step(
+            &mut oracle,
+            &updates(&next, F::TABLES),
+            &next,
+            FormatVersion::CURRENT,
+            &flag,
+            None,
+        )
+        .unwrap();
+        if hour == 101 {
+            let adapted = updates_changed(&next, F::TABLES, Some(&changes), Some(100));
+            assert!(
+                matches!(adapted, std::borrow::Cow::Borrowed(_)),
+                "row deltas became snapshots"
+            );
+            assert_eq!(
+                F::work(&scan).history_visits - before,
+                1,
+                "one changed owner revisited the country census"
+            );
+        }
+        if hour == 102 {
+            assert_eq!(
+                F::work(&scan).history_visits,
+                before,
+                "unread fields revisited the census"
+            );
+        }
+        F::finish_hour(&mut scan);
+        F::finish_hour(&mut oracle);
+        for index in 0..4 {
+            observer_tests::assert_reply_parity(&F::runs(&scan, index), &F::runs(&oracle, index))
+                .unwrap();
+        }
+        observer_tests::assert_reply_parity(&F::metadata(&scan), &F::metadata(&oracle)).unwrap();
+    }
+}
+
+#[test]
+fn air_preparation_keeps_sparse_deltas_and_ignores_mission_only_changes() {
+    recorded_deltas::<crate::products::air_force::prepared::Air>();
+}
+
+#[test]
+fn navy_preparation_keeps_sparse_deltas_and_ignores_organisation_only_changes() {
+    recorded_deltas::<crate::products::navy::prepared::Navy>();
+}

@@ -2292,6 +2292,66 @@ fn prepared_wars_name_change_keeps_unchanged_relation_keys_flat_at_5000_countrie
     );
 }
 
+#[test]
+fn casualty_only_war_hours_reuse_counter_keys_and_publish_identical_bytes() {
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::tests::{Fixture, assert_payloads_equal},
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut cached = prepared::Observer::default();
+    let mut rebuilt = prepared::Observer::default();
+    let mut tracker = FrameChangeTracker::new();
+    let initial = test_fixtures::recorded(100);
+    for hour in 100..106 {
+        let mut frame = initial.clone();
+        set_recorded_hour(&mut frame, if hour == 105 { 107 } else { hour });
+        if let TableView::Complete(rows::TableRows::WarRelations(rows)) =
+            &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            rows[0].first_casualties -= i64::from(hour - 100);
+            rows[0].second_unknown_casualties += i64::from(hour - 100);
+            if hour >= 103 {
+                rows[0].start_hour = 101;
+            }
+        }
+        let changes = tracker.observe(&frame, format);
+        let builds = cached.counter_key_builds;
+        cached.observe_changed(&frame, &changes).unwrap();
+        rebuilt.counter_keys.clear();
+        rebuilt.observe_changed(&frame, &changes).unwrap();
+        if hour == 101 || hour == 102 || hour == 104 {
+            assert_eq!(
+                cached.counter_key_builds, builds,
+                "casualty counters rebuilt lifetime keys"
+            );
+        }
+        if hour == 103 {
+            assert!(
+                cached.counter_key_builds > builds,
+                "a new lifetime retained old counter keys"
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&cached).unwrap(),
+            serde_json::to_vec(&rebuilt).unwrap()
+        );
+    }
+    let fixtures = [Fixture::new(), Fixture::new()];
+    for (state, fixture) in [&mut cached, &mut rebuilt].into_iter().zip(&fixtures) {
+        let mut writer = fixture.writer();
+        state
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    assert_payloads_equal(
+        &fixtures[0].payloads(),
+        &fixtures[1].payloads(),
+        "cached vs rebuilt war counter keys",
+    );
+}
+
 /// Fresh observers of one recording publish one catalogue: relation lifetimes
 /// are numbered in recorded WarRelations order, never the joined map's hash order.
 #[test]

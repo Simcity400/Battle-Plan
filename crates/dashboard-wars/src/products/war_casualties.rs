@@ -1962,6 +1962,8 @@ struct ScanFrames {
     #[serde(skip)]
     supplying_pairs: Option<BTreeSet<PairKey>>,
     #[serde(skip)]
+    supplying_keys_current: bool,
+    #[serde(skip)]
     changed_pairs: BTreeSet<PairKey>,
     #[serde(skip)]
     changed_endpoints: BTreeSet<usize>,
@@ -2012,6 +2014,7 @@ impl ScanFrames {
             relation_keys: Vec::new(),
             current_tags: Vec::new(),
             supplying_pairs: Some(BTreeSet::new()),
+            supplying_keys_current: true,
             changed_pairs: BTreeSet::new(),
             changed_endpoints: BTreeSet::new(),
             changed_tags: BTreeSet::new(),
@@ -2260,6 +2263,9 @@ impl ScanFrames {
                         .zip(relations)
                         .any(|(key, row)| *key != relation_key(row))))
         {
+            // Keep the previous supplying set until the next processed read,
+            // including when the new keys first appear on a non-read hour.
+            self.supplying_keys_current = false;
             let endpoint =
                 |raw| link_slot(links, raw).and_then(|slot| self.by_slot.get(&slot).copied());
             self.seen.clear();
@@ -2344,32 +2350,48 @@ impl ScanFrames {
         }
         let mut retired = BTreeSet::new();
         if process {
-            let mut supplying = BTreeSet::new();
-            for (row, &(first, second)) in relations.iter().zip(&self.endpoints) {
+            for &(first, second) in &self.endpoints {
                 #[cfg(any(test, feature = "test-support"))]
                 {
                     self.work.row_visits += 1;
                 }
-                supplying.insert((first.min(second), first.max(second), row.start_hour));
                 for index in [first, second] {
-                    if let Some(tag) = &self.current_tags[index] {
+                    if let Some(tag) = &self.current_tags[index]
+                        && !self.changed_tags.contains(tag)
+                    {
                         self.changed_tags.insert(tag.clone());
                     }
                 }
             }
-            self.changed_pairs.extend(supplying.iter().copied());
-            let generation = self.scan.generation;
-            let previous = self.supplying_pairs.take().unwrap_or_else(|| {
-                self.scan
-                    .pairs
+            if !self.supplying_keys_current || self.supplying_pairs.is_none() {
+                let supplying: BTreeSet<_> = relations
                     .iter()
-                    .filter(|(_, pair)| pair.generation == generation)
-                    .map(|(&key, _)| key)
-                    .collect()
-            });
-            retired.extend(previous.difference(&supplying).copied());
+                    .zip(&self.endpoints)
+                    .map(|(row, &(first, second))| {
+                        (first.min(second), first.max(second), row.start_hour)
+                    })
+                    .collect();
+                let generation = self.scan.generation;
+                let previous = self.supplying_pairs.take().unwrap_or_else(|| {
+                    self.scan
+                        .pairs
+                        .iter()
+                        .filter(|(_, pair)| pair.generation == generation)
+                        .map(|(&key, _)| key)
+                        .collect()
+                });
+                retired.extend(previous.difference(&supplying).copied());
+                self.supplying_pairs = Some(supplying);
+                self.supplying_keys_current = true;
+            }
+            self.changed_pairs.extend(
+                self.supplying_pairs
+                    .as_ref()
+                    .expect("supplying relation keys")
+                    .iter()
+                    .copied(),
+            );
             self.changed_pairs.extend(retired.iter().copied());
-            self.supplying_pairs = Some(supplying);
         }
         if self.scan.gap_read.is_some() {
             self.changed_tags.extend(self.scan.active.iter().cloned());

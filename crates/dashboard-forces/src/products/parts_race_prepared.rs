@@ -20,6 +20,7 @@ use replay::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::atomic::AtomicBool,
@@ -242,14 +243,23 @@ fn mix_section<F: Family>(branch: u64, index: usize) -> String {
     }
 }
 pub(super) fn updates(frame: &DecodedFrame, tables: &[TableId]) -> Frame {
-    updates_changed(frame, tables, None, None)
+    updates_changed(frame, tables, None, None).into_owned()
 }
-pub(super) fn updates_changed(
+pub(super) fn updates_changed<'a>(
     frame: &DecodedFrame,
     tables: &[TableId],
-    changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    changes: Option<&'a dashboard_base::prepared::frame_changes::FrameChanges>,
     baseline: Option<i32>,
-) -> Frame {
+) -> Cow<'a, Frame> {
+    // The census already holds the preceding decoded rows. Keep their exact
+    // row deltas instead of turning every changed table into a snapshot.
+    if baseline.is_some()
+        && let Some(changes) = changes
+        && let Some(recorded) = changes.recorded()
+        && tables.iter().all(|&table| changes.rows(table).is_some())
+    {
+        return Cow::Borrowed(recorded);
+    }
     let mut result = Frame {
         branch: frame.branch,
         hour: frame.hour,
@@ -260,6 +270,15 @@ pub(super) fn updates_changed(
         }),
     };
     for &id in tables {
+        if baseline.is_some()
+            && let Some(changes) = changes
+            && changes.rows_changed[id.index()]
+            && changes.rows(id).is_some()
+            && let Some(recorded) = changes.recorded()
+        {
+            result.tables[id.index()] = recorded.tables[id.index()].clone();
+            continue;
+        }
         if let Some(baseline) =
             baseline.filter(|_| changes.is_some_and(|changes| !changes.rows_changed[id.index()]))
         {
@@ -285,7 +304,7 @@ pub(super) fn updates_changed(
             },
         };
     }
-    result
+    Cow::Owned(result)
 }
 
 /// Stateless point reads use the native census; preparation projects its already updated census.

@@ -146,37 +146,45 @@ impl BlockExtract {
     fn kept(&mut self, frame: &DecodedFrame) -> DecodedFrame {
         let mut kept = frame.clone();
         self.countries.countries(&mut kept);
-        let characters = frame.complete::<tables::Characters>().ok().map(|rows| {
-            rows.iter()
-                .map(|row| CharacterRow {
-                    id: row.id,
-                    name_token_id: row.name_token_id,
-                    token: row.token.clone(),
-                    template_present: row.template_present,
-                    template_tag: row.template_tag,
-                    template_file: row.template_file.clone(),
-                    template_line: row.template_line,
-                    template_generated: row.template_generated,
-                    ..Default::default()
+        self.characters.reduce(
+            &mut kept,
+            |frame| {
+                frame.complete::<tables::Characters>().ok().map(|rows| {
+                    rows.iter()
+                        .map(|row| CharacterRow {
+                            id: row.id,
+                            name_token_id: row.name_token_id,
+                            token: row.token.clone(),
+                            template_present: row.template_present,
+                            template_tag: row.template_tag,
+                            template_file: row.template_file.clone(),
+                            template_line: row.template_line,
+                            template_generated: row.template_generated,
+                            ..Default::default()
+                        })
+                        .collect()
                 })
-                .collect()
-        });
-        self.characters
-            .apply(&mut kept, characters, TableRows::Characters);
-        let counters = frame
-            .complete::<tables::CountryCounterInputs>()
-            .ok()
-            .map(|rows| {
-                rows.iter()
-                    .map(|row| CountryCounterInputRow {
-                        country: row.country,
-                        owned_state_count: row.owned_state_count,
-                        ..Default::default()
+            },
+            TableRows::Characters,
+        );
+        self.counters.reduce(
+            &mut kept,
+            |frame| {
+                frame
+                    .complete::<tables::CountryCounterInputs>()
+                    .ok()
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|row| CountryCounterInputRow {
+                                country: row.country,
+                                owned_state_count: row.owned_state_count,
+                                ..Default::default()
+                            })
+                            .collect()
                     })
-                    .collect()
-            });
-        self.counters
-            .apply(&mut kept, counters, TableRows::CountryCounterInputs);
+            },
+            TableRows::CountryCounterInputs,
+        );
         kept
     }
 }

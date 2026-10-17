@@ -5,13 +5,10 @@
 //! by the families whose extracts keep their hours this way (subjects, peace
 //! and idea history).
 
-use crate::{
-    metadata::CountryKeys,
-    prepared::frame_changes::{FrameChangeTracker, FrameChanges},
-};
+use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
 use replay::{
     container::{BlockIndex, QuietHours, Replay},
-    frame::{DecodedFrame, SharedView, TableView},
+    frame::{DecodedFrame, SharedView, TableView, ViewIdentity},
     rows::{CountryRow, TableId, TableRows, tables},
 };
 use std::{io, ops::Range, sync::Arc};
@@ -94,11 +91,40 @@ pub fn push_quiet(hours: &mut Vec<Hour>, first: i32, last: i32) {
 pub struct Reduced<R> {
     table: TableId,
     held: Option<(Vec<R>, SharedView)>,
+    source: Option<ViewIdentity>,
 }
 
 impl<R: Clone + PartialEq> Reduced<R> {
     pub fn new(table: TableId) -> Self {
-        Self { table, held: None }
+        Self {
+            table,
+            held: None,
+            source: None,
+        }
+    }
+
+    /// Reduce only a new source view. A carried view has the same rows;
+    /// its supplying date still belongs to this hour's original view.
+    pub fn reduce(
+        &mut self,
+        frame: &mut DecodedFrame,
+        rows: impl FnOnce(&DecodedFrame) -> Option<Vec<R>>,
+        wrap: impl FnOnce(Vec<R>) -> TableRows,
+    ) {
+        let index = self.table.index();
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.is(&frame.tables[index]))
+            && let Some((_, held)) = &self.held
+        {
+            frame.tables[index] = held
+                .clone()
+                .with_sampled_at(frame.tables[index].sampled_at());
+            return;
+        }
+        let rows = rows(frame);
+        self.apply(frame, rows, wrap);
     }
 
     /// Replace `frame`'s view of the table by `rows`, its reduced rows (None
@@ -113,6 +139,7 @@ impl<R: Clone + PartialEq> Reduced<R> {
             return;
         };
         let index = self.table.index();
+        self.source = Some(frame.tables[index].identity());
         let view = match &self.held {
             Some((held, view)) if *held == rows => view.clone(),
             _ => {
@@ -130,18 +157,22 @@ impl Reduced<CountryRow> {
     /// The countries as these families read them: the id, canonical slot and
     /// tag of each (`CountryKeys`).
     pub fn countries(&mut self, frame: &mut DecodedFrame) {
-        let rows = frame.complete::<tables::Countries>().ok().map(|rows| {
-            CountryKeys::read(rows)
-                .iter()
-                .map(|(id, canonical_slot, tag)| CountryRow {
-                    id,
-                    canonical_slot,
-                    tag: tag.to_vec(),
-                    ..Default::default()
+        self.reduce(
+            frame,
+            |frame| {
+                frame.complete::<tables::Countries>().ok().map(|rows| {
+                    rows.iter()
+                        .map(|row| CountryRow {
+                            id: row.id,
+                            canonical_slot: row.canonical_slot,
+                            tag: row.tag.clone(),
+                            ..Default::default()
+                        })
+                        .collect()
                 })
-                .collect()
-        });
-        self.apply(frame, rows, TableRows::Countries);
+            },
+            TableRows::Countries,
+        );
     }
 }
 
@@ -222,3 +253,6 @@ pub fn note_frames(family: &'static str, frames: usize) {
 pub fn counted(family: &str) -> (usize, usize) {
     COUNTS.with(|counts| counts.borrow().get(family).copied().unwrap_or_default())
 }
+
+#[cfg(test)]
+mod tests;

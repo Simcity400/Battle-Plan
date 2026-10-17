@@ -172,42 +172,55 @@ impl BlockExtract {
     fn kept(&mut self, frame: &DecodedFrame) -> DecodedFrame {
         let mut kept = frame.clone();
         self.countries.countries(&mut kept);
-        let states = frame.complete::<tables::States>().ok().map(|rows| {
-            rows.iter()
-                .map(|row| StateRow {
-                    id: row.id,
-                    owner: row.owner,
-                    ..Default::default()
+        self.states.reduce(
+            &mut kept,
+            |frame| {
+                frame.complete::<tables::States>().ok().map(|rows| {
+                    rows.iter()
+                        .map(|row| StateRow {
+                            id: row.id,
+                            owner: row.owner,
+                            ..Default::default()
+                        })
+                        .collect()
                 })
-                .collect()
-        });
-        self.states.apply(&mut kept, states, TableRows::States);
-        let provinces = frame.complete::<tables::Provinces>().ok().map(|rows| {
-            rows.iter()
-                .map(|row| ProvinceRow {
-                    id: row.id,
-                    state: row.state,
-                    victory_points: row.victory_points,
-                    ..Default::default()
+            },
+            TableRows::States,
+        );
+        self.provinces.reduce(
+            &mut kept,
+            |frame| {
+                frame.complete::<tables::Provinces>().ok().map(|rows| {
+                    rows.iter()
+                        .map(|row| ProvinceRow {
+                            id: row.id,
+                            state: row.state,
+                            victory_points: row.victory_points,
+                            ..Default::default()
+                        })
+                        .collect()
                 })
-                .collect()
-        });
-        self.provinces
-            .apply(&mut kept, provinces, TableRows::Provinces);
-        let counters = frame
-            .complete::<tables::CountryCounterInputs>()
-            .ok()
-            .map(|rows| {
-                rows.iter()
-                    .map(|row| CountryCounterInputRow {
-                        country: row.country,
-                        owned_state_count: row.owned_state_count,
-                        ..Default::default()
+            },
+            TableRows::Provinces,
+        );
+        self.counters.reduce(
+            &mut kept,
+            |frame| {
+                frame
+                    .complete::<tables::CountryCounterInputs>()
+                    .ok()
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|row| CountryCounterInputRow {
+                                country: row.country,
+                                owned_state_count: row.owned_state_count,
+                                ..Default::default()
+                            })
+                            .collect()
                     })
-                    .collect()
-            });
-        self.counters
-            .apply(&mut kept, counters, TableRows::CountryCounterInputs);
+            },
+            TableRows::CountryCounterInputs,
+        );
         kept
     }
 }
