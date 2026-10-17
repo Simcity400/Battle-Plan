@@ -1316,7 +1316,9 @@ fn extract_bound(
         .iter()
         .zip(&fields)
         .map(|(family, fields)| {
+            let started = ::replay::cpu::thread_cycles();
             let mut extract = family.start(format);
+            ::replay::cpu::note("extract-start", family.family.name, started);
             let follow = match fields {
                 Some(fields) => {
                     extract.read_by_changes();
@@ -1371,9 +1373,13 @@ fn extract_bound(
                                 let continues = previous.and_then(|hour| hour.checked_add(1))
                                     == Some(frame.hour);
                                 previous = Some(frame.hour);
+                                let mut rows_rebuilt = [false; replay::frame::TABLE_COUNT];
+                                for table in rebuilt {
+                                    rows_rebuilt[table.index()] = true;
+                                }
                                 let changes =
                                     FrameChanges::rebuilt(frame, format, continues, |table| {
-                                        rebuilt.contains(&table)
+                                        rows_rebuilt[table.index()]
                                     });
                                 visit(
                                     family,
@@ -1467,25 +1473,32 @@ fn extract_bound(
         }
     };
     Measured {
-        outcomes: extracts
-            .into_iter()
-            .zip(own)
-            .map(|(running, own)| {
-                // A family whose own read refused the block observes it
-                // hour by hour, as it would have.
-                let extract = running.extract.filter(|_| own);
-                let bytes = extract.as_ref().map_or(0, |extract| extract.bytes());
-                let outcome = extract
-                    .and_then(|extract| extract.finish().ok())
-                    .map_or(Outcome::Sequential, Outcome::Facts);
-                let bytes = if matches!(outcome, Outcome::Facts(_)) {
-                    bytes
-                } else {
-                    0
-                };
-                (outcome, running.took, bytes)
-            })
-            .collect(),
+        outcomes: dashboard_base::prepared::prepass::share_view_sizes(|| {
+            extracts
+                .into_iter()
+                .zip(own)
+                .zip(families)
+                .map(|((running, own), family)| {
+                    // A family whose own read refused the block observes it
+                    // hour by hour, as it would have.
+                    let extract = running.extract.filter(|_| own);
+                    let started = ::replay::cpu::thread_cycles();
+                    let bytes = extract.as_ref().map_or(0, |extract| extract.bytes());
+                    ::replay::cpu::note("extract-size", family.family.name, started);
+                    let started = ::replay::cpu::thread_cycles();
+                    let outcome = extract
+                        .and_then(|extract| extract.finish().ok())
+                        .map_or(Outcome::Sequential, Outcome::Facts);
+                    ::replay::cpu::note("extract-finish", family.family.name, started);
+                    let bytes = if matches!(outcome, Outcome::Facts(_)) {
+                        bytes
+                    } else {
+                        0
+                    };
+                    (outcome, running.took, bytes)
+                })
+                .collect()
+        }),
         read: read_time,
         reads: 1,
     }

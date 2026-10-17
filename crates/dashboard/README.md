@@ -510,8 +510,9 @@ family; a family never does. A family takes a kept block that holds its
 tables; or, while a reader is free to read its next block, waits for it; or
 reads the block itself with its own tables alone (`Replay::read_block_alone`),
 exactly as its own read alone, keeping nothing. Each kept block knows the
-tables it holds (those of the families preparing when it was read), so a
-finished family's tables are left out of later reads, and a family whose
+tables it holds (those of the families that may still read that block), so a
+finished family's tables, tables of a family already past that block and
+tables of a family currently refusing its branch are left out, and a family whose
 tables a kept block lacks reads that block alone. The pool's block tasks read
 most blocks before these families take them: a task reading a block one of
 them will take within as many blocks past its next as the budget has shares
@@ -519,7 +520,9 @@ reads their tables in the same read (`Replay::read_block_watched_keeping`) and
 deposits the block's frames before its extracts run (`prepass::Depot`), so the
 readers read only the blocks no task deposited; a task that does not deposit
 an offered block withdraws it. A deposited block's frames hold every table the
-task read, each table's updates its own read's. A task never waits for these
+task read, each table's updates its own read's. Tables kept only for these
+readers are decoded but have no reconstructed views in the task; each reader
+reconstructs its own selection. A task never waits for these
 families. A pool block's own decoded updates live only while its task reads
 it, one block per worker; only the facts its extracts keep outlive it, counted
 by their decoded bytes.
@@ -584,6 +587,17 @@ read chooses its run's reads from the content the phase binds (`Own::binds`,
 the family's declared ones). Its pool lane claims no block until the
 family's own thread has bound them, before its first block, so every block
 of the run is read with them; the family's facts say what its extract read.
+
+Shared hourly readers choose their table union from that content too:
+occupation leaves out the trigger kit when no bound law has an eligibility
+trigger. Unscoped project extracts read no country presentation tables.
+Supplying-read flags are computed once per hour and timed-table set through
+the recording's cadence groups. The block reader's rebuilt tables become an
+indexed mask, and quiet-hour columns are searched in their table order.
+After reconstruction, families sizing a block share immutable view sizes,
+while keeping independent allocation counts and byte totals. Measured runs
+also report inclusive `extract-start`, `extract-size` and `extract-finish`
+notes by family; these do not change the exclusive CPU labels.
 
 Country groups are prepared on their own. Their extract
 ([products/country_groups/prepared.rs](../dashboard-base/src/products/country_groups/prepared.rs)) reads a block by the fields the scan

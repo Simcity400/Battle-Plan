@@ -116,7 +116,51 @@ fn extract() -> BlockExtract {
         built: Vec::new(),
         deadline: None,
         frames: 0,
+        history_scans: 0,
     }
+}
+
+#[test]
+fn unscoped_project_reads_leave_out_country_presentation_tables() {
+    let selection = bound(false).unwrap();
+    for table in installed_content::country_names::TABLES {
+        assert_eq!(
+            selection.tables.contains(&table),
+            matches!(table, TableId::Countries | TableId::CountryLinks)
+        );
+    }
+    assert!(
+        bound(true).is_none(),
+        "scoped content retains its whole trigger world"
+    );
+}
+
+#[test]
+fn unchanged_history_keeps_its_completion_deadline_without_scanning_again() {
+    let mut extract = extract();
+    let mut first = frame(100, true, 2);
+    first.tables[TableId::ProjectHistory.index()] =
+        TableView::Complete(TableRows::ProjectHistory(vec![
+            replay::rows::ProjectHistoryRow {
+                owner: 1,
+                ordinal: 1,
+                date: 105,
+                prototype_reward_handle: crate::products::special_projects::COMPLETION_MARKER,
+                option_handle: crate::products::special_projects::COMPLETION_MARKER,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
+    let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+    for hour in 100..110 {
+        let mut next = first.clone();
+        next.hour = hour;
+        let changes = tracker.observe(&next, replay.format);
+        extract.observe(&replay, &next, &changes).unwrap();
+        assert_eq!(extract.deadline(), (hour < 105).then_some(105));
+    }
+    assert_eq!(extract.history_scans, 2);
 }
 
 /// How `extract` holds `frame`, which it then keeps as its last, as

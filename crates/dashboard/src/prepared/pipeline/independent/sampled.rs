@@ -1240,7 +1240,7 @@ impl<S: Sampled> Own for Entry<S> {
     }
 
     /// A family that folds reads its blocks on pre-pass workers instead.
-    fn shared_tables(&self) -> &'static [TableId] {
+    fn shared_tables(&self, _: &super::Phase<'_>) -> &'static [TableId] {
         if S::FOLDS { &[] } else { S::tables() }
     }
 

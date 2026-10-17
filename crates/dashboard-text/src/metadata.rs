@@ -718,6 +718,90 @@ pub fn slot_read(format: FormatVersion, metrics: &Metrics, table: TableId, hour:
         })
 }
 
+/// Every table's supplying-read flag, as [`slot_read`] decides it. The
+/// recording's cadence groups are made once per thread and format; one
+/// hour's read evidence is shared by consumers with the same timed tables.
+pub fn slot_reads(
+    format: FormatVersion,
+    metrics: &Metrics,
+    hour: i32,
+) -> [bool; replay::frame::TABLE_COUNT] {
+    SLOT_READS.with_borrow_mut(|held| {
+        if held.as_ref().is_none_or(|held| held.format != format) {
+            *held = Some(ReadSlots::new(format));
+        }
+        held.as_mut()
+            .expect("the recording's read slots")
+            .at(metrics, hour)
+    })
+}
+
+struct ReadSlots {
+    format: FormatVersion,
+    groups: Vec<(replay::cadence::Cadence, Vec<TableId>)>,
+    last: Option<(
+        i32,
+        [bool; replay::frame::TABLE_COUNT],
+        [bool; replay::frame::TABLE_COUNT],
+    )>,
+}
+
+impl ReadSlots {
+    fn new(format: FormatVersion) -> Self {
+        let mut groups: Vec<(replay::cadence::Cadence, Vec<TableId>)> = Vec::new();
+        for table in TableId::ALL {
+            // This table's measured walk dates only itself.
+            if table == TableId::CountryIntel {
+                continue;
+            }
+            let cadence = replay::cadence::cadence_in(table, format);
+            match groups.iter_mut().find(|(group, _)| *group == cadence) {
+                Some((_, tables)) => tables.push(table),
+                None => groups.push((cadence, vec![table])),
+            }
+        }
+        Self {
+            format,
+            groups,
+            last: None,
+        }
+    }
+
+    fn at(&mut self, metrics: &Metrics, hour: i32) -> [bool; replay::frame::TABLE_COUNT] {
+        let timed = metrics.table_ns.map(|duration| duration != 0);
+        if let Some((previous, reads, flags)) = &self.last
+            && *previous == hour
+            && *reads == timed
+        {
+            return *flags;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        SLOT_READ_BATCHES.with(|count| count.set(count.get() + 1));
+        let mut flags = [false; replay::frame::TABLE_COUNT];
+        for (cadence, tables) in &self.groups {
+            let read = cadence.is_refresh(hour) || tables.iter().any(|table| timed[table.index()]);
+            for table in tables {
+                flags[table.index()] = read;
+            }
+        }
+        flags[TableId::CountryIntel.index()] = timed[TableId::CountryIntel.index()];
+        self.last = Some((hour, timed, flags));
+        flags
+    }
+}
+
+thread_local! {
+    static SLOT_READS: std::cell::RefCell<Option<ReadSlots>> = const { std::cell::RefCell::new(None) };
+    #[cfg(any(test, feature = "test-support"))]
+    static SLOT_READ_BATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Distinct supplying-read batches computed on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn slot_read_batches() -> usize {
+    SLOT_READ_BATCHES.with(std::cell::Cell::get)
+}
+
 /// Why a recorded event loss happened: only a same-process reattach writes one.
 pub const EVENT_LOSS_REASON: &str = "The recorder was detached for part of the interval between these reads; its recorded events are incomplete.";
 

@@ -4,6 +4,29 @@ use replay::frame::{FrameDecoder, FrameEncoder, READ_TIME_NOT_RECORDED, TableUpd
 use replay::rows::{TableRows, tables};
 
 #[test]
+fn consumers_of_the_same_hour_share_its_supplying_read_batch() {
+    let mut frame = source(1, -231_987, Some(7));
+    frame.metrics.table_ns[TableId::CountryIntel.index()] = 0;
+    let format = FormatVersion::CURRENT;
+    let before = crate::metadata::slot_read_batches();
+    let first = FrameChanges::alone(&frame, format);
+    let mut tracker = FrameChangeTracker::new();
+    let other = tracker.observe(&frame, format);
+    let rebuilt = FrameChanges::rebuilt(&frame, format, false, |_| true);
+    assert_eq!(crate::metadata::slot_read_batches() - before, 1);
+    assert_eq!(first.slot_read, other.slot_read);
+    assert_eq!(first.slot_read, rebuilt.slot_read);
+    // Read duration is not read evidence; changing its zero/nonzero state is.
+    frame.metrics.table_ns[TableId::CountryIntel.index()] = 1;
+    let measured = FrameChanges::alone(&frame, format);
+    frame.metrics.table_ns[TableId::CountryIntel.index()] = 900;
+    let longer = FrameChanges::alone(&frame, format);
+    assert_eq!(crate::metadata::slot_read_batches() - before, 2);
+    assert!(measured.slot_read[TableId::CountryIntel.index()]);
+    assert_eq!(measured.slot_read, longer.slot_read);
+}
+
+#[test]
 fn frame_changes_distinguish_unchanged_rows_fresh_equal_reads_and_status_changes() {
     let format = FormatVersion::CURRENT;
     let mut tracker = FrameChangeTracker::new();

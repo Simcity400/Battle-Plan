@@ -120,6 +120,8 @@ impl<'v> BlockWatch<'v> {
 /// all of them handed to `frames` once the block is admitted and before any
 /// hour is reconstructed, as [`Replay::read_block_selected`] returns them for
 /// those tables (the updates of tables no read selected are unavailable).
+/// Tables no watch reads are decoded only: the reader keeping their updates
+/// reconstructs its own views.
 pub struct Keep<'k> {
     pub tables: &'k [TableId],
     pub frames: &'k mut dyn FnMut(&[Arc<Frame>]),
@@ -326,9 +328,9 @@ enum Keyframe {
     Interleaved,
 }
 
-/// The union's tables, each advanced once per hour exactly as a reader of
-/// that table alone advances it, and what each hour's step left for the
-/// watches' decisions.
+/// The decoded union's tables, those read by a watch advanced once per hour
+/// exactly as a reader of that table alone advances them, and what each
+/// hour's step left for the watches' decisions.
 struct BlockTables<'r> {
     campaign_id: &'r [u8],
     format: crate::format::FormatVersion,
@@ -433,9 +435,10 @@ impl<'r> BlockTables<'r> {
         }) || matches!(keyframe, Keyframe::Grouped(true))
     }
 
-    /// Advance every table to `frame`'s hour from its update, exactly as
-    /// `FrameDecoder::advance` advances it, and check the campaign.
-    fn advance(&mut self, frame: &Frame) -> io::Result<()> {
+    /// Advance the watches' tables to `frame`'s hour from their updates,
+    /// exactly as `FrameDecoder::advance` advances them, and check the
+    /// campaign. Tables decoded only for another reader stay unreconstructed.
+    fn advance(&mut self, frame: &Frame, reconstructed: &[usize]) -> io::Result<()> {
         // Measurement only: each table's reconstruct cycles, when enabled.
         let _cpu = crate::cpu::scope("reconstruct", None);
         let measured = crate::cpu::enabled();
@@ -444,7 +447,7 @@ impl<'r> BlockTables<'r> {
         // As the decoder: only the hour before's complete views are
         // baselines, and a keyframe has none.
         let before_hour = self.last_hour.filter(|_| !frame.keyframe);
-        for position in 0..self.tables.len() {
+        for &position in reconstructed {
             let table = self.tables[position];
             let update = &frame.tables[table.index()];
             let read = frame.metrics.table_ns[table.index()] != 0;
@@ -562,6 +565,9 @@ struct Consumer {
 /// A block's read for its watches.
 struct Reading<'w, 'v, 'r> {
     tables: BlockTables<'r>,
+    /// Positions of the tables any watch reads (Campaign too). Tables kept
+    /// only as recorded updates for another reader need no views here.
+    reconstructed: Vec<usize>,
     branch: BranchId,
     /// The tables whose updates the hour handed to watches of every hour
     /// keeps: theirs, those kept for another reader and Campaign. Every
@@ -582,9 +588,6 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
     ) -> io::Result<Self> {
         let mut chosen = [false; TABLE_COUNT];
         chosen[TableId::Campaign.index()] = true;
-        for table in extra {
-            chosen[table.index()] = true;
-        }
         for watch in watches.iter() {
             match watch.watching {
                 Watching::Changes(fields) => {
@@ -599,7 +602,18 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 }
             }
         }
+        let reconstructed = chosen;
+        for table in extra {
+            chosen[table.index()] = true;
+        }
         let tables = BlockTables::new(campaign_id, format, &chosen)?;
+        let reconstructed = engine::allocation::collect_vec(
+            tables
+                .tables
+                .iter()
+                .enumerate()
+                .filter_map(|(position, table)| reconstructed[table.index()].then_some(position)),
+        )?;
         let mut kept = [false; TABLE_COUNT];
         kept[TableId::Campaign.index()] = true;
         for table in extra {
@@ -664,6 +678,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
         }
         Ok(Self {
             tables,
+            reconstructed,
             branch,
             kept,
             consumers,
@@ -773,7 +788,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 }
             }
         }
-        self.tables.advance(&frame)?;
+        self.tables.advance(&frame, &self.reconstructed)?;
         let metrics = &frame.metrics;
         for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter()) {
             if watch.stopped() {

@@ -163,8 +163,11 @@ pub(super) trait Own: Sync {
     /// The tables its own thread reads from every block it observes hour by
     /// hour on the block read alone ([`Block::read_alone`]): every selection
     /// it reads is among them. Families that declare them read each block
-    /// once, together ([`shared`]); none for a family that does not.
-    fn shared_tables(&self) -> &'static [TableId] {
+    /// once, together ([`shared`]); none for a family that does not. The
+    /// phase binds the same content as its observer, so a content-dependent
+    /// selection may leave out tables that run never reads.
+    fn shared_tables(&self, phase: &Phase<'_>) -> &'static [TableId] {
+        let _ = phase;
         &[]
     }
     /// One branch's state as `load` last committed it, or new without a
@@ -1274,7 +1277,7 @@ pub(super) fn prepare(
     // prepare at once, each from its own start otherwise.
     let consumers: Vec<(&[TableId], usize)> = runs
         .iter()
-        .map(|run| (run.own.shared_tables(), run.progress.next_block))
+        .map(|run| (run.own.shared_tables(phase), run.progress.next_block))
         .collect();
     let shared = if runs.is_empty() {
         None

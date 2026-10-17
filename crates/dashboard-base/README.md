@@ -23,6 +23,18 @@ here as `dashboard_base::…`.
 
 ## Prepared series
 
+Block extracts share supplying-read flags for the same hour and timed tables;
+the recording's cadence groups decide them, with CountryIntel dated only by
+its own timing. After reconstruction, families sizing the same block share
+the sizes of immutable table views. Each family's allocation counts and byte
+total stay independent, and the size lookup ends with that block's sizing.
+Reduced country views compare only their id, slot and tag before allocating
+new rows. A reduction of an unchanged source view reuses its projected rows
+with the current sample hour.
+Idea extracts also reuse reductions when the block reader reports no change
+to that table's projected fields, keys or availability, even when another
+field rebuilt the source rows.
+
 Each batch reuses the compression of byte-identical per-key payloads within
 that batch. Keys keep separate directories, offsets and payload copies, so
 the batch bytes and saved continuation are unchanged by reuse. The temporary

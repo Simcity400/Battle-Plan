@@ -67,7 +67,12 @@ impl HeldBytes {
 
     /// Whether the allocation at `shared` is not yet counted; counts it so.
     pub fn once<T: ?Sized>(&mut self, shared: *const T) -> bool {
-        self.seen.insert(shared as *const () as usize)
+        let address = shared as *const () as usize;
+        if self.last == Some(address) {
+            return false;
+        }
+        self.last = Some(address);
+        self.seen.insert(address)
     }
 
     /// The nodes of a B-tree of `len` entries of keys `K` and values `V`.
@@ -320,6 +325,50 @@ impl Held for dashboard_text::metadata::LinkTags {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn families_size_shared_views_once_and_keep_their_own_totals() {
+        use replay::{
+            frame::TableView,
+            rows::{CountryRow, TableRows},
+        };
+        let mut view: SharedView = TableView::Complete(TableRows::Countries(vec![CountryRow {
+            id: 1,
+            tag: b"SYN".to_vec(),
+            ..Default::default()
+        }]))
+        .into();
+        let expected = crate::prepared::query::frames::view_bytes(&view) as u64;
+        let before = super::super::sized_views();
+        super::super::share_view_sizes(|| {
+            for _ in 0..3 {
+                let mut held = HeldBytes::default();
+                held.view(&view).view(&view);
+                assert_eq!(held.total(), expected);
+            }
+            assert_eq!(super::super::sized_views() - before, 1);
+            // Mutating even an otherwise unshared view gives it a distinct
+            // allocation while the sizing scope holds its weak identity.
+            let TableView::Complete(TableRows::Countries(rows)) = &mut *view else {
+                unreachable!()
+            };
+            rows[0].tag = b"OTHER".to_vec();
+            let mut held = HeldBytes::default();
+            held.view(&view);
+            assert_eq!(
+                held.total(),
+                crate::prepared::query::frames::view_bytes(&view) as u64
+            );
+            assert_eq!(super::super::sized_views() - before, 2);
+        });
+        let mut held = HeldBytes::default();
+        held.view(&view);
+        assert_eq!(
+            super::super::sized_views() - before,
+            3,
+            "the scope releases its sizes"
+        );
+    }
 
     #[test]
     fn a_map_holds_more_with_every_entry_and_its_strings() {

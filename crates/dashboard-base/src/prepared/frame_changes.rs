@@ -57,8 +57,7 @@ impl FrameChanges {
         Self {
             rows_changed: [true; TABLE_COUNT],
             table_read: std::array::from_fn(|index| frame.metrics.table_ns[index] != 0),
-            slot_read: TableId::ALL
-                .map(|table| crate::metadata::slot_read(format, &frame.metrics, table, frame.hour)),
+            slot_read: crate::metadata::slot_reads(format, &frame.metrics, frame.hour),
             updates: None,
         }
     }
@@ -199,8 +198,7 @@ impl FrameChangeTracker {
             }),
             // READ_TIME_NOT_RECORDED is nonzero evidence, never a duration.
             table_read: std::array::from_fn(|index| frame.metrics.table_ns[index] != 0),
-            slot_read: TableId::ALL
-                .map(|table| crate::metadata::slot_read(format, &frame.metrics, table, frame.hour)),
+            slot_read: crate::metadata::slot_reads(format, &frame.metrics, frame.hour),
             updates: None,
         };
         self.previous = Some(Previous {

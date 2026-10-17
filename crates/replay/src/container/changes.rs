@@ -143,7 +143,7 @@ impl QuietHours {
     /// `table`'s [`SharedView::sampled_at`] at the span's `position`th hour,
     /// as in `read_block_alone`'s frame: None for a table not reconstructed.
     pub fn sampled_at(&self, position: usize, table: TableId) -> Option<Hour> {
-        let column = self.tables.iter().position(|&watched| watched == table)?;
+        let column = self.tables.binary_search(&table).ok()?;
         self.sampled[position * self.tables.len() + column]
     }
 
@@ -156,8 +156,8 @@ impl QuietHours {
     /// for a table not reconstructed.
     pub fn rebuilt(&self, position: usize, table: TableId) -> bool {
         self.tables
-            .iter()
-            .position(|&watched| watched == table)
+            .binary_search(&table)
+            .ok()
             .is_some_and(|column| self.rebuilt[position * self.tables.len() + column])
     }
 

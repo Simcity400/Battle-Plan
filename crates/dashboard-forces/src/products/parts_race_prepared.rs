@@ -450,8 +450,19 @@ pub struct Projected<F: Family>(
     [io::Result<Vec<(Vec<F::Part>, BTreeMap<String, Vec<Option<i64>>>)>>; 4],
 );
 
-/// The scan's step at `frame` and the rows it leaves, as observing the hour
-/// steps it: `ready` once the state observed an hour.
+/// Step only the scan where no caller keeps the hour's rows or projections.
+fn step_scan<F: Family>(
+    scan: &mut F::Scan,
+    frame: &DecodedFrame,
+    format: FormatVersion,
+    cancelled: &AtomicBool,
+    changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+) -> io::Result<()> {
+    let raw = updates_changed(frame, F::TABLES, Some(changes), F::applied(scan));
+    F::step(scan, &raw, frame, format, cancelled, Some(changes))
+}
+
+/// Step the scan and keep the rows and projection bases its observer uses.
 pub fn step_rows<F: Family>(
     scan: &mut F::Scan,
     ready: bool,
@@ -460,8 +471,9 @@ pub fn step_rows<F: Family>(
     cancelled: &AtomicBool,
     changes: &dashboard_base::prepared::frame_changes::FrameChanges,
 ) -> io::Result<Rows<F>> {
-    let raw = updates_changed(frame, F::TABLES, Some(changes), F::applied(scan));
-    F::step(scan, &raw, frame, format, cancelled, Some(changes))?;
+    step_scan::<F>(scan, frame, format, cancelled, changes)?;
+    #[cfg(any(test, feature = "test-support"))]
+    dashboard_base::prepared::prepass::note("forces.rows");
     let observed = std::array::from_fn(|index| {
         if ready {
             F::changed(scan, index, frame.hour)

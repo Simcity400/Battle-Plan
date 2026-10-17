@@ -103,6 +103,23 @@ impl<R: Clone + PartialEq> Reduced<R> {
         }
     }
 
+    /// Reuse the last complete projection where the caller's field report
+    /// proves its row keys and projected fields unchanged. Incomplete
+    /// sources stay incomplete, and a reused view takes this hour's sample.
+    pub fn reuse(&self, frame: &mut DecodedFrame) -> bool {
+        let index = self.table.index();
+        let Some((_, view)) = &self.held else {
+            return false;
+        };
+        if !matches!(*frame.tables[index], TableView::Complete(_)) {
+            return false;
+        }
+        frame.tables[index] = view
+            .clone()
+            .with_sampled_at(frame.tables[index].sampled_at());
+        true
+    }
+
     /// Reduce only a new source view. A carried view has the same rows;
     /// its supplying date still belongs to this hour's original view.
     pub fn reduce(
@@ -123,6 +140,8 @@ impl<R: Clone + PartialEq> Reduced<R> {
                 .with_sampled_at(frame.tables[index].sampled_at());
             return;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        crate::prepared::prepass::note("kept.reduce");
         let rows = rows(frame);
         self.apply(frame, rows, wrap);
     }
@@ -157,10 +176,32 @@ impl Reduced<CountryRow> {
     /// The countries as these families read them: the id, canonical slot and
     /// tag of each (`CountryKeys`).
     pub fn countries(&mut self, frame: &mut DecodedFrame) {
+        let index = TableId::Countries.index();
+        if self
+            .source
+            .as_ref()
+            .is_none_or(|source| !source.is(&frame.tables[index]))
+            && let Some((held, view)) = &self.held
+            && frame.complete::<tables::Countries>().is_ok_and(|rows| {
+                held.len() == rows.len()
+                    && held.iter().zip(rows).all(|(held, row)| {
+                        (held.id, held.canonical_slot, &held.tag)
+                            == (row.id, row.canonical_slot, &row.tag)
+                    })
+            })
+        {
+            self.source = Some(frame.tables[index].identity());
+            frame.tables[index] = view
+                .clone()
+                .with_sampled_at(frame.tables[index].sampled_at());
+            return;
+        }
         self.reduce(
             frame,
             |frame| {
                 frame.complete::<tables::Countries>().ok().map(|rows| {
+                    #[cfg(any(test, feature = "test-support"))]
+                    crate::prepared::prepass::note("kept.countries");
                     rows.iter()
                         .map(|row| CountryRow {
                             id: row.id,

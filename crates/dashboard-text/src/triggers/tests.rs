@@ -3120,6 +3120,7 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
                 state: 64,
                 cores: vec![104],
                 claims: claims.into(),
+                ..Default::default()
             }]));
         f
     };

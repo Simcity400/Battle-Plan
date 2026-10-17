@@ -13,6 +13,12 @@ at the crates that own it ([dashboard-base](../dashboard-base/README.md),
 re-exports the module at `dashboard::products::special_projects`, registers it,
 and prepares and queries it in its pipeline.
 
+The block pre-pass reads country presentation and trigger tables only when
+the bound content has a scoped project name. Unscoped names read the project,
+program, history, character, portrait, dictionary and country identity tables.
+The extract finds its next completion deadline again only when history changes
+or the previous deadline is reached; every due completion is still observed.
+
 `cargo test -p dashboard-special-projects` builds and runs only this product's
 tests. The `test-support` feature compiles its test oracles and instrumentation
 for the dashboard's tests.

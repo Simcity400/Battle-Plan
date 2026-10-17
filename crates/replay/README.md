@@ -131,6 +131,12 @@ keyframe one watch's read refuses refuses that watch alone; a watch whose visit
 fails stops alone; a failure of the read itself fails every watch still
 reading. `read_block_changes` is this read with one watch.
 
+`read_block_watched_keeping` also decodes tables kept as recorded updates for
+other readers and hands over the grouped block before reconstruction. Tables
+none of its watches reads have no reconstructed views here; each later reader
+reconstructs its own selection from those updates. Tables both watched and kept
+are decoded once, reconstructed for the watches once and kept for those readers.
+
 A watch opting into `BlockWatch::releasing` also receives
 `Watched::Replacing` before reconstruction of an hour already known to visit
 it, after its preceding quiet span. It may release those tables from a frame
@@ -140,6 +146,8 @@ ordinary decision after reconstruction. Retained historical frames still own
 their rows, and every delta still creates a new view identity.
 Measured CPU snapshots include `deltaCopies`: shared-baseline delta counts,
 baseline rows traversed and cycles converted to nanoseconds, by table.
+`decodeFamilyTables` reports section decodes and their CPU by both family
+and table, alongside the aggregate `decodeTables` and `decodeFamilies`.
 
 Preparation reads each block on one below-normal-priority worker, decoding a
 grouped block's selected tables in parallel, and sends its frames in source order

@@ -469,7 +469,7 @@ fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
 fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads() {
     let (memory, interleaved, held, path) = replays();
     let watchings = watchings();
-    let extra = [TableId::Countries, TableId::Clock];
+    let extra = [TableId::Countries, TableId::Clock, TableId::CountryLinks];
     for (label, replay) in [
         ("memory", &memory),
         ("interleaved", &interleaved),
@@ -505,6 +505,7 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
                     visited_before_kept = visited.get();
                     kept = Some(frames.to_vec());
                 };
+                let before = decoded();
                 replay
                     .read_block_watched_keeping(
                         index,
@@ -516,6 +517,13 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
                         || Ok(()),
                     )
                     .unwrap();
+                if !std::ptr::eq(replay, &interleaved) {
+                    let mut union: Vec<TableId> =
+                        owns.iter().flatten().copied().chain(extra).collect();
+                    union.sort_unstable();
+                    union.dedup();
+                    assert_eq!(decoded() - before, union.len(), "each section decoded once");
+                }
                 for watch in watches {
                     watch.finish().unwrap();
                 }
@@ -563,4 +571,53 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
     }
     drop(held);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn kept_only_tables_have_no_reconstructed_views() {
+    let replay = fixture();
+    let own = [TableId::Campaign, TableId::Clock];
+    let extra = [
+        TableId::Countries,
+        TableId::SunkShips,
+        TableId::WorldTension,
+    ];
+    let selected: Vec<TableId> = own.into_iter().chain(extra).collect();
+    for index in &replay.index {
+        let mut log = Log::default();
+        {
+            let mut watches = [BlockWatch::new(Watching::Every(&own), |step| {
+                let Watched::Hour { updates, frame } = step else {
+                    unreachable!("a watch of every hour")
+                };
+                log.hour(&own, updates, frame);
+                Ok(())
+            })];
+            let mut reading =
+                Reading::new(CAMPAIGN, index.branch, replay.format, &mut watches, &extra).unwrap();
+            for frame in replay.read_block_selected(index, &selected).unwrap() {
+                assert!(
+                    reading
+                        .hour(Arc::new(frame), Keyframe::Grouped(false))
+                        .unwrap()
+                );
+                for table in extra {
+                    let position = reading.tables.slots[table.index()].unwrap();
+                    assert!(reading.tables.views[position].is_none(), "{table:?}");
+                }
+                assert!(
+                    reading.tables.views[reading.tables.slots[TableId::Clock.index()].unwrap()]
+                        .is_some()
+                );
+            }
+            reading.flush();
+            drop(reading);
+            for watch in watches {
+                watch.finish().unwrap();
+            }
+        }
+        let expected = alone(&replay, index, Watching::Every(&own));
+        assert_eq!(log.steps, expected.steps);
+        assert_eq!(log.shared(), expected.shared());
+    }
 }

@@ -75,7 +75,13 @@ pub fn tables(world: bool) -> &'static [TableId] {
         let mut tables: Vec<_> = WATCHED_WHOLE
             .into_iter()
             .chain([TableId::Countries, TableId::Campaign])
-            .chain(installed_content::country_names::TABLES)
+            .chain(
+                world
+                    .then_some(installed_content::country_names::TABLES.as_slice())
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            )
             .chain(
                 world
                     .then_some(dashboard_text::triggers::RECORDED_TABLES)
@@ -324,8 +330,7 @@ fn fields(world: bool) -> io::Result<Vec<TableFields>> {
 /// [`fields`], once each.
 fn watched(world: bool) -> &'static [TableFields] {
     static OWN: LazyLock<Vec<TableFields>> = LazyLock::new(|| fields(false).unwrap_or_default());
-    static WORLD: LazyLock<Vec<TableFields>> =
-        LazyLock::new(|| fields(true).unwrap_or_default());
+    static WORLD: LazyLock<Vec<TableFields>> = LazyLock::new(|| fields(true).unwrap_or_default());
     if world { &WORLD } else { &OWN }
 }
 
@@ -339,6 +344,8 @@ fn start(format: FormatVersion, world: bool) -> Box<dyn Extract> {
         built: Vec::new(),
         deadline: None,
         frames: 0,
+        #[cfg(test)]
+        history_scans: 0,
     })
 }
 
@@ -403,6 +410,8 @@ struct BlockExtract {
     /// The first completion date after the last hour observed.
     deadline: Option<i32>,
     frames: usize,
+    #[cfg(test)]
+    history_scans: usize,
 }
 
 impl BlockExtract {
@@ -479,16 +488,25 @@ impl Extract for BlockExtract {
         self.built = built;
         // The history's completion dates after this hour, as the observer
         // finds its next one.
-        self.deadline = frame
-            .complete::<tables::ProjectHistory>()
-            .ok()
-            .and_then(|rows| {
-                rows.iter()
-                    .map(super::super::history_operand)
-                    .filter(|&(_, completion, date)| completion && date > frame.hour)
-                    .map(|(_, _, date)| date)
-                    .min()
-            });
+        if self.last.is_none()
+            || changes.rows_changed[TableId::ProjectHistory.index()]
+            || self.deadline.is_some_and(|date| date <= frame.hour)
+        {
+            #[cfg(test)]
+            {
+                self.history_scans += 1;
+            }
+            self.deadline = frame
+                .complete::<tables::ProjectHistory>()
+                .ok()
+                .and_then(|rows| {
+                    rows.iter()
+                        .map(super::super::history_operand)
+                        .filter(|&(_, completion, date)| completion && date > frame.hour)
+                        .map(|(_, _, date)| date)
+                        .min()
+                });
+        }
         self.last = Some(frame.clone());
         self.hours.push(Hour::Observed {
             frame: frame.clone(),
@@ -715,7 +733,15 @@ pub fn fold(
                     let mut frame = base.clone();
                     frame.hour = at;
                     let changes = quiet_changes(read, &rebuilt);
-                    match kept(prepared, &frame, &changes, Held::Built, None, observed, hour)? {
+                    match kept(
+                        prepared,
+                        &frame,
+                        &changes,
+                        Held::Built,
+                        None,
+                        observed,
+                        hour,
+                    )? {
                         None => {
                             let reached = observe_block(
                                 prepared,

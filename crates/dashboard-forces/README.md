@@ -31,3 +31,8 @@ caches do not change the saved series or continuations.
 The `test-support` feature compiles the army's synthetic frame and the force
 families' synthetic recording and prepared store for the dashboard's pipeline
 and query tests.
+
+An air or navy block extract steps every hour's census, but makes output rows
+and projection bases only after its scan settles and its fold will keep them.
+The first hour and air's hours before its variant names settle keep only the
+scan step and boundary state; their fold observes those hours itself.

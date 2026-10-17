@@ -19,6 +19,11 @@ Nothing here names a product or a source. The [dashboard](../dashboard/README.md
 | [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies; the per-source loader is in the dashboard. |
 | [metadata.rs](src/metadata.rs) | Branch bounds, gaps, initial country catalogue, frame checks, country-link resolution and supplying-read detection. |
 
+The metadata helpers can date every table's supplying read together
+(`slot_reads`): cadence groups use the recording's format, and consumers of
+one hour with the same timed tables reuse its flags. CountryIntel's measured
+walk dates only itself. Individual `slot_read` calls follow the same rule.
+
 ## Own refusals
 
 The catalogue's text refusal tally (`Catalogue::refusal_lines`) is shared by

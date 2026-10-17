@@ -202,6 +202,12 @@ pub fn decoded(branch: u64, block_first_hour: i32, table: TableId, cycles: u64) 
     let by = decodes.by_family.entry(family).or_insert([0; 2]);
     by[0] += cycles;
     by[1] += 1;
+    let by = decodes
+        .by_family_table
+        .entry((family, table.index()))
+        .or_insert([0; 2]);
+    by[0] += cycles;
+    by[1] += 1;
 }
 
 /// One hour's tables reconstructed, each with the counter cycles it took.
@@ -315,7 +321,7 @@ pub fn snapshot() -> Value {
                    "untrackedNs": ns(slot[4]), "untracked": slot[5]})
         })
         .collect();
-    let (decode_tables, decode_families, decode_keys) = match DECODES
+    let (decode_tables, decode_families, decode_family_tables, decode_keys) = match DECODES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
@@ -339,9 +345,18 @@ pub fn snapshot() -> Value {
                         json!({"family": family, "ns": ns(value[0]), "decodes": value[1]})
                     })
                     .collect();
-            (tables, families, decodes.seen.len())
+            let mut by_family_table: Vec<_> = decodes.by_family_table.iter().collect();
+            by_family_table.sort_unstable_by_key(|((family, table), _)| (*family, *table));
+            let family_tables: Vec<Value> = by_family_table
+                .into_iter()
+                .map(|((family, table), value)| {
+                    json!({"family": family, "table": format!("{:?}", TableId::ALL[*table]),
+                    "ns": ns(value[0]), "decodes": value[1]})
+                })
+                .collect();
+            (tables, families, family_tables, decodes.seen.len())
         }
-        None => (Vec::new(), Vec::new(), 0),
+        None => (Vec::new(), Vec::new(), Vec::new(), 0),
     };
     let notes: Vec<Value> = NOTES
         .lock()
@@ -386,6 +401,7 @@ pub fn snapshot() -> Value {
         "exitedByRole": exited_ns.into_iter().map(|(role, cycles)| json!({"role": role, "ns": ns(cycles)})).collect::<Vec<_>>(),
         "decodeTables": decode_tables,
         "decodeFamilies": decode_families,
+        "decodeFamilyTables": decode_family_tables,
         "decodeKeys": decode_keys,
         "reconstructTables": reconstruct,
     })
@@ -397,6 +413,7 @@ struct Decodes {
     /// first cycles, count; another family's repeat; the same family's repeat.
     tables: HashMap<usize, [u64; 6]>,
     by_family: HashMap<&'static str, [u64; 2]>,
+    by_family_table: HashMap<(&'static str, usize), [u64; 2]>,
 }
 
 struct HourBits {

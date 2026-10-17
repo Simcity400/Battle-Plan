@@ -143,49 +143,65 @@ struct BlockExtract {
 impl BlockExtract {
     /// The frame as the scan reads it: the countries, characters and country
     /// counters reduced to the fields it reads.
-    fn kept(&mut self, frame: &DecodedFrame) -> DecodedFrame {
+    fn kept(&mut self, frame: &DecodedFrame, reported: Option<&[TableId]>) -> DecodedFrame {
         let mut kept = frame.clone();
-        self.countries.countries(&mut kept);
-        self.characters.reduce(
-            &mut kept,
-            |frame| {
-                frame.complete::<tables::Characters>().ok().map(|rows| {
-                    rows.iter()
-                        .map(|row| CharacterRow {
-                            id: row.id,
-                            name_token_id: row.name_token_id,
-                            token: row.token.clone(),
-                            template_present: row.template_present,
-                            template_tag: row.template_tag,
-                            template_file: row.template_file.clone(),
-                            template_line: row.template_line,
-                            template_generated: row.template_generated,
-                            ..Default::default()
-                        })
-                        .collect()
-                })
-            },
-            TableRows::Characters,
-        );
-        self.counters.reduce(
-            &mut kept,
-            |frame| {
-                frame
-                    .complete::<tables::CountryCounterInputs>()
-                    .ok()
-                    .map(|rows| {
+        let unchanged = |table| reported.is_some_and(|reported| !reported.contains(&table));
+        if !unchanged(TableId::Countries) || !self.countries.reuse(&mut kept) {
+            self.countries.countries(&mut kept);
+        }
+        if !unchanged(TableId::Characters) || !self.characters.reuse(&mut kept) {
+            self.characters.reduce(
+                &mut kept,
+                |frame| {
+                    frame.complete::<tables::Characters>().ok().map(|rows| {
                         rows.iter()
-                            .map(|row| CountryCounterInputRow {
-                                country: row.country,
-                                owned_state_count: row.owned_state_count,
+                            .map(|row| CharacterRow {
+                                id: row.id,
+                                name_token_id: row.name_token_id,
+                                token: row.token.clone(),
+                                template_present: row.template_present,
+                                template_tag: row.template_tag,
+                                template_file: row.template_file.clone(),
+                                template_line: row.template_line,
+                                template_generated: row.template_generated,
                                 ..Default::default()
                             })
                             .collect()
                     })
-            },
-            TableRows::CountryCounterInputs,
-        );
+                },
+                TableRows::Characters,
+            );
+        }
+        if !unchanged(TableId::CountryCounterInputs) || !self.counters.reuse(&mut kept) {
+            self.counters.reduce(
+                &mut kept,
+                |frame| {
+                    frame
+                        .complete::<tables::CountryCounterInputs>()
+                        .ok()
+                        .map(|rows| {
+                            rows.iter()
+                                .map(|row| CountryCounterInputRow {
+                                    country: row.country,
+                                    owned_state_count: row.owned_state_count,
+                                    ..Default::default()
+                                })
+                                .collect()
+                        })
+                },
+                TableRows::CountryCounterInputs,
+            );
+        }
         kept
+    }
+
+    fn hour(&mut self, frame: &DecodedFrame, changes: &FrameChanges, reported: Option<&[TableId]>) {
+        self.frames += 1;
+        let frame = self.kept(frame, reported);
+        self.hours.push(Hour::Observed {
+            frame,
+            changes: kept_changes(changes),
+        });
     }
 }
 
@@ -201,12 +217,18 @@ impl Extract for BlockExtract {
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        self.frames += 1;
-        let kept = self.kept(frame);
-        self.hours.push(Hour::Observed {
-            frame: kept,
-            changes: kept_changes(changes),
-        });
+        self.hour(frame, changes, None);
+        Ok(())
+    }
+
+    fn observe_reported(
+        &mut self,
+        _: &Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        reported: &[TableId],
+    ) -> io::Result<()> {
+        self.hour(frame, changes, Some(reported));
         Ok(())
     }
 
@@ -316,4 +338,50 @@ pub fn observe_block(
             scan.prepare_changes_in(frame, facts, changes, content)
         },
     )
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    use super::*;
+    use replay::frame::{SharedView, TableView};
+
+    #[test]
+    fn reported_unchanged_fields_reuse_reductions_even_when_sources_are_rebuilt() {
+        let new = || BlockExtract {
+            hours: Vec::new(),
+            countries: Reduced::new(TableId::Countries),
+            characters: Reduced::new(TableId::Characters),
+            counters: Reduced::new(TableId::CountryCounterInputs),
+            frames: 0,
+        };
+        let mut frame = crate::test_fixtures::source(1, 100, None);
+        frame.tables[TableId::Characters.index()] =
+            TableView::Complete(TableRows::Characters(vec![CharacterRow {
+                id: 1,
+                token: b"synthetic".to_vec(),
+                ..Default::default()
+            }]))
+            .into();
+        frame.tables[TableId::CountryCounterInputs.index()] =
+            TableView::Complete(TableRows::CountryCounterInputs(vec![
+                CountryCounterInputRow {
+                    country: 1,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+        let mut actual = new();
+        actual.kept(&frame, Some(TABLES));
+        let before = crate::prepared::prepass::noted("kept.reduce");
+        let mut next = frame.clone();
+        next.hour += 1;
+        for table in [TableId::Characters, TableId::CountryCounterInputs] {
+            next.tables[table.index()] = SharedView::from((*frame.tables[table.index()]).clone());
+        }
+        let actual = actual.kept(&next, Some(&[TableId::ActiveIdeas]));
+        assert_eq!(crate::prepared::prepass::noted("kept.reduce"), before);
+        let mut reference = new();
+        reference.kept(&frame, None);
+        assert_eq!(actual, reference.kept(&next, None));
+    }
 }

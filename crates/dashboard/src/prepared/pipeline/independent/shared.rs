@@ -3,8 +3,8 @@
 //! ([`super::Own::shared_tables`]).
 //!
 //! Each such block is read once ([`Replay::read_block_kept`]) for every
-//! table those families still preparing read, on reader threads ahead of the
-//! families, and each family reconstructs it for its own tables on its own
+//! table those families may still read in that block, on reader threads
+//! ahead of the families, and each family reconstructs its own tables on its
 //! thread with a decoder of its own ([`Replay::reconstruct_alone`]), at its
 //! own pace and concurrently with the others. The read (inflating and
 //! decoding the recorded updates) is shared; the reconstruction (applying
@@ -27,6 +27,9 @@
 //! ([`Depot`]), so the readers read only the blocks no task deposited. A
 //! deposited block's frames hold every table the task read, its members'
 //! tables and these families', each table's updates those of its own read.
+//! A family's tables are omitted from blocks it has passed and blocks of
+//! the branch it currently refuses. A later branch still keeps its tables.
+//! Tables kept only for these readers are not reconstructed by the task.
 //!
 //! Only the reader threads and the pool's block tasks read blocks for every
 //! family; a family never does. A family takes a kept block that holds its
@@ -265,13 +268,19 @@ impl Inner {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
-    /// The tables a block is read with now: Campaign and those of every
-    /// member still preparing, as a list and a set.
-    fn selection(&self, state: &State) -> (Vec<TableId>, [bool; TABLE_COUNT]) {
+    /// The tables `block` is read with now: Campaign and those of every
+    /// member that may still read it, as a list and a set. A member past it
+    /// or refusing its branch never needs its tables from this read.
+    fn selection(&self, state: &State, block: usize) -> (Vec<TableId>, [bool; TABLE_COUNT]) {
         let mut chosen = [false; TABLE_COUNT];
         chosen[TableId::Campaign.index()] = true;
         for (consumer, mask) in state.consumers.iter().zip(&self.masks) {
-            if consumer.member && consumer.live {
+            if consumer.member
+                && consumer.live
+                && consumer.next <= block
+                && (consumer.reads
+                    || self.replay.index[consumer.next].branch != self.replay.index[block].branch)
+            {
                 for (at, read) in mask.iter().enumerate() {
                     chosen[at] |= *read;
                 }
@@ -349,7 +358,7 @@ impl Inner {
         let _cpu = ::replay::cpu::scope("decode", Some("shared read"));
         let started = Instant::now();
         let index = &self.replay.index[block];
-        let (tables, chosen) = self.selection(&self.lock());
+        let (tables, chosen) = self.selection(&self.lock(), block);
         let mut given_up = false;
         #[cfg(test)]
         let mut gated = false;
@@ -738,7 +747,7 @@ impl prepass::Depot for Depot {
             return None;
         }
         inner.begin(&mut state, block);
-        let (tables, chosen) = inner.selection(&state);
+        let (tables, chosen) = inner.selection(&state, block);
         state.offered.insert(block, chosen);
         Some(tables)
     }
@@ -1403,6 +1412,87 @@ mod tests {
         });
     }
 
+    /// A family ahead of this block will never take it again, even while
+    /// it is still preparing. Readers and pool deposits select the same
+    /// tables, and the family behind still reads its own frames exactly.
+    #[test]
+    fn a_passed_blocks_tables_are_left_out_while_its_family_still_prepares() {
+        let replay = Arc::new(recording(6));
+        let (clock, countries) = ([TableId::Clock], [TableId::Countries]);
+        with_test_readers(0, || {
+            let shared = Shared::start(
+                Arc::clone(&replay),
+                &[(&clock[..], 0), (&countries[..], 3)],
+                true,
+            )
+            .unwrap();
+            let small = shared.member(0, false).unwrap();
+            let large = shared.member(1, false).unwrap();
+            let depot = shared.depot();
+            for block in [0, 3, 4] {
+                if block == 4 {
+                    large.at(5, true);
+                }
+                small.at(block, true);
+                let offered = depot.offer(block).expect("the block is within reach");
+                assert_eq!(offered.contains(&TableId::Countries), block == 3);
+                let Ended::Read(frames, selected) = shared.inner.read(block) else {
+                    panic!("the reader reads the block");
+                };
+                for table in TableId::ALL {
+                    assert_eq!(offered.contains(&table), selected[table.index()]);
+                }
+                depot.deposit(block, frames);
+                exact(&replay, &small, block, &clock);
+                if block == 3 {
+                    exact(&replay, &large, block, &countries);
+                }
+            }
+            drop((small, large));
+        });
+    }
+
+    /// A refusal settles only that branch: its tables are omitted there,
+    /// but are kept for the same family's next branch before it reaches it.
+    #[test]
+    fn a_refused_branchs_tables_are_left_out_without_omitting_the_next_branchs() {
+        let replay = recording(2)
+            .append(&[records(2, vec![source(2, 20, Some(20_000))])])
+            .unwrap();
+        let replay = Arc::new(replay);
+        let (clock, countries) = ([TableId::Clock], [TableId::Countries]);
+        with_test_readers(0, || {
+            let shared = Shared::start(
+                Arc::clone(&replay),
+                &[(&clock[..], 0), (&countries[..], 0)],
+                true,
+            )
+            .unwrap();
+            let small = shared.member(0, false).unwrap();
+            let large = shared.member(1, false).unwrap();
+            large.at(0, false);
+            let depot = shared.depot();
+            for block in 0..replay.index.len() {
+                small.at(block, true);
+                let offered = depot.offer(block).expect("the block is within reach");
+                assert_eq!(
+                    offered.contains(&TableId::Countries),
+                    replay.index[block].branch == 2
+                );
+                let frames = replay
+                    .read_block_kept(&replay.index[block], &offered, || Ok(()))
+                    .unwrap();
+                depot.deposit(block, frames);
+                exact(&replay, &small, block, &clock);
+                if replay.index[block].branch == 2 {
+                    large.at(block, true);
+                    exact(&replay, &large, block, &countries);
+                }
+            }
+            drop((small, large));
+        });
+    }
+
     /// Four small-table families at distinct next blocks, read with a large
     /// table a fifth family still preparing reads, and one reader: the first
     /// block measured outweighs a block's share, so the source is read
@@ -1430,14 +1520,14 @@ mod tests {
                         (&clock[..], 2),
                         (&clock[..], 4),
                         (&clock[..], 6),
-                        (&countries[..], 15),
+                        (&countries[..], 0),
                     ],
                     true,
                 )
                 .unwrap();
                 let members: Vec<Member<'_>> =
                     (0..5).map(|at| shared.member(at, false).unwrap()).collect();
-                for (member, next) in members.iter().zip([0, 2, 4, 6, 15]) {
+                for (member, next) in members.iter().zip([0, 2, 4, 6, 0]) {
                     member.at(next, true);
                 }
                 until("the first block measured", || !shared.sharing());

@@ -802,6 +802,39 @@ fn daily_slot_of(table: TableId) -> i32 {
 }
 
 #[test]
+fn supplying_read_batches_match_each_tables_own_read_rule() {
+    use replay::{format::FormatVersion, frame::Metrics};
+    let versions = [
+        FormatVersion::CURRENT,
+        FormatVersion::read(FormatVersion::CURRENT.version() - 1).unwrap(),
+    ];
+    for format in versions {
+        for hour in [-1, 0, 4, 17, 23, replay::cadence::STAGGER_PERIOD] {
+            for timed in [
+                None,
+                Some(TableId::CountryIntel),
+                Some(TableId::CountryFuel),
+                Some(TableId::LexicalTokens),
+                Some(TableId::ResearchInputs),
+            ] {
+                let mut metrics = Metrics::default();
+                if let Some(table) = timed {
+                    metrics.table_ns[table.index()] = 1;
+                }
+                let flags = super::slot_reads(format, &metrics, hour);
+                for table in TableId::ALL {
+                    assert_eq!(
+                        flags[table.index()],
+                        super::slot_read(format, &metrics, table, hour),
+                        "{format:?}, {table:?} at {hour}, timed {timed:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
     let slot = daily_slot_of(TableId::CountryFuel);
     let day = 1000 * replay::cadence::STAGGER_PERIOD;

@@ -1170,6 +1170,7 @@ fn richer_frame() -> DecodedFrame {
             state: 1,
             cores: vec![101],
             claims: Recorded::Value(vec![102]),
+            ..Default::default()
         }],
     );
     set::<tables::Nukes>(

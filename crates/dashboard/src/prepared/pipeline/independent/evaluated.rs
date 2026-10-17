@@ -194,7 +194,8 @@ fn observe_alone(
 
 /// Each hour research's fold observes, counted in tests.
 #[cfg(test)]
-pub(in crate::prepared::pipeline) const RESEARCH_OBSERVED: &str = research::prepared::block::OBSERVED;
+pub(in crate::prepared::pipeline) const RESEARCH_OBSERVED: &str =
+    research::prepared::block::OBSERVED;
 
 /// Each of those hours it took from a worker's index changes and kept rows
 /// rather than from a frame, counted in tests.
@@ -257,7 +258,10 @@ impl Branch for ResearchBranch {
     }
 
     fn parts(&mut self) -> Vec<(&'static str, Duration, u64)> {
-        self.measured.as_mut().map(Measured::take).unwrap_or_default()
+        self.measured
+            .as_mut()
+            .map(Measured::take)
+            .unwrap_or_default()
     }
 
     fn fold(
@@ -440,7 +444,10 @@ impl Branch for ProjectsBranch {
     }
 
     fn parts(&mut self) -> Vec<(&'static str, Duration, u64)> {
-        self.measured.as_mut().map(Measured::take).unwrap_or_default()
+        self.measured
+            .as_mut()
+            .map(Measured::take)
+            .unwrap_or_default()
     }
 
     fn fold(
@@ -585,9 +592,12 @@ impl Own for Occupation {
         "independent.occupation"
     }
 
-    /// With the trigger world, whichever its content reads.
-    fn shared_tables(&self) -> &'static [TableId] {
-        occupation_tables(true)
+    /// Bind the same law content as the observer: a law with neither a
+    /// visible nor an available trigger reads no trigger-world tables.
+    fn shared_tables(&self, phase: &super::Phase<'_>) -> &'static [TableId] {
+        let mut prepared = occupied_states::prepared::Prepared::default();
+        prepared.configure(phase.source, phase.context);
+        occupation_tables(prepared.reads_trigger_world())
     }
 
     /// Its own thread observes every block; an extract keeps nothing.
@@ -669,7 +679,10 @@ impl Branch for OccupationBranch {
     }
 
     fn parts(&mut self) -> Vec<(&'static str, Duration, u64)> {
-        self.measured.as_mut().map(Measured::take).unwrap_or_default()
+        self.measured
+            .as_mut()
+            .map(Measured::take)
+            .unwrap_or_default()
     }
 
     fn fold(
@@ -708,12 +721,7 @@ impl Branch for OccupationBranch {
     }
 
     /// The windows of the blocks it went through, in block order.
-    fn publish(
-        &mut self,
-        writer: &mut store::Writer,
-        _: u64,
-        _: &AtomicBool,
-    ) -> io::Result<()> {
+    fn publish(&mut self, writer: &mut store::Writer, _: u64, _: &AtomicBool) -> io::Result<()> {
         for window in self.held.drain(..) {
             window.write(writer)?;
         }

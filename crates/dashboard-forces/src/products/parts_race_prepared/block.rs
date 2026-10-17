@@ -22,7 +22,7 @@
 //! or where the worker's scan was never settled, the caller observes the
 //! rest of the block hour by hour.
 
-use super::{Family, Prepared, Projected, Rows, project, step_rows};
+use super::{Family, Prepared, Projected, Rows, project, step_rows, step_scan};
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use dashboard_base::{
     prepared::{
@@ -100,27 +100,27 @@ where
         // Cancellation is checked between blocks.
         let running = AtomicBool::new(false);
         if self.first.is_none() {
-            step_rows::<F>(
-                &mut self.scan,
-                false,
-                frame,
-                replay.format,
-                &running,
-                changes,
-            )?;
+            step_scan::<F>(&mut self.scan, frame, replay.format, &running, changes)?;
             self.first = Some(frame.clone());
         } else {
-            match step_rows::<F>(
-                &mut self.scan,
-                true,
-                frame,
-                replay.format,
-                &running,
-                changes,
-            ) {
+            let rows = if self.tail.is_some() {
+                step_rows::<F>(
+                    &mut self.scan,
+                    true,
+                    frame,
+                    replay.format,
+                    &running,
+                    changes,
+                )
+                .map(Some)
+            } else {
+                step_scan::<F>(&mut self.scan, frame, replay.format, &running, changes)
+                    .map(|()| None)
+            };
+            match rows {
                 // The fold observes the hours through the tail's itself.
-                Ok(rows) if self.tail.is_some() => self.hours.push(rows),
-                Ok(_) => {}
+                Ok(Some(rows)) => self.hours.push(rows),
+                Ok(None) => {}
                 Err(error) => {
                     self.failed = Some((frame.hour, error));
                     return Ok(());
@@ -363,6 +363,96 @@ mod bytes_tests {
         prepared::frame_changes::FrameChangeTracker,
         test_fixtures::{CAMPAIGN, records},
     };
+
+    #[test]
+    fn the_first_force_hour_steps_the_scan_without_building_discarded_rows() {
+        let frames = vec![test_fixtures::frame(100, 3)];
+        let before = dashboard_base::prepared::prepass::noted("forces.rows");
+        let extract = extracted::<Navy>(&frames);
+        assert!(extract.first.is_some());
+        assert!(extract.tail.is_some());
+        assert_eq!(
+            dashboard_base::prepared::prepass::noted("forces.rows"),
+            before
+        );
+    }
+
+    #[test]
+    fn navy_block_keeps_sparse_deltas_after_its_first_hour_scan() {
+        use dashboard_base::prepared::observer_tests;
+        use replay::{
+            frame::FrameEncoder,
+            rows::{TableId, TableRows},
+        };
+        use std::sync::Arc;
+
+        let mut frame = test_fixtures::frame(100, 32);
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap();
+        let mut encoder = FrameEncoder::default();
+        let mut tracker = FrameChangeTracker::new();
+        let mut extract = BlockExtract::<Navy>::start();
+        let mut oracle = <Navy as Family>::Scan::default();
+        let running = AtomicBool::new(false);
+        let rows_before = dashboard_base::prepared::prepass::noted("forces.rows");
+        for hour in 100..103 {
+            frame.hour = hour;
+            if hour > 100 {
+                let replay::frame::TableView::Complete(TableRows::Ships(rows)) =
+                    &mut *frame.tables[TableId::Ships.index()]
+                else {
+                    unreachable!()
+                };
+                if hour == 101 {
+                    rows[0].strength += 1;
+                } else {
+                    rows[0].organisation += 1;
+                }
+            }
+            let raw = Arc::new(encoder.encode(frame.clone(), hour == 100).unwrap());
+            let changes = tracker.observe_updates(&frame, raw, replay.format);
+            let before = Navy::work(&extract.scan).history_visits;
+            extract.observe(&replay, &frame, &changes).unwrap();
+            Navy::step(
+                &mut oracle,
+                &super::super::updates(&frame, Navy::TABLES),
+                &frame,
+                replay.format,
+                &running,
+                None,
+            )
+            .unwrap();
+            if hour == 100 {
+                assert!(extract.tail.is_some());
+                assert!(extract.hours.is_empty());
+                assert_eq!(
+                    dashboard_base::prepared::prepass::noted("forces.rows"),
+                    rows_before
+                );
+            } else {
+                assert_eq!(
+                    Navy::work(&extract.scan).history_visits - before,
+                    usize::from(hour == 101),
+                    "only a strength change revisits its owner"
+                );
+            }
+        }
+        assert_eq!(extract.hours.len(), 2);
+        Navy::finish_hour(&mut extract.scan);
+        Navy::finish_hour(&mut oracle);
+        for channel in 0..4 {
+            observer_tests::assert_reply_parity(
+                &Navy::runs(&extract.scan, channel),
+                &Navy::runs(&oracle, channel),
+            )
+            .unwrap();
+        }
+        observer_tests::assert_reply_parity(
+            &Navy::metadata(&extract.scan),
+            &Navy::metadata(&oracle),
+        )
+        .unwrap();
+    }
 
     /// A block's extract of `frames`, in order.
     fn extracted<F: Family + 'static>(frames: &[DecodedFrame]) -> Box<BlockExtract<F>>

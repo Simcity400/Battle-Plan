@@ -136,6 +136,7 @@ pub trait Extract: Send {
 pub struct HeldBytes {
     /// The views, recorded updates and shared values counted, by allocation.
     seen: std::collections::HashSet<usize>,
+    last: Option<usize>,
     total: u64,
 }
 
@@ -150,12 +151,8 @@ impl HeldBytes {
 
     /// A kept table view, once per allocation.
     pub fn view(&mut self, view: &replay::frame::SharedView) -> &mut Self {
-        let table: &replay::frame::TableView = view;
-        if self
-            .seen
-            .insert(std::ptr::from_ref(table) as *const () as usize)
-        {
-            self.add(super::query::frames::view_bytes(table));
+        if self.once(view.as_ptr()) {
+            self.add(view_bytes(view));
         }
         self
     }
@@ -194,6 +191,52 @@ impl HeldBytes {
     pub fn total(&self) -> u64 {
         self.total
     }
+}
+
+type ViewSizes = std::collections::HashMap<usize, (replay::frame::ViewIdentity, usize)>;
+
+thread_local! {
+    static VIEW_SIZES: std::cell::RefCell<Option<ViewSizes>> = const { std::cell::RefCell::new(None) };
+    #[cfg(any(test, feature = "test-support"))]
+    static SIZED_VIEWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Share immutable view sizes between the families sizing one extracted
+/// block. Call only after reconstruction: weak identities keep addresses
+/// distinct until sizing ends, without holding rows. Each family's own
+/// allocation counts and byte total remain independent.
+pub fn share_view_sizes<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(Option<ViewSizes>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            VIEW_SIZES.with_borrow_mut(|sizes| *sizes = self.0.take());
+        }
+    }
+    let _reset = Reset(VIEW_SIZES.with_borrow_mut(|sizes| sizes.replace(Default::default())));
+    run()
+}
+
+fn view_bytes(view: &replay::frame::SharedView) -> usize {
+    let size = || {
+        #[cfg(any(test, feature = "test-support"))]
+        SIZED_VIEWS.with(|count| count.set(count.get() + 1));
+        super::query::frames::view_bytes(view)
+    };
+    VIEW_SIZES.with_borrow_mut(|sizes| match sizes {
+        None => size(),
+        Some(sizes) => {
+            let (_, bytes) = sizes
+                .entry(view.as_ptr() as usize)
+                .or_insert_with(|| (view.identity(), size()));
+            *bytes
+        }
+    })
+}
+
+/// View allocations whose owned rows were sized on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn sized_views() -> usize {
+    SIZED_VIEWS.with(std::cell::Cell::get)
 }
 
 /// What one hour's recorded updates keep alive: the frame and every

@@ -157,7 +157,7 @@ impl Own for Ledger {
         "independent.politics_ledger"
     }
 
-    fn shared_tables(&self) -> &'static [TableId] {
+    fn shared_tables(&self, _: &super::Phase<'_>) -> &'static [TableId] {
         tables()
     }
 
