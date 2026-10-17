@@ -161,9 +161,7 @@ pub fn mode_hover(
             | Stock::Raids => ModeHover::Nothing,
             // The app asks the terrain mode's own hover (viewer-combat's terrain_mode) instead.
             Stock::Terrain => ModeHover::Nothing,
-            Stock::Resources => ModeHover::Unbuilt(
-                "the resources mode's hover (each resource produced) is not built".to_owned(),
-            ),
+            Stock::Resources => ModeHover::Resources,
             Stock::Operatives => ModeHover::Operatives,
             Stock::Infrastructure => ModeHover::Infrastructure(infrastructure_level()),
             Stock::Supply => ModeHover::Unbuilt(stock.unavailable().unwrap_or_default().to_owned()),
@@ -833,6 +831,7 @@ mod tests {
         assert_eq!(hover(Stock::Resistance), ModeHover::Occupation);
         assert_eq!(hover(Stock::Compliance), ModeHover::Occupation);
         assert_eq!(hover(Stock::Operatives), ModeHover::Operatives);
+        assert_eq!(hover(Stock::Resources), ModeHover::Resources);
         for stock in [
             Stock::Factions,
             Stock::Players,

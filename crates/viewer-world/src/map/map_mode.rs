@@ -967,7 +967,10 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
     };
     let draw = match stock {
         Stock::Default => return Ok(ModeFill::default()),
-        Stock::StrategicNavy | Stock::StrategicAir | Stock::Resources => {
+        // The resources mode draws no layer of its own: the countries, under its state
+        // resource icons ([`visibility`]).
+        Stock::Resources => Draw::of([Country, Empty], political),
+        Stock::StrategicNavy | Stock::StrategicAir => {
             warnings.push(unbuilt(stock).to_owned());
             match stock {
                 Stock::StrategicNavy => return Ok(refusal(warnings)),
@@ -1064,9 +1067,6 @@ fn unbuilt(stock: Stock) -> &'static str {
         }
         Stock::StrategicNavy => {
             "Navy map mode: the political channels show without the naval supremacy colours, strategic region names, region statistics and range overlays, which are not drawn; the map writes no names"
-        }
-        Stock::Resources => {
-            "Resources map mode: the countries show without the state resource icons, which are not drawn"
         }
         _ => "This map mode's layer is not drawn",
     }

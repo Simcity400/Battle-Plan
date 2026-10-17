@@ -984,7 +984,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
     use replay::frame::FrameEncoder;
     use replay::rows::*;
     use viewer_raids::map::{
-        intel_icons::*,
+        intel_icons::{EntryKind, IntelAssets, IntelDefines, OperationPriorities, Write, icons},
         raids::test_support::{self, put},
     };
     let selected = dashboard_base::prepared_map::selected_tables();
@@ -995,6 +995,16 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         let mut frame = test_support::positive_frame();
         frame.branch = 1;
         frame.hour = hour;
+        // The direct fixture uses a historical absence for this unexercised
+        // input. Current-format rows encode an explicit independent refusal.
+        let mut counters = frame
+            .complete::<tables::CountryCounterInputs>()
+            .unwrap()
+            .to_vec();
+        for row in &mut counters {
+            row.forward_visibility = Recorded::Value(None);
+        }
+        put::<tables::CountryCounterInputs>(&mut frame, counters);
         put::<tables::Campaign>(
             &mut frame,
             vec![CampaignRow {
@@ -1059,6 +1069,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
                 country: 11,
                 propaganda_stability_q15: 16_384,
                 propaganda_war_support_q15: 8_192,
+                keys: vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()],
                 ..Default::default()
             }],
         );
@@ -1083,6 +1094,18 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
                 ..Default::default()
             }],
         );
+        // The direct icon fixture leaves unrelated singletons empty. An encoded
+        // frame must distinguish their missing operands from complete empty lists.
+        for table in TableId::ALL {
+            let view = &mut frame.tables[table.index()];
+            if table.key_bits() == 0
+                && matches!(&**view, TableView::Complete(rows) if rows.is_empty())
+            {
+                **view = TableView::Unavailable {
+                    reason: "outside the operative checkpoint fixture".into(),
+                };
+            }
+        }
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
     let replay = Arc::new(Replay::from_records(b"campaign".to_vec(), &[records]).unwrap());
@@ -1153,5 +1176,43 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         }
         assert_eq!(actual.states, expected.states, "hour {hour}");
         assert_eq!(actual.report, expected.report, "hour {hour}");
+    }
+}
+
+#[test]
+fn prepared_hours_preserve_native_ordinals_and_market_route_state_endpoints() {
+    use replay::rows::tables;
+    let replay = Arc::new(status_replay(&[100, 101, 102, 103]));
+    let fixture = Fixture::new(&replay);
+    let selected = dashboard_base::prepared_map::selected_tables();
+    let progress = prepare(&fixture, &replay, 2, selected);
+    let mut prepared = fixture.reader(progress, Arc::clone(&replay), selected);
+    for hour in [103, 100, 102, 101] {
+        let SeekResult::Frame(ordinary) = replay.seek_selected(1, hour, Some(selected)).unwrap()
+        else {
+            panic!("ordinary hour absent")
+        };
+        let Some(Current::Frame(actual)) = prepared.seek(1, hour).unwrap() else {
+            panic!("prepared hour absent")
+        };
+        assert_eq!(actual.as_ref(), ordinary.as_ref());
+        assert_eq!(
+            actual.complete::<tables::ResourceOrigins>().unwrap()[0].ordinal,
+            hour as u32
+        );
+        assert_eq!(
+            actual.complete::<tables::ResourceRights>().unwrap()[0].ordinal,
+            hour as u32
+        );
+        let route = &actual.complete::<tables::TradeRoutes>().unwrap()[0];
+        assert_eq!(
+            (route.source_state, route.destination_state),
+            (Some(hour as u32), Some(hour as u32 + 1))
+        );
+        let client = &actual.complete::<tables::ConvoyClients>().unwrap()[0];
+        assert_eq!(
+            (client.owner_ordinal, client.other_ordinal),
+            (Some(hour as u32), Some(hour as u32 + 1))
+        );
     }
 }

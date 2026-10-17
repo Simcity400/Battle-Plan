@@ -228,7 +228,9 @@ impl MapGraphics {
                 AirMission::Missile => self.air_missiles,
             }
     }
-    /// Whether a battle-plan ribbon of this kind draws.
+    /// Whether a battle-plan ribbon of this kind draws. Trade-route lines share the ribbons'
+    /// arrow manager but are no battle-plan family: their map mode decides them, never these
+    /// settings.
     pub fn plan(&self, kind: PlanKind) -> bool {
         self.battle_plans
             && match kind {
@@ -238,6 +240,7 @@ impl MapGraphics {
                 PlanKind::Invasion => self.naval_invasions,
                 PlanKind::Paradrop => self.paradrops,
                 PlanKind::Raid => self.raid_paths,
+                PlanKind::TradeRoute => false,
             }
     }
     pub fn plan_labels(&self) -> bool {
@@ -309,6 +312,8 @@ pub enum PlanKind {
     Invasion,
     Paradrop,
     Raid,
+    /// Trade-route lines, which share the arrow manager; the map mode shows them.
+    TradeRoute,
 }
 
 inheritable! {

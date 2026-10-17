@@ -31,6 +31,10 @@ pub const INTEL_SHIELD_WINDOW: &str = "counterintelligence_map_icon_entry";
 pub const INTEL_OPERATIVE_WINDOW: &str = "operative_map_icon_entry";
 pub const INTEL_OPERATION_WINDOW: &str = "operation_map_icon_entry";
 pub const INTEL_MORE_WINDOW: &str = "intel_map_icon_more";
+pub const ADJACENCY_RULE_WINDOW: &str = "adjacency_rule_mapicon";
+/// A state's resource icon and the window of each of its rows.
+pub const RESOURCE_WINDOW: &str = "resource_mapicon";
+pub const RESOURCE_ITEM_WINDOW: &str = "resource_mapicon_item";
 
 /// Native templates read once per GUI viewport and retained for every window consumer.
 pub struct WindowCache {
@@ -215,6 +219,9 @@ impl NativeWindows {
             INTEL_OPERATIVE_WINDOW.as_bytes(),
             INTEL_OPERATION_WINDOW.as_bytes(),
             INTEL_MORE_WINDOW.as_bytes(),
+            ADJACENCY_RULE_WINDOW.as_bytes(),
+            RESOURCE_WINDOW.as_bytes(),
+            RESOURCE_ITEM_WINDOW.as_bytes(),
             native_gui::text_sprites::TOOLTIP,
             b"defaultTextBox",
         ] {

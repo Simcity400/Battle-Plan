@@ -49,10 +49,10 @@ pub struct OriginFactors {
     pub bonuses: [i64; 2],
 }
 
-/// One resource in the game's order: base amount, then the origin's
-/// infrastructure and supply-route factors, clamped at zero, minus the cost,
-/// plus the grants. Uses signed i64 with truncating division and wrapping products.
-pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
+/// The unscaled base amount: `(template + pool + additive under the gate) x factor x global
+/// factor`, each product truncated, each factor one plus its modifier and never below zero.
+/// It is also the full amount a resource origin holds for the resource.
+pub fn base_amount(operands: &ResourceOperands) -> i64 {
     let additive = if operands.gate { operands.additive } else { 0 };
     let factor = operands.factor.wrapping_add(ONE).max(0);
     let global = operands.global_factor.wrapping_add(ONE).max(0);
@@ -62,24 +62,38 @@ pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
         .wrapping_add(operands.template)
         .wrapping_mul(factor)
         / ONE;
-    let base = base.wrapping_mul(global) / ONE;
+    base.wrapping_mul(global) / ONE
+}
+
+/// The origin's infrastructure factor: one, plus the level times
+/// `INFRASTRUCTURE_RESOURCE_BONUS`, plus the controller's modifier (scaled by the level when
+/// positive); one without an infrastructure building.
+pub fn infrastructure_factor(infrastructure: Option<(i32, i64)>, bonus: i64) -> i64 {
+    match infrastructure {
+        None => ONE,
+        Some((level, modifier)) => {
+            let level = i64::from(level).wrapping_mul(ONE);
+            let modifier = if modifier > 0 {
+                level.wrapping_mul(modifier) / ONE
+            } else {
+                modifier
+            };
+            modifier
+                .wrapping_add(ONE)
+                .wrapping_add(level.wrapping_mul(bonus) / ONE)
+        }
+    }
+}
+
+/// One resource in the game's order: base amount, then the origin's
+/// infrastructure and supply-route factors, clamped at zero, minus the cost,
+/// plus the grants. Uses signed i64 with truncating division and wrapping products.
+pub fn state_resource_amount(operands: &ResourceOperands) -> i64 {
+    let base = base_amount(operands);
     let (infrastructure, supply) = match operands.origin {
         None => (ONE, ONE),
         Some(origin) => (
-            match origin.infrastructure {
-                None => ONE,
-                Some((level, modifier)) => {
-                    let level = i64::from(level).wrapping_mul(ONE);
-                    let modifier = if modifier > 0 {
-                        level.wrapping_mul(modifier) / ONE
-                    } else {
-                        modifier
-                    };
-                    modifier
-                        .wrapping_add(ONE)
-                        .wrapping_add(level.wrapping_mul(origin.bonuses[0]) / ONE)
-                }
-            },
+            infrastructure_factor(origin.infrastructure, origin.bonuses[0]),
             if origin.supply_route {
                 origin.bonuses[1].wrapping_add(ONE)
             } else {
@@ -252,6 +266,20 @@ impl<'a> StateResources<'a> {
         controller: Option<u32>,
         links: &impl Links,
     ) -> Result<i64, String> {
+        Ok(state_resource_amount(
+            &self.operands(state, resource, controller, links)?,
+        ))
+    }
+
+    /// The operands [`Self::amount`] combines for the state's resource token: what the
+    /// resources map mode's origins read too (the full amount, [`base_amount`], and the grants).
+    pub fn operands(
+        &self,
+        state: u32,
+        resource: u32,
+        controller: Option<u32>,
+        links: &impl Links,
+    ) -> Result<ResourceOperands, String> {
         let inputs = get(&self.resource_inputs, || {
             Ok(table::<tables::StateResourceInputs>(self.frame)?
                 .iter()
@@ -279,7 +307,7 @@ impl<'a> StateResources<'a> {
         })?;
         let stored = resources.get(&(state, resource));
         let operand = |field: fn(&StateResourceRow) -> i64| stored.map_or(0, |row| field(row));
-        Ok(state_resource_amount(&ResourceOperands {
+        Ok(ResourceOperands {
             template: base.get(&(state, resource)).copied().unwrap_or(0),
             pool: operand(|row| row.pool),
             gate: input.gate != 0,
@@ -295,7 +323,7 @@ impl<'a> StateResources<'a> {
             }),
             cost: operand(|row| row.cost),
             grants: self.building_grants(state, resource, controller, links)?,
-        }))
+        })
     }
 
     /// The state's buildings' grants of one resource, with the controller's overrides.

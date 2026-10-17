@@ -380,7 +380,11 @@ fn purchase_parser_preserves_full_typed_id_and_rejects_duplicate_identity() {
     let contract = br#"purchase_contract={
         id={id=4294967295 type=81}
         contract_definition={contract_draft={seller=GER buyer=D01 speed=-1}}
-        delivery_route_handler={efficiency=-0.00001 days=-2147483648}
+        delivery_route_handler={
+            convoy_client={length=4 type=2 equipments={} id={id=90649 type=4713}
+                convoys_subscriber={convoys=1 total=2} country="INS"
+                efficiency=1 efficiency_due_to_lost_convoys=0.96728 request=1}
+            efficiency=-0.00001 sunk_convoys=2.88504 days=-2147483648}
         contract_delivery_state={factory_cic_progress=90071992547.40993 equipment_transfer_progress=0 collected=-1}
         contract_meta={completed=3}
     }"#;
@@ -391,6 +395,17 @@ fn purchase_parser_preserves_full_typed_id_and_rejects_duplicate_identity() {
     let purchases = parsed.purchases.unwrap();
     let id = (u64::from(u32::MAX) << 32) | 81;
     assert_eq!(purchases[&id].route_efficiency_sum.raw, -1);
+    let client = &purchases[&id].client;
+    assert_eq!(client.id, (90649_u64 << 32) | 4713);
+    assert_eq!(client.efficiency.raw, 100_000);
+    assert_eq!(client.efficiency_due_to_lost_convoys.raw, 96_728);
+    assert_eq!(
+        client.convoys,
+        ConvoyCounts {
+            assigned: 1,
+            required: 2
+        }
+    );
     assert_eq!(purchases[&id].route_days, i32::MIN);
     assert_eq!(purchases[&id].completed_deliveries, 3);
     input.truncate(input.len() - 2);
@@ -444,7 +459,7 @@ fn exchanges_preserve_full_ids_negative_deliveries_and_optional_presence() {
             efficiency=1 efficiency_due_to_lost_convoys=-0.00001 delivered=-90071992547.40993
             required_cic=-1 lended_cic=2}
         export={id={id=1 type=4713} efficiency=0 efficiency_due_to_lost_convoys=0 delivered=0
-            required_cic=0 lended_cic=0 convoys_subscriber={}}
+            required_cic=0 lended_cic=0 convoys_subscriber={convoys=0 total=3}}
         produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}
     }} D01={}}"#,
     )
@@ -456,8 +471,15 @@ fn exchanges_preserve_full_ids_negative_deliveries_and_optional_presence() {
         .unwrap();
     assert_eq!(exports[0].id, (u64::from(u32::MAX) << 32) | 4713);
     assert_eq!(exports[0].delivered.raw, -9_007_199_254_740_993);
-    assert!(!exports[0].convoy_subscriber_present);
-    assert!(exports[1].convoy_subscriber_present);
+    // An absent subscriber is nothing assigned and nothing required.
+    assert_eq!(exports[0].convoys, ConvoyCounts::default());
+    assert_eq!(
+        exports[1].convoys,
+        ConvoyCounts {
+            assigned: 0,
+            required: 3
+        }
+    );
     assert!(exports[1].receiver.is_none());
     assert!(exports[1].resource.is_none());
     assert!(parsed.countries[b"D01".as_slice()].exports.is_none());
@@ -480,10 +502,13 @@ fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
                     efficiency=1 efficiency_due_to_lost_convoys=0 delivered=2
                     required_cic=1 lended_cic=0}
                 lend_lease={ receiver="SOV" id={ id=97730 type=4713 }
+                    country="SOV" efficiency=1 efficiency_due_to_lost_convoys=0.5 request=0
+                    convoys_subscriber={ convoys=1 total=4 }
                     total_delivered={ equipment={ id={ id=1723 type=70 } amount=18 }
                         equipment={ id={ id=1722 type=70 } amount=0.5 } allow_zero_entries=no }
                     equipment_sunk={ allow_zero_entries=no } }
                 lend_lease={ receiver="D01" id={ id=97731 type=4713 }
+                    country="D01" efficiency=0.25 efficiency_due_to_lost_convoys=1 request=0
                     total_delivered={ allow_zero_entries=no }
                     equipment_sunk={ equipment={ id={ id=5157 type=70 } amount=3 } allow_zero_entries=no } }
                 produced={test_resource=-0.00001} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}
@@ -500,6 +525,22 @@ fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
     assert_eq!(ger.len(), 2);
     assert_eq!(ger[0].id, (97730_u64 << 32) | 4713);
     assert_eq!(ger[0].receiver, b"SOV");
+    assert_eq!(
+        [
+            ger[0].efficiency.raw,
+            ger[0].efficiency_due_to_lost_convoys.raw
+        ],
+        [100_000, 50_000]
+    );
+    assert_eq!(
+        ger[0].convoys,
+        ConvoyCounts {
+            assigned: 1,
+            required: 4
+        }
+    );
+    assert_eq!(ger[1].efficiency.raw, 25_000);
+    assert_eq!(ger[1].convoys, ConvoyCounts::default());
     assert_eq!(ger[0].delivered.equipment[1].amount.raw, 50_000);
     assert!(ger[0].sunk.equipment.is_empty());
     assert_eq!(ger[1].receiver, b"D01");
@@ -517,7 +558,7 @@ fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
     // An exchange without its pools is refused, not read as empty.
     assert!(
         parse(
-            &parser::parse(br#"countries={GER={resources={lend_lease={ receiver="SOV" id={ id=1 type=4713 } } produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}}}}"#)
+            &parser::parse(br#"countries={GER={resources={lend_lease={ receiver="SOV" id={ id=1 type=4713 } efficiency=1 efficiency_due_to_lost_convoys=1 } produced={} transfer_overlord_subject={} imported={} to_use={ {} {} {} } to_export={} base_export={} exported={}}}}"#)
                 .unwrap()
                 .items
         )
@@ -683,4 +724,30 @@ fn repeated_resource_names_keep_every_occurrence_in_written_order() {
         ]
     );
     assert_eq!(pools.to_use[1].len(), 1);
+}
+
+#[test]
+fn a_convoy_subscriber_needs_both_counts() {
+    let exchange = |subscriber: &str| {
+        let text = format!(
+            "countries={{GER={{resources={{export={{id={{id=1 type=4713}} efficiency=1 efficiency_due_to_lost_convoys=1 delivered=0 required_cic=0 lended_cic=0 {subscriber}}} produced={{}} transfer_overlord_subject={{}} imported={{}} to_use={{ {{}} {{}} {{}} }} to_export={{}} base_export={{}} exported={{}}}}}}}}"
+        );
+        parse(&parser::parse(text.as_bytes()).unwrap().items)
+            .map(|pack| pack.countries[b"GER".as_slice()].exports.as_ref().unwrap()[0].convoys)
+    };
+    assert_eq!(
+        exchange("convoys_subscriber={convoys=2 total=2}").unwrap(),
+        ConvoyCounts {
+            assigned: 2,
+            required: 2
+        }
+    );
+    for subscriber in [
+        "convoys_subscriber={}",
+        "convoys_subscriber={convoys=1}",
+        "convoys_subscriber={total=1}",
+        "convoys_subscriber={convoys=1 total=1} convoys_subscriber={convoys=1 total=1}",
+    ] {
+        assert!(exchange(subscriber).is_err(), "{subscriber}");
+    }
 }

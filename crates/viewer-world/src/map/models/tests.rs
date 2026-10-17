@@ -178,6 +178,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
         visual: false,
         own_radius: 0.0,
         bound: 0.0,
+        convoy_radius: None,
         attachments: 0,
     };
     let mut shard = ModelLibrary {
@@ -376,6 +377,7 @@ fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             visual: false,
             own_radius: radius,
             bound: radius.hypot(1.0),
+            convoy_radius: None,
             attachments: 0,
         }],
         ..ModelLibrary::default()
@@ -1404,4 +1406,14 @@ fn an_animation_a_mod_breaks_is_read_from_the_recording() {
             .animation_refusals
             .contains_key("gfx/models/idle.anim")
     );
+}
+
+#[test]
+fn convoy_collision_radius_is_the_runtime_bounds_three_dimensional_half_diagonal() {
+    let mut reach = Reach::default();
+    reach.collision_point([1., 2., 3.]);
+    reach.collision_point([7., 10., 3.]);
+    assert_eq!(reach.collision_radius(), Some(5.));
+    reach.attachments = 1;
+    assert_eq!(reach.collision_radius(), None); // Attached entity sphere unions need their own proof.
 }

@@ -30,6 +30,48 @@ pub const REGION_MISSIONS_STRIDE: usize = 0x18;
 pub const REGISTERED_MISSIONS: usize = 0x110;
 /// Strategic navy i64 array, constructed in place and indexed by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
+/// Regional convoy records, indexed by the strategic region's stored id: each region's
+/// delivery efficiency for this country's convoys (`REGIONAL_CONVOY_EFFICIENCY`, i64 fixed5),
+/// which a trade-route line compares with the regional bad-efficiency threshold. The daily
+/// update regains it, a convoy sinking lowers it, and growth, load, dynamic reuse and reset
+/// set it.
+pub const REGIONAL_CONVOYS: usize = 0x98;
+pub const REGIONAL_CONVOYS_STRIDE: usize = 0x30;
+pub const REGIONAL_CONVOY_EFFICIENCY: usize = 0x10;
+/// The efficiency the game takes for a region outside the records: full.
+pub const FULL_REGIONAL_CONVOY_EFFICIENCY: i64 = 100_000;
+
+/// The country's regional convoy records, after its navy's identity and owner authenticate.
+pub fn regional_convoys(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    navy: usize,
+    country: ccountry::Country,
+) -> Result<Array, &'static str> {
+    with_identity(memory, base, state, navy, country, None, || {
+        let root = navy
+            .checked_add(REGIONAL_CONVOYS)
+            .ok_or("navy regional convoys root overflow")?;
+        Array::read(memory, root, REGIONAL_CONVOYS_STRIDE)
+            .ok_or("navy regional convoys invalid")
+    })
+}
+
+/// One region's delivery efficiency from [`regional_convoys`]: full outside the records.
+pub fn regional_convoy_efficiency(
+    memory: &impl Memory,
+    records: Array,
+    region: u32,
+) -> Result<i64, &'static str> {
+    let Some(record) = records.element(region, REGIONAL_CONVOYS_STRIDE) else {
+        return Ok(FULL_REGIONAL_CONVOY_EFFICIENCY);
+    };
+    record
+        .checked_add(REGIONAL_CONVOY_EFFICIENCY)
+        .and_then(|address| read::<i64>(memory, address))
+        .ok_or("navy regional convoy efficiency unreadable")
+}
 
 /// The number of missions `navy` has registered in any region ledger
 /// ([`REGISTERED_MISSIONS`]).

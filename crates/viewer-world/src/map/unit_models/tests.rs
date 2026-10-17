@@ -73,6 +73,7 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
             track,
             stages: Vec::new(),
         }],
+        convoys: None,
         owned: BTreeSet::new(),
         report: ModelReport::default(),
     };
@@ -118,6 +119,161 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
 }
 
 use super::*;
+
+#[test]
+fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
+    use crate::map::trade_routes::{ConvoyDefines, ConvoyLine};
+    let assets = UnitModelAssets {
+        disabled: None,
+        ..UnitModelAssets::off(String::new())
+    };
+    let mut prepared = PreparedModels {
+        ships: NavalSources::default(),
+        raid: Vec::new(),
+        convoys: None,
+        placed: Vec::new(),
+        owned: BTreeSet::new(),
+        report: ModelReport::default(),
+    };
+    let defines = ConvoyDefines {
+        scale_factor: 0.3,
+        max: 4,
+        speed: 0.6,
+        sleep: 3.0,
+        route_offset: 0.5,
+        cutoff: 120.0,
+    };
+    // An hour without lines has no convoys to sail.
+    prepared.add_convoys(Vec::new(), defines);
+    assert!(!prepared.has_convoys());
+    prepared.add_convoys(
+        vec![ConvoyLine {
+            entity: "westerngfx_traderoute_convoy".into(),
+            map_width: 100.,
+            points: vec![[0.0, 0.0], [10.0, 0.0]],
+            count: 2,
+            seed: 0,
+        }],
+        defines,
+    );
+    assert!(prepared.has_convoys());
+    // An unchanged hour inherits already-created presentation instead of re-randomizing it.
+    let (lines, defines, fleet) = prepared.convoys.as_mut().unwrap();
+    *fleet.get_mut().unwrap() = Some(crate::map::trade_routes::ConvoyFleet::new(
+        lines,
+        defines,
+        &|| 7,
+        &|_| None,
+        &|_, _| 0.,
+    ));
+    let mut next = PreparedModels {
+        ships: NavalSources::default(),
+        raid: Vec::new(),
+        convoys: None,
+        placed: Vec::new(),
+        owned: BTreeSet::new(),
+        report: ModelReport::default(),
+    };
+    next.add_convoys(lines.clone(), *defines);
+    next.inherit_convoys(&prepared);
+    assert!(next.convoys.as_ref().unwrap().2.lock().unwrap().is_some());
+    assert!(
+        prepared
+            .convoys
+            .as_ref()
+            .unwrap()
+            .2
+            .lock()
+            .unwrap()
+            .is_none()
+    );
+    let mut refused = BTreeMap::new();
+    let hidden = prepared.convoy_units(&assets, 1.0, &|_, _| 0.0, |_| false, &mut refused);
+    assert!(hidden.is_empty());
+    assert!(refused.is_empty());
+    // Shown, both sailing convoys reach the entity, which these assets do not register.
+    let shown = prepared.convoy_units(&assets, 1.0, &|_, _| 0.0, |_| true, &mut refused);
+    assert!(shown.is_empty());
+    assert_eq!(
+        refused.get(
+            "convoy entity westerngfx_traderoute_convoy: creation-time bounding sphere unavailable"
+        ),
+        Some(&2)
+    );
+    assert!(
+        refused
+            .keys()
+            .any(|reason| reason.contains("native counter seed"))
+    );
+}
+
+#[test]
+fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
+    use crate::map::trade_routes::{ConvoyDefines, ConvoyFleet, ConvoyLine};
+    let assets = UnitModelAssets {
+        disabled: None,
+        ..UnitModelAssets::off(String::new())
+    };
+    let lines = vec![ConvoyLine {
+        entity: "synthetic_convoy".into(),
+        map_width: 20_000.0,
+        points: vec![[0.0, 0.0], [10_000.0, 0.0]],
+        count: 1,
+        seed: 0,
+    }];
+    let defines = ConvoyDefines {
+        scale_factor: 1.0,
+        max: 1,
+        speed: 1.0,
+        sleep: 3.0,
+        route_offset: 0.0,
+        cutoff: 120.0,
+    };
+    let height = |_, _| 0.0;
+    let make = || {
+        let mut prepared = PreparedModels {
+            ships: NavalSources::default(),
+            raid: Vec::new(),
+            convoys: None,
+            placed: Vec::new(),
+            owned: BTreeSet::new(),
+            report: ModelReport::default(),
+        };
+        prepared.add_convoys(lines.clone(), defines);
+        prepared
+    };
+    let fleet = || ConvoyFleet::new(&lines, &defines, &|| 7, &|_| Some(1.0), &height);
+    let mut reference = fleet();
+    let initial = reference.advance(&defines, 120.0, &height);
+    let expected = reference.advance(&defines, 121.0, &height);
+    assert_eq!(initial.len(), 1);
+    assert_eq!(expected.len(), 1);
+    assert!((expected[0].position[0] - initial[0].position[0] - 1.0).abs() < 0.001);
+
+    let mut previous = make();
+    let mut sailing = fleet();
+    assert_eq!(sailing.advance(&defines, 120.0, &height), initial);
+    *previous.convoys.as_mut().unwrap().2.get_mut().unwrap() = Some(sailing);
+    let mut next = make();
+    next.inherit_convoys(&previous);
+    next.field(&assets);
+    next.convoy_units(&assets, 121.0, &height, |_| true, &mut BTreeMap::new());
+    let actual = next
+        .convoys
+        .as_ref()
+        .unwrap()
+        .2
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .advance(&defines, 121.0, &height);
+    assert_eq!(actual, expected, "hour upload must not replay elapsed time");
+    // Mesh upload must also leave a new fleet uninitialized.
+    let fresh = make();
+    fresh.field(&assets);
+    assert!(fresh.convoys.as_ref().unwrap().2.lock().unwrap().is_none());
+}
 
 #[test]
 fn recorded_stack_and_combat_roles_select_native_states() {

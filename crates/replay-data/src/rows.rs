@@ -1115,6 +1115,13 @@ BattleSounds = 328 => BattleSound(BattleSoundRow),
 OperativeMissions = 329 => OperativeMission(OperativeMissionRow),
 StrategicOperatives = 330 => StrategicOperative(StrategicOperativeRow),
 AgencyOperationBuffers = 331 => AgencyOperationBuffers(AgencyOperationBuffersRow),
+ResourceOrigins = 332 => ResourceOrigin(ResourceOriginRow),
+ResourceRights = 333 => ResourceRight(ResourceRightRow),
+CountryOilFactors = 334 => CountryOilFactor(CountryOilFactorRow),
+StateTemporaryResources = 335 => StateTemporaryResource(StateTemporaryResourceRow),
+ConvoyClients = 336 => ConvoyClient(ConvoyClientRow),
+TradeRoutes = 337 => TradeRoute(TradeRouteRow),
+RegionalConvoyEfficiency = 338 => RegionalConvoyEfficiency(RegionalConvoyEfficiencyRow),
 }
 impl TableId {
     /// Discard only proven field framing. No old row is decoded, validated as

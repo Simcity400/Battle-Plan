@@ -119,6 +119,8 @@ fn fog_borders_labels_routes_and_straits_follow_the_games_mode_lists() {
     let routes = [Stock::StrategicNavy, Stock::Supply, Stock::Resources];
     assert_eq!(modes_where(|v| v.trade_routes), routes);
     assert_eq!(modes_where(|v| v.adjacency_rules), routes);
+    assert_eq!(modes_where(|v| v.resource_icons), [Stock::Resources]);
+    assert!(!super::of(&MapMode::Scripted("any".into())).resource_icons);
 }
 
 #[test]

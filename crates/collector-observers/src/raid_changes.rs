@@ -25,6 +25,12 @@
 //!   store keeps its value and no base is withdrawn, its setter calls skip
 //!   their own read, since none would mark.
 //!
+//! - `ROUTES` (raw country links), taken by the RaidState job's resources map capture
+//!   ([`crate::extended::raid_state_inputs`]): the route writers name the country holding
+//!   the route, the route update its sender link and the constructors the link RDX points
+//!   to (a route's sender, or a new country resources object's country, whose delivery
+//!   routes it builds); the save loader names every country.
+//!
 //! A take that returns the epoch of the family's previous read certifies
 //! that every state or country no take visited since then is unchanged; the
 //! consumer then reads its daily slice and the marked owners, and anything
@@ -65,16 +71,17 @@ std::thread_local! {
 /// any hook is enabled.
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// Per [`Family`] and [`Counts`] field, cumulative.
-static READS: [[AtomicU64; 7]; 3] = [const { [const { AtomicU64::new(0) }; 7] }; 3];
+static READS: [[AtomicU64; 7]; 4] = [const { [const { AtomicU64::new(0) }; 7] }; 4];
 /// The family's sampled comparisons; the reason index is the [`Family`].
 static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "an unmarked state's raid inputs differ from its previous read",
     "an unmarked country's building resource overrides differ from its previous read",
     "an unmarked country's raid air sites differ from its previous read",
+    "an unmarked country's trade routes differ from its previous read",
 ]);
 /// Ids of the latest complete census per [`Family`] (state slots, country
 /// link ids), for off-thread sizing.
-static IDS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+static IDS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 /// Calls of the strategic-air base and missile list clears, which
 /// strategic-air reset makes before zeroing a country's RaidAirScores pairs in place,
 /// and every change of the hooks' state ([`air_clear_token`]).
@@ -92,6 +99,8 @@ pub enum Family {
     Countries = 1,
     /// RaidAirSites in the `raid_launch` sliced family, by canonical slot.
     Sites = 2,
+    /// TradeRoutes in the `trade_routes` sliced family, by the country holding each route.
+    Routes = 3,
 }
 
 /// One observation domain: the two sets and each writer site's calls.
@@ -99,6 +108,7 @@ pub struct Watches {
     states: DirtySet,
     countries: DirtySet,
     sites: DirtySet,
+    routes: DirtySet,
     calls: [AtomicU64; SITES],
     /// Receivers whose id did not read.
     unnamed: AtomicU64,
@@ -128,6 +138,10 @@ pub enum Target {
     Site(Option<usize>),
     /// Every country's air sites.
     EverySite,
+    /// The raw link of the country holding a route; `None` when it does not read.
+    Route(Option<usize>),
+    /// Every country's routes.
+    EveryRoute,
     /// Nothing any row reads: an origin without a state, link zero.
     Nothing,
 }
@@ -144,6 +158,7 @@ impl Watches {
             states: DirtySet::new(),
             countries: DirtySet::new(),
             sites: DirtySet::new(),
+            routes: DirtySet::new(),
             calls: [const { AtomicU64::new(0) }; SITES],
             unnamed: AtomicU64::new(0),
             buildings: [const { AtomicU64::new(0) }; 2],
@@ -154,8 +169,8 @@ impl Watches {
         }
     }
 
-    fn sets(&self) -> [&DirtySet; 3] {
-        [&self.states, &self.countries, &self.sites]
+    fn sets(&self) -> [&DirtySet; 4] {
+        [&self.states, &self.countries, &self.sites, &self.routes]
     }
 
     fn mark<'a>(&'a self, set: &'a DirtySet, id: Option<usize>) -> Dirty<'a> {
@@ -178,6 +193,8 @@ impl Watches {
             Target::Country(id) => Some(self.mark(&self.countries, id)),
             Target::Site(id) => Some(self.mark(&self.sites, id)),
             Target::EverySite => Some(self.sites.notify_every()),
+            Target::Route(id) => Some(self.mark(&self.routes, id)),
+            Target::EveryRoute => Some(self.routes.notify_every()),
             Target::Nothing => None,
         }
     }
@@ -234,6 +251,7 @@ impl Watches {
             .set_enabled(hooks && self.forwarder.load(Ordering::SeqCst));
         self.countries.set_enabled(hooks);
         self.sites.set_enabled(hooks);
+        self.routes.set_enabled(hooks);
     }
 
     /// An enabled domain with bitmaps for `states` and `countries` ids (the
@@ -244,6 +262,7 @@ impl Watches {
         watches.states.offer(states);
         watches.countries.offer(countries);
         watches.sites.offer(countries);
+        watches.routes.offer(countries);
         for set in watches.sets() {
             set.boundary(false);
         }
@@ -336,6 +355,14 @@ fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Targ
             }
         }
         Receiver::EveryCountry => Target::EverySite,
+        Receiver::Route | Receiver::RouteSender => {
+            match engine::raid_mutations::route_country(&memory, receiver, first, second) {
+                Ok(Some(raw)) => Target::Route(Some(raw as usize)),
+                Ok(None) => Target::Nothing,
+                Err(engine::raid_mutations::Unreadable) => Target::Route(None),
+            }
+        }
+        Receiver::EveryRoute => Target::EveryRoute,
         _ => match engine::raid_mutations::state(&memory, receiver, first, third) {
             Ok(Some(id)) => Target::State(Some(id as usize)),
             Ok(None) => Target::Nothing,
@@ -503,6 +530,7 @@ pub fn status() -> impl serde::Serialize {
         "states": family(Family::States),
         "countries": family(Family::Countries),
         "sites": family(Family::Sites),
+        "routes": family(Family::Routes),
         "events": events,
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "building_writes": WATCHES.buildings[0].load(Ordering::Relaxed),
@@ -564,6 +592,10 @@ impl Hooks {
                 remove_claim as *const () as usize,
                 add_state_strategic_location as *const () as usize,
                 add_province_strategic_location as *const () as usize,
+                update_trade_route as *const () as usize,
+                construct_trade_route as *const () as usize,
+                construct_country_resources as *const () as usize,
+                load_trade_route as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -730,6 +762,14 @@ callback!(remove_claim, 26);
 callback!(add_state_strategic_location, 27);
 // Province strategic-location append (province, location): marks its state.
 callback!(add_province_strategic_location, 28);
+// Route update (route, from, to, force).
+callback!(update_trade_route, 29);
+// Route construction (route, &sender, &receiver).
+callback!(construct_trade_route, 30);
+// Country resources construction (resources, &country): its delivery routes.
+callback!(construct_country_resources, 31);
+// Route save loading (route, reader, token).
+callback!(load_trade_route, 32);
 
 /// `country air pool capacity setter(base, capacity, tag)` stores `capacity` unchanged at the
 /// slot's container capacity (the daily pass stores most containers' value again): only a store
@@ -925,6 +965,24 @@ mod tests {
         );
         assert_eq!(target(Receiver::StrategicAir, 0, 0, 0), Target::Site(None));
         assert_eq!(target(Receiver::EveryCountry, 0, 0, 0), Target::EverySite);
+        // A route writer names the country holding its route: the route's sender link, or
+        // the link RDX points to for the constructors.
+        let mut route = [0_u8; 0x40];
+        route[engine::resource_map::ROUTE_LINKS[0]..][..4].copy_from_slice(&6_u32.to_le_bytes());
+        assert_eq!(
+            target(Receiver::Route, route.as_ptr() as usize, 0, 0),
+            Target::Route(Some(6))
+        );
+        assert_eq!(
+            target(Receiver::RouteSender, 0, tag.as_ptr() as usize, 0),
+            Target::Route(Some(11))
+        );
+        assert_eq!(
+            target(Receiver::RouteSender, 0, zero.as_ptr() as usize, 0),
+            Target::Nothing
+        );
+        assert_eq!(target(Receiver::Route, 0, 0, 0), Target::Route(None));
+        assert_eq!(target(Receiver::EveryRoute, 0, 0, 0), Target::EveryRoute);
     }
 
     /// The family a site's receiver marks.
@@ -935,6 +993,7 @@ mod tests {
             | Receiver::CountryTag
             | Receiver::EveryCountry
             | Receiver::PoolCapacity => Family::Sites,
+            Receiver::Route | Receiver::RouteSender | Receiver::EveryRoute => Family::Routes,
             _ => Family::States,
         }
     }
@@ -944,7 +1003,12 @@ mod tests {
     /// receiver moves its set's epoch only.
     #[test]
     fn each_site_marks_its_set() {
-        const FAMILIES: [Family; 3] = [Family::States, Family::Countries, Family::Sites];
+        const FAMILIES: [Family; 4] = [
+            Family::States,
+            Family::Countries,
+            Family::Sites,
+            Family::Routes,
+        ];
         for (index, (mutation, receiver)) in MUTATIONS.iter().enumerate() {
             let watches = Watches::enabled(64, 64);
             let epochs = FAMILIES.map(|family| take(&watches, family).0.unwrap());
@@ -953,6 +1017,7 @@ mod tests {
                 Family::States => Target::State(Some(9)),
                 Family::Countries => Target::Country(Some(9)),
                 Family::Sites => Target::Site(Some(9)),
+                Family::Routes => Target::Route(Some(9)),
             };
             drop(watches.notify(index, named));
             for (other, epoch) in FAMILIES.into_iter().zip(epochs) {
@@ -968,6 +1033,7 @@ mod tests {
                 Family::States => Target::State(None),
                 Family::Countries => Target::Country(None),
                 Family::Sites => Target::Site(None),
+                Family::Routes => Target::Route(None),
             };
             drop(watches.notify(index, unnamed));
             for (other, epoch) in FAMILIES.into_iter().zip(epochs) {

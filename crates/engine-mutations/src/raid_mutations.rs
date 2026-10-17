@@ -127,11 +127,19 @@ pub enum Receiver {
     PoolCapacity,
     /// RCX is a province; its `cprovince::STATE` names the state.
     Province,
+    /// RCX is a trade route; its sender link (`resource_map::ROUTE_LINKS[0]`) names the
+    /// country holding it.
+    Route,
+    /// RDX points to the raw link of the country that sends every route being built: a
+    /// route's sender, or a new country resources object's country, whose delivery routes
+    /// it builds.
+    RouteSender,
+    /// Every country's routes: the save loader.
+    EveryRoute,
 }
 
-/// The raid state sites, the site list sites, the claim sites, then the
-/// strategic-location sites.
-pub const MUTATIONS: [(MutationSite, Receiver); 29] = [
+/// The raid state sites, site list sites, claim sites, strategic-location sites, then route sites.
+pub const MUTATIONS: [(MutationSite, Receiver); 33] = [
     // Refresh resource gates (state).
     (
         MutationSite {
@@ -482,7 +490,79 @@ pub const MUTATIONS: [(MutationSite, Receiver); 29] = [
         },
         Receiver::Province,
     ),
+    // Route update (route, from, to, force): the only caller of both path builders; it also
+    // sets the route's kind.
+    (
+        MutationSite {
+            name: "update_trade_route",
+            rva: 0xca_d170,
+            sentinel: [
+                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x20, 0x4c, 0x89, 0x40, 0x18, 0x55, 0x56, 0x57,
+                0x41, 0x54,
+            ],
+        },
+        Receiver::Route,
+    ),
+    // Route construction (route, &sender, &receiver): an empty route of no kind.
+    (
+        MutationSite {
+            name: "construct_trade_route",
+            rva: 0xc9_58c0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0xc6, 0x41,
+                0x08, 0x00,
+            ],
+        },
+        Receiver::RouteSender,
+    ),
+    // Country resources construction (resources, &country): builds the country's delivery
+    // routes in place, one per importer slot.
+    (
+        MutationSite {
+            name: "construct_country_resources",
+            rva: 0xc9_5280,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x20, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
+                0x54, 0x41,
+            ],
+        },
+        Receiver::RouteSender,
+    ),
+    // Route save loading (route, reader, token), once per saved field.
+    (
+        MutationSite {
+            name: "load_trade_route",
+            rva: 0xca_8b50,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+                0x41, 0x57,
+            ],
+        },
+        Receiver::EveryRoute,
+    ),
 ];
+
+/// The [`MUTATIONS`] index of the first trade-route writer, after the claim writers.
+pub const FIRST_ROUTE_SITE: usize = 29;
+
+/// The raw link of the country holding the route a route writer names: the route's sender
+/// for [`Receiver::Route`], the link RDX points to for [`Receiver::RouteSender`].
+/// `Ok(None)` for link zero, which no country holds; `Err` when it does not read.
+pub fn route_country(
+    memory: &impl crate::Memory,
+    receiver: Receiver,
+    first: usize,
+    second: usize,
+) -> Result<Option<u32>, Unreadable> {
+    let link = match receiver {
+        Receiver::Route => first.checked_add(crate::resource_map::ROUTE_LINKS[0]),
+        Receiver::RouteSender => Some(second),
+        _ => None,
+    };
+    link.and_then(|address| crate::read::<u32>(memory, address))
+        .map(|raw| (raw != 0).then_some(raw))
+        .ok_or(Unreadable)
+}
 
 /// Daily base-capacity pass (air, pairs), calling the capacity setter once
 /// per base/country pair. Only strategic-air daily update calls it, in the
@@ -859,6 +939,55 @@ mod tests {
         }
     }
 
+    /// A route writer names the country holding its route: the route's sender link, or the
+    /// link RDX points to for the constructors; link zero names nothing.
+    #[test]
+    fn route_writers_name_the_country_holding_the_route() {
+        let base = 0x1000;
+        let mut bytes = vec![0_u8; 0x400];
+        let route = 0x100;
+        bytes[route + crate::resource_map::ROUTE_LINKS[0]..][..4]
+            .copy_from_slice(&9_u32.to_le_bytes());
+        bytes[route + crate::resource_map::ROUTE_LINKS[1]..][..4]
+            .copy_from_slice(&5_u32.to_le_bytes());
+        let link = 0x300;
+        bytes[link..][..4].copy_from_slice(&7_u32.to_le_bytes());
+        let memory = SliceMemory {
+            base,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            route_country(&memory, Receiver::Route, base + route, 0),
+            Ok(Some(9))
+        );
+        assert_eq!(
+            route_country(&memory, Receiver::RouteSender, 0, base + link),
+            Ok(Some(7))
+        );
+        assert_eq!(
+            route_country(&memory, Receiver::RouteSender, 0, base + 0x380),
+            Ok(None)
+        );
+        assert_eq!(
+            route_country(&memory, Receiver::Route, 0x10, 0),
+            Err(Unreadable)
+        );
+        assert_eq!(
+            route_country(&memory, Receiver::EveryRoute, base + route, base + link),
+            Err(Unreadable)
+        );
+        for (site, receiver) in &MUTATIONS[FIRST_ROUTE_SITE..] {
+            assert!(
+                matches!(
+                    receiver,
+                    Receiver::Route | Receiver::RouteSender | Receiver::EveryRoute
+                ),
+                "{}",
+                site.name
+            );
+        }
+    }
+
     /// A state site names its state through `cstate::ID`, the pool method
     /// through the pool's offset in its state, the origin constructor through
     /// `r8` and the destructor through `cresource_origin::STATE`; a country site
@@ -970,7 +1099,7 @@ mod tests {
         // The strategic-location writers name the state, directly or
         // through the province.
         assert_eq!(
-            MUTATIONS[FIRST_STRATEGIC_LOCATION_SITE..]
+            MUTATIONS[FIRST_STRATEGIC_LOCATION_SITE..FIRST_ROUTE_SITE]
                 .iter()
                 .map(|(_, receiver)| *receiver)
                 .collect::<Vec<_>>(),

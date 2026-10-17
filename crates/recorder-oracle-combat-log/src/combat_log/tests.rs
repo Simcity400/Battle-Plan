@@ -821,7 +821,7 @@ fn a_saved_reason_outside_the_arrays_is_refused() {
 fn lend_lease_compares_every_saved_amount_and_receiver() {
     let exchange = |sunk: &str| {
         format!(
-            "resources={{ lend_lease={{ receiver=\"SOV\" id={{ id=97730 type=4713 }} total_delivered={{ equipment={{ id={{ id=1723 type=70 }} amount=18 }} allow_zero_entries=no }} equipment_sunk={{ {sunk} allow_zero_entries=no }} }} produced={{}} transfer_overlord_subject={{}} imported={{}} to_use={{ {{}} {{}} {{}} }} to_export={{}} base_export={{}} exported={{}} }}"
+            "resources={{ lend_lease={{ receiver=\"SOV\" id={{ id=97730 type=4713 }} efficiency=1 efficiency_due_to_lost_convoys=1 total_delivered={{ equipment={{ id={{ id=1723 type=70 }} amount=18 }} allow_zero_entries=no }} equipment_sunk={{ {sunk} allow_zero_entries=no }} }} produced={{}} transfer_overlord_subject={{}} imported={{}} to_use={{ {{}} {{}} {{}} }} to_export={{}} base_export={{}} exported={{}} }}"
         )
     };
     let rows = vec![

@@ -1993,7 +1993,12 @@ impl Scene {
         // arrow colour's, so the layer factor is 1.
         if let Some(orders) = &mut self.orders {
             let graphics = self.graphics;
-            orders.prepare(camera, size, &offsets, |kind| graphics.plan(kind));
+            // Trade-route lines share the arrow manager; the map mode shows them.
+            let trade_routes = self.visibility.trade_routes;
+            orders.prepare(camera, size, &offsets, |kind| match kind {
+                dashboard_core::protocol::PlanKind::TradeRoute => trade_routes,
+                kind => graphics.plan(kind),
+            });
             for ((pass, labels), mode) in self
                 .order_label_pass
                 .iter_mut()
@@ -2231,49 +2236,54 @@ impl Scene {
                     }
                     mark(&mut encoder, "shadow_tree_casters");
                     // Plans cast shadows exactly while they draw.
-                    PlanSubmissions::new(self.orders.as_ref(), &self.graphics, &overlay)
-                        .cast_shadows(|plans| {
-                            let Some(mut pass) =
-                                self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
-                            else {
-                                return Ok(());
-                            };
-                            for (view, offset) in offsets.iter().enumerate() {
-                                let mut matrix = shadow_prepared.view_projection;
-                                for (value, axis) in
-                                    matrix[3].iter_mut().zip(shadow_prepared.view_projection[0])
-                                {
-                                    *value += axis * offset;
-                                }
-                                let scene = crate::map::arrow_shader::shadow_constants(
-                                    native_frame_bytes[view],
-                                    matrix,
-                                );
-                                plans.draw_shadow(
-                                    arena,
-                                    &mut pass,
-                                    crate::map::order_pass::NativeInputs {
-                                        retained: None,
-                                        scene: &scene,
-                                        grid: bytemuck::bytes_of(&globals.light_grid),
-                                        textures: [
-                                            self.shadow.lit_texture(),
-                                            &self.terrain_ids.view,
-                                            &self.heightmap.view,
-                                            &self.atlas_normal.view,
-                                            &self.height_normal.view,
-                                            &self.lean1.view,
-                                            &self.lean2.view,
-                                            &self.point_light_maps.data.view,
-                                            &self.point_light_maps.indices.view,
-                                        ],
-                                    },
-                                    view,
-                                    animation_time,
-                                )?;
+                    PlanSubmissions::new(
+                        self.orders.as_ref(),
+                        &self.graphics,
+                        &overlay,
+                        self.visibility.trade_routes,
+                    )
+                    .cast_shadows(|plans| {
+                        let Some(mut pass) =
+                            self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
+                        else {
+                            return Ok(());
+                        };
+                        for (view, offset) in offsets.iter().enumerate() {
+                            let mut matrix = shadow_prepared.view_projection;
+                            for (value, axis) in
+                                matrix[3].iter_mut().zip(shadow_prepared.view_projection[0])
+                            {
+                                *value += axis * offset;
                             }
-                            Ok(())
-                        })?;
+                            let scene = crate::map::arrow_shader::shadow_constants(
+                                native_frame_bytes[view],
+                                matrix,
+                            );
+                            plans.draw_shadow(
+                                arena,
+                                &mut pass,
+                                crate::map::order_pass::NativeInputs {
+                                    retained: None,
+                                    scene: &scene,
+                                    grid: bytemuck::bytes_of(&globals.light_grid),
+                                    textures: [
+                                        self.shadow.lit_texture(),
+                                        &self.terrain_ids.view,
+                                        &self.heightmap.view,
+                                        &self.atlas_normal.view,
+                                        &self.height_normal.view,
+                                        &self.lean1.view,
+                                        &self.lean2.view,
+                                        &self.point_light_maps.data.view,
+                                        &self.point_light_maps.indices.view,
+                                    ],
+                                },
+                                view,
+                                animation_time,
+                            )?;
+                        }
+                        Ok(())
+                    })?;
                     mark(&mut encoder, "shadow_arrow_casters");
                 }
                 // Clear the screen target independently of both gates.
@@ -2685,7 +2695,13 @@ impl Scene {
                            mode: ArrowMode,
                            label_index: usize|
          -> io::Result<()> {
-            PlanSubmissions::new(self.orders.as_ref(), &self.graphics, &overlay).draw(|plans| {
+            PlanSubmissions::new(
+                self.orders.as_ref(),
+                &self.graphics,
+                &overlay,
+                self.visibility.trade_routes,
+            )
+            .draw(|plans| {
                 for view in 0..offsets.len() {
                     plans.draw(
                         arena,

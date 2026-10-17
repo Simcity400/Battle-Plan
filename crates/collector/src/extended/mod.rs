@@ -722,6 +722,7 @@ pub(crate) use collector_projects::raid_intel_carry;
 pub use collector_projects::raid_target_statuses;
 pub use collector_raids::raid_launch_inputs;
 pub use collector_raids::raid_state_inputs;
+pub use collector_raids::resource_map;
 pub use collector_railway_guns::railway_guns;
 pub use collector_session::session;
 pub use collector_ship_models::ship_models;
@@ -788,6 +789,7 @@ packs!(
     visibility @helper,
     raid_target_statuses @helper,
     raid_state_inputs,
+    resource_map,
     raid_launch_inputs,
     slice_reads,
     faction_theatres,
@@ -1170,6 +1172,7 @@ impl Captured {
         self.air_histories.prepare_hour(hour, force_full);
         self.raid_launch_inputs.reset_selection(hour, force_full);
         self.raid_state_inputs.reset_selections(hour, force_full);
+        self.resource_map.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
         self.combat_log.prepare_hour(hour, force_full);
         self.naval_mission_inputs.reset_selection(hour, force_full);
@@ -1524,6 +1527,7 @@ impl Captured {
             crate::slicing::RAID_LAUNCH => self.raid_launch_inputs.selection(),
             crate::slicing::RAID_STATE => self.raid_state_inputs.state_selection(),
             crate::slicing::RAID_BUILDINGS => self.raid_state_inputs.country_selection(),
+            crate::slicing::TRADE_ROUTES => self.resource_map.route_selection(),
             crate::slicing::RELATIONS => self.intel.relations_selection(),
             crate::slicing::STABILITY => self.country_stability.selection(),
             crate::slicing::COMBAT_LOG => self.combat_log.selection(),
@@ -3018,7 +3022,7 @@ impl Captured {
         } else {
             #[cfg(test)]
             {
-                staggered!(raid_state_inputs);
+                staggered!(raid_state_inputs, resource_map);
             }
             #[cfg(not(test))]
             {

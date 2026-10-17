@@ -129,12 +129,57 @@ pub struct CountryCollaboration {
 /// (one-based resource database index, amount) elements in native order.
 pub type BuildingOverride = (Vec<u8>, Vec<(i32, Decimal)>);
 
+/// A saved trade route (`delivery_route`): `kind` 0 none, 1 land, 2 naval.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedRoute {
+    pub kind: u8,
+    pub from_state: Option<u32>,
+    pub to_state: Option<u32>,
+    pub from_port: Option<u32>,
+    pub to_port: Option<u32>,
+    /// `land_path`: state ids.
+    pub land_path: Vec<u32>,
+    /// `naval_path`: strategic region ids.
+    pub naval_path: Vec<u32>,
+}
+
+/// State endpoints of a shared country delivery route, keyed by its receiving country.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedDeliveryRoute {
+    pub from_state: Option<u32>,
+    pub to_state: Option<u32>,
+}
+
+/// One saved resource origin, as the resources map reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedOrigin {
+    pub state: Option<u32>,
+    /// The convoy client's two efficiency factors: its first `efficiency` and its
+    /// `efficiency_due_to_lost_convoys`.
+    pub client_efficiency: [Option<Decimal>; 2],
+    /// The convoy client's `convoys_subscriber`.
+    pub convoys: super::economy::ConvoyCounts,
+    /// The origin's stored efficiency product: its second `efficiency`.
+    pub efficiency: Option<Decimal>,
+    pub route: Option<SavedRoute>,
+    /// `given_resource_rights`: (resource name, holder tag), in the serializer's
+    /// resource-name order, which does not retain the live list order.
+    pub rights: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
 /// A country's saved `resources` block, reduced to what the raid state
-/// inputs read.
+/// inputs and the resources map read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryResources {
     /// Each `origin`'s `state`, written only when not null, in native order.
     pub origin_states: Vec<u32>,
+    /// Each `origin`, in native order.
+    pub origins: Vec<SavedOrigin>,
+    /// Each `extra_resource_origin`: the origin this country holds by resource rights,
+    /// and the giving country's tag.
+    pub rights_origins: Vec<(SavedOrigin, Vec<u8>)>,
+    /// `delivery_routes`: receiver tag to the shared route's saved state endpoints.
+    pub delivery_routes: BTreeMap<Vec<u8>, SavedDeliveryRoute>,
     /// `modify_building_resources` in native order. An entry can be empty.
     pub building_overrides: Vec<BuildingOverride>,
 }
@@ -169,8 +214,38 @@ fn country_resources(fields: &[Item]) -> io::Result<CountryResources> {
     for item in fields {
         match item.key.as_deref() {
             Some(b"origin") => {
-                if let Some(state) = field(block(&item.value)?, b"state")? {
-                    out.origin_states.push(integer(scalar(state)?)?);
+                let origin = saved_origin(block(&item.value)?)?;
+                if let Some(state) = origin.state {
+                    out.origin_states.push(state);
+                }
+                out.origins.push(origin);
+            }
+            Some(b"extra_resource_origin") => {
+                let fields = block(&item.value)?;
+                let origin = saved_origin(required_block(fields, b"origin")?)?;
+                out.rights_origins
+                    .push((origin, super::required_bytes(fields, b"giver")?));
+            }
+            Some(b"delivery_routes") => {
+                for entry in block(&item.value)? {
+                    let receiver = entry
+                        .key
+                        .clone()
+                        .filter(|key| !key.is_empty())
+                        .ok_or_else(|| invalid("shared delivery route lacks a receiver tag"))?;
+                    let fields = block(&entry.value)?;
+                    let endpoint = |key: &[u8]| -> io::Result<Option<u32>> {
+                        field(fields, key)?
+                            .map(|value| integer(scalar(value)?))
+                            .transpose()
+                    };
+                    let route = SavedDeliveryRoute {
+                        from_state: endpoint(b"from_state")?,
+                        to_state: endpoint(b"to_state")?,
+                    };
+                    if out.delivery_routes.insert(receiver, route).is_some() {
+                        return Err(invalid("duplicate shared delivery route receiver"));
+                    }
                 }
             }
             Some(b"modify_building_resources") => {
@@ -194,6 +269,70 @@ fn country_resources(fields: &[Item]) -> io::Result<CountryResources> {
         }
     }
     Ok(out)
+}
+
+/// An `origin` block. Its convoy client and the origin itself each write `efficiency`:
+/// the first is the client's, the second the origin's stored product.
+fn saved_origin(fields: &[Item]) -> io::Result<SavedOrigin> {
+    let mut out = SavedOrigin {
+        convoys: super::economy::convoy_counts(fields)?,
+        ..SavedOrigin::default()
+    };
+    let mut efficiencies = 0;
+    for item in fields {
+        match item.key.as_deref() {
+            Some(b"state") => out.state = Some(integer(scalar(&item.value)?)?),
+            Some(b"efficiency") => {
+                let value = Decimal::parse(scalar(&item.value)?)?;
+                match efficiencies {
+                    0 => out.client_efficiency[0] = Some(value),
+                    1 => out.efficiency = Some(value),
+                    _ => return Err(invalid("resource origin writes three efficiencies")),
+                }
+                efficiencies += 1;
+            }
+            Some(b"efficiency_due_to_lost_convoys") => {
+                out.client_efficiency[1] = Some(Decimal::parse(scalar(&item.value)?)?);
+            }
+            Some(b"delivery_route") => out.route = Some(saved_route(block(&item.value)?)?),
+            Some(b"given_resource_rights") => {
+                for right in block(&item.value)? {
+                    if right.key.is_some() {
+                        return Err(invalid("a resource right is keyed"));
+                    }
+                    let [resource, holder] = block(&right.value)? else {
+                        return Err(invalid("a resource right is not a resource and a holder"));
+                    };
+                    if resource.key.is_some() || holder.key.is_some() {
+                        return Err(invalid("a resource right's parts are keyed"));
+                    }
+                    out.rights.push((
+                        scalar(&resource.value)?.to_vec(),
+                        scalar(&holder.value)?.to_vec(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn saved_route(fields: &[Item]) -> io::Result<SavedRoute> {
+    let optional = |key: &[u8]| -> io::Result<Option<u32>> {
+        field(fields, key)?
+            .map(|value| integer(scalar(value)?))
+            .transpose()
+    };
+    Ok(SavedRoute {
+        kind: optional(b"type")?.unwrap_or(0) as u8,
+        from_state: optional(b"from_state")?,
+        to_state: optional(b"to_state")?,
+        from_port: optional(b"from_port")?,
+        to_port: optional(b"to_port")?,
+        land_path: super::integer_list(fields, b"land_path")?,
+        naval_path: super::integer_list(fields, b"naval_path")?,
+    })
 }
 
 fn number<T: std::str::FromStr>(items: &[Item], key: &[u8]) -> io::Result<T> {

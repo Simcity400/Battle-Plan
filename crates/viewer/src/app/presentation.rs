@@ -435,7 +435,7 @@ impl Viewer {
             building_warnings,
             trains,
             aircraft,
-            units,
+            mut units,
             orders,
             effects,
             impacts,
@@ -510,6 +510,11 @@ impl Viewer {
             UnitRestart::Keep => {}
             UnitRestart::ViewingCountry => scene.restart_unit_models(Some(units.owned())),
             UnitRestart::All => scene.restart_unit_models(None),
+        }
+        if matches!(unit_restart, UnitRestart::Keep)
+            && let Some(previous) = &self.unit_models
+        {
+            units.inherit_convoys(previous);
         }
         let model_warnings = units.report.warnings();
         retired.push(self.unit_models.replace(units));

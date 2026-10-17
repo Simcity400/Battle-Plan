@@ -15,6 +15,7 @@ use collector_test_support as _;
 
 pub mod raid_launch_inputs;
 pub mod raid_state_inputs;
+pub mod resource_map;
 
 #[cfg(test)]
 #[global_allocator]

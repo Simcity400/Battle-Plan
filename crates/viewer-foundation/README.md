@@ -8,6 +8,8 @@ The crate also owns shared engagement and retained-icon history reads, shared re
 
 Content comes from installed-content and recorded tables from replay. The crate has no dependency on viewer or its feature implementations. The host owns ordered asset loading, aggregate view state, documents and control of the recording-wide engagement pass.
 
+[Resource origins](src/resource_origins.rs) answer what the resources map mode reads of an hour: which states carry a resource icon, whose origin each resource reads under resource rights, and each resource's nominal and delivered amounts from the recorded origins, rights, oil factors, temporary resources and the shared state resource operands; the resource icons and the resources mode's hover both use them.
+
 Finalized stack-anchor lookup is shared by counter grids and selected movement products, preserving authored slots, victory-point inheritance and seeded defaults.
 
 Synthetic GUI, table, raster, localisation and GPU fixtures used by other viewer crates are available through `test-support`. `slow-tests` preserves the gating of installation and GPU tests. Follow the workspace [working rules](../../AGENTS.md).

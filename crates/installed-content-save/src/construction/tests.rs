@@ -56,6 +56,84 @@ fn garrison_equipment_preserves_order_duplicates_extrema_and_missing_objects() {
 }
 
 #[test]
+fn a_resource_origin_keeps_its_two_efficiencies_convoys_route_and_rights() {
+    let saved = pack(
+        r#"
+        countries={GER={resources={
+            origin={id={id=1 type=4713} country="GER" efficiency=0.9 efficiency_due_to_lost_convoys=0.5 request=0 state=119
+                resources={steel=3} efficiency=0.45
+                delivery_route={type=2 from_state=119 to_state=64 from_port=3379 to_port=6384 sender="GER" receiver="GER" convoys_owner="GER" naval_path={ 43 44 } dirty=no}
+                given_resource_rights={ { steel "AFG" } { oil "GER" } }
+                convoys_subscriber={ convoys=2 total=5 }
+                destination=64}
+            extra_resource_origin={origin={id={id=2 type=4713} country="GER" efficiency=1 efficiency_due_to_lost_convoys=1 state=267 efficiency=1
+                delivery_route={type=1 from_state=267 to_state=64 land_path={ 267 415 64 } dirty=no}} giver="AFG"}
+        }}}
+        states={}
+        provinces={}
+    "#,
+    )
+    .unwrap();
+    let germany = &saved.country_resources[b"GER".as_slice()];
+    let [origin] = germany.origins.as_slice() else {
+        panic!("{:?}", germany.origins);
+    };
+    assert_eq!(origin.state, Some(119));
+    assert_eq!(
+        origin
+            .client_efficiency
+            .each_ref()
+            .map(|value| value.as_ref().map(|value| value.raw)),
+        [Some(90_000), Some(50_000)]
+    );
+    assert_eq!(
+        origin.efficiency.as_ref().map(|value| value.raw),
+        Some(45_000)
+    );
+    assert_eq!(
+        origin.convoys,
+        crate::economy::ConvoyCounts {
+            assigned: 2,
+            required: 5
+        }
+    );
+    assert_eq!(
+        origin.route,
+        Some(SavedRoute {
+            kind: 2,
+            from_state: Some(119),
+            to_state: Some(64),
+            from_port: Some(3379),
+            to_port: Some(6384),
+            land_path: vec![],
+            naval_path: vec![43, 44],
+        })
+    );
+    assert_eq!(
+        origin.rights,
+        [
+            (b"steel".to_vec(), b"AFG".to_vec()),
+            (b"oil".to_vec(), b"GER".to_vec())
+        ]
+    );
+    let [(held, giver)] = germany.rights_origins.as_slice() else {
+        panic!("{:?}", germany.rights_origins);
+    };
+    assert_eq!(giver.as_slice(), b"AFG");
+    assert_eq!(held.state, Some(267));
+    // The writer omits the subscriber exactly when nothing is required.
+    assert_eq!(held.convoys, crate::economy::ConvoyCounts::default());
+    assert_eq!(
+        held.client_efficiency
+            .each_ref()
+            .map(|value| value.as_ref().map(|value| value.raw)),
+        [Some(100_000), Some(100_000)]
+    );
+    assert_eq!(held.route.as_ref().unwrap().land_path, [267, 415, 64]);
+    assert_eq!(germany.origin_states, [119]);
+}
+
+#[test]
 fn country_resources_keep_origin_states_and_override_entries_in_order() {
     let saved = pack(
         r#"
@@ -314,4 +392,54 @@ fn railway_applies_only_serializer_proven_omissions_and_refuses_precision_loss()
     let mut fields = fields;
     fields.retain(|item| item.key.as_deref() != Some(b"remaining_hours"));
     assert!(railway(b"GER", 0, &fields).is_err());
+}
+
+#[test]
+fn shared_delivery_routes_keep_receiver_keys_and_exact_optional_state_endpoints() {
+    let saved = pack(
+        r#"countries={AA={resources={delivery_routes={
+        BB={type=1 from_state=11 to_state=22 land_path={11 22}}
+        CC={type=2 from_state=33 to_state=44 from_port=100 to_port=200 naval_path={7}}
+        DD={from_state=0} EE={}
+    }}} ZZ={resources={}}} states={} provinces={}"#,
+    )
+    .unwrap();
+    let routes = &saved.country_resources[b"AA".as_slice()].delivery_routes;
+    assert_eq!(
+        routes[b"BB".as_slice()],
+        SavedDeliveryRoute {
+            from_state: Some(11),
+            to_state: Some(22)
+        }
+    );
+    assert_eq!(
+        routes[b"CC".as_slice()],
+        SavedDeliveryRoute {
+            from_state: Some(33),
+            to_state: Some(44)
+        }
+    );
+    assert_eq!(
+        routes[b"DD".as_slice()],
+        SavedDeliveryRoute {
+            from_state: Some(0),
+            to_state: None
+        }
+    );
+    assert_eq!(routes[b"EE".as_slice()], SavedDeliveryRoute::default());
+    assert!(
+        saved.country_resources[b"ZZ".as_slice()]
+            .delivery_routes
+            .is_empty()
+    );
+    for malformed in [
+        "BB={} BB={}",
+        "{}",
+        "BB={from_state=bad}",
+        "BB={to_state=1 to_state=2}",
+    ] {
+        let input = "countries={AA={resources={delivery_routes={ENTRIES}}}} states={} provinces={}"
+            .replace("ENTRIES", malformed);
+        assert!(pack(&input).is_err());
+    }
 }

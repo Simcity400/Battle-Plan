@@ -170,6 +170,12 @@ impl MapIcons {
         counters
             .gui
             .load(layers, &animated_text.gui_assets(), &mut images)?;
+        // The resource icons' rows draw the resource strip inline.
+        counters.gui.load(
+            layers,
+            &viewer_world::map::resource_icons::gui_assets(),
+            &mut images,
+        )?;
         if images.len() >= DYNAMIC_BASE {
             return Err(invalid("more static icon pages than texture ids"));
         }

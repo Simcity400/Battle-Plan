@@ -3,11 +3,14 @@
 //! Each verdict (contested, enemy, friend, neutral) has four permission bits,
 //! all initially set and cleared or set one key at a time: army 1, navy 2,
 //! submarine 4, trade 8. Adjacencies name a rule; the first of that name answers.
+//!
+//! A rule's `icon` province and `offset` place its map icon ([`IconPlacement`]); they are read
+//! apart from the permissions, so a rule refused for another field still keeps its icon.
 
 use std::io;
 
 use crate::{
-    ResolvedLayers,
+    ResolvedLayers, crt,
     fields::{self, block, boolean, invalid, key_str},
     parser::{self, Item, Value},
     terrain::DefaultMap,
@@ -28,7 +31,15 @@ pub const NAVY: u8 = 2;
 pub const SUBMARINE: u8 = 4;
 pub const TRADE: u8 = 8;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where a rule's map icon stands: the `icon` province's position plus the authored 3-D
+/// `offset` (zero when the rule names none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IconPlacement {
+    pub province: u32,
+    pub offset: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct AdjacencyRule {
     pub name: String,
     /// Permission bits by [`Verdict`].
@@ -42,6 +53,9 @@ pub struct AdjacencyRule {
     /// Why this rule is refused: a field the port cannot read. A crossing
     /// that names it is then unknown, never guessed.
     pub unsupported: Option<String>,
+    /// The rule's map icon: `None` when it names no `icon` province, or why its `icon` or
+    /// `offset` cannot be read.
+    pub icon: Result<Option<IconPlacement>, String>,
 }
 
 impl AdjacencyRule {
@@ -84,7 +98,8 @@ fn rule(items: &[Item]) -> AdjacencyRule {
         .and_then(Value::scalar_str)
         .unwrap_or_default()
         .to_owned();
-    read_rule(items).unwrap_or_else(|error| AdjacencyRule {
+    let icon = icon(items, &name).map_err(|error| error.to_string());
+    let mut rule = read_rule(items).unwrap_or_else(|error| AdjacencyRule {
         name,
         permissions: [0; 4],
         required_provinces: Vec::new(),
@@ -93,7 +108,44 @@ fn rule(items: &[Item]) -> AdjacencyRule {
         is_friend: Triggers::default(),
         is_neutral: Triggers::default(),
         unsupported: Some(error.to_string()),
-    })
+        icon: Ok(None),
+    });
+    rule.icon = icon;
+    rule
+}
+
+/// The rule's `icon` province and `offset`, each the last assignment of its key. The
+/// province is a signed integer scan; the offset is three numbers.
+fn icon(items: &[Item], name: &str) -> io::Result<Option<IconPlacement>> {
+    let what = |key: &str| format!("adjacency_rule {name:?} {key}");
+    let Some(province) = fields::last(items, b"icon") else {
+        return Ok(None);
+    };
+    let scalar = province
+        .scalar()
+        .ok_or_else(|| invalid(format!("{} is not a scalar", what("icon"))))?;
+    let province = crt::scan_i32(scalar)
+        .stored()
+        .and_then(|province| u32::try_from(province).ok())
+        .ok_or_else(|| invalid(format!("{} is not a province id", what("icon"))))?;
+    let offset = match fields::last(items, b"offset") {
+        None => [0.0; 3],
+        Some(value) => {
+            let what = what("offset");
+            let numbers = block(value, &what)?
+                .iter()
+                .map(|item| {
+                    if item.key.is_some() {
+                        return Err(invalid(format!("{what} holds a keyed entry")));
+                    }
+                    fields::number(&item.value, &what)
+                })
+                .collect::<io::Result<Vec<f32>>>()?;
+            <[f32; 3]>::try_from(numbers.as_slice())
+                .map_err(|_| invalid(format!("{what} holds {} numbers, not 3", numbers.len())))?
+        }
+    };
+    Ok(Some(IconPlacement { province, offset }))
 }
 
 fn read_rule(items: &[Item]) -> io::Result<AdjacencyRule> {
@@ -106,6 +158,7 @@ fn read_rule(items: &[Item]) -> io::Result<AdjacencyRule> {
         is_friend: Triggers::default(),
         is_neutral: Triggers::default(),
         unsupported: None,
+        icon: Ok(None),
     };
     for item in items {
         let key = key_str(item, "adjacency_rule")?;
@@ -127,7 +180,7 @@ fn read_rule(items: &[Item]) -> io::Result<AdjacencyRule> {
             "is_enemy" => rule.is_enemy = trigger(&item.value, &what)?,
             "is_friend" => rule.is_friend = trigger(&item.value, &what)?,
             "is_neutral" => rule.is_neutral = trigger(&item.value, &what)?,
-            // `icon` and `offset` place the map icon; the native reader logs
+            // `icon` and `offset` place the map icon ([`icon`]); the native reader logs
             // any other key and goes on.
             _ => {}
         }
@@ -155,6 +208,7 @@ pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
                 is_friend: Triggers::default(),
                 is_neutral: Triggers::default(),
                 unsupported: Some("adjacency_rule is not a block".into()),
+                icon: Ok(None),
             },
         });
     }
@@ -223,6 +277,45 @@ mod tests {
         assert!(rule.permits(Some(Verdict::Neutral), ARMY));
         assert!(!rule.permits(Some(Verdict::Enemy), ARMY));
         assert!(!rule.permits(None, ARMY));
+        assert_eq!(
+            rule.icon,
+            Ok(Some(IconPlacement {
+                province: 3,
+                offset: [1.0, 0.0, -6.0]
+            }))
+        );
+        assert_eq!(rules[1].icon, Ok(None));
+    }
+
+    #[test]
+    fn the_icon_keeps_its_last_assignment_and_survives_a_refused_rule() {
+        let rules = parse(
+            b"adjacency_rule = { name = A icon = 7 icon = 9 offset = { -31.0 0.0 -2.5 } }
+              adjacency_rule = { name = B enemy = { tanks = no } icon = 4 }
+              adjacency_rule = { name = C icon = 5 offset = { 1 2 } }
+              adjacency_rule = { name = D icon = -3 }",
+        )
+        .unwrap();
+        assert_eq!(
+            rules[0].icon,
+            Ok(Some(IconPlacement {
+                province: 9,
+                offset: [-31.0, 0.0, -2.5]
+            }))
+        );
+        // The permissions are refused; the icon is not.
+        assert!(rules[1].unsupported.is_some());
+        assert_eq!(
+            rules[1].icon,
+            Ok(Some(IconPlacement {
+                province: 4,
+                offset: [0.0; 3]
+            }))
+        );
+        let short = rules[2].icon.as_ref().unwrap_err();
+        assert!(short.contains("\"C\" offset holds 2 numbers"), "{short}");
+        let negative = rules[3].icon.as_ref().unwrap_err();
+        assert!(negative.contains("icon is not a province id"), "{negative}");
     }
 
     #[test]

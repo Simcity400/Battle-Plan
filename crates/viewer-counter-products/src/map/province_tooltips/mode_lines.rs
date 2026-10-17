@@ -79,6 +79,7 @@ impl Context<'_> {
             ModeHover::Ideology => line(out, "ideology", 0, self.ideology()),
             ModeHover::Operatives => super::operatives::append(self, out),
             ModeHover::Occupation => self.occupation(out),
+            ModeHover::Resources => self.resource_lines(out),
             ModeHover::Scripted(name) => {
                 line(
                     out,

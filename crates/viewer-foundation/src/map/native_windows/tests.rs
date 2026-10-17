@@ -131,19 +131,22 @@ fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
     assert!(part(&layout, "count_bg").is_some());
 }
 
-/// The Operatives map mode's intel container and entry windows load their authored sprites
-/// with the other map-icon windows, so their backgrounds and glyphs draw.
+/// Intel, resource and adjacency windows load their authored sprites with the other
+/// map-icon windows, so their backgrounds and glyphs draw.
 #[test]
-fn intel_icon_windows_load_their_authored_sprites() {
+fn intel_and_resource_icon_windows_load_their_authored_sprites() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mut source = SYNTHETIC_NAVY_GUI.to_owned();
+    let mut source = format!("{SYNTHETIC_NAVY_GUI}\n{SYNTHETIC_NAVAL_GUI}");
     for (window, sprite) in [
         (INTEL_CONTAINER_WINDOW, "GFX_intel_container"),
         (INTEL_SHIELD_WINDOW, "GFX_intel_shield"),
         (INTEL_OPERATIVE_WINDOW, "GFX_intel_operative"),
         (INTEL_OPERATION_WINDOW, "GFX_intel_operation"),
         (INTEL_MORE_WINDOW, "GFX_intel_more"),
+        (RESOURCE_WINDOW, "GFX_resource"),
+        (RESOURCE_ITEM_WINDOW, "GFX_resource_item"),
+        (ADJACENCY_RULE_WINDOW, "GFX_adjacency"),
     ] {
         source.push_str(&format!(
             "\nguiTypes = {{ containerWindowType = {{ name = \"{window}\" \
@@ -158,6 +161,9 @@ fn intel_icon_windows_load_their_authored_sprites() {
         "GFX_intel_operative",
         "GFX_intel_operation",
         "GFX_intel_more",
+        "GFX_resource",
+        "GFX_resource_item",
+        "GFX_adjacency",
     ] {
         assert!(assets.sprites.contains(sprite.as_bytes()), "{sprite}");
     }

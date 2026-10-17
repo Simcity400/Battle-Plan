@@ -161,6 +161,13 @@ pub const fn cadence(table: TableId) -> Cadence {
         // building writers); an hour whose marks are not certified reads
         // every owner. Only StateResourceInputs.supply_route, which the supply
         // update rewrites every hour, waits for its state's next read.
+        // Trade routes, by the country holding them: each hour reads the owner slice, an owner
+        // whose set of referenced routes changed, and every owner one of whose routes a hooked
+        // route writer touched (the collector's raid_changes: route update, which is the only
+        // caller of both path builders, route construction, the save loader and a country's
+        // delivery-route construction); an hour whose marks are not certified reads every
+        // owner.
+        TableId::TradeRoutes => Sliced,
         TableId::StateCores => Sliced,
         TableId::StateResourceInputs
         | TableId::StateResources

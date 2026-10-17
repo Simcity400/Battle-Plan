@@ -189,6 +189,30 @@ fn map_input_fields_preserve_literal_bytes_and_writer_omissions() {
 }
 
 #[test]
+fn regional_convoys_keep_only_written_efficiencies() {
+    let read = |navy: &str| {
+        let doc = installed_content::parser::parse(navy.as_bytes()).unwrap();
+        parse_country(b"GER", &doc.items).map(|country| country.regional_convoy_efficiency)
+    };
+    let efficiency = read(
+        "strategic_navy={regional_convoys={ 305 { index=173 data={ required_convoys=5 } } { index=206 data={ required_convoys=1 efficiency=0.4 } } }}",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        efficiency
+            .iter()
+            .map(|(region, value)| (*region, value.raw))
+            .collect::<Vec<_>>(),
+        [(206, 40_000)]
+    );
+    assert_eq!(read("").unwrap(), None);
+    assert_eq!(read("strategic_navy={}").unwrap(), Some(Default::default()));
+    assert!(read("strategic_navy={regional_convoys={ { index=1 data={} } }}").is_err());
+    assert!(read("strategic_navy={regional_convoys={ 1 { index=1 data={} } { index=2 data={} } }}").is_err());
+}
+
+#[test]
 fn naval_region_access_reads_flat_pairs_and_refuses_a_broken_list() {
     let parse = |text: &str| {
         let doc = installed_content::parser::parse(text.as_bytes()).unwrap();

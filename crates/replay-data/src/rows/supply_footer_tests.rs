@@ -291,7 +291,7 @@ fn a_supplied_division_stores_no_shortfall_while_its_demand_drifts() {
     // received amount itself.
     let older = crate::rows::with_historical_stamp(0, || encoded(&supplied(123_000)));
     assert_eq!(older[8..16], 123_i64.to_le_bytes());
-    assert_eq!(SUPPLY_SHORTFALL_FORMAT, crate::FORMAT_VERSION);
+    assert_eq!(SUPPLY_SHORTFALL_FORMAT, 102);
 }
 
 #[test]
@@ -525,5 +525,5 @@ fn the_division_supply_footer_is_recorded_again() {
         "DivisionStatus.supply is not a tombstone"
     );
     const { assert!(<Option<DivisionSupplyFooter> as NativeValue>::RESTORED) };
-    assert_eq!(SUPPLY_FOOTER_FORMAT, crate::FORMAT_VERSION);
+    assert_eq!(SUPPLY_FOOTER_FORMAT, 102);
 }

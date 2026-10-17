@@ -39,6 +39,11 @@ pub struct LendLease {
     /// The exchange's full typed reference (low u32 type, high u32 id).
     pub id: u64,
     pub receiver: Vec<u8>,
+    /// The convoy client's two efficiency factors: `efficiency` and
+    /// `efficiency_due_to_lost_convoys`.
+    pub efficiency: Decimal,
+    pub efficiency_due_to_lost_convoys: Decimal,
+    pub convoys: ConvoyCounts,
     /// The exchange's `total_delivered` equipment pool.
     pub delivered: super::production::Pool,
     /// The exchange's `equipment_sunk` pool.
@@ -155,9 +160,40 @@ pub struct ResourceExchange {
     pub delivered: Decimal,
     pub required_cic: i32,
     pub lended_cic: i32,
-    /// The base exchange writer emits this block precisely when required != 0.
-    /// Its inner assigned/required field mapping is not assumed here.
-    pub convoy_subscriber_present: bool,
+    pub convoys: ConvoyCounts,
+}
+
+/// A convoy client's saved `convoys_subscriber`: `convoys` assigned and `total` required.
+/// The client writer emits the block exactly when the required count is not zero, so an
+/// absent block is zero assigned and zero required.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyCounts {
+    pub assigned: i32,
+    pub required: i32,
+}
+
+/// The `convoys_subscriber` of a convoy client's fields.
+pub(super) fn convoy_counts(fields: &[Item]) -> io::Result<ConvoyCounts> {
+    let Some(value) = field(fields, b"convoys_subscriber")? else {
+        return Ok(ConvoyCounts::default());
+    };
+    let subscriber = block(value)?;
+    Ok(ConvoyCounts {
+        assigned: required_integer(subscriber, b"convoys")?,
+        required: required_integer(subscriber, b"total")?,
+    })
+}
+
+/// A market contract's saved `convoy_client`, under its `delivery_route_handler`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractClient {
+    /// The client's full typed reference (low u32 type, high u32 id).
+    pub id: u64,
+    /// The client's two efficiency factors: `efficiency` and
+    /// `efficiency_due_to_lost_convoys`.
+    pub efficiency: Decimal,
+    pub efficiency_due_to_lost_convoys: Decimal,
+    pub convoys: ConvoyCounts,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +202,8 @@ pub struct Purchase {
     pub seller: Vec<u8>,
     pub buyer: Vec<u8>,
     pub speed: i32,
+    pub client: ContractClient,
+    /// The route handler's own accumulated `efficiency`.
     pub route_efficiency_sum: Decimal,
     pub route_days: i32,
     pub factory_cic_progress: Decimal,
@@ -754,6 +792,7 @@ fn parse_purchases(items: &[Item]) -> io::Result<Option<BTreeMap<u64, Purchase>>
         let definition = required_block(fields, b"contract_definition")?;
         let draft = required_block(definition, b"contract_draft")?;
         let route = required_block(fields, b"delivery_route_handler")?;
+        let client = required_block(route, b"convoy_client")?;
         let delivery = required_block(fields, b"contract_delivery_state")?;
         let meta = required_block(fields, b"contract_meta")?;
         let purchase = Purchase {
@@ -761,6 +800,18 @@ fn parse_purchases(items: &[Item]) -> io::Result<Option<BTreeMap<u64, Purchase>>
             seller: required_bytes(draft, b"seller")?,
             buyer: required_bytes(draft, b"buyer")?,
             speed: required_integer(draft, b"speed")?,
+            client: ContractClient {
+                id: typed_handle(
+                    field(client, b"id")?
+                        .ok_or_else(|| invalid("contract convoy client lacks id"))?,
+                )?,
+                efficiency: required_decimal(client, b"efficiency")?,
+                efficiency_due_to_lost_convoys: required_decimal(
+                    client,
+                    b"efficiency_due_to_lost_convoys",
+                )?,
+                convoys: convoy_counts(client)?,
+            },
             route_efficiency_sum: required_decimal(route, b"efficiency")?,
             route_days: required_integer(route, b"days")?,
             factory_cic_progress: required_decimal(delivery, b"factory_cic_progress")?,
@@ -857,10 +908,7 @@ fn parse_exports(resources: Option<&[Item]>) -> io::Result<Option<Vec<ResourceEx
             delivered: required_decimal(fields, b"delivered")?,
             required_cic: required_integer(fields, b"required_cic")?,
             lended_cic: required_integer(fields, b"lended_cic")?,
-            convoy_subscriber_present: field(fields, b"convoys_subscriber")?
-                .map(block)
-                .transpose()?
-                .is_some(),
+            convoys: convoy_counts(fields)?,
         });
     }
     Ok(Some(exports))
@@ -882,6 +930,12 @@ fn parse_lend_lease(resources: Option<&[Item]>) -> io::Result<Option<Vec<LendLea
                 field(fields, b"id")?.ok_or_else(|| invalid("lend-lease exchange lacks id"))?,
             )?,
             receiver: required_bytes(fields, b"receiver")?,
+            efficiency: required_decimal(fields, b"efficiency")?,
+            efficiency_due_to_lost_convoys: required_decimal(
+                fields,
+                b"efficiency_due_to_lost_convoys",
+            )?,
+            convoys: convoy_counts(fields)?,
             delivered: pool(b"total_delivered")?,
             sunk: pool(b"equipment_sunk")?,
         });

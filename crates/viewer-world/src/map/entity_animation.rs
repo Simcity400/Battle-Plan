@@ -201,6 +201,20 @@ impl Random {
         Self { seed, index: 0 }
     }
 
+    /// A stream's two words mixed from its construction-time nanosecond counter.
+    pub fn from_counter(nanoseconds: u32) -> Self {
+        let mix = |factor: u32, add: u32, multiply: u32| {
+            let value = nanoseconds.wrapping_mul(factor);
+            let value = ((value >> 8) ^ value).wrapping_add(add);
+            let value = ((value << 8) ^ value).wrapping_mul(multiply);
+            (value >> 8) ^ value
+        };
+        Self {
+            seed: mix(0x7eb8_da44, 0x10d8_365e, 0x6d22_f31b),
+            index: mix(0x205a_d647, 0xb4f3_c315, 0x387a_9f3a),
+        }
+    }
+
     pub fn next_word(&mut self) -> u32 {
         let mut x = self.seed.wrapping_add(self.index.wrapping_mul(0xb529_7a4d));
         self.index = self.index.wrapping_add(1);

@@ -124,10 +124,7 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     assert!(report.differences.iter().all(|d| d.contains("claims")));
     // An older row without claims compares nothing for them.
-    let report = run(&[
-        row(1, Recorded::NotRecorded),
-        row(2, Recorded::NotRecorded),
-    ]);
+    let report = run(&[row(1, Recorded::NotRecorded), row(2, Recorded::NotRecorded)]);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
@@ -138,7 +135,10 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
 #[test]
 fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
     use replay::rows::{Recorded, StateCoreRow};
-    let names = BTreeMap::from([(701_u32, &b"natural_harbor"[..]), (702, b"favorable_approach")]);
+    let names = BTreeMap::from([
+        (701_u32, &b"natural_harbor"[..]),
+        (702, b"favorable_approach"),
+    ]);
     let state = |locations: Vec<(&[u8], u32)>| installed_content_save::State {
         id: 4,
         owner: None,
@@ -147,6 +147,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
         is_border_conflict: None,
         manpower_available: None,
         population: None,
+        category: None,
         name: None,
         strategic_locations: locations
             .into_iter()
@@ -161,7 +162,10 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
         victory_points: None,
         strategic_locations: tokens.iter().map(|token| token.to_vec()).collect(),
     };
-    let states = BTreeMap::from([(4, state(vec![(b"natural_harbor", 31), (b"favorable_approach", 32)]))]);
+    let states = BTreeMap::from([(
+        4,
+        state(vec![(b"natural_harbor", 31), (b"favorable_approach", 32)]),
+    )]);
     let provinces = BTreeMap::from([
         (31, province(31, &[b"favorable_approach"])),
         (32, province(32, &[])),
@@ -180,8 +184,17 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
     };
     let run = |row: StateCoreRow| {
         let mut report = Report::default();
-        state_strategic_locations(&[row], &states, &provinces, &state_of, &names, &reads, 10, &mut report)
-            .unwrap();
+        state_strategic_locations(
+            &[row],
+            &states,
+            &provinces,
+            &state_of,
+            &names,
+            &reads,
+            10,
+            &mut report,
+        )
+        .unwrap();
         report.differences
     };
     let pair = |token: u64, province: u64| token << 32 | province;
@@ -1702,4 +1715,366 @@ fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_gr
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("group_laws"));
     }
+}
+
+/// The resources map tables against the saved origins: each origin's stored efficiency and
+/// production-line colour, its rights by resource name and holder, the origin routes of
+/// countries read at this hour, and an import's line colour against its saved exchange.
+#[test]
+fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save() {
+    use replay::rows::{
+        ConvoyClientRow, RegionalConvoyEfficiencyRow, ResourceDefinitionRow, ResourceOriginRow,
+        ResourceRightRow, SliceReadRow, TableId, TradeRouteRow,
+    };
+    let saved = saved_pack(
+        br#"countries={GER={resources={
+            origin={country="GER" efficiency=1 efficiency_due_to_lost_convoys=0.7 state=119 efficiency=0.7
+                delivery_route={type=2 from_state=119 to_state=64 from_port=3379 to_port=6384 naval_path={ 43 } dirty=no}
+                given_resource_rights={ { steel "AFG" } }}}}
+            AFG={}}
+        states={} provinces={}"#,
+    );
+    let (ger, afg) = (
+        CountryRow {
+            id: 5,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        },
+        CountryRow {
+            id: 9,
+            tag: b"AFG".to_vec(),
+            ..Default::default()
+        },
+    );
+    let links = BTreeMap::from([(5_u32, &ger), (9, &afg)]);
+    let names = BTreeMap::from([(19_u32, &b"steel"[..])]);
+    let resources = [ResourceDefinitionRow {
+        id: 3,
+        token: 19,
+        ..Default::default()
+    }];
+    let origin = ResourceOriginRow {
+        state: 119,
+        country: 5,
+        list: 0,
+        efficiency: 70_000,
+        bad: true,
+        ..Default::default()
+    };
+    let rights = [ResourceRightRow {
+        ordinal: 0,
+        state: 119,
+        resource: 3,
+        holder: 9,
+    }];
+    let route = TradeRouteRow {
+        country: 5,
+        class: 0,
+        other: 119,
+        kind: 2,
+        from: 3379,
+        to: 6384,
+        path: vec![43],
+        ..Default::default()
+    };
+    let reads = [SliceReadRow {
+        table: TableId::TradeRoutes.index() as u32,
+        owner: 5,
+        sample_hour: 10,
+    }];
+    let import = ConvoyClientRow {
+        handle: 0x33,
+        category: engine::resource_map::IMPORT,
+        bad: false,
+        ..Default::default()
+    };
+    use installed_content_save::economy::{self, ConvoyCounts};
+    let decimal = |text: &[u8]| installed_content_save::Decimal::parse(text).unwrap();
+    let economy = economy::Pack {
+        countries: BTreeMap::from([(
+            b"GER".to_vec(),
+            economy::Country {
+                fuel: None,
+                experience: None,
+                pools: None,
+                logistics: None,
+                lend_lease: Some(vec![economy::LendLease {
+                    id: 0x34_u64 << 32,
+                    receiver: b"AFG".to_vec(),
+                    efficiency: decimal(b"0.5"),
+                    efficiency_due_to_lost_convoys: decimal(b"1"),
+                    convoys: ConvoyCounts {
+                        assigned: 2,
+                        required: 3,
+                    },
+                    delivered: installed_content_save::production::Pool {
+                        equipment: Vec::new(),
+                        allow_zero_entries: Some(false),
+                    },
+                    sunk: installed_content_save::production::Pool {
+                        equipment: Vec::new(),
+                        allow_zero_entries: Some(false),
+                    },
+                }]),
+                exports: Some(vec![economy::ResourceExchange {
+                    id: 0x33_u64 << 32,
+                    receiver: Some(b"AFG".to_vec()),
+                    resource: Some(b"steel".to_vec()),
+                    efficiency: decimal(b"1"),
+                    efficiency_due_to_lost_convoys: decimal(b"0.8"),
+                    delivered: decimal(b"0"),
+                    required_cic: 0,
+                    lended_cic: 0,
+                    convoys: ConvoyCounts::default(),
+                }]),
+            },
+        )]),
+        ..Default::default()
+    };
+    let lend = ConvoyClientRow {
+        owner_ordinal: Some(0),
+        other_ordinal: Some(0),
+        handle: 0x34,
+        category: engine::resource_map::LEND_LEASE,
+        bad: true,
+        convoys_assigned: 2,
+        convoys_required: 3,
+        ..Default::default()
+    };
+    let countries = BTreeMap::from([(
+        b"GER".to_vec(),
+        installed_content_save::Country {
+            tag: b"GER".to_vec(),
+            regional_convoy_efficiency: Some(BTreeMap::new()),
+            ..Default::default()
+        },
+    )]);
+    let run_with = |origins: &[ResourceOriginRow],
+                    routes: &[TradeRouteRow],
+                    clients: &[ConvoyClientRow],
+                    regional: &[RegionalConvoyEfficiencyRow],
+                    hour| {
+        let mut report = Report::default();
+        resource_map(
+            &ResourceMapRows {
+                origins,
+                rights: &rights,
+                clients,
+                routes,
+                regional,
+                reads: &reads,
+                resources: &resources,
+            },
+            &saved,
+            &economy,
+            &countries,
+            &links,
+            &names,
+            80_000,
+            hour,
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let run = |origins: &[ResourceOriginRow],
+               routes: &[TradeRouteRow],
+               clients: &[ConvoyClientRow],
+               hour| {
+        let clients: Vec<_> = clients.iter().cloned().chain([lend.clone()]).collect();
+        run_with(
+            origins,
+            routes,
+            &clients,
+            &[RegionalConvoyEfficiencyRow {
+                country: 5,
+                region: 43,
+                efficiency: 100_000,
+            }],
+            hour,
+        )
+    };
+    let report = run(&[origin.clone()], &[route.clone()], &[import.clone()], 10);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["ResourceOrigins"], 1);
+    assert_eq!(report.compared_tables["ResourceRights"], 1);
+    assert_eq!(report.compared_tables["TradeRoutes"], 1);
+    assert_eq!(report.compared_tables["ConvoyClients"], 2);
+    let mut reordered = origin.clone();
+    reordered.ordinal = 1;
+    let report = run(&[reordered], &[route.clone()], &[import.clone()], 10);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("ResourceOrigins.GER.own.119.ordinal"))
+    );
+    let mut reordered_lend = lend.clone();
+    reordered_lend.owner_ordinal = Some(1);
+    let report = run_with(
+        &[origin.clone()],
+        &[route.clone()],
+        &[import.clone(), reordered_lend],
+        &[RegionalConvoyEfficiencyRow {
+            country: 5,
+            region: 43,
+            efficiency: 100_000,
+        }],
+        10,
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("owner_ordinal"))
+    );
+    // A changed stored product, a wrong line colour, a different path and a bad import.
+    let mut changed = origin.clone();
+    changed.efficiency = 69_999;
+    changed.bad = false;
+    let mut moved = route.clone();
+    moved.path = vec![44];
+    let mut slow = import.clone();
+    slow.bad = true;
+    let report = run(&[changed], &[moved.clone()], &[slow], 10);
+    assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
+    // Dropping every route or every client must still fail from independently saved membership.
+    let report = run(&[origin.clone()], &[], &[import.clone()], 10);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|d| d.contains("TradeRoutes.GER.origin.119"))
+    );
+    let report = run(&[origin.clone()], &[route.clone()], &[], 10);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|d| d.contains("ConvoyClients.51"))
+    );
+    let mut wrong_lend = lend.clone();
+    wrong_lend.bad = false;
+    wrong_lend.convoys_assigned = 0;
+    wrong_lend.convoys_required = 0;
+    let report = run_with(
+        &[origin.clone()],
+        &[route.clone()],
+        &[import.clone(), wrong_lend],
+        &[RegionalConvoyEfficiencyRow {
+            country: 5,
+            region: 43,
+            efficiency: 100_000,
+        }],
+        10,
+    );
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    // A route read at an earlier hour fails rather than passing a stale comparison.
+    let report = run(&[origin], &[moved], &[import], 11);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|d| d.contains("TradeRoutes.GER"))
+    );
+    assert_eq!(report.compared_tables["TradeRoutes"], 0);
+    // A regional efficiency that differs from the full saved default fails.
+    let regional = [RegionalConvoyEfficiencyRow {
+        country: 5,
+        region: 43,
+        efficiency: 50_000,
+    }];
+    let report = run_with(&[], &[], &[], &regional, 10);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("RegionalConvoyEfficiency.GER.43")),
+        "{:?}",
+        report.differences
+    );
+}
+
+#[test]
+fn resource_right_order_is_runtime_only_but_membership_and_unique_positions_are_checked() {
+    use replay::rows::{ResourceDefinitionRow, ResourceRightRow};
+    let saved = saved_pack(
+        br#"countries={GER={resources={origin={state=119
+            given_resource_rights={ { oil "AFG" } { steel "AFG" } }}}} AFG={}}
+        states={} provinces={}"#,
+    );
+    let ger = CountryRow {
+        id: 5,
+        tag: b"GER".to_vec(),
+        ..Default::default()
+    };
+    let afg = CountryRow {
+        id: 9,
+        tag: b"AFG".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(5, &ger), (9, &afg)]);
+    let names = BTreeMap::from([(19, &b"steel"[..]), (20, &b"oil"[..])]);
+    let resources = [
+        ResourceDefinitionRow {
+            id: 3,
+            token: 19,
+            ..Default::default()
+        },
+        ResourceDefinitionRow {
+            id: 4,
+            token: 20,
+            ..Default::default()
+        },
+    ];
+    let rights = [
+        ResourceRightRow {
+            state: 119,
+            resource: 3,
+            holder: 9,
+            ordinal: 0,
+        },
+        ResourceRightRow {
+            state: 119,
+            resource: 4,
+            holder: 9,
+            ordinal: 1,
+        },
+    ];
+    let run = |rights: &[ResourceRightRow]| {
+        let mut report = Report::default();
+        resource_map::rights(
+            &ResourceMapRows {
+                origins: &[],
+                rights,
+                clients: &[],
+                routes: &[],
+                regional: &[],
+                reads: &[],
+                resources: &resources,
+            },
+            &saved,
+            &links,
+            &names,
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    // Text sorts oil before steel; the live vector can retain steel before oil.
+    assert!(run(&rights).differences.is_empty());
+    let mut duplicate = rights.clone();
+    duplicate[1].ordinal = 0;
+    assert!(
+        run(&duplicate)
+            .differences
+            .iter()
+            .any(|d| d.contains("ordinal"))
+    );
+    assert!(
+        run(&rights[..1])
+            .differences
+            .iter()
+            .any(|d| d.contains("oil"))
+    );
 }

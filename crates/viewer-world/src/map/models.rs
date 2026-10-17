@@ -207,6 +207,8 @@ pub struct ModelMesh {
     /// from its own origin, after `scale`: the radius of the sphere around the
     /// origin that encloses it.
     pub bound: f32,
+    /// Creation-time runtime-bounds sphere for convoy launch collision.
+    pub convoy_radius: Option<f32>,
     /// How many attached entities were composed into this mesh, at any depth.
     pub attachments: usize,
 }
@@ -278,6 +280,8 @@ struct Composition {
 /// for anything but reporting.
 #[derive(Clone, Copy, Debug, Default)]
 struct Reach {
+    collision_unsupported: bool,
+    collision_bounds: Option<([f32; 3], [f32; 3])>,
     radius: f32,
     height: f32,
     /// The farthest point from the origin, in every direction.
@@ -317,6 +321,25 @@ impl Reach {
                 own,
             );
         }
+    }
+
+    fn collision_point(&mut self, p: [f32; 3]) {
+        let (low, high) = self.collision_bounds.get_or_insert((p, p));
+        for axis in 0..3 {
+            low[axis] = low[axis].min(p[axis]);
+            high[axis] = high[axis].max(p[axis]);
+        }
+    }
+
+    fn collision_radius(&self) -> Option<f32> {
+        let (low, high) = self.collision_bounds?;
+        let radius = (0..3)
+            .map(|axis| (high[axis] - low[axis]).powi(2))
+            .sum::<f32>()
+            .sqrt()
+            * 0.5;
+        (radius.is_finite() && self.attachments == 0 && !self.collision_unsupported)
+            .then_some(radius)
     }
 
     /// Widens by one already-placed point.
@@ -833,6 +856,7 @@ impl ModelLibrary {
             visual: self.composing_visual,
             own_radius: reach.own_radius,
             bound: reach.bound,
+            convoy_radius: reach.collision_radius(),
             attachments: reach.attachments,
         });
         Ok(())
@@ -1056,12 +1080,58 @@ impl ModelLibrary {
             self.geometry_cache = geometry_cache;
             out.native.push(descriptor?);
             let shape_lods = decoded.lods();
+            // Static-resource spheres and multiple-LOD unions have a different construction.
+            // Do not substitute a runtime-bounds sphere for those forms.
+            out.reach.collision_unsupported |= !frozen_skin || shape_lods.len() != 1;
             if let Some(shapes) = shape_lods.first() {
                 for (_, sub) in shapes
                     .iter()
                     .flat_map(|shape| shape.meshes.iter().map(|sub| (shape.name.as_str(), sub)))
                     .filter(|(_, sub)| super::mesh_effect::candidate(sub))
                 {
+                    // Runtime bounds transform each bone's bind-space box, rather than a
+                    // box fitted to the weighted, posed vertices. The sphere is half the
+                    // resulting bounds' diagonal. Keep this independent of culling reach.
+                    let mut bone_bounds: BTreeMap<i32, ([f32; 3], [f32; 3])> = BTreeMap::new();
+                    for (vertex, &position) in sub.positions.iter().enumerate() {
+                        let joints: Vec<i32> = sub
+                            .skin
+                            .as_ref()
+                            .map(|skin| {
+                                skin.influences(vertex)
+                                    .into_iter()
+                                    .map(|(joint, _)| joint as i32)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for joint in if joints.is_empty() { vec![-1] } else { joints } {
+                            let (low, high) =
+                                bone_bounds.entry(joint).or_insert((position, position));
+                            for axis in 0..3 {
+                                low[axis] = low[axis].min(position[axis]);
+                                high[axis] = high[axis].max(position[axis]);
+                            }
+                        }
+                    }
+                    for (joint, (low, high)) in bone_bounds {
+                        for corner in 0..8 {
+                            let p = [0, 1, 2].map(|axis| {
+                                if corner & (1 << axis) == 0 {
+                                    low[axis]
+                                } else {
+                                    high[axis]
+                                }
+                            });
+                            let p = if joint >= 0
+                                && let Some(base) = skin_base
+                            {
+                                skinned(&self.palette, p, &[(joint as u32, 1.0)], base)
+                            } else {
+                                own.transform_point(p)
+                            };
+                            out.reach.collision_point(p);
+                        }
+                    }
                     let mut posed = false;
                     if frozen_skin && let (Some(base), Some(skin)) = (skin_base, &sub.skin) {
                         for vertex in 0..sub.vertex_count() {

@@ -156,6 +156,8 @@ pub struct Views {
     pub intel: viewer_raids::map::intel_icons::IntelView,
     pub bases: [PoolView; viewer_counters::map::counters::BASE_FAMILIES],
     pub land_combats: viewer_counters::map::counters::land_windows::View,
+    pub resources: viewer_world::map::resource_icons::ResourceIconView,
+    pub adjacency_rules: PoolView,
 }
 
 impl Views {
@@ -166,6 +168,8 @@ impl Views {
         retries.extend(self.raids.retry());
         retries.extend(self.bases.iter().filter_map(PoolView::retry));
         retries.extend(self.land_combats.retry());
+        retries.extend(self.resources.retry());
+        retries.extend(self.adjacency_rules.retry());
         retries
     }
 
@@ -180,7 +184,9 @@ impl Views {
             bases |= view.take_running();
         }
         let land_combats = self.land_combats.take_running();
-        naval || labels || pings || raids || intel || bases || land_combats
+        let resources = self.resources.take_running();
+        let adjacency_rules = self.adjacency_rules.take_running();
+        naval || labels || pings || raids || intel || bases || land_combats || resources || adjacency_rules
     }
 }
 

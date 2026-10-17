@@ -509,7 +509,6 @@ impl<'a> Plain<'a> {
 
 /// Where the code's rows of a list box go ([`list_box_rows`]), and the list box's scrollbar,
 /// which is drawn after them.
-#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListBoxRows {
     /// Each row's top-left in the list box's parent content, `None` for a row the list box hides
@@ -523,7 +522,6 @@ pub struct ListBoxRows {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 impl ListBoxRows {
     pub(super) fn clipped(&self) -> bool {
         self.clipped
@@ -541,7 +539,6 @@ pub fn smooth_list_step(current: f32) -> f32 {
 
 /// List rows retain their own content-sized windows, ordered placement,
 /// scroll offset and clipping.
-#[cfg(any(test, feature = "test-support"))]
 pub fn list_box_rows(
     element: &Element,
     rows: &[[i32; 2]],
@@ -558,7 +555,6 @@ pub fn list_box_rows(
 /// A fixed window's smooth factory can therefore build a smooth list box from
 /// the `listBoxType` held under that name, while its standard factory builds
 /// a standard list box ([`super::fixed_window_layout`]).
-#[cfg(any(test, feature = "test-support"))]
 pub fn list_box_rows_as(
     element: &Element,
     smooth: bool,

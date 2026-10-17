@@ -117,11 +117,11 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
 }
 
 #[cfg(test)]
+mod fly_render_tests;
+#[cfg(test)]
 mod map_mode_fixture_tests;
 #[cfg(test)]
 mod render_failure_tests;
-#[cfg(test)]
-mod fly_render_tests;
 
 /// The egui memory key of the dashboard map that owns keyboard input: the one last pressed.
 const MAP_INPUT_OWNER: &str = "map camera input owner";
@@ -932,6 +932,11 @@ pub struct Viewer {
     unit_field_uploaded: bool,
     /// The playback fraction the scene's raid units were last placed at.
     raid_tick: Option<f32>,
+    /// Whether the scene's raid units last included sailing trade-route convoys, which move
+    /// every frame by the presentation clock while they show.
+    convoys_sailing: bool,
+    /// The convoy entities that did not bake, as of the last frame that sailed them.
+    convoy_refused: BTreeMap<String, usize>,
     // names
     placements: Option<Arc<Placements>>,
     placements_at: Option<(replay::BranchId, i32, viewer_world::map::map_mode::MapMode)>,
@@ -1330,6 +1335,8 @@ impl Viewer {
             unit_models: None,
             unit_field_uploaded: false,
             raid_tick: None,
+            convoys_sailing: false,
+            convoy_refused: BTreeMap::new(),
             // names
             placements: None,
             placements_at: None,
@@ -1735,8 +1742,12 @@ impl Viewer {
         if let Some(overlay) = &self.prepared_overlay {
             warnings.extend(overlay.raid_report().warnings());
             warnings.extend(overlay.intel_report().warnings());
+            warnings.extend(overlay.mode_icon_warnings());
         }
         warnings.extend(self.counter_report.warnings());
+        for (reason, count) in &self.convoy_refused {
+            warnings.push(format!("Trade-route convoys: {count} not drawn: {reason}."));
+        }
         if let Some(scene) = &self.scene {
             warnings.extend(scene.pass_warnings());
             warnings.extend(
@@ -2719,6 +2730,21 @@ impl Viewer {
             return None;
         };
         let view = self.last_view.as_ref()?;
+        if self.counter_view.visibility.trade_routes
+            && self.uploaded.orders.as_ref().is_some_and(|orders| {
+                viewer_foundation::map::ribbon_content::trade_route_hit(
+                    &orders.trade_route_hovers,
+                    view.camera.eye(),
+                    view.camera
+                        .ray(point.map(|v| v * view.ui_scale), view.viewport),
+                    document.map.width as f32,
+                )
+            })
+        {
+            let mut text = Tooltip::default();
+            text.refused.insert("trade-route hover: transfer rows, delivery efficiency and naval-dominance explanation are not implemented".to_owned(), 1);
+            return Some((Arc::new(text), [0.0, 0.0, extent[0], extent[1]], None));
+        }
         let province = match pick(
             &view.camera,
             point.map(|v| v * view.ui_scale),
@@ -2735,7 +2761,9 @@ impl Viewer {
         };
         let vision = self.overlay_tables.as_ref()?.3.vision();
         if self.map_mode
-            == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Terrain)
+            == viewer_world::map::map_mode::MapMode::Stock(
+                viewer_world::map::map_mode::Stock::Terrain,
+            )
         {
             let text = self
                 .terrain_tooltips
@@ -3357,14 +3385,45 @@ impl Viewer {
         } else {
             0.0
         };
-        if self.raid_tick != Some(tick)
+        // The trade-route convoys sail by the presentation clock, so while they show they are
+        // placed again every frame, with the raid units.
+        let convoys_shown = |defines: &viewer_world::map::trade_routes::ConvoyDefines| {
+            viewer_world::map::trade_routes::convoys_shown(
+                camera.height,
+                defines,
+                self.graphics.units,
+                self.counter_view.visibility.trade_routes,
+            )
+        };
+        let sailing = self.unit_models.as_ref().is_some_and(|prepared| {
+            prepared.has_convoys()
+                && document
+                    .trade_routes
+                    .as_ref()
+                    .is_ok_and(|defines| convoys_shown(&defines.convoys))
+        });
+        if (self.raid_tick != Some(tick) || sailing || self.convoys_sailing)
             && let Some(prepared) = self.unit_models.as_ref()
         {
             let hour = document.hour().map_err(|error| error.to_string())?;
             let heights = hour.heights();
-            scene
-                .set_raid_units(prepared.raid_units(&document.unit_models, Some((&heights, tick))));
+            let mut units = prepared.raid_units(&document.unit_models, Some((&heights, tick)));
+            let time = self
+                .capture
+                .as_ref()
+                .and_then(|capture| capture.time)
+                .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+            self.convoy_refused.clear();
+            units.extend(prepared.convoy_units(
+                &document.unit_models,
+                time,
+                &|x, z| heights.surface_height(x, z),
+                convoys_shown,
+                &mut self.convoy_refused,
+            ));
+            scene.set_raid_units(units);
             self.raid_tick = Some(tick);
+            self.convoys_sailing = sailing;
         }
         // names: the engine integrates the layer cross-fade by the frame delta
         // and clamps to [0, 1], so it takes one second whatever the zoom speed.

@@ -19,7 +19,7 @@ use engine_research::{
     cresearch_slot, ctechnology, ctechnology_sharing_group, ctechnology_status,
     ctechnology_template,
 };
-use engine_resources::{ccountry_resources, cresource_origin};
+use engine_resources::{ccountry_resources, cresource_origin, resource_map};
 use engine_stability::{cdynamic_modifier_container, cworld_threat};
 
 pub mod advisor_mutations;

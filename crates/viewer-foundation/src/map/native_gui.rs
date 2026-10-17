@@ -5117,7 +5117,6 @@ impl Holder {
     /// A list box's scrollbar ([`widgets::ListBoxRows::scrollbar`], in the list box's parent
     /// content) placed as the holder's items are, after its rows; a smooth list box's escapes
     /// the holder's clip.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn place_scrollbar(&self, rows: &widgets::ListBoxRows) -> Vec<Part> {
         let mut parts = self.place_parts([0, 0], &rows.scrollbar);
         if !rows.clipped() {

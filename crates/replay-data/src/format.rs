@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 102);
+        assert_eq!(FORMAT_VERSION, 103);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
@@ -237,6 +237,17 @@ mod tests {
             }
             if version < crate::rows::compatibility::OPERATION_PREPARATION_FORMAT {
                 expected.push(TableId::Operations);
+            }
+            if version < crate::rows::compatibility::RESOURCES_MAP_FORMAT {
+                expected.extend([
+                    TableId::ResourceOrigins,
+                    TableId::ResourceRights,
+                    TableId::CountryOilFactors,
+                    TableId::StateTemporaryResources,
+                    TableId::ConvoyClients,
+                    TableId::TradeRoutes,
+                    TableId::RegionalConvoyEfficiency,
+                ]);
             }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
                 expected.push(TableId::DivisionRetreatBans);

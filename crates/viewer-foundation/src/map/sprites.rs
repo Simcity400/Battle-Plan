@@ -2176,6 +2176,7 @@ mod tests {
             rotation: 0.0,
             layer: 0,
             shade: 0.0,
+            anchor: None,
             present: None,
             exact: Some(Exact {
                 native: None,

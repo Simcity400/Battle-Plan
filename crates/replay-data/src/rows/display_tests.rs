@@ -369,8 +369,5 @@ fn remaining_grace_keeps_the_whole_percent_the_game_shows() {
     for sentinel in [i64::MIN, i64::MIN + 1, i64::MAX] {
         assert_eq!(grace(sentinel, Some(72)), sentinel);
     }
-    assert_eq!(
-        crate::rows::compatibility::GRACE_PERCENT_FORMAT,
-        crate::FORMAT_VERSION
-    );
+    assert_eq!(crate::rows::compatibility::GRACE_PERCENT_FORMAT, 102);
 }

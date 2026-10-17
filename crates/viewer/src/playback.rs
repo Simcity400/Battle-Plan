@@ -470,10 +470,12 @@ pub(crate) mod tests {
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::{Identity, Roster, SessionStart, Verification},
         rows::{
-            AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryRow, DivisionRow,
-            FactionMemberRow, FactionRow, FleetRow, HumanControllerRow, LandCombatRow,
-            NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow, ShipRow, StateRow,
-            TableRows, TaskForceRow, WarRelationRow,
+            AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, ConvoyClientRow, CountryOilFactorRow,
+            CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow, HumanControllerRow,
+            LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow,
+            RegionalConvoyEfficiencyRow, ResourceExchangeRow, ResourceOriginRow, ResourceRightRow,
+            ShipRow, StateRow, StateTemporaryResourceRow, TableRows, TaskForceRow, TradeRouteRow,
+            WarRelationRow,
         },
         spool::Record,
     };
@@ -693,9 +695,84 @@ pub(crate) mod tests {
                     } else {
                         Vec::new()
                     }));
+                // The resources map mode's and the trade routes' tables.
+                for rows in resource_map_rows(hour) {
+                    let table = rows.table();
+                    tables[table.index()] = TableView::Complete(rows);
+                }
                 tables.map(Into::into)
             },
         }
+    }
+
+    /// The resources map mode's and the trade routes' hourly tables, one row each and
+    /// changing every hour.
+    pub(crate) fn resource_map_rows(hour: Hour) -> [TableRows; 8] {
+        let efficiency = i64::from(hour) * 1_000;
+        [
+            TableRows::ResourceExchanges(vec![ResourceExchangeRow {
+                id: 9_u64 << 32,
+                resource: 7,
+                exporter: 2,
+                importer: 1,
+                efficiency_a: efficiency,
+                ..Default::default()
+            }]),
+            TableRows::ResourceOrigins(vec![ResourceOriginRow {
+                ordinal: hour as u32,
+                state: 1,
+                country: 1,
+                efficiency,
+                convoys_assigned: 2,
+                convoys_required: 3,
+                ..Default::default()
+            }]),
+            TableRows::ResourceRights(vec![ResourceRightRow {
+                ordinal: hour as u32,
+                state: 1,
+                resource: 1,
+                holder: 2,
+            }]),
+            TableRows::CountryOilFactors(vec![CountryOilFactorRow {
+                country: 1,
+                factor: efficiency,
+            }]),
+            TableRows::StateTemporaryResources(vec![StateTemporaryResourceRow {
+                state: 1,
+                resource: 7,
+                amount: efficiency,
+            }]),
+            TableRows::ConvoyClients(vec![ConvoyClientRow {
+                owner_ordinal: Some(hour as u32),
+                other_ordinal: Some(hour as u32 + 1),
+                handle: 9,
+                category: 2,
+                owner: 1,
+                other: 2,
+                route_class: 1,
+                route_country: 2,
+                route_other: 1,
+                convoys_assigned: 1,
+                convoys_required: 1,
+                ..Default::default()
+            }]),
+            TableRows::TradeRoutes(vec![TradeRouteRow {
+                country: 2,
+                class: 1,
+                other: 1,
+                kind: 2,
+                from: 1,
+                to: 1,
+                path: vec![hour as u32],
+                source_state: Some(hour as u32),
+                destination_state: Some(hour as u32 + 1),
+            }]),
+            TableRows::RegionalConvoyEfficiency(vec![RegionalConvoyEfficiencyRow {
+                country: 1,
+                region: hour as u32,
+                efficiency,
+            }]),
+        ]
     }
 
     pub(crate) fn records(id: u64, hours: &[Hour]) -> Vec<Record> {

@@ -220,6 +220,11 @@ pub struct Country {
     /// omitted access child is a known empty list. The writer omits an empty
     /// array and emits only signed-positive byte modes.
     pub naval_region_access: Option<Vec<(u32, u8)>>,
+    /// `strategic_navy.regional_convoys`: each saved record's delivery efficiency by
+    /// strategic region id; `None` when the country saved no strategic navy. The writer
+    /// omits `efficiency` at 1.0 and a whole record whose required convoys are zero,
+    /// efficiency is 1.0 and last sinking is unset, so a missing region is full.
+    pub regional_convoy_efficiency: Option<BTreeMap<u32, Decimal>>,
     /// Stored stability and war-support terms. The country writer
     /// writes each only when its word is nonzero, so absence is zero. Each
     /// is a five-decimal number: the Q15 penalties truncated toward zero, the
@@ -635,6 +640,7 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
         volunteer_permissions: volunteer_permissions(items)?,
         naval_mines: naval_mines(items)?,
         naval_region_access: naval_region_access(items)?,
+        regional_convoy_efficiency: regional_convoy_efficiency(items)?,
         cores: integer_list(items, b"cores")?,
         claims: integer_list(items, b"claims")?,
         civil_war_targets: items
@@ -684,6 +690,45 @@ fn naval_region_access(items: &[Item]) -> io::Result<Option<Vec<(u32, u8)>>> {
         })
         .collect::<io::Result<Vec<_>>>()
         .map(Some)
+}
+
+/// The strategic navy's `regional_convoys`: a leading record count, then anonymous records
+/// of `index` (the strategic region id) and `data`. Only records writing `efficiency` are
+/// kept; the others are full.
+fn regional_convoy_efficiency(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Decimal>>> {
+    let Some(navy) = field(items, b"strategic_navy")? else {
+        return Ok(None);
+    };
+    let Some(records) = field(block(navy)?, b"regional_convoys")? else {
+        return Ok(Some(BTreeMap::new()));
+    };
+    let mut out = BTreeMap::new();
+    let mut records = block(records)?.iter();
+    let count = records
+        .next()
+        .ok_or_else(|| invalid("regional_convoys lacks its record count"))?;
+    if count.key.is_some() {
+        return Err(invalid("regional_convoys does not lead with its record count"));
+    }
+    let count: usize = integer(scalar(&count.value)?)?;
+    let mut seen = 0;
+    for record in records {
+        if record.key.is_some() {
+            return Err(invalid("a regional convoy record is keyed"));
+        }
+        let fields = block(&record.value)?;
+        let region = integer::<u32>(&required_bytes(fields, b"index")?)?;
+        seen += 1;
+        if let Some(efficiency) = decimal(required_block(fields, b"data")?, b"efficiency")?
+            && out.insert(region, efficiency).is_some()
+        {
+            return Err(invalid("regional_convoys repeats a region"));
+        }
+    }
+    if seen > count {
+        return Err(invalid("regional_convoys holds more records than its count"));
+    }
+    Ok(Some(out))
 }
 
 fn naval_mines(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Decimal>>> {

@@ -556,6 +556,8 @@ pub use states::{
     building_overrides, resource_inputs, state_cores, state_modifiers, state_pools,
     state_strategic_locations,
 };
+mod resource_map;
+pub use resource_map::{ResourceMapRows, resource_map};
 
 fn value<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,

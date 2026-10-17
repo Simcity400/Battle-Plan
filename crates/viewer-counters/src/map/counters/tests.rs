@@ -4141,6 +4141,8 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 DEFAULT_PRIORITY_ROCKET_SITE = 7,
                 DEFAULT_PRIORITY_GUN_EMPLACEMENT = 8,
                 DEFAULT_PRIORITY_STRATEGIC_LOCATION = 9,
+                DEFAULT_PRIORITY_RESOURCE = 10,
+                DEFAULT_PRIORITY_ADJACENCY_RULE = 11,
                 OTHER_TABLES
                 HOME_BASE_MAP_ICON_SCALE_DEFAULT = 1.25,
             },
@@ -4190,6 +4192,8 @@ fn counter_defines_read_each_define_through_its_native_getter() {
         ),
         (7, 8, 9)
     );
+    assert_eq!(default(PriorityIcon::AdjacencyRule), 11);
+    assert_eq!(default(PriorityIcon::Resource), 10);
     // Each map mode's table is its own: the navy table is the second after the default one.
     assert_eq!(
         read.priorities

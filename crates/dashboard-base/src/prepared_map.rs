@@ -184,6 +184,17 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::SimulationFeatures,
             TableId::StateResistance,
             TableId::Subjects,
+            // The resources map mode's origins, icons and hover
+            // (viewer_foundation::resource_origins) and the trade routes and their convoys
+            // (viewer_world::map::trade_routes).
+            TableId::ConvoyClients,
+            TableId::CountryOilFactors,
+            TableId::RegionalConvoyEfficiency,
+            TableId::ResourceExchanges,
+            TableId::ResourceOrigins,
+            TableId::ResourceRights,
+            TableId::StateTemporaryResources,
+            TableId::TradeRoutes,
         ];
         TableId::ALL
             .into_iter()

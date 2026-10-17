@@ -1263,7 +1263,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|placement| place(*placement))
             .collect::<io::Result<Vec<_>>>()?;
-        let (unit_model_field, unit_report) = document.unit_model_field(&options.perspective)?;
+        // The convoys sail at the dump's presentation clock where the mode and camera show them.
+        let trade_routes =
+            viewer_world::map::map_mode::visibility::of(&options.map_mode).trade_routes;
+        let (unit_model_field, unit_report) = document.unit_model_field_sailing(
+            &options.perspective,
+            options.presentation_time,
+            &|defines| {
+                viewer_world::map::trade_routes::convoys_shown(
+                    camera.height,
+                    defines,
+                    true,
+                    trade_routes,
+                )
+            },
+        )?;
         // fog of war: the hour's `IntelMap` for the viewing country and the fog
         // switch. The camera decides `FOWFadeFactor`, so the report needs it.
         let intel_map = document.intel_map(&options.perspective)?;
@@ -1756,6 +1770,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.province_geometry_build.as_secs_f64() * 1000.0
         );
         let plan = &order_field.report;
+        for warning in &plan.trade_routes {
+            println!("  {warning}");
+        }
         println!(
             "  {} snapped offensive lines, {} offset fronts, {} labels placed, {} labels fitting no variant, {} labels without their transport count{}{}",
             plan.snapped,

@@ -1149,7 +1149,7 @@ impl UnitModelAssets {
     }
 
     /// A registered entity's slot, baking it first.
-    fn bake_slot(&self, name: &str) -> Option<usize> {
+    pub(crate) fn bake_slot(&self, name: &str) -> Option<usize> {
         if !self.registered(name) || self.refusal(name).is_some() {
             return None;
         }
@@ -1172,6 +1172,7 @@ impl UnitModelAssets {
         if let Some(reason) = &self.disabled {
             return Ok(PreparedModels {
                 raid: Vec::new(),
+                convoys: None,
                 placed: Vec::new(),
                 ships: NavalSources::default(),
                 owned: BTreeSet::new(),
@@ -1449,6 +1450,7 @@ impl UnitModelAssets {
             .collect();
         Ok(PreparedModels {
             raid: Vec::new(),
+            convoys: None,
             placed,
             ships,
             owned,
@@ -1935,6 +1937,13 @@ pub struct PreparedModels {
     /// slot's: each arrow creates its entity directly, so
     /// they bypass the unit history, its camera gates and popup scale.
     raid: Vec<RaidModel>,
+    /// The viewed country's trade-route convoys ([`Self::add_convoys`]), posed each frame by
+    /// the presentation clock ([`Self::convoy_units`]).
+    convoys: Option<(
+        Vec<crate::map::trade_routes::ConvoyLine>,
+        crate::map::trade_routes::ConvoyDefines,
+        std::sync::Mutex<Option<crate::map::trade_routes::ConvoyFleet>>,
+    )>,
     placed: Vec<(Target, counter_move::Position)>,
     /// The viewing country's provinces, whose unit slots a switch to it
     /// clears ([`viewer_foundation::map::presentation::UnitRestart::ViewingCountry`]).
@@ -2003,6 +2012,91 @@ impl PreparedModels {
             .collect()
     }
 
+    /// Adds the viewed country's trade-route convoys ([`crate::map::trade_routes`]). Like the
+    /// raid units they are no unit slot's and bypass the unit history.
+    pub fn add_convoys(
+        &mut self,
+        lines: Vec<crate::map::trade_routes::ConvoyLine>,
+        defines: crate::map::trade_routes::ConvoyDefines,
+    ) {
+        self.convoys = (!lines.is_empty()).then_some((lines, defines, std::sync::Mutex::new(None)));
+    }
+
+    /// Preserve this view's sailing stream across unchanged forward-hour route refreshes.
+    /// Seeks and viewing-country changes recreate presentation through the host's restart rule.
+    pub fn inherit_convoys(&mut self, previous: &Self) {
+        let (Some((lines, defines, fleet)), Some((old_lines, old_defines, old_fleet))) =
+            (&mut self.convoys, &previous.convoys)
+        else {
+            return;
+        };
+        if lines == old_lines && defines == old_defines {
+            *fleet
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = old_fleet
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+        }
+    }
+
+    /// Whether the hour has convoys to sail.
+    pub fn has_convoys(&self) -> bool {
+        self.convoys.is_some()
+    }
+
+    /// The convoys sailing at `time` seconds of presentation time, when they show
+    /// ([`crate::map::trade_routes::convoys_shown`]); `height` is the drawn surface at a world
+    /// `(x, z)`. Entities that do not bake are counted in `refused`.
+    pub fn convoy_units(
+        &self,
+        assets: &UnitModelAssets,
+        time: f32,
+        height: &dyn Fn(f32, f32) -> f32,
+        shown: impl Fn(&crate::map::trade_routes::ConvoyDefines) -> bool,
+        refused: &mut BTreeMap<String, usize>,
+    ) -> Vec<(usize, ModelInstance)> {
+        let Some((lines, defines, fleet)) = &self.convoys else {
+            return Vec::new();
+        };
+        if !shown(defines) {
+            return Vec::new();
+        }
+        let mut radii = BTreeMap::new();
+        for line in lines {
+            if radii.contains_key(&line.entity) {
+                continue;
+            }
+            let radius = assets
+                .bake_slot(&line.entity)
+                .and_then(|slot| assets.library().meshes[slot].convoy_radius);
+            if radius.is_none() {
+                *refused
+                    .entry(format!(
+                        "convoy entity {}: creation-time bounding sphere unavailable",
+                        line.entity
+                    ))
+                    .or_default() += line.count as usize;
+            }
+            radii.insert(line.entity.clone(), radius);
+        }
+        let mut fleet = fleet
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fleet = fleet.get_or_insert_with(|| {
+            crate::map::trade_routes::ConvoyFleet::new(
+                lines,
+                defines,
+                &crate::map::trade_routes::presentation_counter,
+                &|name| radii.get(name).copied().flatten(),
+                height,
+            )
+        });
+        *refused.entry("convoy presentation history: native counter seed, cached positions and sleep state are not recorded; fresh viewer presentation".to_owned()).or_default() += lines.iter().map(|line|line.count as usize).sum::<usize>();
+        let poses = fleet.advance(defines, time, height);
+        crate::map::trade_routes::convoy_instances(assets, lines, &poses, refused)
+    }
+
     /// Every figure and ship of the hour, whatever the camera: the unit
     /// history admits them ([`crate::map::unit_history`]); and the raid units
     /// where the hour placed them, which bypass it.
@@ -2039,6 +2133,24 @@ impl PreparedModels {
                 .map(|target| (target.mesh, target.instance)),
         );
         models.extend_from_slice(&raids);
+        // Upload each convoy mesh without creating or stepping its sailing fleet.
+        // These zero-scale residency instances never enter the unit history or draw
+        // a convoy; the presentation frame supplies the sailing instances.
+        if let Some((lines, _, _)) = &self.convoys {
+            let slots: BTreeSet<_> = lines
+                .iter()
+                .filter_map(|line| assets.bake_slot(&line.entity))
+                .collect();
+            models.extend(slots.into_iter().map(|slot| {
+                (
+                    slot,
+                    ModelInstance {
+                        scale: 0.0,
+                        ..ModelInstance::default()
+                    },
+                )
+            }));
+        }
         Field {
             models: ModelField::build(&assets.library(), models, UNIT_TILE),
             targets,

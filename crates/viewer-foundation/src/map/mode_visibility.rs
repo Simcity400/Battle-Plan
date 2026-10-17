@@ -78,10 +78,14 @@ pub enum PriorityIcon {
     RocketSite,
     GunEmplacement,
     StrategicLocation,
+    /// Strait and canal (adjacency-rule) icons.
+    AdjacencyRule,
+    /// A state's resource icon.
+    Resource,
 }
 
 impl PriorityIcon {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::UnitsStack,
         Self::UnitsStackGroup,
         Self::VictoryPoints,
@@ -97,6 +101,8 @@ impl PriorityIcon {
         Self::RocketSite,
         Self::GunEmplacement,
         Self::StrategicLocation,
+        Self::AdjacencyRule,
+        Self::Resource,
     ];
 
     pub fn suffix(self) -> &'static str {
@@ -116,6 +122,8 @@ impl PriorityIcon {
             Self::RocketSite => "ROCKET_SITE",
             Self::GunEmplacement => "GUN_EMPLACEMENT",
             Self::StrategicLocation => "STRATEGIC_LOCATION",
+            Self::AdjacencyRule => "ADJACENCY_RULE",
+            Self::Resource => "RESOURCE",
         }
     }
 }
@@ -208,6 +216,8 @@ pub struct Visibility {
     /// Strait and canal (adjacency-rule) icons.
     pub adjacency_rules: bool,
     pub trade_routes: bool,
+    /// Each state's resource icon (`resource_mapicon`).
+    pub resource_icons: bool,
 }
 
 impl Visibility {
@@ -229,6 +239,7 @@ impl Visibility {
         province_borders: true,
         adjacency_rules: false,
         trade_routes: false,
+        resource_icons: false,
     };
 
     /// The navy mode's army counter opacity.

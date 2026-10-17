@@ -49,6 +49,89 @@ pub const REGISTERED: usize = 0x10;
 /// Convoy-client raw owner reference initialized from the importer.
 pub const OWNER: usize = 0x18;
 
+/// An exchange's authenticated ends: its exporter's resources, the exporter's and the importer's
+/// raw country links, and the exporter.
+#[derive(Debug, Clone, Copy)]
+pub struct Ends {
+    pub exporter_resources: usize,
+    pub exporter: u32,
+    pub importer: u32,
+    pub exporter_country: ccountry::Country,
+}
+
+/// The exchange at `pointer`, copied whole, held in `importer`'s import list: its vtable, its
+/// registered handle, its exporter's resources (the exporter's own resources, by backlink),
+/// its convoy owner and importer (both `importer`) and two distinct ends.
+pub fn authenticate<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    pointer: usize,
+    importer: ccountry::Country,
+) -> Result<([u8; SIZE], Ends), &'static str> {
+    // One guarded full-object copy preserves field widths without a separate
+    // guarded-read entry per scalar.
+    let bytes = read::<[u8; SIZE]>(memory, pointer).ok_or("trade exchange unreadable")?;
+    let u32_at = |offset: usize| {
+        u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("fixed field width"),
+        )
+    };
+    let u64_at = |offset: usize| {
+        u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("fixed field width"),
+        )
+    };
+    if u64_at(0)
+        != base
+            .checked_add(VTABLE_RVA)
+            .ok_or("module address overflow")? as u64
+    {
+        return Err("trade exchange vtable mismatch");
+    }
+    if bytes[REGISTERED] == 0 {
+        return Err("trade exchange has no registered native handle");
+    }
+    let exporter_resources = usize::try_from(u64_at(EXPORTER_RESOURCES))
+        .ok()
+        .filter(|&p| p != 0)
+        .ok_or("trade exporter resources pointer invalid")?;
+    let exporter = exporter_resources
+        .checked_add(ccountry_resources::OWNER)
+        .and_then(|p| read::<u32>(memory, p))
+        .ok_or("trade exporter unreadable")?;
+    let exporter_country = countries.resolve(exporter)?;
+    if ccountry_resources::resources(memory, base, countries, exporter_country)?
+        != exporter_resources
+    {
+        return Err("trade exporter resources backlink mismatch");
+    }
+    let raw_importer = u32_at(IMPORTER);
+    let importer_country = countries.resolve(raw_importer)?;
+    if countries.resolve(u32_at(OWNER))?.pointer != importer_country.pointer {
+        return Err("trade convoy owner disagrees with importer");
+    }
+    if importer_country.pointer != importer.pointer {
+        return Err("trade source country mismatch");
+    }
+    if exporter_country.pointer == importer_country.pointer {
+        return Err("trade endpoints are the same country");
+    }
+    Ok((
+        bytes,
+        Ends {
+            exporter_resources,
+            exporter,
+            importer: raw_importer,
+            exporter_country,
+        },
+    ))
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub id: u64,
@@ -289,9 +372,8 @@ impl<M: Memory> Reader<'_, M> {
         country: ccountry::Country,
         ordinal: u32,
     ) -> Result<(Row, Membership), &'static str> {
-        // One guarded full-object copy preserves field widths without a separate
-        // guarded-read entry per scalar.
-        let bytes = read::<[u8; SIZE]>(self.memory, pointer).ok_or("trade exchange unreadable")?;
+        let (bytes, ends) =
+            authenticate(self.memory, self.base, &self.countries, pointer, country)?;
         let u32_at = |offset| {
             u32::from_le_bytes(
                 bytes[offset..offset + 4]
@@ -306,42 +388,8 @@ impl<M: Memory> Reader<'_, M> {
                     .expect("fixed field width"),
             )
         };
-        if u64_at(0)
-            != self
-                .base
-                .checked_add(VTABLE_RVA)
-                .ok_or("module address overflow")? as u64
-        {
-            return Err("trade exchange vtable mismatch");
-        }
-        if bytes[REGISTERED] == 0 {
-            return Err("trade exchange has no registered native handle");
-        }
-        let exporter_resources = usize::try_from(u64_at(EXPORTER_RESOURCES))
-            .ok()
-            .filter(|&p| p != 0)
-            .ok_or("trade exporter resources pointer invalid")?;
-        let exporter = exporter_resources
-            .checked_add(ccountry_resources::OWNER)
-            .and_then(|p| read::<u32>(self.memory, p))
-            .ok_or("trade exporter unreadable")?;
-        let exporter_country = self.countries.resolve(exporter)?;
-        if ccountry_resources::resources(self.memory, self.base, &self.countries, exporter_country)?
-            != exporter_resources
-        {
-            return Err("trade exporter resources backlink mismatch");
-        }
-        let importer = u32_at(IMPORTER);
-        let importer_country = self.countries.resolve(importer)?;
-        if self.countries.resolve(u32_at(OWNER))?.pointer != importer_country.pointer {
-            return Err("trade convoy owner disagrees with importer");
-        }
-        if importer_country.pointer != country.pointer {
-            return Err("trade source country mismatch");
-        }
-        if exporter_country.pointer == importer_country.pointer {
-            return Err("trade endpoints are the same country");
-        }
+        let (exporter, importer, exporter_resources) =
+            (ends.exporter, ends.importer, ends.exporter_resources);
         let descriptor = self
             .descriptors
             .iter()

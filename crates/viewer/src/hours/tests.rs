@@ -539,6 +539,27 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
         Current::Gap { reason, .. } => Err(reason.clone()),
     };
     assert_eq!(strikes(&current), Ok(vec![7]));
+    // The resources map mode's and the trade routes' tables, including exchange ordinals, survive checkpoint restoration
+    // as ordinary playback decodes them.
+    let replay::container::SeekResult::Frame(ordinary) = replay.seek(1, 105).unwrap() else {
+        panic!("hour 105 is recorded");
+    };
+    let Current::Frame(restored) = &current else {
+        panic!("hour 105 is recorded");
+    };
+    for rows in crate::playback::tests::resource_map_rows(105) {
+        let table = rows.table();
+        assert_eq!(
+            *ordinary.tables[table.index()],
+            replay::frame::TableView::Complete(rows),
+            "{table:?}"
+        );
+        assert_eq!(
+            *restored.tables[table.index()],
+            *ordinary.tables[table.index()],
+            "{table:?}"
+        );
+    }
     assert!(
         matches!((current, expected), (Current::Frame(actual), replay::container::SeekResult::Frame(expected)) if actual.as_ref() == expected.as_ref())
     );

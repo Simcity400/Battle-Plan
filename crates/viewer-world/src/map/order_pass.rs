@@ -414,9 +414,8 @@ impl OrderPass {
     }
 }
 
-/// The battle plans a frame submits. Their shadow casters and their draws are reachable only
-/// through here, and only while plans are shown: by their own display switch and, as part of the
-/// map's interface, by the overlay's `interface`.
+/// The admitted arrow families a frame submits. Both draws and shadow casters respect the
+/// map interface switch; trade routes have their map mode's visibility, plans their own switch.
 pub struct PlanSubmissions<'a, P = OrderPass> {
     shown: Option<&'a P>,
 }
@@ -432,9 +431,10 @@ impl<'a, P> PlanSubmissions<'a, P> {
         plans: Option<&'a P>,
         graphics: &dashboard_core::protocol::MapGraphics,
         overlay: &crate::map::scene::Overlay<'_>,
+        trade_routes: bool,
     ) -> Self {
         Self {
-            shown: plans.filter(|_| graphics.battle_plans && overlay.interface),
+            shown: plans.filter(|_| (graphics.battle_plans || trade_routes) && overlay.interface),
         }
     }
 
@@ -494,12 +494,14 @@ mod tests {
         // A stand-in plan pass through the one gate the frame reaches the order pass's shadows
         // and draws by, counting the shadow casts and draws a frame submits.
         struct StandIn;
-        let submitted = |graphics: dashboard_core::protocol::MapGraphics, interface: bool| {
+        let submitted = |graphics: dashboard_core::protocol::MapGraphics,
+                         interface: bool,
+                         trade_routes: bool| {
             let overlay = crate::map::scene::Overlay {
                 interface,
                 ..Default::default()
             };
-            let frame = PlanSubmissions::new(Some(&StandIn), &graphics, &overlay);
+            let frame = PlanSubmissions::new(Some(&StandIn), &graphics, &overlay, trade_routes);
             let (mut casts, mut draws) = (0, 0);
             frame
                 .cast_shadows(|_| {
@@ -516,19 +518,21 @@ mod tests {
             (casts, draws)
         };
         let shown = dashboard_core::protocol::MapGraphics::default();
-        assert_eq!(submitted(shown, true), (1, 1));
+        assert_eq!(submitted(shown, true, false), (1, 1));
         // A free view with its overlays hidden casts no plan shadows and draws no plans.
-        assert_eq!(submitted(shown, false), (0, 0));
+        assert_eq!(submitted(shown, false, false), (0, 0));
         let switched_off = dashboard_core::protocol::MapGraphics {
             battle_plans: false,
             ..shown
         };
-        assert_eq!(submitted(switched_off, true), (0, 0));
+        assert_eq!(submitted(switched_off, true, false), (0, 0));
+        assert_eq!(submitted(switched_off, true, true), (1, 1));
+        assert_eq!(submitted(switched_off, false, true), (0, 0));
         // A scene without plans submits none, and a failing submission reaches the frame.
         let overlay = crate::map::scene::Overlay::default();
-        let none = PlanSubmissions::<StandIn>::new(None, &shown, &overlay);
+        let none = PlanSubmissions::<StandIn>::new(None, &shown, &overlay, true);
         assert!(none.cast_shadows(|_| unreachable!()).is_ok());
-        let failing = PlanSubmissions::new(Some(&StandIn), &shown, &overlay)
+        let failing = PlanSubmissions::new(Some(&StandIn), &shown, &overlay, false)
             .cast_shadows(|_| Err(io::Error::other("refused")));
         assert!(failing.is_err());
     }

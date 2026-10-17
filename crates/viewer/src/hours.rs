@@ -1509,11 +1509,14 @@ impl Coordinator {
             "movers",
             Box::new(move |view| {
                 Part::Movers((|| {
-                    // The raid arrows' units join the unit models.
-                    let orders =
-                        view.order_field_with_allied(&movers_perspective, show_allied_plans)?;
+                    // The raid arrows' units and the trade-route convoys join the unit models.
+                    let (orders, convoys) =
+                        view.orders_and_convoys(&movers_perspective, show_allied_plans)?;
                     let mut units = view.prepare_unit_models(&movers_perspective)?;
                     units.add_raid_units(&view.unit_models, &orders.raid_units);
+                    if let Ok(defines) = &view.trade_routes {
+                        units.add_convoys(convoys, defines.convoys);
+                    }
                     Ok(Box::new(Movers {
                         trains: view.train_plan(&movers_perspective)?,
                         aircraft: view.aircraft_plan(&movers_perspective)?,

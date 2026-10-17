@@ -84,7 +84,7 @@ fn a_side_stores_one_marked_loss_sum() {
     // The sum sits where the samples sat, followed by the count.
     find(&bytes, &loss_window(&[sum], 30));
     assert_eq!(decoded(&bytes, crate::FORMAT_VERSION), side);
-    assert_eq!(LOSS_SUM_FORMAT, crate::FORMAT_VERSION);
+    assert_eq!(LOSS_SUM_FORMAT, 102);
     // The historical writer, standing in for format 101, stores 24 samples
     // and the count itself: 184 bytes more.
     let older = crate::rows::with_historical_stamp(0, || encoded(&side));

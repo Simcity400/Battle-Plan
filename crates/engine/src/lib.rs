@@ -342,6 +342,7 @@ pub use engine_research::governance_batch;
 pub use engine_resources::clend_lease_exchange;
 pub use engine_resources::cresource_exchange;
 pub use engine_resources::cresource_origin;
+pub use engine_resources::resource_map;
 pub use engine_resources::cstrategic_resource;
 pub use engine_resources::cstrategic_resource_database;
 pub use engine_resources::cstrategic_resource_pool;

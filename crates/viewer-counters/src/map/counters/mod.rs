@@ -366,8 +366,8 @@ impl CounterDefines {
         coarse_distance: [350.0, 350.0],
         // The default table's: units, groups, victory points, air and naval bases, naval
         // headquarters, facilities, land and naval combats, naval results and missions, capitals,
-        // rocket sites, gun emplacements and strategic locations.
-        priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10]),
+        // rocket sites, gun emplacements, strategic locations, adjacency rules and resources.
+        priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10]),
         groups: GroupDefines::VANILLA,
         split_selected_limit: 12,
         naval_counts: viewer_foundation::map::naval_count_approx::Defines::VANILLA,

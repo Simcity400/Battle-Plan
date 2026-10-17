@@ -15,7 +15,7 @@
 //! | states | state priorities; no raid icons; no faction pins; no fog of war |
 //! | supply | adjacency-rule icons; trade routes; no raid icons; no faction pins; no fog of war |
 //! | resistance, compliance | resistance priorities; no raid icons; no faction pins |
-//! | resources | resource priorities; no unit counters; label texts empty; adjacency-rule icons; trade routes; no province borders; no raid icons; no faction pins; no fog of war |
+//! | resources | resource priorities; state resource icons; no unit counters; label texts empty; adjacency-rule icons; trade routes; no province borders; no raid icons; no faction pins; no fog of war |
 //! | diplomacy, factions, ideology | their own priorities; no raid icons; no faction pins; no fog of war |
 //! | players | player priorities; no raid icons; no faction pins |
 //! | infrastructure, manpower | their own priorities; no province borders; no raid icons; no faction pins; no fog of war |
@@ -24,7 +24,8 @@
 //! | scripted | state priorities; no raid icons; no faction pins; no fog of war |
 //!
 //! Faction pins show in the political, air and navy modes only. Raid icons show in the
-//! political, air, navy, operatives and raids modes.
+//! political, air, navy, operatives and raids modes, and state resource icons in the resources
+//! mode only.
 
 use viewer_foundation::map::mode_visibility::{PriorityTable, RaidReach, UnitKinds, Visibility};
 
@@ -79,6 +80,7 @@ pub fn of(mode: &MapMode) -> Visibility {
             province_borders: false,
             adjacency_rules: true,
             trade_routes: true,
+            resource_icons: true,
             ..other(PriorityTable::Resources)
         },
         Stock::Diplomacy => other(PriorityTable::Diplomacy),

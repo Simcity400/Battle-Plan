@@ -730,7 +730,6 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
         (Stock::StrategicAir, [Strategic, Empty]),
         (Stock::Supply, [Empty, Empty]),
         (Stock::Terrain, [Empty, Country]),
-        (Stock::Resources, [Country, Empty]),
     ] {
         let fill = run(
             MapMode::Stock(stock),
@@ -740,14 +739,17 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
         assert_eq!(fill.draw.unwrap().channels, channels, "{stock:?}");
         assert_eq!(fill.warnings.len(), 1);
     }
-    // The raid mode is the countries alone, with nothing left to refuse.
-    let raids = run(
-        MapMode::Stock(Stock::Raids),
-        &content(MapModes::default()),
-        Some(0),
-    );
-    assert_eq!(raids.draw.unwrap().channels, [Country, Empty]);
-    assert!(raids.warnings.is_empty());
+    // The raid and resources modes are the countries alone, with nothing left to refuse: the
+    // resources mode's state icons draw.
+    for stock in [Stock::Raids, Stock::Resources] {
+        let fill = run(
+            MapMode::Stock(stock),
+            &content(MapModes::default()),
+            Some(0),
+        );
+        assert_eq!(fill.draw.unwrap().channels, [Country, Empty], "{stock:?}");
+        assert!(fill.warnings.is_empty(), "{stock:?}");
+    }
     // The navy mode keeps the political channels.
     let navy = run(
         MapMode::Stock(Stock::StrategicNavy),

@@ -3,8 +3,9 @@
 #[cfg(test)]
 use engine_native::crelation_status;
 use engine_native::{
-    Memory, batch_fallback, ccountry, cequipment_variant, cequipment_variant_pool, cgame_state,
-    cpdx_array, cstate, cstate_template, equipment_entry, memory, read, read_slice, walk,
+    Memory, allocation, batch_fallback, ccountry, cequipment_variant, cequipment_variant_pool,
+    cgame_state, cpdx_array, cstate, cstate_template, cstrategic_navy, cstrategic_navy_manager,
+    equipment_entry, memory, modifier_accumulator, read, read_slice, walk,
 };
 
 pub mod ccountry_resources;
@@ -14,4 +15,5 @@ pub mod cresource_origin;
 pub mod cstrategic_resource;
 pub mod cstrategic_resource_database;
 pub mod cstrategic_resource_pool;
+pub mod resource_map;
 pub mod state_resource_entry;

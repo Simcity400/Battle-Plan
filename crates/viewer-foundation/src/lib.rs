@@ -21,6 +21,7 @@ pub mod naval_sides;
 pub mod parallel;
 pub mod profile_writer;
 pub mod profiling;
+pub mod resource_origins;
 pub mod retirement;
 pub mod state_resources;
 pub mod table_access;

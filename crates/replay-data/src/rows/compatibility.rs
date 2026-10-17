@@ -1,5 +1,6 @@
 //! Proven field, wire and meaning history; no translation or old decoders.
 use super::TableId;
+#[cfg(test)]
 use crate::FORMAT_VERSION;
 
 /// Earlier history has not been audited for today's readers.
@@ -37,11 +38,11 @@ pub const POLITICAL_FORMAT: u16 = 101;
 /// Provisional main+1: packets on hourly host rows stop storing their read
 /// hour ([`crate::rows::PacketHour`]). Older nested records keep their stamp
 /// and stay readable, so no table is refused.
-pub const PACKET_HOUR_FORMAT: u16 = FORMAT_VERSION;
+pub const PACKET_HOUR_FORMAT: u16 = 102;
 /// Provisional main+1: the reserved singleton's transport packet was split
 /// into keyed hourly tables ([`super::RESERVED_SPLIT_TABLES`]), which retired
 /// in the same provisional format; no published build wrote them.
-pub const RESERVED_SPLIT_FORMAT: u16 = FORMAT_VERSION;
+pub const RESERVED_SPLIT_FORMAT: u16 = 102;
 /// Provisional main+1: per-division speed graphs and fresh counter-route
 /// operands, the movement inputs only arrival times used, attrition modifier
 /// breakdowns, selected-attack operands and the selected transport and
@@ -56,16 +57,16 @@ pub const RESERVED_SPLIT_FORMAT: u16 = FORMAT_VERSION;
 /// tombstones ([`RETIRED_FIELDS`]); older recordings discard them by name.
 /// The selected-attack operands' fields instead decode older payloads again
 /// ([`ATTACK_INPUTS_FORMAT`]).
-pub const RETIRED_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+pub const RETIRED_INPUTS_FORMAT: u16 = 102;
 /// Provisional main+1: each moving division's stat-block base speed, from
 /// which playback estimates arrival times.
-pub const BASE_SPEED_FORMAT: u16 = FORMAT_VERSION;
+pub const BASE_SPEED_FORMAT: u16 = 102;
 /// Provisional main+1: DivisionStatus records the camouflage category selected from a
 /// division's acclimatization (field 27, `camouflage`) instead of every entry and the
 /// maximum, which current writers leave empty. Format 101 and earlier keep their entries,
 /// from which consumers still decide. Format-102 captures written before this change
 /// share the version number but not the field count, so their blocks read as malformed.
-pub const CAMOUFLAGE_FORMAT: u16 = FORMAT_VERSION;
+pub const CAMOUFLAGE_FORMAT: u16 = 102;
 /// Provisional main+1: drifting values the game displays are stored at its
 /// display precision ([`crate::display`]): each stepped column holds whole
 /// multiples of its step and its wire holds the value divided by the step.
@@ -74,7 +75,7 @@ pub const CAMOUFLAGE_FORMAT: u16 = FORMAT_VERSION;
 /// written before this change share the version number and hold exact values
 /// in those columns, which this reader would multiply by the step; no
 /// published build wrote them.
-pub const DISPLAY_PRECISION_FORMAT: u16 = FORMAT_VERSION;
+pub const DISPLAY_PRECISION_FORMAT: u16 = 102;
 /// Provisional main+1: CountryFuel stores the day of applied fuel updates
 /// before a read summed as the Fuel widget shows it (`award_day`, field 22)
 /// and retires the update-by-update window (`awards`, field 20). Older
@@ -82,7 +83,7 @@ pub const DISPLAY_PRECISION_FORMAT: u16 = FORMAT_VERSION;
 /// totals. Format-102 captures written before this change share the version
 /// number but not CountryFuel's field count, so their blocks read as
 /// malformed; no published build wrote them.
-pub const FUEL_AWARD_DAY_FORMAT: u16 = FORMAT_VERSION;
+pub const FUEL_AWARD_DAY_FORMAT: u16 = 102;
 /// Provisional main+1: LandCombatDetails appends each side's CAS and
 /// commander hover inputs (field 10, `side_inputs`,
 /// [`super::LandCombatSideInputs`]): the anti-air cache, prevented CAS damage,
@@ -99,7 +100,7 @@ pub const FUEL_AWARD_DAY_FORMAT: u16 = FORMAT_VERSION;
 /// written before this change, or before those two parts became optional,
 /// share the version number but not LandCombatDetails' layout, so their
 /// blocks read as malformed; no published build wrote them.
-pub const SIDE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+pub const SIDE_INPUTS_FORMAT: u16 = 102;
 
 /// Provisional main+1: each LandCombatDetails side (field 7,
 /// [`super::LandCombatSideDetails`]) stores the sum of its 24 organisation loss samples,
@@ -113,7 +114,7 @@ pub const SIDE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
 /// refuses the whole block holding a marked side with the payload error `nested
 /// collection length exceeds remaining payload`; it never misreads it. Main+1 is never
 /// released and is renumbered at merge, so only in-flight tools predate the change.
-pub const LOSS_SUM_FORMAT: u16 = FORMAT_VERSION;
+pub const LOSS_SUM_FORMAT: u16 = 102;
 /// Provisional main+1: LandCombatDivisions records the stat block's initiative again
 /// (field 16, which format 101 holds with the same meaning) and appends each reserve's
 /// reinforcement speed share (`reinforcement_speed`, field 30), which the collector
@@ -122,7 +123,7 @@ pub const LOSS_SUM_FORMAT: u16 = FORMAT_VERSION;
 /// chance arm stays unknown. Format-102 captures written before this change share the
 /// version number but not LandCombatDivisions' field count, so their blocks read as
 /// malformed; no published build wrote them.
-pub const RESERVE_SPEED_FORMAT: u16 = FORMAT_VERSION;
+pub const RESERVE_SPEED_FORMAT: u16 = 102;
 /// Provisional main+1: LandCombatDivisions stores fuel and capacity, the
 /// five stats and the four scales as a numeric field each (fields 31 to
 /// 41, [`super::LandCombatDivisionRow::fuel_inputs`],
@@ -134,13 +135,13 @@ pub const RESERVE_SPEED_FORMAT: u16 = FORMAT_VERSION;
 /// exact, and still answer with them. Format-102 captures written before
 /// this change share the version number but not LandCombatDivisions' field
 /// count, so their blocks read as malformed; no published build wrote them.
-pub const LAND_DIVISION_NUMBERS_FORMAT: u16 = FORMAT_VERSION;
+pub const LAND_DIVISION_NUMBERS_FORMAT: u16 = 102;
 /// Provisional main+1: AirRegionCombat records each retained regional air-combat holder (the
 /// strategic air's region-combat table) with its records and their damage together, read when the
 /// record updater touched it and carried otherwise; playback derives the daily pruning. The retired
 /// AirRegionHistory and AirRegionDamage tables (a whole-table daily walk without a parent link from
 /// damage to record) stay retired.
-pub const AIR_REGION_COMBAT_FORMAT: u16 = FORMAT_VERSION;
+pub const AIR_REGION_COMBAT_FORMAT: u16 = 102;
 
 /// Provisional main+1: Politics appends what the `has_elections` trigger tests
 /// (`has_elections`, field 6): the elections byte nonzero and the frequency positive, as
@@ -149,7 +150,7 @@ pub const AIR_REGION_COMBAT_FORMAT: u16 = FORMAT_VERSION;
 /// refused by name for them. Format-102 captures written before this change share the
 /// version number but not Politics' field count, so their blocks read as malformed; no
 /// published build wrote them.
-pub const HAS_ELECTIONS_FORMAT: u16 = FORMAT_VERSION;
+pub const HAS_ELECTIONS_FORMAT: u16 = 102;
 
 /// Provisional main+1: the selected army's attack list is derived on playback
 /// during playback from the inputs it reads that nothing else records:
@@ -163,7 +164,7 @@ pub const HAS_ELECTIONS_FORMAT: u16 = FORMAT_VERSION;
 /// for those recordings; current writers leave them empty. Format-102 captures written
 /// before this change share the version number but not these tables' field counts, so
 /// their blocks read as malformed.
-pub const ATTACK_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+pub const ATTACK_INPUTS_FORMAT: u16 = 102;
 /// Provisional main+1: the movement-speed and attrition terms arrival times and the
 /// attrition hover read: the stat block's and commander's movement words, province and
 /// region weather speed and attrition entries, out-of-supply days, fuel, the exact supply
@@ -175,7 +176,7 @@ pub const ATTACK_INPUTS_FORMAT: u16 = FORMAT_VERSION;
 /// record's whole modifier accumulator, every key; captures of this version that hold only
 /// the movement and attrition keys share the version but not the field's layout, so their
 /// blocks read as malformed.
-pub const MOVEMENT_TERMS_FORMAT: u16 = FORMAT_VERSION;
+pub const MOVEMENT_TERMS_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionStatus.supply (field 22), the division supply
 /// footer, is recorded again for every division at display precision
@@ -186,7 +187,7 @@ pub const MOVEMENT_TERMS_FORMAT: u16 = FORMAT_VERSION;
 /// (`opaque_value!(T, restored)`); format-102 captures written before that
 /// retirement hold exact amounts this reader multiplies by the step. No
 /// published build wrote either.
-pub const SUPPLY_FOOTER_FORMAT: u16 = FORMAT_VERSION;
+pub const SUPPLY_FOOTER_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionStatus.supply ([`super::DivisionSupplyFooter`])
 /// stores its received amount as the shortfall from the asked amount, and
@@ -201,7 +202,7 @@ pub const SUPPLY_FOOTER_FORMAT: u16 = FORMAT_VERSION;
 /// holding a marked footer with the payload error `invalid nested option
 /// tag`; it never misreads it. Main+1 is never released and is renumbered at
 /// merge, so only in-flight tools predate the change.
-pub const SUPPLY_SHORTFALL_FORMAT: u16 = FORMAT_VERSION;
+pub const SUPPLY_SHORTFALL_FORMAT: u16 = 102;
 
 /// Provisional main+1: the task force and railway gun supply footers
 /// (TaskForceCounterInputs.supply, field 11, and RailwayGunCounterInputs.supply,
@@ -211,7 +212,7 @@ pub const SUPPLY_SHORTFALL_FORMAT: u16 = FORMAT_VERSION;
 /// amounts exact and unscaled. Format-102 captures written before this change share the
 /// version number and hold exact amounts, which this reader multiplies by the step; no
 /// published build wrote them.
-pub const UNIT_SUPPLY_FOOTER_FORMAT: u16 = FORMAT_VERSION;
+pub const UNIT_SUPPLY_FOOTER_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionStatus.supply_grace_remaining (field 19) is
 /// stored at the whole percent of the supply grace share the game shows
@@ -221,14 +222,14 @@ pub const UNIT_SUPPLY_FOOTER_FORMAT: u16 = FORMAT_VERSION;
 /// Format-102 captures written before this change share the version number
 /// and hold the finer value, which the save comparison reports as differing;
 /// no published build wrote them.
-pub const GRACE_PERCENT_FORMAT: u16 = FORMAT_VERSION;
+pub const GRACE_PERCENT_FORMAT: u16 = 102;
 
 /// Provisional main+1: the naval hovers' source trees, keyed by recorded
 /// source identities and carried while no hooked writer touches a country or
 /// commander tree (NavalModifierTrees), and their diagnostic oracle samples
 /// (NavalModifierTreeSamples). Older recordings refuse both by name; the
 /// retired NavalModifierBreakdowns stays refused.
-pub const NAVAL_TREES_FORMAT: u16 = FORMAT_VERSION;
+pub const NAVAL_TREES_FORMAT: u16 = 102;
 
 /// Provisional main+1: Provinces rows label each province's controller and
 /// owner areas by their smallest member and hold each controller area's
@@ -239,7 +240,7 @@ pub const NAVAL_TREES_FORMAT: u16 = FORMAT_VERSION;
 /// there. Format-102 captures written before this change share the version
 /// number but not Provinces' field count, so their blocks read as malformed;
 /// no published build wrote them.
-pub const AREA_FORMAT: u16 = FORMAT_VERSION;
+pub const AREA_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionRetreatBans holds every division's commander
 /// bans at the frame's hour instead of each roster owner's daily read, which
@@ -247,7 +248,7 @@ pub const AREA_FORMAT: u16 = FORMAT_VERSION;
 /// layout is unchanged; older recordings refuse the table by name.
 /// Format-102 captures written before this change share the version number
 /// and hold daily reads; no published build wrote them.
-pub const RETREAT_BANS_FORMAT: u16 = FORMAT_VERSION;
+pub const RETREAT_BANS_FORMAT: u16 = 102;
 
 /// Provisional main+1 (owner decision 2026-10-11): StockpileArchetypes holds,
 /// every hour, only the archetypes a raid type lists as essential equipment,
@@ -257,7 +258,7 @@ pub const RETREAT_BANS_FORMAT: u16 = FORMAT_VERSION;
 /// Format-102 captures written before this change share the version number
 /// but not the field's width, so their blocks read as malformed; no
 /// published build wrote them.
-pub const ESSENTIAL_STOCK_FORMAT: u16 = FORMAT_VERSION;
+pub const ESSENTIAL_STOCK_FORMAT: u16 = 102;
 
 /// Provisional main+1: EventFeedHistory events append what caused them
 /// (`EventFeedEvent.cause`, [`crate::event_feed_rows::EventFeedCause`]): the
@@ -268,19 +269,19 @@ pub const ESSENTIAL_STOCK_FORMAT: u16 = FORMAT_VERSION;
 /// decode with their cause not recorded. Format-102 captures written before
 /// this change share the version number but not the event layout, so their
 /// blocks read as malformed; no published build wrote them.
-pub const EVENT_CAUSE_FORMAT: u16 = FORMAT_VERSION;
+pub const EVENT_CAUSE_FORMAT: u16 = 102;
 
 /// Provisional main+1: the tables in [`crate::cadence::EARLIER_CADENCES`]
 /// changed cadence (most daily tables read within the hour, a few sliced or
 /// moved to another slot). Recordings before it were written with their
 /// earlier cadence, which [`crate::cadence::cadence_in`] returns.
-pub const CADENCE_FORMAT: u16 = FORMAT_VERSION;
+pub const CADENCE_FORMAT: u16 = 102;
 
 /// Provisional main+1: NuclearStrikes records each nuclear impact with its
 /// launcher, type, target and the outcome the impact applied before the
 /// authored `on_nuke_drop` effects ([`crate::rows::NuclearStrikeRow`]).
 /// Older recordings refuse the table by name.
-pub const NUCLEAR_STRIKES_FORMAT: u16 = FORMAT_VERSION;
+pub const NUCLEAR_STRIKES_FORMAT: u16 = 102;
 
 /// Provisional main+1: LandCombatDivisionModifiers holds each combat
 /// member's ordered modifier entries, a row a member keyed (combat, side,
@@ -292,7 +293,7 @@ pub const NUCLEAR_STRIKES_FORMAT: u16 = FORMAT_VERSION;
 /// Format-102 captures written before this change share the version number
 /// but not the table set, so their blocks read as malformed; no published
 /// build wrote them.
-pub const LAND_MODIFIER_ROWS_FORMAT: u16 = FORMAT_VERSION;
+pub const LAND_MODIFIER_ROWS_FORMAT: u16 = 102;
 
 /// Provisional main+1: FuelDemandParts holds each element of a CountryFuel
 /// row's demand pack lists, a row a part keyed by country, list and identity,
@@ -305,12 +306,12 @@ pub const LAND_MODIFIER_ROWS_FORMAT: u16 = FORMAT_VERSION;
 /// written before this change share the version number but not the table
 /// set or the pack's layout, so their blocks read as malformed; no
 /// published build wrote them.
-pub const FUEL_DEMAND_PARTS_FORMAT: u16 = FORMAT_VERSION;
+pub const FUEL_DEMAND_PARTS_FORMAT: u16 = 102;
 /// Map-mode inputs: each state's population (States `population`), its
 /// claims (StateCores `claims`) and each country's owned war goals'
 /// recipients (Capitulation `war_goal_recipients`). Format-102 captures
 /// written before them hold none of these fields.
-pub const MAP_MODE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+pub const MAP_MODE_INPUTS_FORMAT: u16 = 102;
 /// Provisional main+1: IntelNetworks rows carry each state's daily gain and
 /// its two parts, the network's quiet byte for the row's selector and the
 /// selected subnetwork's gain factor, strength target, the target's two parts
@@ -319,20 +320,20 @@ pub const MAP_MODE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
 /// written before this change share the version number but not the table's
 /// field count, so their blocks read as malformed; no published build wrote
 /// them.
-pub const INTEL_NETWORK_MAP_FORMAT: u16 = FORMAT_VERSION;
+pub const INTEL_NETWORK_MAP_FORMAT: u16 = 102;
 /// Each state's live category (States `category`). Format-102 captures
 /// written before it hold none.
-pub const STATE_CATEGORY_FORMAT: u16 = FORMAT_VERSION;
+pub const STATE_CATEGORY_FORMAT: u16 = 102;
 /// Map icons: each state's strategic locations and its provinces' own
 /// (StateCores `strategic_locations` and `province_strategic_locations`).
 /// Format-102 captures written before them hold neither field.
-pub const STRATEGIC_LOCATIONS_FORMAT: u16 = FORMAT_VERSION;
+pub const STRATEGIC_LOCATIONS_FORMAT: u16 = 102;
 
 /// Provisional main+1: MapEvents records the simulation edges behind the
 /// game's floating map text and critical shore bombardment explosions as an
 /// hourly interval with each family's coverage ([`crate::rows::MapEventsRow`]).
 /// Older recordings refuse the table by name.
-pub const MAP_EVENTS_FORMAT: u16 = FORMAT_VERSION;
+pub const MAP_EVENTS_FORMAT: u16 = 102;
 
 /// Provisional main+1: OwnerTransportSpeeds holds each railway-gun owner's
 /// transport speed in the strategic regions its guns stand in or route
@@ -341,7 +342,7 @@ pub const MAP_EVENTS_FORMAT: u16 = FORMAT_VERSION;
 /// refuse their duration. Format-102 captures
 /// written before this change share the version number but not the table
 /// set, so their blocks read as malformed; no published build wrote them.
-pub const OWNER_TRANSPORT_SPEEDS_FORMAT: u16 = FORMAT_VERSION;
+pub const OWNER_TRANSPORT_SPEEDS_FORMAT: u16 = 102;
 
 /// Provisional main+1: ReserveModifierTrees holds the printed reinforcement-rate
 /// trees of the hour's reserves' countries and contextual commanders, which the
@@ -349,7 +350,7 @@ pub const OWNER_TRANSPORT_SPEEDS_FORMAT: u16 = FORMAT_VERSION;
 /// and their chance arm omits those fragments by name. Format-102 captures
 /// written before this change share the version number but not the table set,
 /// so their blocks read as malformed; no published build wrote them.
-pub const RESERVE_MODIFIER_TREES_FORMAT: u16 = FORMAT_VERSION;
+pub const RESERVE_MODIFIER_TREES_FORMAT: u16 = 102;
 
 /// Provisional main+1: BattleSounds holds the battle ambience's battle list as
 /// the game holds it at each hourly boundary ([`crate::rows::BattleSoundRow`]).
@@ -357,7 +358,7 @@ pub const RESERVE_MODIFIER_TREES_FORMAT: u16 = FORMAT_VERSION;
 /// ambience. Format-102 captures written before this change share the version
 /// number but not the table set, so their blocks read as malformed; no
 /// published build wrote them.
-pub const BATTLE_SOUNDS_FORMAT: u16 = FORMAT_VERSION;
+pub const BATTLE_SOUNDS_FORMAT: u16 = 102;
 /// Provisional main+1: OperativeMissions holds every agency's active
 /// operatives hourly with what the Operatives map's icons read: assignment and
 /// cooldown, the active and pending missions with their targets, and the
@@ -365,7 +366,7 @@ pub const BATTLE_SOUNDS_FORMAT: u16 = FORMAT_VERSION;
 /// Format-102 captures written before this change share the version number
 /// but not the table set, so their blocks read as malformed; no published
 /// build wrote them.
-pub const OPERATIVE_MISSIONS_FORMAT: u16 = FORMAT_VERSION;
+pub const OPERATIVE_MISSIONS_FORMAT: u16 = 102;
 
 /// Provisional main+1: StrategicOperatives holds each country's strategic
 /// operative hourly with what the Operatives map's icons read: the mission
@@ -374,10 +375,10 @@ pub const OPERATIVE_MISSIONS_FORMAT: u16 = FORMAT_VERSION;
 /// recordings refuse only that table, by name. Format-102 captures written
 /// before this change share the version number but not the table set, so
 /// their blocks read as malformed; no published build wrote them.
-pub const STRATEGIC_OPERATIVES_FORMAT: u16 = FORMAT_VERSION;
+pub const STRATEGIC_OPERATIVES_FORMAT: u16 = 102;
 
 /// Current-format client agency UI buffer membership and native bucket order.
-pub const AGENCY_OPERATION_BUFFERS_FORMAT: u16 = FORMAT_VERSION;
+pub const AGENCY_OPERATION_BUFFERS_FORMAT: u16 = 102;
 
 /// Provisional main+1: Operations rows carry the selected phases, the
 /// requirement records and the inline equipment pool (fields 16 to 20),
@@ -386,7 +387,13 @@ pub const AGENCY_OPERATION_BUFFERS_FORMAT: u16 = FORMAT_VERSION;
 /// captures written before this change share the version number but not the
 /// table's field count, so their blocks read as malformed; no published
 /// build wrote them.
-pub const OPERATION_PREPARATION_FORMAT: u16 = FORMAT_VERSION;
+pub const OPERATION_PREPARATION_FORMAT: u16 = 102;
+/// Provisional main+1: the resources map mode's inputs. ResourceOrigins, ResourceRights,
+/// CountryOilFactors and StateTemporaryResources hold what each state's resource icon reads
+/// beyond the raid state tables; ConvoyClients, TradeRoutes and RegionalConvoyEfficiency hold
+/// every trade-route line and its hotspots.
+/// Earlier recordings lack these tables and refuse only their dependent features by name.
+pub const RESOURCES_MAP_FORMAT: u16 = 103;
 
 /// A row field whose capture ended at `retired`. A whole field keeps its
 /// Opaque framing as a [`super::Retired`] tombstone; a nested name
@@ -552,20 +559,20 @@ pub static RETIRED_FIELDS: [RetiredField; 63] = [
 /// Format-102 captures written before this change share the version number
 /// but not this layout, so their blocks read as malformed; format 101 keeps
 /// its recorded clocks.
-pub const DERIVED_CLOCKS_FORMAT: u16 = FORMAT_VERSION;
+pub const DERIVED_CLOCKS_FORMAT: u16 = 102;
 /// Provisional main+1: WeatherProvinces rows hold each province's temperature
 /// words at their frame's anchor and slot zero the hourly pass's inputs since
 /// ([`crate::rows::ProvinceTemperature`], [`crate::temperature`]), so field 4
 /// is the anchor's temperature. Format-102 captures written before this
 /// change share the version number but not the layout, so their blocks read
 /// as malformed; format 101 keeps each hour's recorded temperature.
-pub const DERIVED_TEMPERATURE_FORMAT: u16 = FORMAT_VERSION;
+pub const DERIVED_TEMPERATURE_FORMAT: u16 = 102;
 
 /// Provisional main+1: a same-process reattach that continues its branch
 /// records the event interval it could not observe as a control record
 /// (`ControlRecord::EventLoss`, spool and trailer tag 8). Older recordings
 /// hold none; their reattached first intervals stay unexplained.
-pub const EVENT_LOSS_FORMAT: u16 = FORMAT_VERSION;
+pub const EVENT_LOSS_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionStatus holds each name member's own template
 /// reference (30, `name_template`), a [`Witnessed`](crate::rows::Witnessed)
@@ -573,14 +580,14 @@ pub const EVENT_LOSS_FORMAT: u16 = FORMAT_VERSION;
 /// compare a division whose member names a deleted template against what the
 /// game holds rather than the template a save rebinds on load. Older
 /// recordings have no field.
-pub const NAME_TEMPLATE_FORMAT: u16 = FORMAT_VERSION;
+pub const NAME_TEMPLATE_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionTemplateIcons holds each composition grid's
 /// (definition, cell count) entries (15, `grids`,
 /// [`TemplateGrids`](crate::rows::TemplateGrids)), so battle ambience counts
 /// the regiment and support grids' slots without the regimental-support
 /// grid's. Older recordings have no field.
-pub const TEMPLATE_GRIDS_FORMAT: u16 = FORMAT_VERSION;
+pub const TEMPLATE_GRIDS_FORMAT: u16 = 102;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -2233,6 +2240,62 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "pol/mapmode-operative-icons",
         )
     };
+    history[TableId::ResourceOrigins.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::ResourceOrigins,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
+    history[TableId::ResourceRights.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::ResourceRights,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
+    history[TableId::CountryOilFactors.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::CountryOilFactors,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
+    history[TableId::StateTemporaryResources.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::StateTemporaryResources,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
+    history[TableId::ConvoyClients.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::ConvoyClients,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
+    history[TableId::TradeRoutes.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::TradeRoutes,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
+    history[TableId::RegionalConvoyEfficiency.index()] = LastChange {
+        introduced: RESOURCES_MAP_FORMAT,
+        ..table(
+            TableId::RegionalConvoyEfficiency,
+            RESOURCES_MAP_FORMAT,
+            "pol/mapmode-resources-raids",
+        )
+    };
     history[TableId::VariantDefinitions.index()] = appended(
         TableId::VariantDefinitions,
         "9d09404c0d",
@@ -2808,6 +2871,37 @@ mod tests {
     }
 
     #[test]
+    fn resource_format_keeps_mains_table_and_field_introductions() {
+        assert_eq!(RESOURCES_MAP_FORMAT, 103);
+        assert_eq!(TableId::TradeRoutes.field_count(), 6);
+        let route_history = TableId::TradeRoutes.last_change();
+        assert_eq!((route_history.introduced, route_history.format), (103, 103));
+        assert!(route_history.appended.is_empty());
+        for format in [
+            STATE_CATEGORY_FORMAT,
+            STRATEGIC_LOCATIONS_FORMAT,
+            BATTLE_SOUNDS_FORMAT,
+            OPERATIVE_MISSIONS_FORMAT,
+            STRATEGIC_OPERATIVES_FORMAT,
+            AGENCY_OPERATION_BUFFERS_FORMAT,
+            OPERATION_PREPARATION_FORMAT,
+        ] {
+            assert_eq!(format, 102);
+        }
+        assert!(TableId::BattleSounds.last_change().present(102));
+        assert!(!TableId::ResourceOrigins.last_change().present(102));
+        assert!(TableId::ResourceOrigins.last_change().present(103));
+        assert_eq!(
+            TableId::ResourceOrigins as u16,
+            TableId::AgencyOperationBuffers as u16 + 1
+        );
+        assert_eq!(
+            TableId::RegionalConvoyEfficiency as u16,
+            TableId::ResourceOrigins as u16 + 6
+        );
+    }
+
+    #[test]
     fn compatibility_catalog_covers_every_table_and_record_once() {
         for table in TableId::ALL {
             let entry = table.last_change();
@@ -2821,7 +2915,7 @@ mod tests {
                 entry
                     .retired
                     .is_none_or(|retired| retired > entry.introduced
-                        || (retired == entry.introduced && retired == FORMAT_VERSION))
+                        || (retired == entry.introduced && retired == RESERVED_SPLIT_FORMAT))
             );
             if entry.kind == ChangeKind::AppendedOnly {
                 if entry.appended.is_empty() {

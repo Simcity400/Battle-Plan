@@ -27,7 +27,7 @@ use crate::rows::{
     ProjectHistoryRow, ProjectRow, RaidAirSiteRow, RelationOpinionRow, RelationTupleRow,
     ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow,
     SliceReadRow, StateCoreRow, StateDynamicModifierRow, StateResourceInputRow, StateResourceRow,
-    SupplyNodeRow, TableId, TableRows, TrainInventoryRow,
+    SupplyNodeRow, TableId, TableRows, TradeRouteRow, TrainInventoryRow,
 };
 use crate::{codec::invalid_static as invalid, rows::RowCodec};
 use engine::allocation;
@@ -66,6 +66,9 @@ sliced_by!(
     // The supply companion's native country ID, whose node and vertex
     // rows and inventory are read together.
     SupplyNodeRow,
+    // The country holding the route: an origin's list owner, a delivery route's
+    // exporter or a supply transfer's country.
+    TradeRouteRow,
     TrainInventoryRow,
     AvailableAdvisorRow,
     // A country's focus state and completed roster, read together.
@@ -157,6 +160,9 @@ macro_rules! dispatch {
             }
             (TableRows::SupplyNodes($old), TableRows::SupplyNodes($new)) => {
                 Ok(TableRows::SupplyNodes($body?))
+            }
+            (TableRows::TradeRoutes($old), TableRows::TradeRoutes($new)) => {
+                Ok(TableRows::TradeRoutes($body?))
             }
             (TableRows::TrainInventory($old), TableRows::TrainInventory($new)) => {
                 Ok(TableRows::TrainInventory($body?))
@@ -315,6 +321,7 @@ pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
         TableRows::NavalMissionCountries(rows) => collect(rows),
         TableRows::NavalMissionCommanders(rows) => collect(rows),
         TableRows::SupplyNodes(rows) => collect(rows),
+        TableRows::TradeRoutes(rows) => collect(rows),
         TableRows::TrainInventory(rows) => collect(rows),
         TableRows::AvailableAdvisors(rows) => collect(rows),
         TableRows::Focus(rows) => collect(rows),

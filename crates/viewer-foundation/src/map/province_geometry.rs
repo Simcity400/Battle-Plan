@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct ProvinceGeometry {
     pub width: u32,
     centroids: Vec<Option<[i32; 2]>>,
+    pixels: Vec<u32>,
     pub borders: BTreeMap<(u32, u32), Vec<[i32; 2]>>,
     pub centers: Centers,
 }
@@ -69,6 +70,7 @@ impl ProvinceGeometry {
             edges = &edges[count..];
         }
         // Centroid sums use i32 fields, so a sum past i32 wraps; division is signed.
+        let pixels = sums.iter().map(|entry| entry.2 as u32).collect();
         let centroids: Vec<Option<[i32; 2]>> = sums
             .into_iter()
             .map(|(sx, sy, count)| {
@@ -85,8 +87,14 @@ impl ProvinceGeometry {
             width: map.width,
             centers: Centers::build(map, &centroids),
             centroids,
+            pixels,
             borders,
         }
+    }
+
+    /// Pixel count used by the trade-line province search.
+    pub fn pixel_count(&self, province: u32) -> Option<u32> {
+        self.pixels.get(province as usize).copied()
     }
 
     /// World `(x, z)` of a province's integer pixel centroid.

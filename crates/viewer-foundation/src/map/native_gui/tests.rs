@@ -8357,3 +8357,19 @@ fn alpha_hover_keeps_an_out_of_range_selected_frame_offset() {
         .unwrap();
     assert!(hit.contains([10.2, 20.2]));
 }
+
+#[test]
+fn icon_pool_sizes_keep_every_added_family() {
+    assert_eq!(
+        [
+            MapIconPool::Resource,
+            MapIconPool::AdjacencyRule,
+            MapIconPool::RocketSite,
+            MapIconPool::GunEmplacement,
+            MapIconPool::Radar,
+            MapIconPool::StrategicLocation
+        ]
+        .map(MapIconPool::initial),
+        [0xC0, 0x20, 0x80, 0x80, 0x40, 0x40]
+    );
+}

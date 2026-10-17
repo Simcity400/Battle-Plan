@@ -121,7 +121,7 @@ impl LabelDefines {
             text_cutoff: [100.0, 800.0],
             max_points_for_percent: 22.0,
             capital_cutoff: [1100.0, 1000.0],
-            priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5]),
+            priorities: Priorities::uniform([10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10]),
         }
     }
 }

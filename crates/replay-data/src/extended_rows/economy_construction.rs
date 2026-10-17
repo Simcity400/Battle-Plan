@@ -1101,6 +1101,161 @@ pub struct CountryBuildingResourceRow {
 typed_codec!(CountryBuildingResourceRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (entry): U32, 1 => (building): U32, 2 => (count): U32, 3 => (resource): U32, 4 => (amount): I64 }, |_row| Ok(()));
+
+/// ResourceOrigins: key state:country (64 bits).
+///
+/// A resource origin the resources map icon reads: the controller's own origin of the state
+/// (`list` 0) or a rights holder's (`list` 1); `country` is the country whose list holds it.
+/// `efficiency` is the origin's stored efficiency product the icon multiplies by,
+/// `route_factor` the supply-route factor fixed when the game loaded or the origin was built,
+/// and `local_resources_factor` the effective `local_resources_factor` for the state and
+/// `country`. All fixed5. `bad` is whether the origin's line draws in the bad-route colour:
+/// its convoy efficiency product below
+/// `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`; `convoys_assigned` and `convoys_required` are its
+/// convoy counts. Its route is TradeRoutes' class 0 route of (`country`, `state`).
+///
+/// Hourly: the game refreshes origins in its hourly trade task.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ResourceOriginRow {
+    /// Zero-based position in this country's own or rights-holder origin list.
+    pub ordinal: u32,
+    pub state: u32,
+    pub country: u32,
+    pub list: u8,
+    pub efficiency: i64,
+    pub route_factor: i64,
+    pub local_resources_factor: i64,
+    pub bad: bool,
+    pub convoys_assigned: i32,
+    pub convoys_required: i32,
+}
+typed_codec!(ResourceOriginRow, 64, |row| (row.state as u128) << 32 | row.country as u128,
+ |key| Self { state: (key >> 32) as u32, country: key as u32, ..Default::default() },
+ { 0 => (list): U8, 1 => (efficiency): I64, 2 => (route_factor): I64, 3 => (local_resources_factor): I64, 4 => (bad): Bool, 5 => (convoys_assigned): I32, 6 => (convoys_required): I32, 7 => (ordinal): U32 }, |_row| Ok(()));
+
+/// ResourceRights: key state:resource (64 bits).
+///
+/// A resource right on a state: the state controller's origin gives `resource` (the
+/// one-based resource database index) to `holder`. Hourly.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ResourceRightRow {
+    /// Zero-based position in the origin's resource-rights list.
+    pub ordinal: u32,
+    pub state: u32,
+    pub resource: u32,
+    pub holder: u32,
+}
+typed_codec!(ResourceRightRow, 64, |row| (row.state as u128) << 32 | row.resource as u128,
+ |key| Self { state: (key >> 32) as u32, resource: key as u32, ..Default::default() },
+ { 0 => (holder): U32, 1 => (ordinal): U32 }, |_row| Ok(()));
+
+/// CountryOilFactors: key country (32 bits).
+///
+/// The country's effective `production_oil_factor`, fixed5, which scales the oil resource's
+/// building grants in the states it controls; a zero factor has no row. Hourly.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CountryOilFactorRow {
+    pub country: u32,
+    pub factor: i64,
+}
+typed_codec!(CountryOilFactorRow, 32, |row| row.country as u128,
+ |key| Self { country: key as u32, ..Default::default() },
+ { 0 => (factor): I64 }, |_row| Ok(()));
+
+/// StateTemporaryResources: key state:resource lexer token (64 bits).
+///
+/// A state's temporary resources, the resource definition's temporary key in the state's
+/// modifiers, read only while the state's temporary-resource list is not empty or its flag
+/// is set, which is when the resources map icon adds them; a zero amount has no row.
+/// Fixed5. Hourly.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StateTemporaryResourceRow {
+    pub state: u32,
+    pub resource: u32,
+    pub amount: i64,
+}
+typed_codec!(StateTemporaryResourceRow, 64, |row| (row.state as u128) << 32 | row.resource as u128,
+ |key| Self { state: (key >> 32) as u32, resource: key as u32, ..Default::default() },
+ { 0 => (amount): I64 }, |_row| Ok(()));
+
+/// ConvoyClients: key client handle id (32 bits).
+///
+/// Every convoy client a trade-route line draws for, other than resource origins:
+/// `category` 1 a naval supply transfer of `owner`, 2 an import of `owner` from `other`,
+/// 4 lend-lease from `owner` to `other`, 6 a market contract sold by `owner` to `other`.
+/// Its route is TradeRoutes' (`route_class`, `route_country`, `route_other`). `bad` is
+/// whether its line draws in the bad-route colour: its efficiency product below
+/// `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`; `convoys_assigned` and `convoys_required` are its
+/// convoy counts. Hourly.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConvoyClientRow {
+    /// Independent positions in the owner's and counterparty's directional lists.
+    /// Imports/exports instead use ResourceExchanges' existing ordinals; None refuses
+    /// any other layer that needs this position, rather than using handle order.
+    pub owner_ordinal: Option<u32>,
+    pub other_ordinal: Option<u32>,
+    pub handle: u32,
+    pub category: u8,
+    pub owner: u32,
+    pub other: u32,
+    pub route_class: u8,
+    pub route_country: u32,
+    pub route_other: u32,
+    pub bad: bool,
+    pub convoys_assigned: i32,
+    pub convoys_required: i32,
+}
+typed_codec!(ConvoyClientRow, 32, |row| row.handle as u128,
+ |key| Self { handle: key as u32, ..Default::default() },
+ { 0 => (category): U8, 1 => (owner): U32, 2 => (other): U32, 3 => (route_class): U8, 4 => (route_country): U32, 5 => (route_other): U32, 6 => (bad): Bool, 7 => (convoys_assigned): I32, 8 => (convoys_required): I32, 9 => (owner_ordinal): OptionalU32, 10 => (other_ordinal): OptionalU32 }, |_row| Ok(()));
+
+/// RegionalConvoyEfficiency: key country:region (64 bits).
+///
+/// A country's delivery efficiency in one strategic sea region, fixed5, as its strategic
+/// navy's regional convoy record holds it (full for a region beyond its records). A bad
+/// trade-route line draws a region in the hotspot colour for a viewing country whose
+/// efficiency there is below `TRADE_ROUTE_REGIONAL_BAD_EFFICIENCY_THRESHOLD`. Read for every
+/// country taking part in a bad naval route, in each sea region of its path. Hourly.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RegionalConvoyEfficiencyRow {
+    pub country: u32,
+    pub region: u32,
+    pub efficiency: i64,
+}
+typed_codec!(RegionalConvoyEfficiencyRow, 64, |row| (row.country as u128) << 32 | row.region as u128,
+ |key| Self { country: (key >> 32) as u32, region: key as u32, ..Default::default() },
+ { 0 => (efficiency): I64 }, |_row| Ok(()));
+
+/// TradeRoutes: key country:class:other (72 bits).
+///
+/// Every route a convoy client draws: class 0 a resource origin's (`country` the origin's
+/// list owner, `other` its state), 1 a delivery route (`country` the exporter, `other` the
+/// importer), 2 a naval supply transfer's (`country`, `other` the client's handle id). A
+/// naval route (`kind` 2) draws from port province `from` through the strategic sea regions
+/// in `path` to port province `to`; any other kind from state `from` through the states in
+/// `path` to state `to`. A route that draws nothing has `from`, `to` and `path` empty.
+///
+/// Sliced (family `trade_routes`, owner: `country`): each hour reads the daily slice, an
+/// owner new to the census or whose set of referenced routes changed, and every owner one
+/// of whose routes a hooked route writer touched since the previous hour; an hour whose take
+/// of those marks does not certify the previous hour's read reads every owner.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TradeRouteRow {
+    pub country: u32,
+    pub class: u8,
+    pub other: u32,
+    pub kind: u8,
+    pub from: u32,
+    pub to: u32,
+    pub path: Vec<u32>,
+    /// The native source/destination states used by market route grouping, independent
+    /// of naval port provinces. None on routes without a market client or a null state.
+    pub source_state: Option<u32>,
+    pub destination_state: Option<u32>,
+}
+typed_codec!(TradeRouteRow, 72, |row| (row.country as u128) << 40 | (row.class as u128) << 32 | row.other as u128,
+ |key| Self { country: (key >> 40) as u32, class: (key >> 32) as u8, other: key as u32, ..Default::default() },
+ { 0 => (kind): U8, 1 => (from): U32, 2 => (to): U32, 3 => (path): U32List, 4 => (source_state): OptionalU32, 5 => (destination_state): OptionalU32 }, |_row| Ok(()));
 /// StockpileArchetypes: key canonical slot:archetype token. The stock of each archetype a raid type
 /// lists as essential equipment, in a country's stockpile pool (the production status's first
 /// stockpile array), which the raid equipment-requirement check compares with each amount:

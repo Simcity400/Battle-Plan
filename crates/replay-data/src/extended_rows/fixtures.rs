@@ -324,7 +324,15 @@ sample_struct!(ProvinceModifierEntry {
     key: u32,
     value: i64
 });
-sample_struct!(ProvinceWeatherModifiers { entries: Vec<ProvinceModifierEntry> });
+impl Sample for ProvinceWeatherModifiers {
+    fn sample(tick: usize) -> Self {
+        let mut entries = Vec::<ProvinceModifierEntry>::sample(tick);
+        entries.retain(|entry| entry.key != 0);
+        entries.sort_by_key(|entry| entry.key);
+        entries.dedup_by_key(|entry| entry.key);
+        Self { entries }
+    }
+}
 impl Sample for PoliticalRuntimeScalars {
     fn sample(tick: usize) -> Self {
         Self {
@@ -2196,6 +2204,13 @@ fixture!(StateResourceInputRow, |key| {state: key as u32}, {gate: u8, global_fac
 fixture!(StateResourceRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {pool: i64, additive: i64, factor: i64, cost: i64});
 fixture!(StateDynamicModifierRow, |key| {state: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, scope_country: u32, scope_state: i32});
 fixture!(CountryBuildingResourceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {entry: u32, building: u32, count: u32, resource: u32, amount: i64});
+fixture!(ResourceOriginRow, |key| {state: (key >> 32) as u32, country: key as u32}, {ordinal: u32, list: u8, efficiency: i64, route_factor: i64, local_resources_factor: i64, bad: bool, convoys_assigned: i32, convoys_required: i32});
+fixture!(ResourceRightRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {holder: u32, ordinal: u32});
+fixture!(CountryOilFactorRow, |key| {country: key as u32}, {factor: i64});
+fixture!(StateTemporaryResourceRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {amount: i64});
+fixture!(ConvoyClientRow, |key| {handle: key as u32}, {owner_ordinal: Option<u32>, other_ordinal: Option<u32>, category: u8, owner: u32, other: u32, route_class: u8, route_country: u32, route_other: u32, bad: bool, convoys_assigned: i32, convoys_required: i32});
+fixture!(RegionalConvoyEfficiencyRow, |key| {country: (key >> 32) as u32, region: key as u32}, {efficiency: i64});
+fixture!(TradeRouteRow, |key| {country: (key >> 40) as u32, class: (key >> 32) as u8, other: key as u32}, {kind: u8, from: u32, to: u32, path: Vec<u32>, source_state: Option<u32>, destination_state: Option<u32>});
 fixture!(RaidCountryInputRow, |key| {canonical_slot: key as u32}, {air_range_factor: Option<i64>, naval_commando_range_factor: Option<i64>, autonomous: Option<u32>, convoy_reservations: Vec<u32>});
 fixture!(CountryCommandPowerRow, |key| {canonical_slot: key as u32}, {allocated_command_power_raw: i64, max_command_power: Option<i64>, max_command_power_factor: Option<i64>, ace_effectiveness_factor: Option<i64>, air_ace_bonuses_factor: Option<i64>});
 fixture!(DivisionRetreatBanRow, |key| {division: key as u64}, {owner: u32, bans: u8});
@@ -2908,6 +2923,19 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
         }
         TableId::StrategicOperatives => {
             TableRows::StrategicOperatives(rows::<StrategicOperativeRow>(tick))
+        }
+        TableId::ResourceOrigins => TableRows::ResourceOrigins(rows::<ResourceOriginRow>(tick)),
+        TableId::ResourceRights => TableRows::ResourceRights(rows::<ResourceRightRow>(tick)),
+        TableId::CountryOilFactors => {
+            TableRows::CountryOilFactors(rows::<CountryOilFactorRow>(tick))
+        }
+        TableId::StateTemporaryResources => {
+            TableRows::StateTemporaryResources(rows::<StateTemporaryResourceRow>(tick))
+        }
+        TableId::ConvoyClients => TableRows::ConvoyClients(rows::<ConvoyClientRow>(tick)),
+        TableId::TradeRoutes => TableRows::TradeRoutes(rows::<TradeRouteRow>(tick)),
+        TableId::RegionalConvoyEfficiency => {
+            TableRows::RegionalConvoyEfficiency(rows::<RegionalConvoyEfficiencyRow>(tick))
         }
         TableId::DivisionLandInputs => {
             TableRows::DivisionLandInputs(rows::<DivisionLandInputsRow>(tick))
@@ -5049,6 +5077,13 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<OperativeMissionRow>(TableId::OperativeMissions);
     check_table::<StrategicOperativeRow>(TableId::StrategicOperatives);
     check_table::<AgencyOperationBuffersRow>(TableId::AgencyOperationBuffers);
+    check_table::<ResourceOriginRow>(TableId::ResourceOrigins);
+    check_table::<ResourceRightRow>(TableId::ResourceRights);
+    check_table::<CountryOilFactorRow>(TableId::CountryOilFactors);
+    check_table::<StateTemporaryResourceRow>(TableId::StateTemporaryResources);
+    check_table::<ConvoyClientRow>(TableId::ConvoyClients);
+    check_table::<TradeRouteRow>(TableId::TradeRoutes);
+    check_table::<RegionalConvoyEfficiencyRow>(TableId::RegionalConvoyEfficiency);
     check_table::<NavalCombatDetailsRow>(TableId::NavalCombatDetails);
     check_table::<NavalCombatShipRow>(TableId::NavalCombatShips);
     check_table::<NavalCombatResultDetailsRow>(TableId::NavalCombatResultDetails);

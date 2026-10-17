@@ -25,6 +25,8 @@ Operatives retain the inherited leader writer's optional nonempty portrait `gfx`
 
 Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
 
+Country resources retain shared `delivery_routes` by receiver tag, including exact optional `from_state` and `to_state` values. Omitted endpoints, zero and an absent receiver entry remain distinct; duplicate receiver keys are refused.
+
 [Saved transfer inputs](src/counter_inputs.rs) keep source province and ordered combat references separate from the target. [Mission cache reads](src/naval_missions/spotting_cache.rs) use recorded lexical keys and the authenticated physical-country projection; omission constrains only the nonpositive writer branch. Air pools require their saved definition token. Orders-group and plan names distinguish an omitted key from emitted empty first-NUL text.
 
 The [template save reader](src/units.rs), state, province and faction names, and ace callsigns preserve key presence separately from bytes: emitted empty text differs from an omitted key. Comparisons follow each native stored-length gate and first-NUL prefix. Unconditional deployment and air-group names require the saved key even when its text is empty.

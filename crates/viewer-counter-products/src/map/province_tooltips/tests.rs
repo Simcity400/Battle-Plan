@@ -17,6 +17,7 @@ fn thermal_identifier_notes_reach_province_content_warnings() {
         air_log_timeout: Err("unused".into()),
         occupation: Err("unused".into()),
         network_base_target: Err("unused".into()),
+        resources: Err("unused".into()),
     };
     assert!(content.warnings().iter().any(|warning| warning ==
         "fixture modifier: unsupported identifier field (1 modifier)"));

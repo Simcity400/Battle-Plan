@@ -17,6 +17,9 @@ pub const FACTORY_COST: usize = 0xe0;
 pub const STATE_ADDITIVE_KEY: usize = 0xf0;
 /// State resource-factor key, u32, scaling by nonnegative one plus modifier.
 pub const STATE_FACTOR_KEY: usize = 0xf4;
+/// Temporary state resource modifier key, u32: the term the resources map icon adds while
+/// the state's temporary-resource gate is set.
+pub const TEMPORARY_KEY: usize = 0xf8;
 /// State resource-accumulator modifier key, u32.
 pub const MODIFIER_KEY: usize = 0xfc;
 /// Resource constructor initializing token and ordinal.

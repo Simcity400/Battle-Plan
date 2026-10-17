@@ -74,9 +74,10 @@ pub const SUPPLY_TRAINS: usize = 11;
 pub const AVAILABLE_ADVISORS: usize = 12;
 pub const FOCUS: usize = 13;
 pub const PROJECTS: usize = 14;
+pub const TRADE_ROUTES: usize = 15;
 
 /// Every sliced family. Index with the family constants above.
-pub const FAMILIES: [SliceFamily; 15] = [
+pub const FAMILIES: [SliceFamily; 16] = [
     // Research inputs, applied bonuses and modifiers, read in their own job
     // as stability is: hooked writers mark the countries to read within the
     // hour (`country_input_changes`); the slice refreshes daily progress.
@@ -216,6 +217,15 @@ pub const FAMILIES: [SliceFamily; 15] = [
         name: "projects",
         owner: OwnerKind::Country,
         tables: &[TableId::Projects, TableId::ProjectHistory],
+    },
+    // Trade routes, by the country holding each route, read in the RaidState job with the
+    // resources map tables: hooked route writers mark the countries to read within the hour
+    // (crate::raid_changes), a changed set of referenced routes reads its owner at once, and
+    // the slice refreshes the rest.
+    SliceFamily {
+        name: "trade_routes",
+        owner: OwnerKind::Country,
+        tables: &[TableId::TradeRoutes],
     },
 ];
 

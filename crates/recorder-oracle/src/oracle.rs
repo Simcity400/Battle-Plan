@@ -990,6 +990,35 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("construction resources map", |report| {
+        let threshold = defines
+            .clone()
+            .and_then(|defines| {
+                defines
+                    .fixed5("NGraphics", "TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD")
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|error| invalid(format!("requires the bad-efficiency threshold: {error}")))?;
+        construction::resource_map(
+            &construction::ResourceMapRows {
+                origins: complete::<tables::ResourceOrigins>(frame)?,
+                rights: complete::<tables::ResourceRights>(frame)?,
+                clients: complete::<tables::ConvoyClients>(frame)?,
+                routes: complete::<tables::TradeRoutes>(frame)?,
+                regional: complete::<tables::RegionalConvoyEfficiency>(frame)?,
+                reads: complete::<tables::SliceReads>(frame)?,
+                resources: complete::<tables::ResourceDefinitions>(frame)?,
+            },
+            &save.construction,
+            &save.economy,
+            &save.countries,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            threshold,
+            frame.hour,
+            report,
+        )
+    });
     report.attempt("construction BuildingConstruction", |report| {
         construction::building_construction(
             complete::<tables::BuildingConstruction>(frame)?,

@@ -3225,6 +3225,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     crate::extended::RaidStateStores {
                         states: take_slice_store(shared, crate::slicing::RAID_STATE),
                         buildings: take_slice_store(shared, crate::slicing::RAID_BUILDINGS),
+                        routes: take_slice_store(shared, crate::slicing::TRADE_ROUTES),
                     },
                 )
             };
@@ -4727,6 +4728,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     crate::slicing::RAID_BUILDINGS,
                     state_stores.buildings,
                 );
+                return_slice_store(shared, crate::slicing::TRADE_ROUTES, state_stores.routes);
             };
             let (gated_request, _, gated_failure) = completed!(gated_pending, Gated);
             let project_store = frame

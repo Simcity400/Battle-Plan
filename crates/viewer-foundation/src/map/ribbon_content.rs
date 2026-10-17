@@ -15,6 +15,8 @@ use installed_content::{
 use std::{collections::BTreeMap, io};
 pub const MAPARROWS: &str = "gfx/maparrows/maparrows.txt";
 pub const GROUP_SECTION_TYPE_NAME: &str = "ag_child_defence_line";
+/// The arrow type every trade-route line draws with.
+pub const TRADE_ROUTE_TYPE_NAME: &str = "traderoute";
 
 /// The stride is 32 bytes. XYZ and UV4 are written; bytes 12 through 15 are skipped by the
 /// declaration and do not supply POSITION.w.
@@ -333,6 +335,7 @@ impl ArrowTypes {
                 declaration_index,
                 ..Default::default()
             };
+            let mut secondary_scale_declared = false;
             for entry in entries {
                 let Some(key) = entry.key.as_deref() else {
                     continue;
@@ -363,7 +366,10 @@ impl ArrowTypes {
                     }
                     b"texture_patterns" => arrow.patterns = strings(&entry.value),
                     b"body_uv_scale" => arrow.body_uv_scale = number.unwrap_or(1.0),
-                    b"body_uv_scale_2" => arrow.secondary_body_uv_scale = number.unwrap_or(1.0),
+                    b"body_uv_scale_2" => {
+                        secondary_scale_declared = true;
+                        arrow.secondary_body_uv_scale = number.unwrap_or(1.0);
+                    }
                     b"mask_inner" => {
                         if let Some(v) = floats(&entry.value)
                             && v.len() >= 3
@@ -403,7 +409,7 @@ impl ArrowTypes {
                     _ => {}
                 }
             }
-            if arrow.secondary_body_uv_scale == 1.0 && arrow.body_uv_scale != 1.0 {
+            if !secondary_scale_declared {
                 arrow.secondary_body_uv_scale = arrow.body_uv_scale;
             }
             if !arrow.name.is_empty() {
@@ -511,6 +517,8 @@ pub struct OrderField {
     pub vertices: Vec<OrderVertex>,
     pub native_vertices: Vec<Vertex>,
     pub draws: Vec<OrderDraw>,
+    /// Trade-route stored control samples and their world-space picking radius.
+    pub trade_route_hovers: Vec<[f32; 4]>,
     /// The name labels, drawn by a `mapname` pass after the ribbons.
     pub labels: Placements,
     /// The raid arrows' flying units ([`super::raid_arrows`]), which the
@@ -572,6 +580,8 @@ pub struct OrderReport {
     /// The raid arrows drawn in this field and what they could not draw
     /// ([`super::raid_arrows`]).
     pub raid_arrows: RaidArrowReport,
+    /// The trade-route lines' warning-area lines, drawn in this field's arrow manager.
+    pub trade_routes: Vec<String>,
 }
 
 impl OrderReport {
@@ -624,6 +634,7 @@ impl OrderReport {
             ));
         }
         out.extend(self.raid_arrows.warnings());
+        out.extend(self.trade_routes.iter().cloned());
         out
     }
 }
@@ -697,7 +708,8 @@ pub struct ArrowPage {
 }
 
 /// Every arrow type the battle plan can select; the raid arrows' types
-/// ([`installed_content::raids::RaidArrowKind::arrow_type`]) are uploaded with them.
+/// ([`installed_content::raids::RaidArrowKind::arrow_type`]) and the trade-route lines' type
+/// ([`TRADE_ROUTE_TYPE_NAME`]) are uploaded with them.
 pub const DRAWN_ARROW_TYPES: &[&str] = &[
     "defence_line",
     "ag_defence_line_no_child",
@@ -738,11 +750,17 @@ impl OrderAssets {
         let below = layers.without_overlays();
         let mut pages = BTreeMap::new();
         let raid_types = installed_content::raids::RaidArrowKind::ALL.map(|kind| kind.arrow_type());
-        for name in DRAWN_ARROW_TYPES.iter().chain(raid_types.iter()) {
+        for name in DRAWN_ARROW_TYPES
+            .iter()
+            .chain(raid_types.iter())
+            .chain(std::iter::once(&TRADE_ROUTE_TYPE_NAME))
+        {
             let Some(arrow) = types.get(name) else {
                 // Named for the map's fallback, which compares it with the recording's.
                 layers.note_refused(format!("arrowType {name}"));
-                warnings.push((installed_content::DiagnosticKind::Refused, if raid_types.contains(name) {
+                warnings.push((installed_content::DiagnosticKind::Refused, if *name == TRADE_ROUTE_TYPE_NAME {
+                    format!("{MAPARROWS} declares no arrowType {name}; trade-route lines are not drawn.")
+                } else if raid_types.contains(name) {
                     format!("{MAPARROWS} declares no arrowType {name}; raid arrows that would use it are not drawn.")
                 } else {
                     format!("{MAPARROWS} declares no arrowType {name}; battle-plan orders that would use it are not drawn.")
@@ -809,4 +827,43 @@ fn page(
         pattern: read(&arrow.patterns[choice])?,
         variants: arrow.texture_variant_count,
     })
+}
+
+/// Native route picker: compare stored samples to the point on the normalized pointer ray
+/// whose eye-distance equals the sample's eye-distance, including equality at the radius.
+pub fn trade_route_hit(samples: &[[f32; 4]], eye: [f32; 3], ray: [f32; 3], width: f32) -> bool {
+    samples.iter().any(|&[x, y, z, radius]| {
+        let p = [super::unit_pose::unwrap(x, eye[0], width), y, z];
+        let distance = (0..3).map(|i| (p[i] - eye[i]).powi(2)).sum::<f32>().sqrt();
+        (0..3)
+            .map(|i| (p[i] - (eye[i] + ray[i] * distance)).powi(2))
+            .sum::<f32>()
+            <= radius * radius
+    })
+}
+
+#[cfg(test)]
+mod trade_hover_tests {
+    use super::*;
+    #[test]
+    fn explicitly_authored_secondary_scale_one_survives_the_primary_fallback() {
+        let content=ArrowTypes::parse(b"arrowType={name=trade body_uv_scale=0.41 body_uv_scale_2=1} arrowType={name=other body_uv_scale=0.2}").unwrap();
+        assert_eq!(content.types["trade"].secondary_body_uv_scale, 1.);
+        assert_eq!(content.types["other"].secondary_body_uv_scale, 0.2);
+    }
+    #[test]
+    fn route_picking_uses_stored_samples_and_keeps_radius_equality() {
+        let ray = [0., 0., 1.];
+        let eye = [0.; 3];
+        assert!(trade_route_hit(&[[0., 0., 10., 0.]], eye, ray, 100.));
+        // A continuous line joining these samples crosses the ray, but no stored sample hits.
+        assert!(!trade_route_hit(
+            &[[-10., 0., 10., 1.], [10., 0., 10., 1.]],
+            eye,
+            ray,
+            100.
+        ));
+        assert!(trade_route_hit(&[[0., 0., -10., 20.]], eye, ray, 100.));
+        assert!(!trade_route_hit(&[[0., 0., -10., 19.99]], eye, ray, 100.));
+    }
 }

@@ -8,6 +8,7 @@ use super::{
     naval_bases, naval_combat_sources, naval_counters, naval_details, naval_history,
     naval_mission_inputs, naval_result_details, peace_bids, production, production_modifiers,
     projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses, railway_guns,
+    resource_map,
     saved_event_targets, scatter, session, unpublished, visibility, war_overview,
 };
 use crate::{division_census::UnitInputs, map_capture::Orders};
@@ -756,6 +757,7 @@ impl Captured {
             );
             stores.states.forget();
             stores.buildings.forget();
+            stores.routes.forget();
         }
         self.raid_state_ticks = Some(packs.ticks);
         self.swap_raid_state(&mut packs);
@@ -770,6 +772,12 @@ impl Captured {
             self.raid_state_inputs
                 .country_selection()
                 .invalidate(&mut stores.buildings);
+        }
+        // TradeRoutes, the `trade_routes` family's table.
+        if unpublished(&self.resource_map.outcomes()[5..6]) {
+            self.resource_map
+                .route_selection()
+                .invalidate(&mut stores.routes);
         }
         stores
     }
@@ -833,6 +841,7 @@ impl Captured {
 
     fn swap_raid_state(&mut self, packs: &mut RaidStatePacks) {
         std::mem::swap(&mut self.raid_state_inputs, &mut packs.raid_state_inputs);
+        std::mem::swap(&mut self.resource_map, &mut packs.resource_map);
     }
 
     fn swap_stability(&mut self, packs: &mut StabilityPacks) {
@@ -1629,10 +1638,12 @@ pub(crate) struct SlowStores {
     pub(crate) local_subunits: Option<Box<model_inputs::LocalStore>>,
 }
 
-/// The raid state job's owner stores (`slicing::RAID_STATE`, `RAID_BUILDINGS`).
+/// The raid state job's owner stores (`slicing::RAID_STATE`, `RAID_BUILDINGS`,
+/// `TRADE_ROUTES`).
 pub(crate) struct RaidStateStores {
     pub(crate) states: Box<crate::slicing::SliceFingerprints>,
     pub(crate) buildings: Box<crate::slicing::SliceFingerprints>,
+    pub(crate) routes: Box<crate::slicing::SliceFingerprints>,
 }
 
 impl RaidStateStores {
@@ -1641,6 +1652,7 @@ impl RaidStateStores {
         Self {
             states: Box::new(crate::slicing::SliceFingerprints::new()),
             buildings: Box::new(crate::slicing::SliceFingerprints::new()),
+            routes: Box::new(crate::slicing::SliceFingerprints::new()),
         }
     }
 }
@@ -1837,10 +1849,12 @@ impl ProductionDailyPacks {
     }
 }
 
-/// The sliced state and building-resource inputs: their own pool job of the
-/// first burst, so they run beside Slow.
+/// The sliced state and building-resource inputs, then the resources map tables and
+/// the sliced trade routes: their own pool job of the first burst, so they run beside
+/// Slow.
 pub(crate) struct RaidStatePacks {
     pub(crate) raid_state_inputs: raid_state_inputs::Captured,
+    pub(crate) resource_map: resource_map::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -1888,11 +1902,14 @@ impl RaidStatePacks {
     pub(super) fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.raid_state_inputs
             .fail_capture(hour, force_full, reason);
+        self.resource_map.fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
     }
 
     pub(super) fn allocated_bytes(&self) -> usize {
-        size_of::<Self>() + self.raid_state_inputs.allocated_bytes()
+        size_of::<Self>()
+            + self.raid_state_inputs.allocated_bytes()
+            + self.resource_map.allocated_bytes()
     }
 
     pub(super) fn spare() -> Option<Box<Self>> {
@@ -1901,6 +1918,7 @@ impl RaidStatePacks {
         }
         Some(Box::new(Self {
             raid_state_inputs: raid_state_inputs::Captured::vacant(),
+            resource_map: resource_map::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         }))
     }
@@ -1930,6 +1948,19 @@ impl RaidStatePacks {
             }),
         );
         scatter(&raid_state_inputs::TABLES, cost, &mut ticks);
+        let cost = self.resource_map.capture_growing(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            Some(resource_map::Stores {
+                routes: &mut stores.routes,
+                changes: &crate::raid_changes::Observer,
+                verify: crate::raid_changes::VERIFY,
+            }),
+        );
+        scatter(&resource_map::TABLES, cost, &mut ticks);
         self.ticks = ticks;
     }
 }

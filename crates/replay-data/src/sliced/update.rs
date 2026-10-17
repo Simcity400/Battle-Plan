@@ -39,7 +39,7 @@ macro_rules! sliced_pair {
             RaidAirSites, StateResourceInputs, StateResources,
             StateCores, StateDynamicModifiers, CountryBuildingResources, RelationOpinions,
             RelationTuples, CountryStabilityInputs, CountryStabilityLines, CombatLogEquipment,
-            NavalMissionCountries, NavalMissionCommanders, SupplyNodes, TrainInventory,
+            NavalMissionCountries, NavalMissionCommanders, SupplyNodes, TradeRoutes, TrainInventory,
             AvailableAdvisors, Focus, CompletedFocuses, Projects, ProjectHistory)
     };
     (@arms $pair:expr, $a:ident, $b:ident, $wrap:ident, $body:expr, $other:expr; $($variant:ident),+) => {

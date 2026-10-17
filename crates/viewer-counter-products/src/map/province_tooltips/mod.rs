@@ -8,6 +8,7 @@ mod border;
 pub(super) mod clock;
 mod mode_lines;
 mod operatives;
+mod resources;
 mod selected_attack;
 mod selection;
 pub(super) mod units;
@@ -51,6 +52,8 @@ pub struct Content {
     /// `NOperatives.INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET`, the base
     /// the Operatives hover shows for a network's strength cap.
     network_base_target: Result<i64, String>,
+    /// What the resources mode's hover reads of the content.
+    resources: Result<viewer_foundation::resource_origins::Content, String>,
 }
 
 impl Content {
@@ -97,6 +100,8 @@ impl Content {
                     "INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET",
                 )
                 .map_err(|e| e.to_string()),
+            resources: viewer_foundation::resource_origins::Content::load(layers, defines)
+                .map_err(|e| e.to_string()),
         }
     }
 
@@ -109,6 +114,12 @@ impl Content {
         };
         if let Ok(temperature) = &self.temperature {
             warnings.extend(temperature.notes.iter().cloned());
+        }
+        match &self.resources {
+            Ok(resources) => warnings.extend(resources.warnings.iter().cloned()),
+            Err(reason) => warnings.push(format!(
+                "The resources map mode's province hover is not built: {reason}."
+            )),
         }
         if let Err(reason) = &self.pass {
             warnings.push(format!(
@@ -180,6 +191,8 @@ pub enum ModeHover {
     Operatives,
     /// The state's resistance and compliance, the same in both modes.
     Occupation,
+    /// What the state produces, resource by resource.
+    Resources,
     /// A scripted mode's `<name>_tooltip` and `<name>_tooltip_delayed`.
     Scripted(String),
     /// A mode whose lines the viewer does not build, and why.

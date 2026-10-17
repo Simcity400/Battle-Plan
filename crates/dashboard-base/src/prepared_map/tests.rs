@@ -228,6 +228,21 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
         TableId::MapEvents,
         TableId::NuclearStrikes,
         TableId::TaskForceMapMotion,
+        // The Operatives map mode's native icon inputs.
+        TableId::OperativeMissions,
+        TableId::StrategicOperatives,
+        TableId::AgencyOperationBuffers,
+        TableId::Operations,
+        TableId::CountryStabilityInputs,
+        // The resources map mode and the trade routes.
+        TableId::ConvoyClients,
+        TableId::CountryOilFactors,
+        TableId::RegionalConvoyEfficiency,
+        TableId::ResourceExchanges,
+        TableId::ResourceOrigins,
+        TableId::ResourceRights,
+        TableId::StateTemporaryResources,
+        TableId::TradeRoutes,
     ] {
         assert!(selected.contains(&table));
     }

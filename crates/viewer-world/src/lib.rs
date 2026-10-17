@@ -1,5 +1,6 @@
 //! Native world modules with no host or sibling feature dependency.
 pub mod map {
+    pub mod adjacency_icons;
     pub mod aircraft;
     pub mod aircraft_events;
     pub mod animated_map_text;
@@ -38,6 +39,7 @@ pub mod map {
     pub mod post;
     pub mod rail_shader;
     pub mod railways;
+    pub mod resource_icons;
     pub mod river_shader;
     pub mod rivers;
     pub mod scene;
@@ -58,6 +60,7 @@ pub mod map {
     pub mod strike_effects;
     pub mod terrain;
     pub mod terrain_shader;
+    pub mod trade_routes;
     pub mod trains;
     pub mod tree_caster;
     pub mod tree_order;

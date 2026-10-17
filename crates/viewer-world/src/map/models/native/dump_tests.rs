@@ -165,6 +165,7 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
             visual: false,
             own_radius: 1.,
             bound: 1.,
+            convoy_radius: None,
             attachments: 0,
         });
         library.rigs.push(Arc::new(Rig {

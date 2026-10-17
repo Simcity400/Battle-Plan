@@ -305,6 +305,12 @@ pub struct Content {
     pub names: NameContent,
     /// The label window layout and the unit-stack anchors.
     pub labels: LabelContent,
+    /// The resources mode's state icons, or why their content cannot be read.
+    pub resource_icons: Result<viewer_world::map::resource_icons::ResourceIconContent, String>,
+    /// The strait and canal icons of the content's adjacency rules.
+    pub adjacency_icons: viewer_world::map::adjacency_icons::AdjacencyIcons,
+    /// The trade-route lines' defines, or why they cannot be read.
+    pub trade_routes: Result<viewer_world::map::trade_routes::TradeRouteDefines, String>,
     // rivers
     /// `map/terrain/RiverSurface_*`.
     pub river_assets: RiverAssets,
@@ -374,6 +380,7 @@ pub struct Content {
     /// ([`orders::TABLES`]) are the same allocations, keyed also on the
     /// viewing country's slot, the only thing it reads from the perspective.
     order_memo: Recent<(TableKey, u32, bool), OrderField>,
+    trade_route_memo: Recent<(TableKey, u32), viewer_world::map::trade_routes::TradeRoutes>,
     /// Each hour's counter type-icon relations, shared by the hours whose
     /// relation tables and viewing country's volunteer hosts are unchanged
     /// ([`counters::type_tint::Memo`]).
@@ -475,6 +482,16 @@ pub struct PreparedOverlay {
     /// The counter options and the view's counter memory it was laid out with, which its
     /// redraws keep.
     counter_view: CounterView,
+    /// The resources mode's state icons and the strait and canal icons, presented through this
+    /// view's pools.
+    resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
+    adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
+    /// The strait and canal icons' priority in the view's map mode.
+    adjacency_priority: i8,
+    /// Both icon families as last drawn.
+    mode_icons: Batch,
+    /// What the last draw of both refused, by reason.
+    mode_icon_refused: BTreeMap<String, usize>,
 }
 /// A dump retains the same presented windows across its scene frames.
 pub struct DumpOverlay<'a> {
@@ -656,7 +673,7 @@ impl PreparedOverlay {
         report: &mut CounterReport,
     ) -> io::Result<()> {
         let display = &layers.counters;
-        let (labels, label_report, raid_quads) = hour.with_gui_context(
+        let (labels, label_report, raid_quads, mode_icons) = hour.with_gui_context(
             gui_resources_viewport(viewport, ui_scale),
             Some(time),
             |windows| {
@@ -726,11 +743,27 @@ impl PreparedOverlay {
                 );
                 let raids = hour.raid_quads(context, &self.native_raids, &mut views.raids);
                 let intel = hour.intel_quads(context, &self.native_intel, &mut views.intel);
-                (labels, report, (raids, intel))
+                let mut mode_icons = Batch::default();
+                let resources =
+                    self.resource_icons
+                        .draw(context, &mut views.resources, &mut mode_icons);
+                let mut refused = resources.refused;
+                for (reason, count) in &self.adjacency_icons.report {
+                    *refused.entry(reason.clone()).or_default() += count;
+                }
+                self.adjacency_icons.draw(
+                    context,
+                    self.adjacency_priority,
+                    &mut views.adjacency_rules,
+                    &mut mode_icons,
+                    &mut refused,
+                );
+                (labels, report, (raids, intel), (mode_icons, refused))
             },
         )?;
         self.label_report = label_report;
         let (raid_quads, intel_quads) = raid_quads;
+        (self.mode_icons, self.mode_icon_refused) = mode_icons;
         (self.raids, self.raid_hits, self.raid_report) = raid_quads;
         (self.intel, self.intel_hits, self.intel_report) = intel_quads;
         let (counters, counter_report) = self.icons.drawn();
@@ -740,6 +773,7 @@ impl PreparedOverlay {
             &OverlayParts {
                 pings: &self.icons.fixed.pings.quads,
                 bases: &self.icons.fixed.bases.quads,
+                mode_icons: &self.mode_icons.quads,
                 raids: &self.raids.quads,
                 intel: &self.intel.quads,
                 labels: &labels.quads,
@@ -761,6 +795,14 @@ impl PreparedOverlay {
     /// The raid icons' report, as of the icons last laid out.
     pub fn raid_report(&self) -> &raids::RaidReport {
         &self.raid_report
+    }
+
+    /// The warning-area lines of the resource and strait icons: what their last draw refused.
+    pub fn mode_icon_warnings(&self) -> Vec<String> {
+        self.mode_icon_refused
+            .iter()
+            .map(|(reason, count)| format!("Map icons: {count} not drawn: {reason}."))
+            .collect()
     }
 
     /// The hit shapes of the raid icons the latest draw laid out for hovering, drawn or hidden;
@@ -872,6 +914,8 @@ impl PreparedOverlay {
 struct OverlayParts<'a> {
     pings: &'a [Quad],
     bases: &'a [Quad],
+    /// The map mode's resource and strait icons, which the mode alone shows.
+    mode_icons: &'a [Quad],
     raids: &'a [Quad],
     /// The Operatives map mode's state containers.
     intel: &'a [Quad],
@@ -897,6 +941,7 @@ fn compose(
     if layers.bases {
         batch.quads.extend_from_slice(parts.bases);
     }
+    batch.quads.extend_from_slice(parts.mode_icons);
     let mut raids = None;
     if layers.raids {
         let start = batch.quads.len();
@@ -2273,7 +2318,36 @@ impl Document {
             movement: movement.clone(),
             eta_cache: Arc::clone(&eta_cache),
         });
+        let resource_icons =
+            viewer_world::map::resource_icons::ResourceIconContent::load(&content.layers, &defines)
+                .map_err(|error| error.to_string());
+        match &resource_icons {
+            Ok(icons) => warnings.extend(icons.warnings().iter().cloned()),
+            Err(why) => warnings.push(format!(
+                "The resources map mode draws no state icons: {why}"
+            )),
+        }
+        let adjacency_icons = match installed_content::adjacency_rules::read(&content.layers) {
+            Ok(rules) => viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines),
+            Err(error) => {
+                warnings.push(format!(
+                    "No strait or canal icons are drawn: the adjacency rules cannot be read: {error}"
+                ));
+                viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+            }
+        };
+        let trade_routes = crate::map_assets::graphics_define(
+            &content.layers,
+            "trade-route lines and convoys",
+            &art_defines,
+            &defines,
+            viewer_world::map::trade_routes::TradeRouteDefines::read,
+        )
+        .map_err(|error| error.to_string());
         let content = Content {
+            resource_icons,
+            adjacency_icons,
+            trade_routes,
             counter_content,
             combat,
             visual_mods: visual_mods.map(<[installed_content::content::visual::Choice]>::to_vec),
@@ -2340,6 +2414,7 @@ impl Document {
             eta_cache,
             vision_memo,
             order_memo: Recent::new(ORDER_MEMO),
+            trade_route_memo: Recent::new(ORDER_MEMO),
             type_tint_memo: Keyed::new(counters::type_tint::TABLES, TYPE_TINT_MEMO),
             mission_memo: Recent::new(MISSION_MEMO),
             snow_cells: OnceLock::new(),
@@ -2492,6 +2567,17 @@ impl Document {
         perspective: &perspective::Choice,
     ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
         self.hour()?.unit_model_field(perspective)
+    }
+
+    /// See [`Hour::unit_model_field_sailing`].
+    pub fn unit_model_field_sailing(
+        &self,
+        perspective: &perspective::Choice,
+        time: f32,
+        shown: &dyn Fn(&viewer_world::map::trade_routes::ConvoyDefines) -> bool,
+    ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
+        self.hour()?
+            .unit_model_field_sailing(perspective, time, shown)
     }
 
     pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {
@@ -2796,6 +2882,109 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         show_allied: bool,
     ) -> io::Result<Arc<OrderField>> {
+        Ok(self.orders_and_convoys(perspective, show_allied)?.0)
+    }
+
+    /// The viewed country's trade-route lines and convoys of the hour
+    /// ([`viewer_world::map::trade_routes`]).
+    fn trade_route_lines(&self, ours: u32) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
+        use replay::rows::TableId;
+        const TABLES: &[TableId] = &[
+            TableId::ResourceOrigins,
+            TableId::ConvoyClients,
+            TableId::TradeRoutes,
+            TableId::RegionalConvoyEfficiency,
+            TableId::CountryLinks,
+            TableId::CountryAppearance,
+            TableId::Provinces,
+            TableId::ResourceExchanges,
+        ];
+        self.trade_route_memo
+            .get_or_insert_with((TableKey::of(self.frame, TABLES), ours), || {
+                Ok::<_, io::Error>(Arc::new(self.build_trade_route_lines(ours)))
+            })
+            .unwrap_or_else(|why| {
+                let mut routes = viewer_world::map::trade_routes::TradeRoutes::default();
+                routes.report.unavailable = Some(why.to_string());
+                Arc::new(routes)
+            })
+    }
+
+    fn build_trade_route_lines(&self, ours: u32) -> viewer_world::map::trade_routes::TradeRoutes {
+        use viewer_world::map::trade_routes;
+        let graph = match self.icons.raids.mission_topology() {
+            Ok((graph, geography)) => (graph, geography),
+            Err(why) => {
+                let mut routes = trade_routes::TradeRoutes::default();
+                routes.report.unavailable = Some(format!(
+                    "the content's province graph is unavailable: {why}"
+                ));
+                return routes;
+            }
+        };
+        let (graph, geography) = graph;
+        let provinces = match self.frame.complete::<replay::rows::tables::Provinces>() {
+            Ok(rows) => rows,
+            Err(why) => {
+                let mut routes = trade_routes::TradeRoutes::default();
+                routes.report.unavailable = Some(why.to_string());
+                return routes;
+            }
+        };
+        let ports: BTreeMap<u32, u32> = provinces
+            .iter()
+            .filter(|p| p.port_sea > 0)
+            .map(|p| (p.id, p.port_sea as u32))
+            .collect();
+        let state_of = provinces.iter().map(|p| (p.id, p.state)).collect();
+        let counters = &self.counters;
+        let position = |province: u32| {
+            let slot = if geography.land.contains(&province) && ports.contains_key(&province) {
+                viewer_foundation::map::unit_rules::SHIP_IN_PORT
+            } else {
+                viewer_foundation::map::unit_rules::STANDSTILL
+            };
+            counters.anchor(province, slot)
+        };
+        let pixels = |province| self.province_geometry.pixel_count(province);
+        let crossing = |a, b| self.movement.as_ref()?.map.neighbour_crossing(a, b);
+        let content = trade_routes::RouteContent {
+            graph,
+            geography,
+            state_of: &state_of,
+            ports: &ports,
+            pixels: &pixels,
+            crossing: &crossing,
+            region_of: &self.icons.raids.regions,
+            region_provinces: &self.icons.raids.region_provinces,
+            state_provinces: &self.icons.raids.trigger_content.state_provinces,
+            position: &position,
+        };
+        let heights = self.heights();
+        let declared = |name: &str| self.unit_models.declares(name);
+        trade_routes::build(
+            &trade_routes::Inputs {
+                orders: &self.orders,
+                defines: self.trade_routes.as_ref().map_err(String::as_str),
+                content: &content,
+                heights: &heights,
+                ours,
+                declared: &declared,
+            },
+            self.frame,
+        )
+    }
+
+    /// The battle plan with the hour's raid arrows and trade-route lines appended in the shared
+    /// arrow manager, and the trade-route convoys the unit models sail.
+    pub fn orders_and_convoys(
+        &self,
+        perspective: &perspective::Choice,
+        show_allied: bool,
+    ) -> io::Result<(
+        Arc<OrderField>,
+        Vec<viewer_world::map::trade_routes::ConvoyLine>,
+    )> {
         let plan = self.plan_field(perspective, show_allied)?;
         let ours = self.vision(perspective)?.ours();
         let heights = self.heights();
@@ -2828,12 +3017,20 @@ impl<'a> Hour<'a> {
             self.frame,
             self.trigger_world(),
         );
-        if raid_field.draws.is_empty() && report == Default::default() {
-            return Ok(plan);
+        let routes = self.trade_route_lines(ours);
+        let route_warnings = routes.report.warnings();
+        if raid_field.draws.is_empty()
+            && report == Default::default()
+            && routes.field.draws.is_empty()
+            && route_warnings.is_empty()
+        {
+            return Ok((plan, routes.convoys.clone()));
         }
         let mut field = viewer_foundation::map::ribbon_mesh::append(&plan, &raid_field);
+        field = viewer_foundation::map::ribbon_mesh::append(&field, &routes.field);
         field.report.raid_arrows = report;
-        Ok(Arc::new(field))
+        field.report.trade_routes = route_warnings;
+        Ok((Arc::new(field), routes.convoys.clone()))
     }
 
     /// The battle plan alone; ordinary plans are memoised on [`orders::TABLES`].
@@ -2998,12 +3195,39 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
+        self.unit_model_field_sailing(perspective, 0.0, &|_| false)
+    }
+
+    /// The hour's unit models with the raid units, and the trade-route convoys sailing at `time`
+    /// seconds of presentation time where `shown` admits them
+    /// ([`viewer_world::map::trade_routes::convoys_shown`]).
+    pub fn unit_model_field_sailing(
+        &self,
+        perspective: &perspective::Choice,
+        time: f32,
+        shown: &dyn Fn(&viewer_world::map::trade_routes::ConvoyDefines) -> bool,
+    ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
         let mut prepared = self.prepare_unit_models(perspective)?;
-        prepared.add_raid_units(
+        let (orders, convoys) = self.orders_and_convoys(perspective, false)?;
+        prepared.add_raid_units(&self.unit_models, &orders.raid_units);
+        if let Ok(defines) = &self.trade_routes {
+            prepared.add_convoys(convoys, defines.convoys);
+        }
+        let mut field = prepared.field(&self.unit_models);
+        let heights = self.heights();
+        let mut refused = BTreeMap::new();
+        field.raids.extend(prepared.convoy_units(
             &self.unit_models,
-            &self.order_field(perspective)?.raid_units,
-        );
-        Ok((prepared.field(&self.unit_models), prepared.report))
+            time,
+            &|x, z| heights.surface_height(x, z),
+            shown,
+            &mut refused,
+        ));
+        let mut report = prepared.report;
+        for (reason, count) in refused {
+            *report.selection_errors.entry(reason).or_default() += count;
+        }
+        Ok((field, report))
     }
 
     /// This hour's nuclear impacts at their provinces' standstill anchors.
@@ -3579,7 +3803,50 @@ impl<'a> Hour<'a> {
             &tables.intel,
         );
         let intel_report = native_intel.report.clone();
+        // The resource icons' content failure is a document warning; they draw nothing then.
+        let resource_icons = match &self.resource_icons {
+            Ok(content) => viewer_world::map::resource_icons::prepare(
+                &viewer_world::map::resource_icons::ResourceIconInputs {
+                    content,
+                    localisation: &self.names.localisation,
+                    state_provinces: &self.icons.raids.trigger_content.state_provinces,
+                    centroid: &|province| {
+                        let (_, geography) = self.icons.raids.mission_topology().ok()?;
+                        let [x, z] = *geography.centroids.get(&province)?;
+                        let (x, z) = (x as f32, z as f32);
+                        Some([x, self.heights().surface_height(x, z), z])
+                    },
+                    camera,
+                    viewport,
+                    ui_scale,
+                    visibility: view.visibility,
+                },
+                frame,
+            ),
+            Err(_) => Default::default(),
+        };
+        let counters = &self.counters;
+        let anchor =
+            |province| counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL);
+        let adjacency_icons =
+            self.adjacency_icons
+                .prepare(&viewer_world::map::adjacency_icons::Inputs {
+                    anchor: &anchor,
+                    camera,
+                    viewport,
+                    ui_scale,
+                    visibility: view.visibility,
+                });
+        let adjacency_priority = viewer_world::map::adjacency_icons::priority(
+            &self.counters.defines.priorities,
+            &view.visibility,
+        );
         Ok(PreparedOverlay {
+            resource_icons,
+            adjacency_icons,
+            adjacency_priority,
+            mode_icons: Batch::default(),
+            mode_icon_refused: BTreeMap::new(),
             lazy_version,
             engaged_covered: tables.engaged_covered,
             counter_view: view.clone(),
@@ -4341,6 +4608,7 @@ mod tests {
                 OverlayParts {
                     pings: &fixed[0],
                     bases: &fixed[1],
+                    mode_icons: &[],
                     raids,
                     intel: &[],
                     labels: &fixed[2],
@@ -4374,6 +4642,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn intel_and_resource_overlays_keep_draw_order_and_raid_range() {
+        let quad = |texture| Quad {
+            texture,
+            rect: [0.0; 4],
+            uv: [0.0; 4],
+            color: [1.0; 4],
+            rotation: 0.0,
+            layer: 0,
+            shade: 0.0,
+            exact: None,
+            anchor: None,
+            present: None,
+        };
+        let resource = [quad(1)];
+        let raid = [quad(2)];
+        let intel = [quad(3)];
+        let labels = [quad(4)];
+        let parts = OverlayParts {
+            pings: &[],
+            bases: &[],
+            mode_icons: &resource,
+            raids: &raid,
+            intel: &intel,
+            labels: &labels,
+            counters: &[],
+            combats: &[],
+            naval_combats: &[],
+        };
+        let mut batch = Batch::default();
+        let layers = OverlayLayers::shown(&Default::default(), None);
+        assert_eq!(compose(&mut batch, &parts, &layers), Some(1..2));
+        assert_eq!(
+            batch
+                .quads
+                .iter()
+                .map(|quad| quad.texture)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        let layers = OverlayLayers {
+            raids: false,
+            ..layers
+        };
+        assert_eq!(compose(&mut batch, &parts, &layers), None);
+        assert_eq!(
+            batch
+                .quads
+                .iter()
+                .map(|quad| quad.texture)
+                .collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
+    }
+
     /// Each display switch leaves out only its own overlay part; a part shows only under its
     /// main switch, and hidden raid icons keep their hover.
     #[test]
@@ -4394,6 +4717,7 @@ mod tests {
         let parts = OverlayParts {
             pings: &groups[0],
             bases: &groups[1],
+            mode_icons: &[],
             raids: &groups[2],
             intel: &[],
             labels: &groups[3],

@@ -200,6 +200,12 @@ compared_tables!(
     OperativeMissions,
     StrategicOperatives,
     AgencyOperationBuffers,
+    ResourceOrigins,
+    ResourceRights,
+    CountryOilFactors,
+    StateTemporaryResources,
+    ConvoyClients,
+    RegionalConvoyEfficiency,
     Operations,
     OperationAssignments,
     SimulationFeatures,
@@ -607,6 +613,36 @@ mod tests {
             }),
             metrics: Metrics::default(),
         };
+        frame.tables[TableId::ResourceOrigins.index()] =
+            TableView::Complete(TableRows::ResourceOrigins(
+                states
+                    .iter()
+                    .map(|state| replay::rows::ResourceOriginRow {
+                        state: state.id,
+                        country: state.owner,
+                        efficiency: i64::from(state.controller),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+            .into();
+        // Sliced routes bypass the hourly comparison catalog, retaining every new column
+        // through the encoder's ordinary baseline beside the compared hourly tables.
+        frame.tables[TableId::TradeRoutes.index()] = TableView::Complete(TableRows::TradeRoutes(
+            states
+                .iter()
+                .map(|state| replay::rows::TradeRouteRow {
+                    country: state.id,
+                    class: 1,
+                    other: 1,
+                    kind: 2,
+                    source_state: Some(state.owner),
+                    destination_state: Some(state.controller),
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+        .into();
         frame.tables[TableId::States.index()] =
             TableView::Complete(TableRows::States(states)).into();
         frame
@@ -682,6 +718,16 @@ mod tests {
                 assert_eq!(
                     decoded.complete::<tables::States>().unwrap(),
                     rows.as_slice()
+                );
+                let routes = decoded.complete::<tables::TradeRoutes>().unwrap();
+                assert_eq!(
+                    routes
+                        .iter()
+                        .map(|route| (route.source_state, route.destination_state))
+                        .collect::<Vec<_>>(),
+                    rows.iter()
+                        .map(|state| (Some(state.owner), Some(state.controller)))
+                        .collect::<Vec<_>>()
                 );
             }
             // Hours 1 and 4 equal, 2 and 3 changed, 5 and 6 kept for their

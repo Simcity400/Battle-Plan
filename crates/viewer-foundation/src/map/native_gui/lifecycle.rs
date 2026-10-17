@@ -411,7 +411,7 @@ enum Drawables {
         written: Option<String>,
     },
     /// A list box's scrollbar: hidden with the box, shown only by the rows its code appends,
-    /// which no map icon's code does (reachability: [`widgets::list_box_rows`]).
+    /// whose places and scrollbar [`widgets::list_box_rows`] lays out apart from the instance.
     ListBox {
         bar: usize,
     },
@@ -3174,6 +3174,11 @@ pub enum MapIconPool {
     Headquarter,
     /// Type 11, the land combat icon: 0x80.
     LandCombat,
+    /// Type 16, the adjacency-rule (strait and canal) icon. Its initial size is not
+    /// established; 0x20 windows, grown like every pool.
+    AdjacencyRule,
+    /// Type 3, a state's resource icon: 0xC0.
+    Resource,
 }
 
 impl MapIconPool {
@@ -3181,8 +3186,8 @@ impl MapIconPool {
     pub fn initial(self) -> usize {
         match self {
             Self::Label => 0xA0,
-            Self::AirBase | Self::Base | Self::Capital => 0xC0,
-            Self::Combat => 0x20,
+            Self::AirBase | Self::Base | Self::Capital | Self::Resource => 0xC0,
+            Self::Combat | Self::AdjacencyRule => 0x20,
             Self::CombatResults
             | Self::Mission
             | Self::Headquarter

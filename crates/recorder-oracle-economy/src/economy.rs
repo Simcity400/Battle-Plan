@@ -542,19 +542,27 @@ fn compare_exchanges(
                 actual.assigned_factories,
                 expected.lended_cic,
             );
-            equal(
-                report,
-                format!("{label}.convoys_required_nonzero"),
-                actual.convoys_required != 0,
-                expected.convoy_subscriber_present,
-            );
+            for (name, actual, expected) in [
+                (
+                    "convoys_assigned",
+                    actual.convoys_assigned,
+                    expected.convoys.assigned,
+                ),
+                (
+                    "convoys_required",
+                    actual.convoys_required,
+                    expected.convoys.required,
+                ),
+            ] {
+                equal(report, format!("{label}.{name}"), actual, expected);
+            }
         }
     }
     for id in actual.keys() {
         report.difference(format!("resource exchange {id:#018x}"), "present", "absent");
     }
     report.compared("ResourceExchanges", count);
-    report.limitation("resource exchange no_trade_influence/no_resources bytes and directional native vector ordinals are not directly serialized; convoy required zero/nonzero is checked by native subscriber omission, but nonzero required counts and assigned counts have no established direct mapping", "ResourceExchanges");
+    report.limitation("resource exchange no_trade_influence/no_resources bytes and directional native vector ordinals are not directly serialized", "ResourceExchanges");
     report.limitation("save resource names and country tags cannot certify equivalent raw numeric token/resource identities or country-link alias bits", "ResourceExchanges");
     Ok(())
 }
@@ -1442,6 +1450,28 @@ mod tests {
                 .flatten()
                 .any(|subject| subject.contains(".resource token=77"))
         );
+        // The save omits the subscriber of an exchange that requires no convoys: both
+        // counts are zero.
+        let TableView::Complete(TableRows::ResourceExchanges(rows)) =
+            &mut *frame.tables[TableId::ResourceExchanges.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].convoys_assigned = 1;
+        rows[0].convoys_required = 2;
+        let mut report = Report::default();
+        let tokens = super::super::lexical_tokens(&frame, &mut report).unwrap();
+        compare_exchanges(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert!(report.differences[0].contains(".convoys_assigned"));
+        assert!(report.differences[1].contains(".convoys_required"));
+        let TableView::Complete(TableRows::ResourceExchanges(rows)) =
+            &mut *frame.tables[TableId::ResourceExchanges.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].convoys_assigned = 0;
+        rows[0].convoys_required = 0;
         for (literal, differences, nul_suffix) in [
             (b"steel".as_slice(), 0, false),
             (b"Steel".as_slice(), 1, false),

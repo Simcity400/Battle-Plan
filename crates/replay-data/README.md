@@ -35,3 +35,7 @@ recordings. Run `cargo test -p replay-data` for the data contract and
 `cargo test -p replay -p replay-data --features slow-tests` for both suites.
 
 `AgencyOperationBuffers` holds one observed shared-client snapshot: completed, running, ready-preparation and unready-preparation references in native order, with each reference's resolved target state. Empty lists are recorded; unavailable acquisition remains a table refusal. UI membership is runtime state, independent of saved operation-roster membership.
+
+ResourceOrigins and ResourceRights carry native list ordinals. ConvoyClients carries independent optional owner/counterparty ordinals for the directional lists; imports and exports use ResourceExchanges ordinals. Ordinary and prepared codecs retain these fields with the rest of each existing row.
+
+TradeRoutes source_state and destination_state retain market-referenced routes' native state endpoints separately from naval ports. Both optional columns belong to the complete format-103 introduction and use ordinary delta and prepared codecs.
