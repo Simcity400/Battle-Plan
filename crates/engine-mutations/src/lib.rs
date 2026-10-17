@@ -9,7 +9,7 @@ use engine_native::carmy;
 use engine_native::{
     Memory, allocation, cair_base, cair_wing_pool, ccharacter, ccountry, ccountry_air_container,
     ccountry_characters, cdiplomacy_status, cequipment_production_license, cfaction, cgame_state,
-    clicensed_production_status, cpdx_array, cpolitical_party, cpolitical_status,
+    clicensed_production_status, cpdx_array, cpolitical_party, cpolitical_status, cprovince,
     creferenced_division_template, crelation, crelation_status, cstate, cstrategic_air,
     cstrategic_air_manager, province_definition, read,
 };

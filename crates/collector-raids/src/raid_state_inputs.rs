@@ -47,7 +47,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
         0,
         &[0, 1, 2, 3],
     ),
-    ("state cores and claims", 4, &[4]),
+    ("state cores, claims and strategic locations", 4, &[4]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -577,16 +577,36 @@ impl Captured {
         };
         let rows = self.cores.get(..outcome.len()).unwrap_or_default();
         if !rows.iter().all(|row| {
-            links(row.start, row.len).is_some() && links(row.claims_start, row.claims_len).is_some()
+            links(row.start, row.len).is_some()
+                && links(row.claims_start, row.claims_len).is_some()
+                && links(row.locations_start, 2 * row.locations_len).is_some()
+                && links(row.province_locations_start, 2 * row.province_locations_len).is_some()
         }) {
             return unavailable("state core list outside captured links");
         }
+        // Two words each: (high, low) into one u64.
+        let pairs = |words: &[u32]| {
+            owned_vec(vec(words.len() / 2).map(|mut out: Vec<u64>| {
+                out.extend(
+                    words
+                        .chunks_exact(2)
+                        .map(|pair| u64::from(pair[0]) << 32 | u64::from(pair[1])),
+                );
+                out
+            }))
+        };
         table::<tables::StateCores, _>(outcome, &self.cores, |row| rows::StateCoreRow {
             state: row.state,
             cores: owned_vec(copy_vec(links(row.start, row.len).unwrap())),
             claims: rows::Recorded::Value(owned_vec(copy_vec(
                 links(row.claims_start, row.claims_len).unwrap(),
             ))),
+            strategic_locations: rows::Recorded::Value(pairs(
+                links(row.locations_start, 2 * row.locations_len).unwrap(),
+            )),
+            province_strategic_locations: rows::Recorded::Value(pairs(
+                links(row.province_locations_start, 2 * row.province_locations_len).unwrap(),
+            )),
         })
     }
 }
@@ -629,7 +649,8 @@ fn fold(hashes: &mut Vec<(u32, u64)>) {
 }
 
 /// Each read state's content: every field of its StateResourceInputs,
-/// StateResources, StateDynamicModifiers and StateCores (cores and claims)
+/// StateResources, StateDynamicModifiers and StateCores (cores, claims and
+/// strategic locations)
 /// rows that a hooked
 /// writer certifies (the supply-route flag, which the hourly supply rebuild
 /// rewrites, is left out). False when a row's span or the storage fails.
@@ -709,17 +730,20 @@ fn state_hashes(
             .and_then(|end| core_links.get(start..end))
     };
     for core in cores {
-        let (Some(links), Some(claims)) = (
+        let (Some(links), Some(claims), Some(locations), Some(provinces)) = (
             list(core.start, core.len),
             list(core.claims_start, core.claims_len),
+            list(core.locations_start, 2 * core.locations_len),
+            list(core.province_locations_start, 2 * core.province_locations_len),
         ) else {
             return false;
         };
-        // Each list's length precedes its links, so the two never alias.
-        let words = std::iter::once(links.len() as u64)
-            .chain(links.iter().map(|&link| u64::from(link)))
-            .chain(std::iter::once(claims.len() as u64))
-            .chain(claims.iter().map(|&link| u64::from(link)));
+        // Each list's length precedes its words, so no two alias.
+        let words = [links, claims, locations, provinces]
+            .into_iter()
+            .flat_map(|list| {
+                std::iter::once(list.len() as u64).chain(list.iter().map(|&word| u64::from(word)))
+            });
         hashes.push((core.state, row(4, words)));
     }
     fold(hashes);

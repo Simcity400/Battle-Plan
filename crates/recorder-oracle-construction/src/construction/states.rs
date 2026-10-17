@@ -424,6 +424,91 @@ pub fn state_cores(
     Ok(())
 }
 
+/// `StateCores`' strategic locations against the save: each read state's
+/// (location, anchor province) pairs against its `strategic_region_data`,
+/// and its provinces' (province, location) entries against each province's
+/// `strategic_province_location`, both in stored order, the tokens spelled
+/// through the recorded lexical dictionary. Only states whose StateCores row
+/// was read at the frame's hour are compared; a state's provinces are the
+/// provinces its entries name and the save lists under its province ids.
+#[allow(clippy::too_many_arguments)]
+pub fn state_strategic_locations(
+    rows: &[replay::rows::StateCoreRow],
+    states: &BTreeMap<u32, installed_content_save::State>,
+    provinces: &BTreeMap<u32, installed_content_save::ProvinceOverride>,
+    state_of: &BTreeMap<u32, u32>,
+    names: &BTreeMap<u32, &[u8]>,
+    reads: &[replay::rows::SliceReadRow],
+    hour: i32,
+    report: &mut Report,
+) -> io::Result<()> {
+    let sampled = |state: u32| {
+        replay::sliced::read_hour(reads, replay::rows::TableId::StateCores, state) == Some(hour)
+    };
+    let spell = |token: u32| -> io::Result<Vec<u8>> {
+        names
+            .get(&token)
+            .map(|name| name.to_vec())
+            .ok_or_else(|| invalid(format!("strategic location token {token} has no recorded spelling")))
+    };
+    let mut compared = 0;
+    for row in rows.iter().filter(|row| sampled(row.state)) {
+        let label = format!("state {} strategic locations", row.state);
+        let Some(pairs) = report.recorded(&row.strategic_locations, "StateCores.strategic_locations", label)
+        else {
+            continue;
+        };
+        let captured = pairs
+            .iter()
+            .map(|&pair| Ok((spell((pair >> 32) as u32)?, pair as u32)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let saved = states
+            .get(&row.state)
+            .map(|state| state.strategic_locations.clone())
+            .unwrap_or_default();
+        if captured != saved {
+            report.difference(
+                format!("state {} strategic locations", row.state),
+                format!("{captured:?}"),
+                format!("{saved:?}"),
+            );
+        }
+        let label = format!("state {} province strategic locations", row.state);
+        let Some(entries) = report.recorded(
+            &row.province_strategic_locations,
+            "StateCores.province_strategic_locations",
+            label,
+        ) else {
+            continue;
+        };
+        let mut captured: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
+        for &entry in entries {
+            captured
+                .entry((entry >> 32) as u32)
+                .or_default()
+                .push(spell(entry as u32)?);
+        }
+        // Every saved province of this state with a list must be captured.
+        let saved: BTreeMap<u32, Vec<Vec<u8>>> = provinces
+            .iter()
+            .filter(|(id, province)| {
+                state_of.get(id) == Some(&row.state) && !province.strategic_locations.is_empty()
+            })
+            .map(|(&id, province)| (id, province.strategic_locations.clone()))
+            .collect();
+        if captured != saved {
+            report.difference(
+                format!("state {} province strategic locations", row.state),
+                format!("{captured:?}"),
+                format!("{saved:?}"),
+            );
+        }
+        compared += 1;
+    }
+    report.compared("StateCores strategic locations", compared);
+    Ok(())
+}
+
 /// One reciprocal membership: each read state's recorded links (`None` when
 /// not recorded, which compares nothing for it) against the saved countries
 /// listing it.

@@ -323,6 +323,10 @@ pub const INTEL_NETWORK_MAP_FORMAT: u16 = FORMAT_VERSION;
 /// Each state's live category (States `category`). Format-102 captures
 /// written before it hold none.
 pub const STATE_CATEGORY_FORMAT: u16 = FORMAT_VERSION;
+/// Map icons: each state's strategic locations and its provinces' own
+/// (StateCores `strategic_locations` and `province_strategic_locations`).
+/// Format-102 captures written before them hold neither field.
+pub const STRATEGIC_LOCATIONS_FORMAT: u16 = FORMAT_VERSION;
 
 /// Provisional main+1: MapEvents records the simulation edges behind the
 /// game's floating map text and critical shore bombardment explosions as an
@@ -1009,13 +1013,25 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::StateCores.index()] = appended_at(
         TableId::StateCores,
-        MAP_MODE_INPUTS_FORMAT,
-        "pol/mapmode-capture state claims",
-        &[AppendedField {
-            index: 1,
-            name: "claims",
-            introduced: MAP_MODE_INPUTS_FORMAT,
-        }],
+        STRATEGIC_LOCATIONS_FORMAT,
+        "pol/strategic-locations state and province strategic locations",
+        &[
+            AppendedField {
+                index: 1,
+                name: "claims",
+                introduced: MAP_MODE_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 2,
+                name: "strategic_locations",
+                introduced: STRATEGIC_LOCATIONS_FORMAT,
+            },
+            AppendedField {
+                index: 3,
+                name: "province_strategic_locations",
+                introduced: STRATEGIC_LOCATIONS_FORMAT,
+            },
+        ],
     );
     history[TableId::RailCooldowns.index()] = appended_at(
         TableId::RailCooldowns,

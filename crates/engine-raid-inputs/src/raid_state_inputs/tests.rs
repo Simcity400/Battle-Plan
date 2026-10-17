@@ -73,6 +73,7 @@ fn state(m: &mut impl Store, pointer: usize, id: u32, controller: u32, scratch: 
     m.u64(pointer + cstate::TEMPLATE, 0);
     m.array(pointer + cstate::PROVINCES, scratch, 0);
     m.array(pointer + cstate::CLAIMS, scratch, 0);
+    m.array(pointer + cstate::STRATEGIC_LOCATIONS, scratch, 0);
     let status = pointer + cstate::BUILDING_STATUS;
     m.array(status + cbuilding_status::BUILDING_INDICES, scratch, 0);
     m.array(status + cbuilding_status::BUILDINGS, scratch, 0);
@@ -102,6 +103,67 @@ fn state(m: &mut impl Store, pointer: usize, id: u32, controller: u32, scratch: 
     m.u32(pointer + cstate::COUNTRY_MODIFIERS + 12, 0);
     m.u8(pointer + cstate::COUNTRY_MODIFIERS + 16, 0);
     m.u8(scratch + 0x300 + 4, 0);
+}
+
+/// A state's strategic locations follow its cores and claims: its own
+/// (token, anchor province) pairs, then each of its provinces' (province,
+/// token) entries in the state's province order. Each province is checked
+/// against its state; one that names another state refuses the read.
+/// Before, neither list was read.
+#[test]
+fn state_cores_read_the_state_s_and_its_provinces_strategic_locations() {
+    let mut m = fixture();
+    m.array(STATE_A + cstate::CORES, 0, 0);
+    m.array(STATE_B + cstate::CORES, 0, 0);
+    // State 1: two location pairs, and provinces 31 (one token) and 32 (two).
+    m.array(STATE_A + cstate::STRATEGIC_LOCATIONS, 0x4642_0000, 2);
+    for (index, (token, province)) in [(701_u32, 31_u32), (702, 32)].into_iter().enumerate() {
+        m.u32(0x4642_0000 + index * 8, token);
+        m.u32(0x4642_0004 + index * 8, province);
+    }
+    let provinces = 0x4643_0000;
+    m.array(STATE_A + cstate::PROVINCES, provinces, 2);
+    let province = |m: &mut Mem, slot: usize, at: usize, id: u32, state: usize, tokens: &[u32]| {
+        m.u64(provinces + slot * 8, at as u64);
+        m.put(at, &[0; 0x150]);
+        m.u64(at, m.rva(cprovince::VTABLE_RVA));
+        m.u64(at + cprovince::STATE, state as u64);
+        m.u32(at + cprovince::ID, id);
+        let list = at + 0x1000;
+        m.array(at + cprovince::STRATEGIC_LOCATIONS, list, tokens.len() as u32);
+        for (index, &token) in tokens.iter().enumerate() {
+            m.u32(list + index * 4, token);
+        }
+    };
+    province(&mut m, 0, 0x4644_0000, 31, STATE_A, &[801]);
+    province(&mut m, 1, 0x4645_0000, 32, STATE_A, &[802, 803]);
+    let run = |m: &Mem| {
+        let mut rows = [CoreRow::default(); 2];
+        let mut links = vec![0; 16];
+        let mut required = 0;
+        let outcome = state_cores(m, 0, GS, &[1, 2], &|_| true, &mut rows, &mut links, &mut required);
+        (outcome, rows, links, required)
+    };
+    let (outcome, rows, links, required) = run(&m);
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        rows[0],
+        CoreRow {
+            state: 1,
+            locations_len: 2,
+            province_locations_start: 4,
+            province_locations_len: 3,
+            ..CoreRow::default()
+        }
+    );
+    assert_eq!(required, 10);
+    assert_eq!(
+        &links[..10],
+        &[701, 31, 702, 32, 31, 801, 32, 802, 32, 803]
+    );
+    // A province that names another state refuses the read.
+    province(&mut m, 1, 0x4645_0000, 32, STATE_B, &[802]);
+    assert!(matches!(run(&m).0, Outcome::Unavailable { .. }));
 }
 
 #[test]
@@ -143,6 +205,9 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
                 len: 2,
                 claims_start: 2,
                 claims_len: 0,
+                locations_start: 2,
+                province_locations_start: 2,
+                ..CoreRow::default()
             },
             CoreRow {
                 state: 2,
@@ -150,6 +215,9 @@ fn state_cores_read_each_selected_states_list_in_stored_order() {
                 len: 0,
                 claims_start: 2,
                 claims_len: 2,
+                locations_start: 4,
+                province_locations_start: 4,
+                ..CoreRow::default()
             }
         ]
     );
@@ -322,9 +390,11 @@ fn fixture() -> Mem {
         &[0x4700_0000, 0x4700_1000],
     );
     for (pointer, id) in [(0x4700_0000, 7), (0x4700_1000, 9)] {
-        m.put(pointer, &[0; 0xa8]);
+        m.put(pointer, &[0; 0x150]);
         m.u64(pointer, cprovince::VTABLE_RVA as u64);
         m.u32(pointer + cprovince::ID, id);
+        m.u64(pointer + cprovince::STATE, STATE_A as u64);
+        m.array(pointer + cprovince::STRATEGIC_LOCATIONS, 0, 0);
     }
     let status = STATE_A + cstate::BUILDING_STATUS;
     m.array(status + cbuilding_status::BUILDING_INDICES, 0x4630_1000, 1);
@@ -688,6 +758,9 @@ fn growing_core_lists_preserve_5000_links_and_later_growth() {
                     len: count,
                     claims_start: count,
                     claims_len: 0,
+                    locations_start: count,
+                    province_locations_start: count,
+                    ..CoreRow::default()
                 },
                 CoreRow {
                     state: 2,
@@ -695,6 +768,9 @@ fn growing_core_lists_preserve_5000_links_and_later_growth() {
                     len: 0,
                     claims_start: count,
                     claims_len: count,
+                    locations_start: 2 * count,
+                    province_locations_start: 2 * count,
+                    ..CoreRow::default()
                 }
             ]
         );
@@ -944,7 +1020,7 @@ fn scaled(countries: usize, states: usize) -> (Arena, usize) {
 
 /// [`scaled`], optionally without any resource origin.
 fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, usize) {
-    let mut m = Arena::new(states * 0x1800 + countries * 0x2400 + (1 << 20));
+    let mut m = Arena::new(states * 0x1e00 + countries * 0x2400 + (1 << 20));
     let game_state = m.alloc(0x1000);
     // Resources: tokens 1000 + i, keys 0x100 + 4 i .. + 3.
     let database = m.alloc(0x80);
@@ -1156,10 +1232,12 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
             );
             for index in 0..PROVINCES_PER_STATE {
                 let id = (id * PROVINCES_PER_STATE + index) as u32;
-                let province = m.alloc(cprovince::ID + 4);
+                let province = m.alloc(cprovince::STRATEGIC_LOCATIONS + 16);
                 m.u64(provinces + index * 8, province as u64);
                 m.u64(province, m.rva(cprovince::VTABLE_RVA));
                 m.u32(province + cprovince::ID, id);
+                m.u64(province + cprovince::STATE, pointer as u64);
+                m.array(province + cprovince::STRATEGIC_LOCATIONS, 0, 0);
                 let pair = ordinal * PROVINCES_PER_STATE + index;
                 m.u32(routes + pair * 8, id);
                 m.u32(routes + pair * 8 + 4, pair as u32);

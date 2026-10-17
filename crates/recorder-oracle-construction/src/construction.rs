@@ -552,7 +552,10 @@ pub use occupation::{
 };
 
 mod states;
-pub use states::{building_overrides, resource_inputs, state_cores, state_modifiers, state_pools};
+pub use states::{
+    building_overrides, resource_inputs, state_cores, state_modifiers, state_pools,
+    state_strategic_locations,
+};
 
 fn value<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,

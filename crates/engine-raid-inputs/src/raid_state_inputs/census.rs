@@ -2,7 +2,8 @@ use super::*;
 
 /// Attach/cadence storage demand from registries and retained array/name
 /// headers. No resource amounts, modifier values, route pairs or core and
-/// claim links are acquired; the links count both lists. Resource, province-node and core checks select these same
+/// claim links are acquired; the links count both lists and two words for
+/// each strategic location of the state and of its provinces. Resource, province-node and core checks select these same
 /// populations; the worker authenticates its own original headers and grows
 /// if they changed after this hint.
 pub fn demand(
@@ -63,6 +64,22 @@ pub fn demand(
             let cores = array(pointer, cstate::CORES, 4)?;
             let claims = array(pointer, cstate::CLAIMS, 4)?;
             core_links = add(core_links, add(cores.count as usize, claims.count as usize)?)?;
+            let locations = array(
+                pointer,
+                cstate::STRATEGIC_LOCATIONS,
+                cstate::STRATEGIC_LOCATION_STRIDE,
+            )?;
+            core_links = add(core_links, mul(locations.count as usize, 2)?)?;
+            for ordinal in 0..provinces.count {
+                let province = provinces
+                    .element(ordinal, 8)
+                    .and_then(|at| read::<u64>(memory, at))
+                    .and_then(|pointer| usize::try_from(pointer).ok())
+                    .filter(|&pointer| pointer != 0)
+                    .ok_or("state province sizing pointer unreadable or null")?;
+                let tokens = array(province, cprovince::STRATEGIC_LOCATIONS, 4)?;
+                core_links = add(core_links, mul(tokens.count as usize, 2)?)?;
+            }
             let accumulator = array(pointer, cstate::BASE_MODIFIERS, modifier_entry::STRIDE)?;
             let container = address(pointer, cstate::DYNAMIC_MODIFIERS)?;
             if read::<u64>(memory, container)
@@ -214,6 +231,14 @@ pub fn state_census(
 
 /// One state's core countries and claim countries: raw country references in stored order at
 /// `links[start..start + len]` and `links[claims_start..claims_start + claims_len]`.
+///
+/// Its strategic locations follow in the same links, two words each: the
+/// state's (location token, anchor province) pairs in stored order at
+/// `links[locations_start..locations_start + 2 * locations_len]`, then each
+/// of its provinces' (province, location token) entries, the provinces in
+/// the state's province order and each province's tokens in stored order,
+/// at `links[province_locations_start..province_locations_start + 2 *
+/// province_locations_len]`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CoreRow {
     pub state: u32,
@@ -221,12 +246,18 @@ pub struct CoreRow {
     pub len: usize,
     pub claims_start: usize,
     pub claims_len: usize,
+    pub locations_start: usize,
+    pub locations_len: usize,
+    pub province_locations_start: usize,
+    pub province_locations_len: usize,
 }
 
-/// The core and claim lists of the census states `selected` accepts, one row
-/// per state (empty lists included), in census order. Each state is
-/// authenticated (vtable and ID) with both list headers in one record batch
-/// of 64; each nonempty list is its own guarded copies. A state whose lists
+/// The core, claim and strategic-location lists of the census states
+/// `selected` accepts, one row per state (empty lists included), in census
+/// order. Each state is authenticated (vtable and ID) with its list headers
+/// and province array in one record batch of 64; each nonempty list is its
+/// own guarded copies, and each province is authenticated (vtable, ID and
+/// state) before its strategic locations are read. A state whose lists
 /// do not fit in `links` has no row and is counted; `required` is the links
 /// every selected state needs.
 #[allow(clippy::too_many_arguments)]
@@ -287,12 +318,14 @@ fn state_cores_buffer(
     mut links: Buffer<'_, u32>,
     required: &mut usize,
 ) -> Outcome {
-    const RECORD: usize = 48;
-    const FIELDS: [RecordField; 4] = [
+    const RECORD: usize = 80;
+    const FIELDS: [RecordField; 6] = [
         field(0, 0, 8),
         field(cstate::ID, 8, 4),
         field(cstate::CORES, 16, 16),
         field(cstate::CLAIMS, 32, 16),
+        field(cstate::STRATEGIC_LOCATIONS, 48, 16),
+        field(cstate::PROVINCES, 64, 16),
     ];
     const LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&FIELDS, RECORD).expect("valid record layout");
@@ -303,6 +336,7 @@ fn state_cores_buffer(
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("state array unreadable or invalid")?;
         let vtable = address(base, cstate::VTABLE_RVA)? as u64;
+        let province_vtable = address(base, cprovince::VTABLE_RVA)? as u64;
         let (mut len, mut used, mut unread) = (0, 0, 0_u32);
         let mut ids = [0_u32; BATCH];
         let mut pointers = [0_usize; BATCH];
@@ -346,9 +380,27 @@ fn state_cores_buffer(
                     Array::from_header(header16(record, 16), 4).ok_or("state core list invalid")?;
                 let claims = Array::from_header(header16(record, 32), 4)
                     .ok_or("state claim list invalid")?;
+                let locations =
+                    Array::from_header(header16(record, 48), cstate::STRATEGIC_LOCATION_STRIDE)
+                        .ok_or("state strategic location list invalid")?;
+                let provinces = Array::from_header(header16(record, 64), 8)
+                    .ok_or("state province list invalid")?;
+                // Sized first and copied after, without allocating: each
+                // province header is read once per pass.
+                let province = |ordinal| {
+                    province_locations(memory, provinces, ordinal, province_vtable, pointers[index])
+                };
+                let mut province_count = 0_usize;
+                for ordinal in 0..provinces.count {
+                    province_count = province_count
+                        .checked_add(province(ordinal)?.1.count as usize)
+                        .ok_or("state core link count overflow")?;
+                }
                 let (core_count, claim_count) = (cores.count as usize, claims.count as usize);
-                let count = core_count
-                    .checked_add(claim_count)
+                let location_count = locations.count as usize;
+                let count = [core_count, claim_count, 2 * location_count, 2 * province_count]
+                    .into_iter()
+                    .try_fold(0_usize, usize::checked_add)
                     .ok_or("state core link count overflow")?;
                 *required = required
                     .checked_add(count)
@@ -362,15 +414,36 @@ fn state_cores_buffer(
                     unread += 1;
                     continue;
                 };
-                let (core_slot, claim_slot) = slot.split_at_mut(core_count);
+                let (core_slot, rest) = slot.split_at_mut(core_count);
+                let (claim_slot, rest) = rest.split_at_mut(claim_count);
+                let (location_slot, mut rest) = rest.split_at_mut(2 * location_count);
                 copy_links(memory, cores, core_slot, "state core list unreadable")?;
                 copy_links(memory, claims, claim_slot, "state claim list unreadable")?;
+                copy_pairs(memory, locations, location_slot)?;
+                for ordinal in 0..provinces.count {
+                    let (id, tokens) = province(ordinal)?;
+                    let words = 2 * tokens.count as usize;
+                    if words > rest.len() {
+                        return Err("province strategic location list changed while read");
+                    }
+                    let (entries, after) = rest.split_at_mut(words);
+                    copy_paired_tokens(memory, tokens, id, entries)?;
+                    rest = after;
+                }
+                if !rest.is_empty() {
+                    return Err("province strategic location list changed while read");
+                }
+                let locations_start = used + core_count + claim_count;
                 *row = CoreRow {
                     state: ids[index],
                     start: used,
                     len: core_count,
                     claims_start: used + core_count,
                     claims_len: claim_count,
+                    locations_start,
+                    locations_len: location_count,
+                    province_locations_start: locations_start + 2 * location_count,
+                    province_locations_len: province_count,
                 };
                 len += 1;
                 used += count;
@@ -386,6 +459,78 @@ fn state_cores_buffer(
         })
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// One province of a state's province array: authenticated by vtable, its
+/// state back-reference and a nonzero ID, with its strategic-location token
+/// list header.
+fn province_locations(
+    memory: &impl Memory,
+    provinces: Array,
+    ordinal: u32,
+    vtable: u64,
+    state: usize,
+) -> Result<(u32, Array), &'static str> {
+    let pointer = provinces
+        .element(ordinal, 8)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .filter(|&pointer| pointer != 0)
+        .ok_or("state province pointer unreadable or null")?;
+    if read::<u64>(memory, pointer) != Some(vtable)
+        || read::<u64>(memory, address(pointer, cprovince::STATE)?) != Some(state as u64)
+    {
+        return Err("state province disagrees with its state");
+    }
+    let id = read::<u32>(memory, address(pointer, cprovince::ID)?)
+        .filter(|&id| id != 0)
+        .ok_or("state province id unreadable or zero")?;
+    let tokens = Array::read(memory, address(pointer, cprovince::STRATEGIC_LOCATIONS)?, 4)
+        .ok_or("province strategic location list invalid")?;
+    Ok((id, tokens))
+}
+
+/// A province's stored token list into `out` as (province, token) word
+/// pairs, 64 tokens per guarded copy.
+fn copy_paired_tokens(
+    memory: &impl Memory,
+    list: Array,
+    province: u32,
+    out: &mut [u32],
+) -> Result<(), &'static str> {
+    let mut bytes = [0_u8; 4 * 64];
+    for (chunk, out) in out.chunks_mut(128).enumerate() {
+        let bytes = &mut bytes[..out.len() * 2];
+        let copied = list
+            .element((chunk * 64) as u32, 4)
+            .is_some_and(|at| memory.copy(at, bytes));
+        if !copied {
+            return Err("province strategic location list unreadable");
+        }
+        for (entry, word) in out.chunks_exact_mut(2).zip(bytes.chunks_exact(4)) {
+            entry.copy_from_slice(&[province, u32::from_le_bytes(word.try_into().unwrap())]);
+        }
+    }
+    Ok(())
+}
+
+/// A stored list of 8-byte (u32, u32) pairs into `out` (two words each),
+/// 32 pairs per guarded copy.
+fn copy_pairs(memory: &impl Memory, list: Array, out: &mut [u32]) -> Result<(), &'static str> {
+    let mut bytes = [0_u8; 8 * 32];
+    for (chunk, out) in out.chunks_mut(64).enumerate() {
+        let bytes = &mut bytes[..out.len() * 4];
+        let copied = list
+            .element((chunk * 32) as u32, cstate::STRATEGIC_LOCATION_STRIDE)
+            .is_some_and(|at| memory.copy(at, bytes));
+        if !copied {
+            return Err("state strategic location list unreadable");
+        }
+        for (word, value) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+            *word = u32::from_le_bytes(value.try_into().unwrap());
+        }
+    }
+    Ok(())
 }
 
 /// One stored u32 list into `out` (its exact length), 64 links per guarded copy.

@@ -29,10 +29,11 @@ pub(super) enum Family {
     RocketSite,
     GunEmplacement,
     Radar,
+    StrategicLocation,
 }
 
 /// How many [`Family`] kinds there are, one pool view each.
-pub(super) const FAMILIES: usize = 6;
+pub(super) const FAMILIES: usize = 7;
 
 /// The radar icon's priority: the game's per-mode priority tables leave the
 /// radar icon's entry zero in every mode, and no define sets it.
@@ -71,7 +72,10 @@ impl PreparedBases {
             return;
         };
         let cutoff = match family {
-            Family::AirBase | Family::RocketSite | Family::GunEmplacement => {
+            Family::AirBase
+            | Family::RocketSite
+            | Family::GunEmplacement
+            | Family::StrategicLocation => {
                 inputs.content.defines.air_base_cutoff
             }
             Family::Radar => inputs.content.defines.radar_cutoff,
@@ -137,11 +141,21 @@ impl PreparedBases {
                 inputs.priority(PriorityIcon::GunEmplacement),
             ),
             (Family::Radar, RADAR_WINDOW, MapIconPool::Radar, RADAR_PRIORITY),
+            (
+                Family::StrategicLocation,
+                STRATEGIC_LOCATION_WINDOW,
+                MapIconPool::StrategicLocation,
+                inputs.priority(PriorityIcon::StrategicLocation),
+            ),
         ];
         let mut layouts = Vec::new();
         for &(family, name, kind, priority) in &families {
+            // A strategic location's sprite is set only where the content
+            // defines it; otherwise the button keeps its authored sprite.
+            let named = family != Family::StrategicLocation;
             for sprite in self.placed[family as usize]
                 .iter()
+                .filter(|_| named)
                 .filter_map(|icon| icon.state.sprite.as_ref())
             {
                 if native_gui::Resources::sprite(&resources, sprite.as_bytes()).is_none() {
@@ -163,7 +177,12 @@ impl PreparedBases {
                     dirty: schedule.dirty(icon.province),
                 })
                 .collect();
-            let drawn = views[family as usize].present(
+            // A strategic location's icon fixes its location when its window is
+            // acquired and keeps it while that window lives, as the game's icon
+            // keeps the list it gathered when it was made.
+            let view = &mut views[family as usize];
+            let mut acquired = std::mem::take(&mut view.acquired_sprites);
+            let drawn = view.present(
                 &context,
                 &Plan {
                     name,
@@ -172,9 +191,23 @@ impl PreparedBases {
                     owners: &owners,
                 },
                 Box::new(move |_, root| bind(root, family).map(|_| ())),
-                |owner, _, instance, root| update(instance, root, family, &placed[&owner].state),
+                |owner, slot, instance, root| {
+                    let state = &placed[&owner].state;
+                    if family != Family::StrategicLocation {
+                        return update(instance, root, family, state);
+                    }
+                    let sprite = acquired_sprite(&mut acquired, owner, slot, &state.sprite);
+                    let state = State {
+                        frame: state.frame,
+                        enabled: state.enabled,
+                        sprite,
+                    };
+                    update(instance, root, family, &state)
+                },
                 &mut report.icon_gui_notes,
             );
+            forget_released(&mut acquired, &view.live());
+            view.acquired_sprites = acquired;
             layouts.extend(
                 drawn
                     .into_iter()
@@ -199,6 +232,7 @@ impl PreparedBases {
                         Family::RocketSite => report.rocket_sites += 1,
                         Family::GunEmplacement => report.gun_emplacements += 1,
                         Family::Radar => report.radars += 1,
+                        Family::StrategicLocation => report.strategic_locations += 1,
                     }
                 }
                 Err(why) => count_refused(&mut report.icon_gui_notes, name, &[why]),
@@ -206,6 +240,32 @@ impl PreparedBases {
         }
         batch.at_anchor(None);
     }
+}
+
+/// The sprite an owner's window fixed when it was acquired: `offered` the
+/// first time the owner holds `slot`, and that same choice while it keeps it.
+pub(super) fn acquired_sprite<K: Eq + std::hash::Hash, S: PartialEq + Copy>(
+    acquired: &mut HashMap<K, (S, Option<String>)>,
+    owner: K,
+    slot: S,
+    offered: &Option<String>,
+) -> Option<String> {
+    match acquired.get(&owner) {
+        Some((held, sprite)) if *held == slot => sprite.clone(),
+        _ => {
+            acquired.insert(owner, (slot, offered.clone()));
+            offered.clone()
+        }
+    }
+}
+
+/// Drops the choices of windows no longer live, so an owner whose window
+/// was released chooses afresh when it is acquired again.
+pub(super) fn forget_released<K: Eq + std::hash::Hash, S: PartialEq + Copy>(
+    acquired: &mut HashMap<K, (S, Option<String>)>,
+    live: &[(K, S)],
+) {
+    acquired.retain(|owner, (slot, _)| live.iter().any(|(o, s)| o == owner && s == slot));
 }
 
 /// The binders find bg_btn locally; its actual drawn footprint intercepts unit input.
@@ -306,8 +366,9 @@ fn update(
         // The game shows the icon in its default frame and writes nothing else.
         return instance.show(root, button);
     }
-    // Air-base and headquarters updates write frames; facilities retain them.
-    if family != Family::Facility {
+    // Air-base and headquarters updates write frames; facilities and
+    // strategic locations retain them.
+    if !matches!(family, Family::Facility | Family::StrategicLocation) {
         instance.set_frame(root, button, state.frame)?;
     }
     if let Some(sprite) = &state.sprite {
@@ -333,6 +394,80 @@ mod tests {
     fn window(children: &str) -> native::Element {
         native::read(format!("guiTypes = {{ containerWindowType = {{ name = test size = {{ width = 50 height = 40 }} {children} }} }}").as_bytes())
             .template("test").unwrap().clone()
+    }
+
+    #[test]
+    fn strategic_location_preparation_in_free_views_keeps_nearby_elevated_anchors() {
+        use super::super::tests::{action_gui, wings_frame, with_counter_inputs_fixture};
+        use replay::{
+            frame::TableView,
+            rows::{LexicalTokenRow, ProvinceRow, Recorded, StateCoreRow, TableId, TableRows},
+        };
+        use viewer_foundation::map::camera::{Free, Lens, Pose};
+
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+        *frame.tables[TableId::Provinces.index()] =
+            TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
+                id: 9,
+                state: 7,
+                controller: 100,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::StateCores.index()] =
+            TableView::Complete(TableRows::StateCores(vec![StateCoreRow {
+                state: 7,
+                strategic_locations: Recorded::Value(vec![(700u64 << 32) | 9]),
+                province_strategic_locations: Recorded::Value(Vec::new()),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 700,
+                literal: b"synthetic_location".to_vec(),
+            }]));
+        let anchor = [2.0, 10.0, 2.0];
+        with_counter_inputs_fixture(
+            action_gui(false),
+            |_| {},
+            |content| {
+                content.defines.air_base_cutoff = 50.0;
+                Arc::make_mut(&mut content.anchors).insert((9, VICTORY_POINT), anchor);
+            },
+            |mut inputs| {
+                let free = Pose::Free(Free::looking_at([2.0, 50.0, 2.0], anchor, Lens::MAP));
+                inputs.camera.pose = free;
+                inputs.camera.height = 50.0;
+                assert_eq!(inputs.camera.icon_distance(anchor), 40.0);
+                // Only the free view keeps this nearby icon at the absolute-height cutoff.
+                // Province-icon mode suppression and the ordinary camera's strict cutoff remain.
+                for (pose, height, province_icons, expected) in [
+                    (free, 50.0, true, 1),
+                    (free, 50.0, false, 0),
+                    (Pose::Map, 50.0, true, 0),
+                    (Pose::Map, 49.0, true, 1),
+                ] {
+                    inputs.camera.pose = pose;
+                    inputs.camera.height = height;
+                    inputs.visibility.province_icons = province_icons;
+                    let mut out = CounterFrame::default();
+                    bases::strategic_location_icons(&inputs, &frame, &mut out).unwrap();
+                    let placed = &out.native_bases.placed[Family::StrategicLocation as usize];
+                    assert_eq!(placed.len(), expected, "{pose:?}, height {height}");
+                    if let Some(placed) = placed.first() {
+                        assert_eq!(
+                            placed.anchor,
+                            Some(IconAnchor {
+                                world: anchor,
+                                cutoff: 50.0,
+                                family: IconFamily::Bases,
+                            })
+                        );
+                    }
+                }
+            },
+        );
     }
 
     #[test]
@@ -519,6 +654,26 @@ mod tests {
         );
     }
 
+    /// A strategic location's window keeps the location it took when it was
+    /// acquired: a later offer changes nothing while the window lives, and
+    /// a released window chooses afresh when its owner acquires one again.
+    /// Before, the sprite followed every frame's offer.
+    #[test]
+    fn a_strategic_location_keeps_its_sprite_for_its_window_s_lifetime() {
+        let mut acquired: HashMap<u32, (u32, Option<String>)> = HashMap::new();
+        let offer = |name: &str| Some(name.to_owned());
+        assert_eq!(acquired_sprite(&mut acquired, 7, 1, &offer("A")), offer("A"));
+        forget_released(&mut acquired, &[(7, 1)]);
+        // A province token added while the icon is visible keeps the first.
+        assert_eq!(acquired_sprite(&mut acquired, 7, 1, &offer("B")), offer("A"));
+        // Released, then acquired again: the current choice.
+        forget_released(&mut acquired, &[]);
+        assert!(acquired.is_empty());
+        assert_eq!(acquired_sprite(&mut acquired, 7, 1, &offer("B")), offer("B"));
+        // A different slot is a new window.
+        assert_eq!(acquired_sprite(&mut acquired, 7, 2, &offer("C")), offer("C"));
+    }
+
     /// The radar window shows its one efficiency icon in its authored frame.
     #[test]
     fn radar_update_shows_its_icon() {
@@ -547,6 +702,30 @@ mod tests {
                 .unwrap_err()
                 .contains(RADAR_WINDOW)
         );
+    }
+
+    /// A strategic location sets its location's sprite on `bg_btn` and keeps
+    /// the authored frame; an undefined sprite keeps the authored one.
+    #[test]
+    fn strategic_location_update_sets_the_location_sprite_and_keeps_the_frame() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let root = window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even frame = 2 }"#);
+        let resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let button = root.find(native::Kind::Button, "bg_btn").unwrap();
+        let state = |sprite: &str| State {
+            frame: 0,
+            enabled: true,
+            sprite: Some(sprite.into()),
+        };
+        update(&mut instance, &root, Family::StrategicLocation, &state("GFX_missing")).unwrap();
+        assert_eq!(instance.control(&root, button).unwrap().frame, None);
+        update(&mut instance, &root, Family::StrategicLocation, &state("GFX_odd")).unwrap();
+        let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+        assert_eq!(layout.parts.len(), 1);
+        assert_eq!(instance.control(&root, button).unwrap().frame, None);
     }
 
     #[test]

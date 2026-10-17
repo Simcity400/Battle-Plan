@@ -84,7 +84,8 @@ static AIR_CLEARS: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     /// The `raid_state` sliced family: StateResourceInputs, StateResources,
-    /// StateDynamicModifiers and StateCores (cores and claims), by state id.
+    /// StateDynamicModifiers and StateCores (cores, claims and strategic
+    /// locations), by state id.
     States = 0,
     /// The `raid_country_buildings` sliced family: CountryBuildingResources,
     /// by country.
@@ -561,6 +562,8 @@ impl Hooks {
                 set_country_pool_capacity as *const () as usize,
                 add_claim as *const () as usize,
                 remove_claim as *const () as usize,
+                add_state_strategic_location as *const () as usize,
+                add_province_strategic_location as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -723,6 +726,10 @@ callback!(destroy_strategic_air, 23);
 callback!(add_claim, 25);
 // Claim erase (state, tag).
 callback!(remove_claim, 26);
+// State strategic-location append (state, location, anchor province).
+callback!(add_state_strategic_location, 27);
+// Province strategic-location append (province, location): marks its state.
+callback!(add_province_strategic_location, 28);
 
 /// `country air pool capacity setter(base, capacity, tag)` stores `capacity` unchanged at the
 /// slot's container capacity (the daily pass stores most containers' value again): only a store
@@ -997,6 +1004,32 @@ mod tests {
             drop(watches.notify(index, Target::State(Some(12))));
             assert_eq!(take(&watches, Family::States), (Some(epoch), vec![12]), "{name}");
         }
+    }
+
+    /// The strategic-location appenders are observed: the state's marks its
+    /// state, and the province's marks the province's state, so StateCores'
+    /// strategic locations are read within the hour.
+    #[test]
+    fn strategic_location_writers_mark_their_state() {
+        let index = site("add_state_strategic_location");
+        assert_eq!(MUTATIONS[index].1, Receiver::State);
+        let index = site("add_province_strategic_location");
+        assert_eq!(MUTATIONS[index].1, Receiver::Province);
+        let watches = Watches::enabled(64, 64);
+        let epoch = take(&watches, Family::States).0.unwrap();
+        drop(watches.notify(index, Target::State(Some(12))));
+        assert_eq!(take(&watches, Family::States), (Some(epoch), vec![12]));
+        // The province receiver names its state through the province.
+        let mut memory = vec![0_u8; 0x200];
+        let state = memory.as_ptr() as usize + 0x100;
+        let state_slot = engine::cprovince::STATE;
+        memory[state_slot..state_slot + 8].copy_from_slice(&(state as u64).to_le_bytes());
+        memory[0x100 + engine::cstate::ID..0x100 + engine::cstate::ID + 4]
+            .copy_from_slice(&12_u32.to_le_bytes());
+        let province = memory.as_ptr() as usize;
+        assert_eq!(target(Receiver::Province, province, 0, 0), Target::State(Some(12)));
+        memory[state_slot..state_slot + 8].fill(0);
+        assert_eq!(target(Receiver::Province, province, 0, 0), Target::Nothing);
     }
 
     /// A forwarded write of a state status marks that state; a province

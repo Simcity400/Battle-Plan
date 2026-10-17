@@ -122,6 +122,7 @@ fn unowned_state_provinces_keep_null_ownership_and_explicit_controllers() {
             owner: None,
             controller: Some(b"B".to_vec()),
             victory_points: None,
+            strategic_locations: Vec::new(),
         },
     );
     let rows = save.province_control(&membership).unwrap();
@@ -170,6 +171,7 @@ fn unowned_state_control_scales_to_5000_synthetic_countries() {
                     owner: None,
                     controller: Some(tag),
                     victory_points: None,
+                    strategic_locations: Vec::new(),
                 },
             );
         }

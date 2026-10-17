@@ -950,6 +950,22 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("construction StateCores strategic locations", |report| {
+        let state_of = complete::<tables::Provinces>(frame)?
+            .iter()
+            .map(|province| (province.id, province.state))
+            .collect();
+        construction::state_strategic_locations(
+            complete::<tables::StateCores>(frame)?,
+            &save.states,
+            &save.provinces,
+            &state_of,
+            required_context("lexical dictionary", &tokens)?,
+            complete::<tables::SliceReads>(frame)?,
+            frame.hour,
+            report,
+        )
+    });
     report.attempt("construction StateResourceInputs", |report| {
         construction::resource_inputs(
             complete::<tables::StateResourceInputs>(frame)?,

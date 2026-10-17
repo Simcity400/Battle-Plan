@@ -4,7 +4,7 @@
 //! recording never calls them.
 //!
 //! StateResourceInputs, StateResources, StateDynamicModifiers and StateCores
-//! (cores and claims) record each state's additive gate
+//! (cores, claims and strategic locations) record each state's additive gate
 //! (`cstate::RESOURCE_MODIFIER_GATE`); effective resource accumulator values
 //! (`cstate::BASE_MODIFIERS`, in modifier block `cstate::RESOURCE_MODIFIER`;
 //! global factor key 0x223 and each resource's state additive, state factor
@@ -54,6 +54,11 @@
 //!   remover, called by the two claim-removal effects and the country's own
 //!   claim eraser. Both take (state, &tag) and leave the list unchanged for a
 //!   nonpositive tag.
+//! - Strategic locations (`cstate::STRATEGIC_LOCATIONS` and each province's
+//!   `cprovince::STRATEGIC_LOCATIONS`): the state's and the province's
+//!   appenders are the only run-time writers. Each is called only by its
+//!   state-scoped effect and takes the state or province in RCX; neither
+//!   list is ever shortened. Loading reads both lists.
 //! - Infrastructure: [`crate::building_mutations`] owns and forwards the
 //!   building-status writers.
 //! - Resource origin: controller resources' origin list
@@ -120,10 +125,13 @@ pub enum Receiver {
     /// Capacity assignment (base, capacity, tag): R8 points to the raw country
     /// link whose container at RCX takes RDX.
     PoolCapacity,
+    /// RCX is a province; its `cprovince::STATE` names the state.
+    Province,
 }
 
-/// The raid state sites, the site list sites, then the claim sites.
-pub const MUTATIONS: [(MutationSite, Receiver); 27] = [
+/// The raid state sites, the site list sites, the claim sites, then the
+/// strategic-location sites.
+pub const MUTATIONS: [(MutationSite, Receiver); 29] = [
     // Refresh resource gates (state).
     (
         MutationSite {
@@ -450,6 +458,30 @@ pub const MUTATIONS: [(MutationSite, Receiver); 27] = [
         },
         Receiver::State,
     ),
+    // State strategic-location append (state, location, anchor province).
+    (
+        MutationSite {
+            name: "add_state_strategic_location",
+            rva: 0x9c_4a60,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30,
+                0x8b, 0x5a,
+            ],
+        },
+        Receiver::State,
+    ),
+    // Province strategic-location append (province, location).
+    (
+        MutationSite {
+            name: "add_province_strategic_location",
+            rva: 0xe6_5050,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x41, 0x56, 0x48, 0x83,
+                0xec, 0x30,
+            ],
+        },
+        Receiver::Province,
+    ),
 ];
 
 /// Daily base-capacity pass (air, pairs), calling the capacity setter once
@@ -597,6 +629,14 @@ pub fn state(
                 .ok_or(Unreadable)?;
             if state == 0 { Ok(None) } else { id(state) }
         }
+        Receiver::Province => {
+            let state = first
+                .checked_add(crate::cprovince::STATE)
+                .and_then(|address| crate::read::<u64>(memory, address))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .ok_or(Unreadable)?;
+            if state == 0 { Ok(None) } else { id(state) }
+        }
         _ => Err(Unreadable),
     }
 }
@@ -616,6 +656,9 @@ pub const FIRST_SITE: usize = 12;
 /// The [`MUTATIONS`] index of the first claim writer, after the site list
 /// writers.
 pub const FIRST_CLAIM_SITE: usize = 25;
+/// The [`MUTATIONS`] index of the first strategic-location writer, after the
+/// claim writers.
+pub const FIRST_STRATEGIC_LOCATION_SITE: usize = 27;
 
 /// The raw country link a site list receiver names, given a site's first
 /// three arguments: a country air object's `cstrategic_air::COUNTRY` for
@@ -920,9 +963,18 @@ mod tests {
         );
         // The claim writers name their state, as the core writers do.
         assert!(
-            MUTATIONS[FIRST_CLAIM_SITE..]
+            MUTATIONS[FIRST_CLAIM_SITE..FIRST_STRATEGIC_LOCATION_SITE]
                 .iter()
                 .all(|(_, receiver)| *receiver == Receiver::State)
+        );
+        // The strategic-location writers name the state, directly or
+        // through the province.
+        assert_eq!(
+            MUTATIONS[FIRST_STRATEGIC_LOCATION_SITE..]
+                .iter()
+                .map(|(_, receiver)| *receiver)
+                .collect::<Vec<_>>(),
+            [Receiver::State, Receiver::Province]
         );
     }
 

@@ -961,17 +961,53 @@ typed_codec!(CountryCivilWarRow, 64, |row| (row.country as u128) << 32 | row.ord
 /// `is_claimed_by` and the claims map modes compare them as `is_core_of` compares cores. The save
 /// writes claims from the country side (`claims`), as it writes cores.
 ///
+/// `strategic_locations` is the state's strategic locations in stored order,
+/// each `location token << 32 | anchor province`: the map icon of a location
+/// stands in its anchor province. `province_strategic_locations` is each of
+/// the state's provinces' own strategic locations, each `province << 32 |
+/// location token`, the provinces in the state's province order and each
+/// province's tokens in stored order. Tokens are lexer tokens, spelled
+/// through LexicalTokens. The save writes them as the state's
+/// `strategic_region_data` and each province's `strategic_province_location`.
+///
 /// Sliced, with `StateResourceInputs` (family `raid_state`, owner: the state):
-/// core and claim insertion and removal are hooked, so both lists equal the
-/// game's at every hour.
+/// core and claim insertion and removal and both strategic-location appenders
+/// are hooked, so every list equals the game's at every hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateCoreRow {
     pub state: u32,
     pub cores: Vec<u32>,
     pub claims: Recorded<Vec<u32>>,
+    pub strategic_locations: Recorded<Vec<u64>>,
+    pub province_strategic_locations: Recorded<Vec<u64>>,
 }
 typed_codec!(StateCoreRow, 32, |row| row.state as u128, |key| Self { state: key as u32, ..Default::default() },
- { 0 => (cores): U32List, 1 => (claims): U32List }, |_row| Ok(()));
+ { 0 => (cores): U32List, 1 => (claims): U32List, 2 => (strategic_locations): U64List, 3 => (province_strategic_locations): U64List }, |_row| Ok(()));
+
+impl StateCoreRow {
+    /// The state's (location token, anchor province) pairs in stored order;
+    /// `None` when not recorded.
+    pub fn state_locations(&self) -> Option<impl Iterator<Item = (u32, u32)> + '_> {
+        match &self.strategic_locations {
+            Recorded::Value(pairs) => Some(pairs.iter().map(|&pair| split(pair))),
+            Recorded::NotRecorded => None,
+        }
+    }
+
+    /// The state's provinces' (province, location token) entries in stored
+    /// order; `None` when not recorded.
+    pub fn province_locations(&self) -> Option<impl Iterator<Item = (u32, u32)> + '_> {
+        match &self.province_strategic_locations {
+            Recorded::Value(pairs) => Some(pairs.iter().map(|&pair| split(pair))),
+            Recorded::NotRecorded => None,
+        }
+    }
+}
+
+/// A u64 that packs two u32 words, high word first.
+fn split(pair: u64) -> (u32, u32) {
+    ((pair >> 32) as u32, pair as u32)
+}
 
 /// StateDynamicModifiers: key state:ordinal (64 bits).
 ///

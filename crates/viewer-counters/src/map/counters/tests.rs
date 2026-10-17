@@ -708,6 +708,75 @@ fn base_icons_need_a_controlled_province() {
     );
 }
 
+/// A province's strategic-location icon lists the province's own tokens,
+/// then its own state's locations anchored on it, each in stored order; a
+/// pair anchored in another state's province is not gathered, a province
+/// with neither has no icon, and a state whose lists are not recorded is
+/// named. Before, a foreign anchor added an icon.
+#[test]
+fn strategic_locations_list_the_province_s_tokens_then_its_state_s() {
+    use replay::rows::{Recorded, StateCoreRow};
+    let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
+    let pair = |high: u64, low: u64| high << 32 | low;
+    let province = |id, state| ProvinceRow {
+        id,
+        state,
+        ..Default::default()
+    };
+    // Provinces 31 to 33 are state 4's; 40 is state 5's.
+    *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+        province(31, 4),
+        province(32, 4),
+        province(33, 4),
+        province(40, 5),
+    ]));
+    *frame.tables[TableId::StateCores.index()] = TableView::Complete(TableRows::StateCores(vec![
+        StateCoreRow {
+            state: 4,
+            // 703 anchors in state 5's province 40: the game never gathers
+            // it for that province, and 704's province is not recorded.
+            strategic_locations: Recorded::Value(vec![
+                pair(701, 31),
+                pair(702, 33),
+                pair(703, 40),
+                pair(704, 99),
+            ]),
+            province_strategic_locations: Recorded::Value(vec![
+                pair(31, 801),
+                pair(31, 802),
+                pair(32, 803),
+            ]),
+            ..Default::default()
+        },
+        StateCoreRow {
+            state: 5,
+            ..Default::default()
+        },
+        StateCoreRow {
+            state: 6,
+            strategic_locations: Recorded::NotRecorded,
+            province_strategic_locations: Recorded::NotRecorded,
+            ..Default::default()
+        },
+    ]));
+    let (locations, notes) = strategic_locations(&frame).unwrap();
+    assert_eq!(
+        locations,
+        BTreeMap::from([
+            (31, vec![801, 802, 701]),
+            (32, vec![803]),
+            (33, vec![702]),
+        ])
+    );
+    assert_eq!(
+        notes,
+        [
+            "1 states' strategic locations are not recorded, so their icons are not drawn",
+            "1 state strategic locations anchor on a province whose state is not recorded (Provinces), so they are not drawn"
+        ]
+    );
+}
+
 /// A state holding an air base and a rocket site keeps their counts apart:
 /// the air-base icon reads only the air base, and the rocket-site icon only
 /// the rocket site. Before, every recorded base of a state was merged into

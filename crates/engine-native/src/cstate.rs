@@ -34,6 +34,12 @@ pub const SECONDARY_DISPLAY_NAME: usize = 0xe8;
 pub const CLAIMS: usize = 0x98;
 /// CState core-country CPdxArray of u32 links.
 pub const CORES: usize = 0xb0;
+/// CState strategic-location CPdxArray of 8-byte (location token, anchor
+/// province id) pairs in insertion order. The state effect appends one
+/// pair and refuses a token already listed; loading reads the list.
+pub const STRATEGIC_LOCATIONS: usize = 0x800;
+/// The size of one [`STRATEGIC_LOCATIONS`] pair.
+pub const STRATEGIC_LOCATION_STRIDE: usize = 8;
 /// Core-country signed count in the inline array header.
 pub const CORE_COUNT: usize = 0xbc;
 /// Embedded building status with its building vector.

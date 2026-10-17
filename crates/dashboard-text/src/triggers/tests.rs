@@ -3204,6 +3204,7 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
                 state: 64,
                 cores: vec![104],
                 claims,
+                ..Default::default()
             }]));
     };
     claims(&mut f, vec![110].into());

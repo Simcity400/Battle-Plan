@@ -162,7 +162,7 @@ use viewer_foundation::map::native_windows::NAVY_WINDOW;
 pub const STACK_WINDOW: &str = "unit_mapicon";
 use viewer_foundation::map::native_windows::AIR_BASE_WINDOW;
 use viewer_foundation::map::native_windows::{
-    GUN_EMPLACEMENT_WINDOW, RADAR_WINDOW, ROCKET_SITE_WINDOW,
+    GUN_EMPLACEMENT_WINDOW, RADAR_WINDOW, ROCKET_SITE_WINDOW, STRATEGIC_LOCATION_WINDOW,
 };
 /// its `bg_btn` is replaced per facility.
 use viewer_foundation::map::native_windows::FACILITY_WINDOW;
@@ -1885,6 +1885,7 @@ pub struct CounterReport {
     pub rocket_sites: usize,
     pub gun_emplacements: usize,
     pub radars: usize,
+    pub strategic_locations: usize,
     /// Naval base, naval-HQ and facility icons an unknown or refused input kept from being
     /// drawn, by reason.
     pub unknown_bases: BaseUnknowns,
@@ -1983,6 +1984,7 @@ impl CounterReport {
             + self.rocket_sites
             + self.gun_emplacements
             + self.radars
+            + self.strategic_locations
             + self.naval_counters) as u32
     }
 
@@ -2234,6 +2236,7 @@ impl CounterReport {
             rocket_sites,
             gun_emplacements,
             radars,
+            strategic_locations,
             unknown_bases,
             unresolved_facility_sprites,
             icon_gui_notes,
@@ -2318,6 +2321,7 @@ impl CounterReport {
         self.rocket_sites = *rocket_sites;
         self.gun_emplacements = *gun_emplacements;
         self.radars = *radars;
+        self.strategic_locations = *strategic_locations;
         // Both change only when an icon's reason or sprite does; compare first so unchanged
         // maps cost no allocation.
         if self.unknown_bases != *unknown_bases {

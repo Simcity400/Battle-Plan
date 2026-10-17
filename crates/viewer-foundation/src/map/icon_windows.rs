@@ -196,6 +196,10 @@ pub struct PoolView<K = u32> {
     pool: Option<Pool<K>>,
     last: Option<f32>,
     active: bool,
+    /// A sprite each live window fixed when its owner acquired it, by owner,
+    /// with the slot that acquisition took; the caller keeps it while that
+    /// window stays live ([`Self::live`]).
+    pub acquired_sprites: HashMap<K, (SlotId, Option<String>)>,
 }
 
 impl<K> Default for PoolView<K> {
@@ -205,7 +209,19 @@ impl<K> Default for PoolView<K> {
             pool: None,
             last: None,
             active: false,
+            acquired_sprites: HashMap::new(),
         }
+    }
+}
+
+impl<K: Clone + Eq> PoolView<K> {
+    /// Every live window's owner and slot.
+    pub fn live(&self) -> Vec<(K, SlotId)> {
+        self.pool.as_ref().map_or_else(Vec::new, |pool| {
+            pool.live()
+                .map(|(owner, slot, _)| (owner.clone(), slot))
+                .collect()
+        })
     }
 }
 

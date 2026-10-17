@@ -803,6 +803,72 @@ pub(super) fn site_icon_states(frame: &DecodedFrame) -> io::Result<([BTreeSet<u3
     Ok((states, bases.is_complete()))
 }
 
+/// The prefix of a strategic location's sprite: the game names it after the
+/// province's first strategic location.
+pub(super) const STRATEGIC_LOCATION_SPRITE_PREFIX: &str = "GFX_strategic_location_";
+
+/// Each province's strategic locations, as the game's icon lists them: the
+/// province's own tokens in stored order, then its own state's locations
+/// anchored on it, in stored order. The game gathers a province's state
+/// locations only through the province's state, so a pair anchored in another
+/// state's province is kept out. Provinces with none are left out; notes
+/// name what the hour does not record.
+pub(super) fn strategic_locations(
+    frame: &DecodedFrame,
+) -> io::Result<(BTreeMap<u32, Vec<u32>>, Vec<String>)> {
+    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut notes = Vec::new();
+    let cores = rows::<tables::StateCores>(frame)?;
+    if let Available::Unavailable { reason } = cores {
+        notes.push(format!(
+            "strategic location icons are not drawn: StateCores is unavailable ({reason})"
+        ));
+        return Ok((out, notes));
+    }
+    if !cores.is_complete() {
+        notes.push("strategic location icons may be missing: StateCores is truncated".into());
+    }
+    let membership: BTreeMap<u32, u32> = rows::<tables::Provinces>(frame)?
+        .rows()
+        .iter()
+        .map(|province| (province.id, province.state))
+        .collect();
+    let mut unrecorded = 0;
+    let mut unplaced = 0;
+    let mut anchored: Vec<(u32, u32)> = Vec::new();
+    for row in cores.rows() {
+        let (Some(provinces), Some(state)) = (row.province_locations(), row.state_locations())
+        else {
+            unrecorded += 1;
+            continue;
+        };
+        for (province, token) in provinces {
+            out.entry(province).or_default().push(token);
+        }
+        for (token, province) in state {
+            match membership.get(&province) {
+                Some(&owner) if owner == row.state => anchored.push((province, token)),
+                Some(_) => {}
+                None => unplaced += 1,
+            }
+        }
+    }
+    for (province, token) in anchored {
+        out.entry(province).or_default().push(token);
+    }
+    if unrecorded > 0 {
+        notes.push(format!(
+            "{unrecorded} states' strategic locations are not recorded, so their icons are not drawn"
+        ));
+    }
+    if unplaced > 0 {
+        notes.push(format!(
+            "{unplaced} state strategic locations anchor on a province whose state is not recorded (Provinces), so they are not drawn"
+        ));
+    }
+    Ok((out, notes))
+}
+
 /// The states whose radar icons the hour shows, and why some may be
 /// missing.
 #[derive(Debug, Default, PartialEq)]
@@ -1019,6 +1085,8 @@ pub(super) fn bases(
         }
     }
 
+    strategic_location_icons(inputs, frame, out)?;
+
     radars(inputs, frame, vision, out)?;
 
     let icons = &tables.base_icons;
@@ -1054,6 +1122,60 @@ pub(super) fn bases(
                 sprite: Some(sprite.clone()),
             },
         );
+    }
+    Ok(())
+}
+
+/// Prepare strategic-location icons, deferring free-view cutoffs to each anchor.
+pub(super) fn strategic_location_icons(
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    out: &mut CounterFrame,
+) -> io::Result<()> {
+    let defines = &inputs.content.defines;
+    // A strategic location shows with the air-base icons' camera cutoff and
+    // map-mode gate, wherever the province lists one.
+    if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
+        let (locations, notes) = strategic_locations(frame)?;
+        for note in notes {
+            *out.report
+                .icon_gui_notes
+                .entry(format!("{STRATEGIC_LOCATION_WINDOW}: {note}"))
+                .or_default() += 1;
+        }
+        let names = TokenNames::new(frame)?;
+        for (province, tokens) in locations {
+            let Some(anchor) = inputs.content.anchor(province, VICTORY_POINT) else {
+                *out.report
+                    .icon_gui_notes
+                    .entry(format!(
+                        "{STRATEGIC_LOCATION_WINDOW} is not placed: its province has no victory-point anchor"
+                    ))
+                    .or_default() += 1;
+                continue;
+            };
+            let Ok(first) = names.name(tokens[0]) else {
+                *out.report
+                    .icon_gui_notes
+                    .entry(format!(
+                        "{STRATEGIC_LOCATION_WINDOW} is not drawn: its first location has no recorded spelling (LexicalTokens)"
+                    ))
+                    .or_default() += 1;
+                continue;
+            };
+            out.native_bases.offer(
+                inputs,
+                base_windows::Family::StrategicLocation,
+                province,
+                province,
+                anchor,
+                base_windows::State {
+                    frame: 0,
+                    enabled: true,
+                    sprite: Some(format!("{STRATEGIC_LOCATION_SPRITE_PREFIX}{first}")),
+                },
+            );
+        }
     }
     Ok(())
 }

@@ -2167,7 +2167,7 @@ fixture!(CountryBuildingResourceRow, |key| {country: (key >> 32) as u32, ordinal
 fixture!(RaidCountryInputRow, |key| {canonical_slot: key as u32}, {air_range_factor: Option<i64>, naval_commando_range_factor: Option<i64>, autonomous: Option<u32>, convoy_reservations: Vec<u32>});
 fixture!(CountryCommandPowerRow, |key| {canonical_slot: key as u32}, {allocated_command_power_raw: i64, max_command_power: Option<i64>, max_command_power_factor: Option<i64>, ace_effectiveness_factor: Option<i64>, air_ace_bonuses_factor: Option<i64>});
 fixture!(DivisionRetreatBanRow, |key| {division: key as u64}, {owner: u32, bans: u8});
-fixture!(StateCoreRow, |key| {state: key as u32}, {cores: Vec<u32>, claims: Recorded<Vec<u32>>});
+fixture!(StateCoreRow, |key| {state: key as u32}, {cores: Vec<u32>, claims: Recorded<Vec<u32>>, strategic_locations: Recorded<Vec<u64>>, province_strategic_locations: Recorded<Vec<u64>>});
 fixture!(InvasionPreparationRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {progress: i64, target: u32, country_term: i64, relation_term: Option<i64>, relation_bonus: Option<i64>, leader_term: Option<i64>, leader_applies: u8, days_term: i64, unit_owner: u32, zero_war_present: RetiredU8, zero_war_retired: RetiredU8, zero_co_belligerent: RetiredU8, co_belligerents: RetiredU32List});
 fixture!(CountryCharacterRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>});
 fixture!(PartyLeaderRow, |key| {country: (key >> 64) as u32, party: (key >> 32) as u32, ordinal: key as u32}, {character: Option<u32>, leader_id: i32, role: Option<i32>});

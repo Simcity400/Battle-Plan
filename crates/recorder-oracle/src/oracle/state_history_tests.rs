@@ -309,6 +309,7 @@ fn add_victory_points_compares_the_saved_result_and_keeps_a_difference() {
             owner: None,
             controller: None,
             victory_points: Some(5),
+            strategic_locations: Vec::new(),
         },
     );
     if let TableView::Complete(TableRows::Provinces(rows)) =

@@ -131,6 +131,81 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
+/// The recorded strategic locations against the save, in stored order with
+/// tokens spelled through the dictionary: the state's pairs against its
+/// `strategic_region_data`, its provinces' entries against each province's
+/// `strategic_province_location`. A reordered or missing entry differs.
+#[test]
+fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
+    use replay::rows::{Recorded, StateCoreRow};
+    let names = BTreeMap::from([(701_u32, &b"natural_harbor"[..]), (702, b"favorable_approach")]);
+    let state = |locations: Vec<(&[u8], u32)>| installed_content_save::State {
+        id: 4,
+        owner: None,
+        controller: None,
+        demilitarized: None,
+        is_border_conflict: None,
+        manpower_available: None,
+        population: None,
+        name: None,
+        strategic_locations: locations
+            .into_iter()
+            .map(|(name, province)| (name.to_vec(), province))
+            .collect(),
+    };
+    let province = |id, tokens: &[&[u8]]| installed_content_save::ProvinceOverride {
+        id,
+        name: None,
+        owner: None,
+        controller: None,
+        victory_points: None,
+        strategic_locations: tokens.iter().map(|token| token.to_vec()).collect(),
+    };
+    let states = BTreeMap::from([(4, state(vec![(b"natural_harbor", 31), (b"favorable_approach", 32)]))]);
+    let provinces = BTreeMap::from([
+        (31, province(31, &[b"favorable_approach"])),
+        (32, province(32, &[])),
+    ]);
+    let state_of = BTreeMap::from([(31, 4), (32, 4)]);
+    let reads = [replay::rows::SliceReadRow {
+        table: replay::rows::TableId::StateCores.index() as u32,
+        owner: 4,
+        sample_hour: 10,
+    }];
+    let row = |pairs: Vec<u64>, entries: Vec<u64>| StateCoreRow {
+        state: 4,
+        strategic_locations: Recorded::Value(pairs),
+        province_strategic_locations: Recorded::Value(entries),
+        ..Default::default()
+    };
+    let run = |row: StateCoreRow| {
+        let mut report = Report::default();
+        state_strategic_locations(&[row], &states, &provinces, &state_of, &names, &reads, 10, &mut report)
+            .unwrap();
+        report.differences
+    };
+    let pair = |token: u64, province: u64| token << 32 | province;
+    assert!(run(row(vec![pair(701, 31), pair(702, 32)], vec![pair(31, 702)])).is_empty());
+    // Order matters, and a province's list must be captured.
+    let differences = run(row(vec![pair(702, 32), pair(701, 31)], Vec::new()));
+    assert_eq!(differences.len(), 2, "{differences:?}");
+    // An unspelled token refuses the comparison.
+    let mut report = Report::default();
+    assert!(
+        state_strategic_locations(
+            &[row(vec![pair(799, 31)], Vec::new())],
+            &states,
+            &provinces,
+            &state_of,
+            &names,
+            &reads,
+            10,
+            &mut report
+        )
+        .is_err()
+    );
+}
+
 fn saved_pack(text: &[u8]) -> saved::Pack {
     saved::parse(&installed_content::parser::parse(text).unwrap().items).unwrap()
 }

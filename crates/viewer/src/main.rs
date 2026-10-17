@@ -1919,7 +1919,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters
         println!(
-            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases, {} rocket sites, {} gun emplacements ({} hidden by fog of war), {} radars, {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats ({} undecided), {} naval result icons ({} undecided); {} stacks with no anchor",
+            "Counters: {} land ({} between provinces), {} naval ({} task forces not drawn, {} standing for an unplaced route); {} air bases, {} rocket sites, {} gun emplacements ({} hidden by fog of war), {} radars, {} strategic locations, {} naval bases, {} naval HQs, {} facilities ({} unresolved sprites; undecided: {} bases, {} HQs, {} facilities); {} land combats, {} naval combats ({} undecided), {} naval result icons ({} undecided); {} stacks with no anchor",
             counter_report.land_counters,
             counter_report.moving,
             counter_report.naval_counters,
@@ -1938,6 +1938,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             counter_report.gun_emplacements,
             counter_report.hidden_air_bases,
             counter_report.radars,
+            counter_report.strategic_locations,
             counter_report.naval_bases,
             counter_report.naval_headquarters,
             counter_report.facilities,

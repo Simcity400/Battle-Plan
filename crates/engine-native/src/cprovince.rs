@@ -650,6 +650,10 @@ pub const VTABLE_RVA: usize = 0x0295_af68;
 pub const ID: usize = 0xa4;
 /// Owning-state pointer.
 pub const STATE: usize = 0xc0;
+/// CProvince strategic-location CPdxArray of u32 location tokens in
+/// insertion order. The state-scoped province effect appends one and refuses
+/// a token already listed; loading reads the list.
+pub const STRATEGIC_LOCATIONS: usize = 0x140;
 /// Raw controller reference, u32, preserving zero.
 pub const CONTROLLER: usize = 0x188;
 /// Unscaled victory points, i32, serialized whenever nonzero.

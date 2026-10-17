@@ -3150,6 +3150,8 @@ pub enum MapIconPool {
     GunEmplacement,
     /// Type 17, the radar icon: 0x40.
     Radar,
+    /// Type 33, the strategic location icon: 0x40.
+    StrategicLocation,
     /// Type 8, the naval base icon: 0xC0.
     Base,
     /// Type 9, the naval combat icon: 0x20.
@@ -3181,7 +3183,11 @@ impl MapIconPool {
             Self::Label => 0xA0,
             Self::AirBase | Self::Base | Self::Capital => 0xC0,
             Self::Combat => 0x20,
-            Self::CombatResults | Self::Mission | Self::Headquarter | Self::Radar => 0x40,
+            Self::CombatResults
+            | Self::Mission
+            | Self::Headquarter
+            | Self::Radar
+            | Self::StrategicLocation => 0x40,
             Self::Raid
             | Self::Ping
             | Self::Facility

@@ -369,6 +369,47 @@ states={ 1={owner="GER"} } provinces={ 2={controller="D01"} 3={buildings={}} }
     );
 }
 
+/// A state's `strategic_region_data` reads as (location, anchor province)
+/// pairs and a province's `strategic_province_location` as its tokens, both
+/// in saved order and empty when absent; a malformed entry is refused.
+#[test]
+fn strategic_locations_read_from_states_and_provinces() {
+    let text = |state: &str, province: &str| {
+        format!(
+            "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={{}} states={{4={{{state}}} 5={{}}}} provinces={{1={{{province}}} 2={{}}}}"
+        )
+    };
+    let saved = parse(
+        text(
+            "strategic_region_data={ { natural_harbor 1 } { favorable_approach 2 } }",
+            "strategic_province_location={ defensive_chokepoint natural_harbor }",
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        saved.states[&4].strategic_locations,
+        [
+            (b"natural_harbor".to_vec(), 1),
+            (b"favorable_approach".to_vec(), 2)
+        ]
+    );
+    assert!(saved.states[&5].strategic_locations.is_empty());
+    assert_eq!(
+        saved.provinces[&1].strategic_locations,
+        [b"defensive_chokepoint".to_vec(), b"natural_harbor".to_vec()]
+    );
+    assert!(saved.provinces[&2].strategic_locations.is_empty());
+    for (state, province) in [
+        ("strategic_region_data={ { a 1 b } }", ""),
+        ("strategic_region_data={ { a=1 } }", ""),
+        ("strategic_region_data={ x={ a 1 } }", ""),
+        ("", "strategic_province_location={ a=b }"),
+    ] {
+        assert!(parse(text(state, province).as_bytes()).is_err(), "{state}{province}");
+    }
+}
+
 #[test]
 fn province_victory_points_keep_signed_integers_and_literal_omission() {
     let text = |value: &str| {
@@ -556,6 +597,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
             manpower_available: None,
             population: None,
             category: None,
+            strategic_locations: Vec::new(),
         },
     );
     assert!(

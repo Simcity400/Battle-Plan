@@ -287,6 +287,10 @@ pub struct State {
     /// The set_state_name rename, emitted as `name` only when the string
     /// is nonempty.
     pub name: Option<Vec<u8>>,
+    /// `strategic_region_data`: the state's strategic locations in stored
+    /// order, each `{ <location> <anchor province> }`, written only when the
+    /// list is nonempty.
+    pub strategic_locations: Vec<(Vec<u8>, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -298,6 +302,9 @@ pub struct ProvinceOverride {
     pub controller: Option<Vec<u8>>,
     /// The province writer emits the signed victory-point integer only when nonzero.
     pub victory_points: Option<i32>,
+    /// `strategic_province_location`: the province's own strategic locations
+    /// in stored order, written only when the list is nonempty.
+    pub strategic_locations: Vec<Vec<u8>>,
 }
 
 /// The engine's monotonic allocation counters as the save header serializes
@@ -1075,6 +1082,48 @@ fn object_id(items: &[Item]) -> io::Result<u64> {
     id.ok_or_else(|| invalid("saved object lacks typed id"))
 }
 
+/// A saved list of bare tokens, in order; empty when the key is absent.
+fn token_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+    let Some(value) = field(items, key)? else {
+        return Ok(Vec::new());
+    };
+    block(value)?
+        .iter()
+        .map(|item| {
+            let token = scalar(&item.value)?;
+            if item.key.is_some() || token.is_empty() {
+                return Err(invalid("saved token list has a keyed or empty entry"));
+            }
+            Ok(token.to_vec())
+        })
+        .collect()
+}
+
+/// A state's `strategic_region_data`: one anonymous block per location,
+/// each holding exactly the location and its anchor province as two bare
+/// values, as the text save writes them.
+fn state_strategic_locations(state: &[Item]) -> io::Result<Vec<(Vec<u8>, u32)>> {
+    let Some(value) = field(state, b"strategic_region_data")? else {
+        return Ok(Vec::new());
+    };
+    block(value)?
+        .iter()
+        .map(|item| {
+            let [location, province] = block(&item.value)? else {
+                return Err(invalid("saved strategic location is not one location and province"));
+            };
+            if item.key.is_some() || location.key.is_some() || province.key.is_some() {
+                return Err(invalid("saved strategic location has a keyed entry"));
+            }
+            let location = scalar(&location.value)?;
+            if location.is_empty() {
+                return Err(invalid("saved strategic location lacks its location"));
+            }
+            Ok((location.to_vec(), integer::<i32>(scalar(&province.value)?)? as u32))
+        })
+        .collect()
+}
+
 fn integer_list(items: &[Item], key: &[u8]) -> io::Result<Vec<u32>> {
     let Some(value) = field(items, key)? else {
         return Ok(Vec::new());
@@ -1362,6 +1411,7 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                                 .transpose()
                         })
                         .transpose()?,
+                    strategic_locations: state_strategic_locations(state)?,
                 },
             )
             .is_some()
@@ -1388,6 +1438,7 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                     victory_points: bytes(province, b"victory_points")?
                         .map(|value| integer(&value))
                         .transpose()?,
+                    strategic_locations: token_list(province, b"strategic_province_location")?,
                 },
             )
             .is_some()

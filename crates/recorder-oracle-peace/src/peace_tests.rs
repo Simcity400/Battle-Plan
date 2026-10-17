@@ -400,6 +400,7 @@ fn busy_drain_span_matches_long_delays_and_keeps_every_conference_in_the_census(
             population: None,
             category: None,
             name: None,
+            strategic_locations: Vec::new(),
         },
     );
     let mut hours: Vec<_> = (100..104).map(frame).collect();

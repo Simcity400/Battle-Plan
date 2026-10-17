@@ -61,6 +61,12 @@ pub(super) fn window_assets(
         FACILITY_SPRITE_PREFIX.as_bytes(),
         b"",
     ));
+    // A strategic location's icon names its sprite after its first location.
+    assets.sprites.extend(sprites_with_prefix(
+        registry,
+        STRATEGIC_LOCATION_SPRITE_PREFIX.as_bytes(),
+        b"",
+    ));
     // Terrain selection appends its name to the combat background button's sprite.
     if let Some(background) = windows
         .gui_type(LAND_COMBAT_WINDOW.as_bytes())
