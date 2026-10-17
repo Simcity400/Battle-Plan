@@ -3138,10 +3138,26 @@ A prepared query runs first on the prepared lane with block decodes refused
 (`progressive::without_block_decodes`): an answer from prepared pages alone, or
 from the source's frame cache, is given there at once, so it never waits behind
 sampled reads. A query whose answer needs a block decode stops at that decode,
-answers nothing, and runs again from the start on the sampled lane; nothing the
-first attempt read is kept. A sampled read holds one block's selected frames,
+answers nothing, and runs again from the start on the sampled lane; the partial
+reply assembled on the first attempt is not sent. Compact block observations and
+prepared facts remain in their bounded caches. A sampled read holds one block's selected frames,
 the two read ahead of it and the source's frame cache (dashboard-base), so the
-sampled lane's memory grows with its thread count, not with the recording.
+sampled lane's transient recorded-frame storage grows with its thread count.
+
+Series summaries and states, air superiority, event feed, supply health, party
+history, division log manifests and air aces retain their reply data in the shared
+observation cache as branch entries, separate from block observations. Each
+branch and parameter selection keeps at most one current answer. The store epoch,
+numeric publication identities of gates and declared suppliers, current
+localisation key, content folders, cache folder, unverified-content choice and
+texture decode setting bind its validity; the observation scope also binds the
+recording and recorded content stack. A changed binding replaces the previous
+answer. Branch replies share the product's bounded LRU with block observations:
+largest observed entry times live blocks, evicting the least recently used entry
+across selections and viewports. Retained replies with unchanged bindings reuse
+their projection; supplier refusals are checked before lookup. Live content warnings
+and transport fields are added when serving each response. In-flight replies that need recording reads retain the ordinary
+prepared-lane refusal and sampled-lane retry.
 
 Each lane uses the existing request admission budget for queued jobs.
 Cancellation releases the frontend request but its queued job keeps occupying

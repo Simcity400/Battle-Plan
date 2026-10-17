@@ -766,6 +766,114 @@ fn air_superiority_quiet_hours_build_no_frame() {
 #[test]
 #[cfg_attr(
     not(feature = "slow-tests"),
+    ignore = "synthetic content and first-view air presentation"
+)]
+fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    independent::with_test_hourly(|| {
+        let mut fixture = Fixture::new(&scenario(111, false));
+        let game = fixture.root.join("game");
+        for (path, text) in [
+            ("hoi4.exe", "test"),
+            (
+                "user/dlc_load.json",
+                r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+            ),
+            (
+                "user/settings.txt",
+                "language=l_english force_pow2_textures=no",
+            ),
+            (
+                "map/strategicregions/synthetic.txt",
+                "strategic_region={id=7000 name=REGION provinces={1}}",
+            ),
+            (
+                "localisation/english/synthetic_l_english.yml",
+                "\u{feff}l_english:\n REGION:0 \"English region\"\n",
+            ),
+            (
+                "localisation/french/synthetic_l_french.yml",
+                "\u{feff}l_french:\n REGION:0 \"R\u{e9}gion fran\u{e7}aise\"\n",
+            ),
+        ] {
+            let path = game.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let (content, identity) = dashboard_base::test_fixtures::content_identity(&game);
+        let mut wire = records(1, vec![air_frame(1, 100), air_frame(1, 101)]);
+        let replay::spool::Record::SessionStart(session) = &mut wire[0] else {
+            unreachable!()
+        };
+        session.identity = identity;
+        fixture.replace(&Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap());
+        let source = fixture.source("air-reply-language");
+        let flag = AtomicBool::new(false);
+        let request = crate::transport::ProductRequest {
+            source_id: source.key().source_id.clone(),
+            revision: source.key().revision.clone(),
+            product: "air-superiority".into(),
+            params: serde_json::json!({"branchId":"1", "view":"moment", "firstHour":101, "lastHour":101, "mode":"sides"}),
+        };
+        let ask = || -> serde_json::Value {
+            serde_json::from_str(
+                &crate::prepared::query::query(&source, &request, Some(&content), &flag).unwrap(),
+            )
+            .unwrap()
+        };
+        let english = ask();
+        assert_eq!(english["data"]["regions"][0]["name"], "English region");
+        assert_eq!(ask(), english);
+        let computed = dashboard_base::prepared::query::observations::usage(
+            &source,
+            "queries:air-superiority",
+        )
+        .2;
+        assert_eq!(computed, 1);
+        let (_, key) = super::super::super::files(&source, Some(&content)).unwrap();
+        let epoch = crate::prepared::store_epoch(&source);
+        std::fs::write(
+            game.join("user/settings.txt"),
+            "language=l_french force_pow2_textures=no",
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::super::files(&source, Some(&content))
+                .unwrap()
+                .1,
+            key
+        );
+        assert_eq!(crate::prepared::store_epoch(&source), epoch);
+        let french = ask();
+        assert_eq!(
+            french["data"]["regions"][0]["name"],
+            "R\u{e9}gion fran\u{e7}aise"
+        );
+        assert_eq!(french["data"]["coverage"], english["data"]["coverage"]);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &source,
+                "queries:air-superiority",
+            )
+            .2,
+            computed + 1
+        );
+        assert_eq!(ask(), french);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &source,
+                "queries:air-superiority",
+            )
+            .2,
+            computed + 1
+        );
+    });
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
     ignore = "cold, prefix and complete first-view preparation parity"
 )]
 fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values() {
@@ -775,6 +883,14 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
         let source = fixture.source("air-sampled-first-view");
         let params = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":100, "lastHour":LAST, "mode":"sides", "top":10});
         let cold = query(&source, params.clone());
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &source,
+                "queries:air-superiority",
+            )
+            .2,
+            1
+        );
         assert!(
             cold["coverage"]["firstHour"]
                 .as_i64()
@@ -790,6 +906,15 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
             });
         assert!(!refused, "a re-ask must reuse every block sample");
         assert_eq!(again, cold);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &source,
+                "queries:air-superiority",
+            )
+            .2,
+            1,
+            "an unchanged publication reuses the complete reply projection"
+        );
         let (bytes, bound, computed) =
             dashboard_base::prepared::query::observations::usage(&source, "air-superiority");
         assert!(bytes > 0 && bytes <= bound);
@@ -825,10 +950,33 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
         )
         .unwrap();
         let partial = query(&source, params.clone());
+        assert!(
+            dashboard_base::prepared::query::observations::usage(
+                &source,
+                "queries:air-superiority",
+            )
+            .2 > 1,
+            "a moved supplier must invalidate the reply"
+        );
+        let daily = dashboard_base::prepared::query::observations::usage(
+            &source,
+            "air-superiority:daily-values",
+        )
+        .2;
+        assert!(daily > 0);
         assert_eq!(partial["coverage"]["lastHour"], 123);
         assert_eq!(partial["rowsApproximate"], true);
         plain(&source);
         let complete = query(&source, params);
+        let (bytes, bound, all_days) = dashboard_base::prepared::query::observations::usage(
+            &source,
+            "air-superiority:daily-values",
+        );
+        assert!(bytes > 0 && bytes <= bound);
+        assert!(
+            all_days > daily,
+            "only newly reached daily blocks add extractions"
+        );
         assert!(complete.get("approximate").is_none());
         assert!(complete.get("rowsApproximate").is_none());
         // Only whole prepared days are exact when a daily cell crosses coverage.

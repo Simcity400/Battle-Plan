@@ -1250,11 +1250,13 @@ pub fn query(
         .flat_map(|tag| ["fuel", "capacity"].map(move |field| (tag.clone(), field.to_owned())))
         .collect();
     let tail = if partial && product == "series-state" {
-        progressive::state_tail(
+        progressive::state_tail_cached(
             source,
+            "country-fuel:series",
             branch,
             accepted.as_ref(),
             TABLES,
+            &requested,
             &requested,
             &params
                 .reads
@@ -1267,11 +1269,13 @@ pub fn query(
     } else if partial && product == "series-summary" {
         let (from, to, width) = series::viewport(params.from, params.to, params.width)?;
         series::summary_budget(from, to, width, requested.len())?;
-        progressive::tail(
+        progressive::tail_cached(
             source,
+            "country-fuel:series",
             branch,
             accepted.as_ref(),
             TABLES,
+            &requested,
             &requested,
             (from.floor() as i32, to.floor() as i32),
             &sample,

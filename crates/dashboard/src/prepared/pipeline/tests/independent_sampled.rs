@@ -714,7 +714,14 @@ fn observed_on_its_own(family: Sampled) {
 /// and it publishes and covers what hourly preparation does.
 #[test]
 fn sampled_families_observing_every_block_have_no_prepass_lane() {
-    for family in [STABILITY, EQUIPMENT_LOSSES, SUPPLY, TRADE, TERRITORY, PARTIES] {
+    for family in [
+        STABILITY,
+        EQUIPMENT_LOSSES,
+        SUPPLY,
+        TRADE,
+        TERRITORY,
+        PARTIES,
+    ] {
         let replay = scenario(3, true);
         let mut fixture = Fixture::new(&replay);
         let revision = format!("{}-unlaned", family.name);

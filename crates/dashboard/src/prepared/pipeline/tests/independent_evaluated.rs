@@ -1043,7 +1043,10 @@ fn special_projects_read_the_trigger_kit_only_where_content_can_evaluate_scoped_
         };
         let hourly = independent::with_test_hourly(|| prepare(&mut fixture));
         let kit = crate::products::special_projects::prepared::block::KIT;
-        let before = (prepass::noted(evaluated::PROJECTS_WORLD), prepass::noted(kit));
+        let before = (
+            prepass::noted(evaluated::PROJECTS_WORLD),
+            prepass::noted(kit),
+        );
         let own = own(&PROJECTS, || {
             prepass::with_test_prepass(2, None, || prepare(&mut fixture))
         });

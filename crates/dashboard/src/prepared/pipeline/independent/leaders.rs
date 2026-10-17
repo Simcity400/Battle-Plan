@@ -73,7 +73,9 @@ impl Own for Leaders {
             Some((keys, metadata)) => {
                 let file = load
                     .read(&format!("unit-leaders-{branch}"))?
-                    .ok_or_else(|| super::super::invalid("Prepared leader continuation is missing"))?;
+                    .ok_or_else(|| {
+                        super::super::invalid("Prepared leader continuation is missing")
+                    })?;
                 Prepared::read(io::BufReader::new(file), keys, metadata)?
             }
             None => Prepared::new(load.replay, branch),

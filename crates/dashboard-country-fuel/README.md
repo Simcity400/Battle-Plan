@@ -18,6 +18,10 @@ The country-key join uses recorded row field masks to retain its keys through
 balance-only country changes. Country key edits, link changes and snapshots
 rebuild or compare the ordinary join; runtime joins rebuild after restore.
 
+Progressive fuel levels and capacities share compact block observations across
+summary and state requests. Moving prefixes clip retained keyframes or exact
+block folds; completed-day accounting still comes only from prepared pages.
+
 `cargo test -p dashboard-country-fuel` builds and runs only these products'
 tests. The `test-support` feature compiles their test oracles and instrumentation
 for the dashboard's tests.

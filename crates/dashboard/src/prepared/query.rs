@@ -74,6 +74,51 @@ struct Reply<'a> {
     gate: Option<Vec<&'static str>>,
 }
 
+struct CachedQuery {
+    data: Value,
+    short: std::collections::BTreeSet<&'static str>,
+}
+
+/// Content files and the recorded mod stack are bound by the observation
+/// scope's SourceKey. Presentation also depends on today's language and folders
+/// (including the verification choice), even when files() reuses that key.
+/// Preserve settings errors in the binding: products may present a warning
+/// rather than refusing the entire reply.
+#[derive(Serialize)]
+struct ReplyPresentation {
+    content: Option<dashboard_base::catalogue::Binding>,
+    localisation: Option<Result<dashboard_base::content::LocalisationKey, String>>,
+    force_pow2_textures: Option<Result<bool, String>>,
+}
+
+fn reply_presentation(content: Option<&ContentOptions>) -> ReplyPresentation {
+    ReplyPresentation {
+        content: content.map(dashboard_base::catalogue::binding),
+        localisation: content.map(|options| {
+            dashboard_base::content::localisation_key(options).map_err(|error| error.to_string())
+        }),
+        force_pow2_textures: content.map(|options| {
+            installed_content::settings::read_keys(&options.options.user_dir)
+                .map(|settings| settings.texture_decode().force_pow2_textures)
+                .map_err(|error| error.to_string())
+        }),
+    }
+}
+
+fn cache_product(product: &str) -> Option<&'static str> {
+    Some(match product {
+        "series-summary" => "queries:series-summary",
+        "series-state" => "queries:series-state",
+        "air-superiority" => "queries:air-superiority",
+        "event-feed" => "queries:event-feed",
+        "supply-health" => "queries:supply-health",
+        "party-history" => "queries:party-history",
+        "division-log-manifest" => "queries:division-log-manifest",
+        "air-aces" => "queries:air-aces",
+        _ => return None,
+    })
+}
+
 /// Whether a reply is pending (null) or partial (its coverage is missing or
 /// incomplete), so that its client re-asks as preparation goes on.
 fn waits(data: &Value) -> bool {
@@ -1745,6 +1790,37 @@ fn query_data(
                 for (tag, _) in &requested {
                     crate::products::validate_tag(tag).map_err(crate::invalid)?;
                 }
+                let mut sampled_requested = requested.clone();
+                if family == Some("country-stability") {
+                    sampled_requested.extend(requested.iter().map(|(tag, _)| {
+                        (
+                            tag.clone(),
+                            crate::prepared_measure::query::READ_HOUR.to_owned(),
+                        )
+                    }));
+                    sampled_requested.sort();
+                    sampled_requested.dedup();
+                }
+                let channels: &[&str] = if family == Some("country-stability") {
+                    &[
+                        "stability",
+                        "warSupport",
+                        "maxCommandPower",
+                        crate::prepared_measure::query::READ_HOUR,
+                    ]
+                } else {
+                    &["politicalPower", "commandPower"]
+                };
+                let mut cached_requested: Vec<_> = requested
+                    .iter()
+                    .flat_map(|(tag, _)| {
+                        channels
+                            .iter()
+                            .map(move |field| (tag.clone(), (*field).to_owned()))
+                    })
+                    .collect();
+                cached_requested.sort();
+                cached_requested.dedup();
                 sampled = if product == "series-state" {
                     if let Some(sampler) = &experience {
                         progressive::state_tail_recorded(
@@ -1761,12 +1837,18 @@ fn query_data(
                             cancelled,
                         )?
                     } else {
-                        progressive::state_tail(
+                        progressive::state_tail_cached(
                             source,
+                            if family == Some("country-stability") {
+                                "country-stability:series"
+                            } else {
+                                "country-measure:series"
+                            },
                             branch,
                             accepted.as_ref(),
                             tables,
-                            &requested,
+                            &sampled_requested,
+                            &cached_requested,
                             &hours,
                             sample,
                             cancelled,
@@ -1815,12 +1897,18 @@ fn query_data(
                             cancelled,
                         )?
                     } else {
-                        progressive::tail(
+                        progressive::tail_cached(
                             source,
+                            if family == Some("country-stability") {
+                                "country-stability:series"
+                            } else {
+                                "country-measure:series"
+                            },
                             branch,
                             accepted.as_ref(),
                             tables,
-                            &requested,
+                            &sampled_requested,
+                            &cached_requested,
                             window,
                             sample,
                             cancelled,
@@ -2226,20 +2314,59 @@ pub fn query(
             .unwrap_or_default(),
         product => product,
     };
-    if let Some(branch) = request
+    let branch = request
         .params
         .get("branchId")
         .or_else(|| request.params.get("selection")?.get("branchId"))
         .and_then(Value::as_str)
-        .and_then(|id| branch(source, id).ok())
-    {
+        .and_then(|id| branch(source, id).ok());
+    if let Some(branch) = branch {
         super::pipeline::refusal(source, content, branch, name, cancelled)?;
     }
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
-    let (data, short) =
-        super::coverage::waiting(|| query_data(source, request, content, cancelled));
-    let mut data = data?;
+    let read = || {
+        let (data, short) =
+            super::coverage::waiting(|| query_data(source, request, content, cancelled));
+        Ok(CachedQuery { data: data?, short })
+    };
+    dashboard_base::prepared::query::observations::bind(source, &key);
+    let answer = if let (Some(product), Some(branch)) = (cache_product(&request.product), branch) {
+        let supplier = if name == "faction-totals" {
+            crate::products::faction_totals::gate(&request.params)
+        } else {
+            name
+        };
+        let mut pages = super::pipeline::query_pages(&store, &key, branch, name)?;
+        if supplier != name {
+            pages.extend(super::pipeline::query_pages(
+                &store, &key, branch, supplier,
+            )?);
+        }
+        dashboard_base::prepared::query::observations::scope(source, product, Some(&key))
+            .get_entry(
+                branch,
+                &request.params,
+                &(
+                    &pages,
+                    super::store_epoch(source),
+                    reply_presentation(content),
+                ),
+                cancelled,
+                |reply: &CachedQuery| {
+                    let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
+                    bytes.heap(&reply.short);
+                    std::mem::size_of::<CachedQuery>()
+                        + dashboard_base::prepared::query::observations::json_bytes(&reply.data)
+                        + bytes.total() as usize
+                },
+                read,
+            )?
+    } else {
+        std::sync::Arc::new(read()?)
+    };
+    let mut data = answer.data.clone();
+    let short = answer.short.clone();
     check_cancel(cancelled)?;
     // What a pending or partial reply waits for: the coverage it found short,
     // or, when it consulted none, the coverage its product waits for.

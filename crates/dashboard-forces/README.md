@@ -32,6 +32,13 @@ The `test-support` feature compiles the army's synthetic frame and the force
 families' synthetic recording and prepared store for the dashboard's pipeline
 and query tests.
 
+Supply health's reached-hour summary and history share a content-bound endpoint
+observation, including availability and warnings. Its request binding includes
+the content folders, cache folder and unverified-content choice, so tightened
+verification runs the ordinary refusal checks before accepting an endpoint.
+While preparation remains before that hour, re-asks reuse it across prefix commits and presentation widths;
+once the prefix reaches it, ordinary prepared values supply the endpoint.
+
 An air or navy block extract steps every hour's census, but makes output rows
 and projection bases only after its scan settles and its fold will keep them.
 The first hour and air's hours before its variant names settle keep only the

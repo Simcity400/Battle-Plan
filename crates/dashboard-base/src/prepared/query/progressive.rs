@@ -701,6 +701,137 @@ fn supplying_read(
 /// About one year: the owner's ~2 s exact-zoom target. This is not a country or reply cap.
 const EXACT_ZOOM_BLOCKS: usize = 13;
 
+/// Stateless series share a block's channels for `cached_requested`, then
+/// select `requested`. Cache keys include that extraction selection, so related
+/// measures can share a pass without sampling unrequested countries. The sampler
+/// must have no side effects; `product` names it independently of the reply shape.
+/// Exact windows keep whole block folds where requested, and bounded folds at
+/// their edges; wider windows keep keyframe facts.
+#[allow(clippy::too_many_arguments)]
+pub fn tail_cached(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    cached_requested: &[(String, String)],
+    window: (i32, i32),
+    sample: Sample<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    check_cancel(cancelled)?;
+    if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
+        return Ok(TailData::default());
+    }
+    let first = coverage.map_or(i64::from(window.0), |coverage| {
+        i64::from(window.0).max(i64::from(coverage.last_hour) + 1)
+    });
+    let blocks: Vec<_> = source
+        .replay_ref()
+        .index
+        .iter()
+        .filter(|block| {
+            block.branch == branch
+                && i64::from(block.last_hour) >= first
+                && block.first_hour <= window.1
+        })
+        .collect();
+    if blocks.len() <= EXACT_ZOOM_BLOCKS {
+        return cached_recorded_blocks(
+            source,
+            product,
+            branch,
+            tables,
+            1,
+            requested,
+            cached_requested,
+            (first, window.1),
+            blocks,
+            &|frame, _, keys| sample(frame, keys),
+            None,
+            true,
+            cancelled,
+        );
+    }
+    let cache = super::observations::scope(source, product, None);
+    let mut selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
+    selected.sort_unstable();
+    selected.dedup();
+    let mut keys = cached_requested.to_vec();
+    keys.sort();
+    keys.dedup();
+    let wanted: std::collections::BTreeSet<_> = requested.iter().collect();
+    let mut result = TailData::default();
+    for block in blocks {
+        check_cancel(cancelled)?;
+        if source.replay_ref().gaps.iter().any(|gap| {
+            gap.branch == branch
+                && gap.first_hour <= block.first_hour
+                && block.first_hour <= gap.last_hour
+        }) {
+            continue;
+        }
+        let observed = cache.get(
+            block,
+            &(&selected, &keys),
+            cancelled,
+            |samples: &Samples| {
+                let mut bytes = crate::prepared::prepass::HeldBytes::default();
+                bytes.value(samples);
+                bytes.total() as usize
+            },
+            || {
+                let keyframe = source.replay_ref().read_keyframe_selected(block, tables)?;
+                let mut decoder = FrameDecoder::for_tables(tables);
+                sample(decoder.advance(&keyframe)?, Some(cached_requested))
+            },
+        )?;
+        let spans = crate::prepared::prefix::without_gaps(
+            source,
+            branch,
+            i64::from(block.first_hour).max(first) as i32,
+            block.last_hour.min(window.1),
+        );
+        sampled_spans(
+            &mut result,
+            &spans,
+            observed.iter().filter(|(key, _)| wanted.contains(key)),
+        );
+    }
+    Ok(result)
+}
+
+/// State hours use the same immutable exact folds as short summary windows.
+#[allow(clippy::too_many_arguments)]
+pub fn state_tail_cached(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    cached_requested: &[(String, String)],
+    hours: &[i32],
+    sample: Sample<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    state_tail_recorded_bounded(
+        source,
+        product,
+        branch,
+        coverage,
+        tables,
+        1,
+        requested,
+        cached_requested,
+        hours,
+        &|frame, _, keys| sample(frame, keys),
+        true,
+        cancelled,
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn tail(
     source: &Source,
@@ -869,6 +1000,37 @@ pub fn state_tail_recorded(
     Vec<HourSpan>,
     BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
 )> {
+    state_tail_recorded_bounded(
+        source,
+        product,
+        branch,
+        coverage,
+        tables,
+        cadence,
+        requested,
+        cached_requested,
+        hours,
+        sample,
+        false,
+        cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn state_tail_recorded_bounded(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    cadence: i32,
+    requested: &[(String, String)],
+    cached_requested: &[(String, String)],
+    hours: &[i32],
+    sample: SampleRecorded<'_>,
+    bounded: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
     check_cancel(cancelled)?;
     let first = coverage.map_or(i64::from(i32::MIN), |coverage| {
         i64::from(coverage.last_hour) + 1
@@ -900,10 +1062,11 @@ pub fn state_tail_recorded(
         cadence,
         requested,
         cached_requested,
-        (first, i32::MAX),
+        (first, hours.last().copied().unwrap_or(i32::MIN)),
         blocks,
         sample,
         Some(&hours),
+        bounded,
         cancelled,
     )
 }
@@ -938,7 +1101,8 @@ fn with_predecessors<'a>(
 /// hour, which stands for the block's hours after the prefix, approximate.
 /// The look-back is bounded by the family's read cadence, never by a chosen
 /// count. A block with no such read, or whose hours are all a recorded gap,
-/// is not sampled.
+/// is not sampled. `first_sample` must use the observation cache (or enforce
+/// `decodes_allowed` itself) so a cache-only request never reads a missing block.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn tail_first_read(
     source: &Source,
@@ -989,64 +1153,92 @@ pub fn tail_first_read(
             blocks,
             sample,
             None,
+            false,
             cancelled,
         );
     }
-    decodes_allowed()?;
-    let mut runs: BTreeMap<(String, String), Vec<Run>> = BTreeMap::new();
-    let mut approximate: Vec<HourSpan> = Vec::new();
-    let mut identities: BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>> = BTreeMap::new();
+    let mut result = TailData::default();
     let read_ahead =
         std::thread::available_parallelism().map_or(1, |threads| (threads.get() / 2).max(1));
-    dashboard_core::blocks::scan_blocks_by(blocks, read_ahead, cancelled, first_sample, |reads| {
-        for (block, read) in reads {
-            check_cancel(cancelled)?;
-            let observed = read?;
-            if !observed.values().any(|(_, value)| value.is_some()) {
-                continue;
-            }
-            let start = i64::from(block.first_hour).max(first) as i32;
-            let end = block.last_hour.min(window.1);
-            let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
-            for (key, (identity, value)) in observed {
-                if let Some((slot, country_id)) = identity {
-                    let rows = identities.entry(key.clone()).or_default();
-                    for span in &spans {
-                        if let Some(last) = rows.last_mut().filter(|last| {
-                            last.1.checked_add(1) == Some(span.first_hour)
-                                && (last.2, last.3) == (slot, country_id)
-                        }) {
-                            last.1 = span.last_hour;
-                        } else {
-                            rows.push((span.first_hour, span.last_hour, slot, country_id));
-                        }
-                    }
-                }
-                if let Some(value) = value {
-                    for span in &spans {
-                        runs.entry(key.clone()).or_default().push(Run::new(
-                            span.first_hour,
-                            span.last_hour,
-                            value,
-                            true,
-                        ));
-                    }
-                }
-            }
-            for span in spans {
-                crate::products::country_groups::mark_unobserved(
-                    &mut approximate,
-                    span.first_hour,
-                    span.last_hour,
-                );
-            }
+    let mut accept = |block: &replay::container::BlockIndex, observed: Samples| -> io::Result<()> {
+        check_cancel(cancelled)?;
+        if !observed.values().any(|(_, value)| value.is_some()) {
+            return Ok(());
         }
+        let start = i64::from(block.first_hour).max(first) as i32;
+        let end = block.last_hour.min(window.1);
+        let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
+        sampled_spans(&mut result, &spans, observed.iter());
         Ok(())
-    })?;
-    Ok((runs, approximate, identities))
+    };
+    if block_decodes_disabled() {
+        // The extractor shares the observation cache's miss/busy refusal,
+        // so held first reads can answer here without scheduling workers.
+        for block in blocks {
+            accept(block, first_sample(block)?)?;
+        }
+    } else {
+        dashboard_core::blocks::scan_blocks_by(
+            blocks,
+            read_ahead,
+            cancelled,
+            first_sample,
+            |reads| {
+                for (block, read) in reads {
+                    accept(block, read?)?;
+                }
+                Ok(())
+            },
+        )?;
+    }
+    Ok(result)
 }
 
-type TailData = (
+/// One sampled observation stands for each clipped, gap-free span. An unchanged
+/// holder stays one identity row across adjacent blocks, while values retain
+/// their sampled block boundaries.
+#[allow(clippy::type_complexity)]
+fn sampled_spans<'a>(
+    result: &mut TailData,
+    spans: &[HourSpan],
+    observed: impl Iterator<Item = (&'a (String, String), &'a (Option<(u32, u32)>, Option<i128>))>,
+) {
+    for (key, &(identity, value)) in observed {
+        if let Some((slot, country_id)) = identity {
+            let rows = result.2.entry(key.clone()).or_default();
+            for span in spans {
+                if let Some(last) = rows.last_mut().filter(|last| {
+                    last.1.checked_add(1) == Some(span.first_hour)
+                        && (last.2, last.3) == (slot, country_id)
+                }) {
+                    last.1 = span.last_hour;
+                } else {
+                    rows.push((span.first_hour, span.last_hour, slot, country_id));
+                }
+            }
+        }
+        if let Some(value) = value {
+            for span in spans {
+                result.0.entry(key.clone()).or_default().push(Run::new(
+                    span.first_hour,
+                    span.last_hour,
+                    value,
+                    true,
+                ));
+            }
+        }
+    }
+    for span in spans {
+        crate::products::country_groups::mark_unobserved(
+            &mut result.1,
+            span.first_hour,
+            span.last_hour,
+        );
+    }
+}
+
+/// Runs, approximation spans and holder identities extracted from a tail.
+pub type TailData = (
     BTreeMap<(String, String), Vec<Run>>,
     Vec<HourSpan>,
     BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
@@ -1054,8 +1246,13 @@ type TailData = (
 struct BlockSamples(TailData);
 
 fn block_sample_bytes(block: &BlockSamples) -> usize {
-    let (runs, approximate, identities) = &block.0;
-    std::mem::size_of::<BlockSamples>()
+    tail_bytes(&block.0)
+}
+
+/// Inline and retained allocation capacities of compact tail observations.
+pub fn tail_bytes(tail: &TailData) -> usize {
+    let (runs, approximate, identities) = tail;
+    std::mem::size_of::<TailData>()
         + approximate.capacity() * std::mem::size_of::<HourSpan>()
         + runs
             .iter()
@@ -1077,9 +1274,10 @@ fn block_sample_bytes(block: &BlockSamples) -> usize {
             .sum::<usize>()
 }
 
-/// A block's exact observations are independent of the moving prefix and reached
-/// hours. Cache that fold, including its supplying-read predecessor, then clip
-/// it for each ask. State reads and short exact windows share these entries.
+/// Cache exact block observations, including their supplying-read predecessor,
+/// then clip them for each ask. Stateless reads bound a missing edge fold to the
+/// request's read window; a held whole-block fold can answer it directly. Daily
+/// samplers retain their whole supplying-read folds.
 #[allow(clippy::too_many_arguments)]
 fn cached_recorded_blocks(
     source: &Source,
@@ -1093,6 +1291,7 @@ fn cached_recorded_blocks(
     blocks: Vec<&replay::container::BlockIndex>,
     sample: SampleRecorded<'_>,
     state_hours: Option<&[i32]>,
+    bounded: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
     let cache = super::observations::scope(source, product, None).working_set(blocks.len());
@@ -1105,29 +1304,46 @@ fn cached_recorded_blocks(
     keys.sort();
     keys.dedup();
     for block in blocks {
-        let observed = cache.get(
-            block,
-            &(&selected, &keys, cadence),
-            cancelled,
-            block_sample_bytes,
-            || {
-                // The cadence bounds the look-back; its block count cannot
-                // turn this exact cache entry into a keyframe sample.
-                sample_blocks_recorded(
-                    source,
-                    branch,
-                    tables,
-                    cached_requested,
-                    (i64::from(block.first_hour), block.last_hour),
-                    with_predecessors(source, branch, block, cadence),
-                    sample,
-                    None,
-                    true,
-                    cancelled,
-                )
-                .map(BlockSamples)
-            },
-        )?;
+        let whole = (&selected, &keys, cadence, None::<(i64, i32)>);
+        let extent = bounded
+            .then_some((
+                i64::from(block.first_hour).max(window.0),
+                block.last_hour.min(window.1),
+            ))
+            .filter(|&(first, last)| {
+                first != i64::from(block.first_hour) || last != block.last_hour
+            });
+        let held = if extent.is_some() {
+            cache.get_cached::<BlockSamples>(block, &whole, cancelled)?
+        } else {
+            None
+        };
+        let observed = match held {
+            Some(observed) => observed,
+            None => cache.get(
+                block,
+                &(&selected, &keys, cadence, extent),
+                cancelled,
+                block_sample_bytes,
+                || {
+                    // The cadence bounds the look-back; its block count cannot
+                    // turn this exact cache entry into a keyframe sample.
+                    sample_blocks_recorded(
+                        source,
+                        branch,
+                        tables,
+                        cached_requested,
+                        extent.unwrap_or((i64::from(block.first_hour), block.last_hour)),
+                        with_predecessors(source, branch, block, cadence),
+                        sample,
+                        None,
+                        true,
+                        cancelled,
+                    )
+                    .map(BlockSamples)
+                },
+            )?,
+        };
         let spans: Vec<(i32, i32)> = match state_hours {
             Some(hours) => hours
                 .iter()
@@ -2538,6 +2754,336 @@ mod tests {
         .map(|(runs, approximate, _)| (runs, approximate))
         .unwrap()
     }
+
+    #[test]
+    fn stateless_exact_folds_are_shared_by_moving_prefixes_channels_and_state_hours() {
+        let source = source(2);
+        let flag = AtomicBool::new(false);
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            crate::prepared_measure::sample(frame, requested)
+        };
+        let tables = crate::prepared_measure::TABLES;
+        let key = ("GER".to_owned(), "politicalPower".to_owned());
+        let cached = [key.clone(), ("GER".to_owned(), "commandPower".to_owned())];
+        let ask = |coverage: Option<&Coverage>, window| {
+            tail_cached(
+                &source,
+                "test-stateless",
+                1,
+                coverage,
+                tables,
+                std::slice::from_ref(&key),
+                &cached,
+                window,
+                &sample,
+                &flag,
+            )
+            .unwrap()
+        };
+        let cold = ask(None, (0, 3));
+        assert_eq!(
+            cold,
+            tail(
+                &source,
+                1,
+                None,
+                tables,
+                std::slice::from_ref(&key),
+                (0, 3),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+            .unwrap()
+        );
+        let computed = calls.get();
+        for through in [0, 1, 2] {
+            let prefix = Coverage {
+                schema: 0,
+                first_hour: 0,
+                last_hour: through,
+                complete: false,
+            };
+            assert_eq!(
+                ask(Some(&prefix), (0, 3)),
+                tail(
+                    &source,
+                    1,
+                    Some(&prefix),
+                    tables,
+                    std::slice::from_ref(&key),
+                    (0, 3),
+                    &crate::prepared_measure::sample,
+                    &flag,
+                )
+                .unwrap()
+            );
+            assert_eq!(calls.get(), computed, "only the clipping boundary moved");
+        }
+        let other = [("GER".to_owned(), "commandPower".to_owned())];
+        for hours in [[0, 2], [1, 3]] {
+            let (actual, refused) = without_block_decodes(|| {
+                state_tail_cached(
+                    &source,
+                    "test-stateless",
+                    1,
+                    None,
+                    tables,
+                    &other,
+                    &cached,
+                    &hours,
+                    &sample,
+                    &flag,
+                )
+            });
+            assert!(!refused, "the same blocks already hold every channel");
+            assert_eq!(
+                actual.unwrap(),
+                state_tail(
+                    &source,
+                    1,
+                    None,
+                    tables,
+                    &other,
+                    &hours,
+                    &crate::prepared_measure::sample,
+                    &flag,
+                )
+                .unwrap()
+            );
+        }
+        assert_eq!(calls.get(), computed);
+        let (bytes, bound, entries) = super::super::observations::usage(&source, "test-stateless");
+        assert!(bytes > 0 && bytes <= bound);
+        assert_eq!(entries, 2);
+    }
+
+    #[test]
+    fn cached_folds_do_not_refuse_an_hour_because_a_later_sample_fails() {
+        let source = source(1);
+        let flag = AtomicBool::new(false);
+        let keys = [("GER".to_owned(), "politicalPower".to_owned())];
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            if frame.hour == 1 {
+                return Err(io::Error::other("later sample"));
+            }
+            crate::prepared_measure::sample(frame, requested)
+        };
+        let tables = crate::prepared_measure::TABLES;
+        let expected = tail(&source, 1, None, tables, &keys, (0, 0), &sample, &flag).unwrap();
+        calls.set(0);
+        assert_eq!(
+            tail_cached(
+                &source,
+                "test-narrow-error",
+                1,
+                None,
+                tables,
+                &keys,
+                &keys,
+                (0, 0),
+                &sample,
+                &flag,
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(calls.get(), 1, "the later sample was never evaluated");
+        assert_eq!(
+            state_tail_cached(
+                &source,
+                "test-narrow-error",
+                1,
+                None,
+                tables,
+                &keys,
+                &keys,
+                &[0],
+                &sample,
+                &flag,
+            )
+            .unwrap(),
+            expected
+        );
+        assert_eq!(calls.get(), 1, "state reuses the successful bounded fold");
+        calls.set(0);
+        assert!(
+            tail_cached(
+                &source,
+                "test-narrow-error",
+                1,
+                None,
+                tables,
+                &keys,
+                &keys,
+                (0, 1),
+                &sample,
+                &flag,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            calls.get(),
+            2,
+            "an in-window failure is returned without retrying"
+        );
+    }
+
+    #[test]
+    fn cached_failures_in_requested_blocks_are_propagated_once() {
+        let source = source(2);
+        let flag = AtomicBool::new(false);
+        let keys = [("GER".to_owned(), "politicalPower".to_owned())];
+        for kind in [
+            io::ErrorKind::Other,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::UnexpectedEof,
+        ] {
+            let failures = Cell::new(0);
+            let sample = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+                if frame.hour == 2 {
+                    failures.set(failures.get() + 1);
+                    return Err(io::Error::new(kind, "requested sample"));
+                }
+                crate::prepared_measure::sample(frame, requested)
+            };
+            let tables = crate::prepared_measure::TABLES;
+            let error = tail_cached(
+                &source,
+                "test-failure-tail",
+                1,
+                None,
+                tables,
+                &keys,
+                &keys,
+                (0, 3),
+                &sample,
+                &flag,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), "requested sample");
+            assert_eq!(failures.get(), 1);
+            failures.set(0);
+            let error = state_tail_cached(
+                &source,
+                "test-failure-state",
+                1,
+                None,
+                tables,
+                &keys,
+                &keys,
+                &[0, 3],
+                &sample,
+                &flag,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), "requested sample");
+            assert_eq!(failures.get(), 1);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "sampled and exact block cache parity"
+    )]
+    fn stateless_keyframes_are_shared_until_exact_zoom_replaces_them() {
+        let source = source(15);
+        let flag = AtomicBool::new(false);
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            crate::prepared_measure::sample(frame, requested)
+        };
+        let key = [("GER".to_owned(), "politicalPower".to_owned())];
+        let tables = crate::prepared_measure::TABLES;
+        let cached = [
+            key[0].clone(),
+            ("GER".to_owned(), "commandPower".to_owned()),
+        ];
+        let ask = |prefix: Option<&Coverage>, keys: &[(String, String)]| {
+            tail_cached(
+                &source,
+                "test-stateless-rough",
+                1,
+                prefix,
+                tables,
+                keys,
+                &cached,
+                (0, 29),
+                &sample,
+                &flag,
+            )
+            .unwrap()
+        };
+        let cold = ask(None, &key);
+        assert_eq!(
+            cold,
+            tail(
+                &source,
+                1,
+                None,
+                tables,
+                &key,
+                (0, 29),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+            .unwrap()
+        );
+        assert!(!cold.1.is_empty());
+        assert_eq!(calls.get(), 15);
+        let other = [("GER".to_owned(), "commandPower".to_owned())];
+        let mut prefix = Coverage {
+            schema: 0,
+            first_hour: 0,
+            last_hour: 0,
+            complete: false,
+        };
+        for keys in [&key, &other] {
+            assert_eq!(
+                ask(Some(&prefix), keys),
+                tail(
+                    &source,
+                    1,
+                    Some(&prefix),
+                    tables,
+                    keys,
+                    (0, 29),
+                    &crate::prepared_measure::sample,
+                    &flag,
+                )
+                .unwrap()
+            );
+            assert_eq!(calls.get(), 15);
+        }
+        prefix.last_hour = 3;
+        let exact = ask(Some(&prefix), &key);
+        assert!(exact.1.is_empty());
+        assert_eq!(
+            exact,
+            tail(
+                &source,
+                1,
+                Some(&prefix),
+                tables,
+                &key,
+                (0, 29),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+            .unwrap()
+        );
+        let computed = calls.get();
+        assert_eq!(ask(Some(&prefix), &key), exact);
+        assert_eq!(calls.get(), computed);
+    }
+
     #[test]
     #[cfg_attr(
         not(feature = "slow-tests"),

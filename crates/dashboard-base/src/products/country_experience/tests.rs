@@ -52,21 +52,29 @@ fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_f
                 ),
             ];
             let sampler = Sampler::new(source.replay_ref().format);
-            let reply = progressive::tail_first_read(
-                &source,
-                "country-experience:exact",
-                1,
-                coverage.as_ref(),
-                SAMPLE_TABLES,
-                replay::cadence::STAGGER_PERIOD,
-                &requested,
-                &Sampler::cache_keys(&requested),
-                (slot_base(), slot_base() + 31),
-                &|frame, _, requested| sampler.sample(frame, requested),
-                &|block| Sampler::first_block(&source, block, &requested, &flag),
-                &flag,
-            )
-            .unwrap();
+            let ask = || {
+                progressive::tail_first_read(
+                    &source,
+                    "country-experience:exact",
+                    1,
+                    coverage.as_ref(),
+                    SAMPLE_TABLES,
+                    replay::cadence::STAGGER_PERIOD,
+                    &requested,
+                    &Sampler::cache_keys(&requested),
+                    (slot_base(), slot_base() + 31),
+                    &|frame, _, requested| sampler.sample(frame, requested),
+                    &|block| Sampler::first_block(&source, block, &requested, &flag),
+                    &flag,
+                )
+            };
+            let (reply, refused) = if cold.is_some() {
+                progressive::without_block_decodes(ask)
+            } else {
+                (ask(), false)
+            };
+            assert!(!refused, "held first reads stay on the prepared lane");
+            let reply = reply.unwrap();
             assert!(!reply.1.is_empty());
             for run in &reply.0[&(key.clone(), measure.to_owned())] {
                 let sampled = (run.first_hour - slot_base()) / 2 * 2;

@@ -1251,6 +1251,39 @@ pub(crate) fn gate(product: &str) -> Vec<&'static str> {
     entries.dedup();
     entries
 }
+
+/// Publication identities of every declared supplier of a query: its gates
+/// and the families whose refusals it reads. One query scope pins these pages
+/// and the data they publish to the same manifest. A replacement, including a
+/// refusal or Clear followed by preparation, changes its identity.
+pub(crate) fn query_pages(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    product: &str,
+) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
+    let mut gates: std::collections::BTreeSet<_> = gate(product).into_iter().collect();
+    for family in FAMILIES
+        .iter()
+        .filter(|family| family.queries.contains(&product))
+    {
+        gates.insert(gate_entry(family.name));
+    }
+    gates
+        .into_iter()
+        .map(|family| {
+            let section = if family == super::coverage::WALK {
+                coverage_section(branch)
+            } else {
+                independent::coverage_section(family, branch)
+            };
+            let id = store
+                .read(key, &section, 0)?
+                .map(|file| file.id().cache_key());
+            Ok((section, id))
+        })
+        .collect()
+}
 /// The gates readers below the dashboard ask ([`super::coverage::Gates`]):
 /// [`product_coverage`] and [`refusal`].
 struct Gates;

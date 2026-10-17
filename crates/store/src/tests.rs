@@ -6,6 +6,27 @@ use std::{
     time::Duration,
 };
 
+#[test]
+fn range_cache_keys_serialize_each_identity_operand_losslessly() {
+    let first = RangeId {
+        pack: u64::MAX,
+        offset: 7,
+        len: 11,
+    };
+    let encoded = serde_json::to_vec(&first.cache_key()).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<[u64; 3]>(&encoded).unwrap(),
+        [u64::MAX, 7, 11]
+    );
+    for other in [
+        RangeId { pack: 1, ..first },
+        RangeId { offset: 8, ..first },
+        RangeId { len: 12, ..first },
+    ] {
+        assert_ne!(other.cache_key(), first.cache_key());
+    }
+}
+
 thread_local! {
     pub(super) static VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static MANIFEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

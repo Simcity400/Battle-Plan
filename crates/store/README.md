@@ -26,7 +26,9 @@ owned handle on the range's pack, positioned at the range and bounded to its
 length, with `Read`, `Seek`, `len` and `id`. It stays valid while held, through
 replacement, Clear and later commits. Producers define range boundaries and
 encode their own data; each saved range is immutable, and a replaced range
-always gets a new `RangeId`. Opening reads the manifest root and its names;
+always gets a new `RangeId`. `RangeId::cache_key` exposes its three numeric
+identity operands as a serializable array for transient caches, independent of
+display formatting and pack handles. Opening reads the manifest root and its names;
 a lookup then reads one entry from one entry log, whatever the section's range
 count. Memory holds input/section metadata, each section's runs, a copy buffer
 and newly added entries.

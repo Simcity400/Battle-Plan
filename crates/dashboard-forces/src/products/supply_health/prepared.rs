@@ -621,6 +621,20 @@ pub fn next_change(
     Ok(json!({"hour": hour}))
 }
 
+struct PointSample {
+    tail: dashboard_base::prepared::query::progressive::TailData,
+    available: bool,
+    warnings: Vec<String>,
+}
+impl PointSample {
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + dashboard_base::prepared::query::progressive::tail_bytes(&self.tail)
+            + self.warnings.capacity() * std::mem::size_of::<String>()
+            + self.warnings.iter().map(String::capacity).sum::<usize>()
+    }
+}
+
 fn progressive_query(
     source: &Source,
     params: &serde_json::Value,
@@ -657,38 +671,76 @@ fn progressive_query(
         selection.tags.len().saturating_mul(3),
     )?;
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let available = std::cell::Cell::new(false);
-    let defines = std::cell::RefCell::new(None);
-    let warnings = std::cell::RefCell::new(Vec::new());
-    let sampler = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
-        available.set(available.get() || land_present(frame));
-        if land_present(frame) && defines.borrow().is_none() {
-            *defines.borrow_mut() =
-                Some(query_defines(source, context, &mut warnings.borrow_mut())?);
-        }
-        let mut samples = sample(frame, None, *defines.borrow())?;
-        if let Some(requested) = requested {
-            for key in requested {
-                samples.entry(key.clone()).or_insert((None, None));
-            }
-        }
-        Ok(samples)
-    };
     let requested = selection
         .tags
         .iter()
         .map(|tag| (tag.clone(), "0".into()))
         .collect::<Vec<_>>();
-    let tail = progressive::tail(
-        source,
-        branch,
-        coverage,
-        TABLES,
-        &requested,
-        (from, to),
-        &sampler,
-        cancelled,
-    )?;
+    let read = |coverage| {
+        let available = std::cell::Cell::new(false);
+        let defines = std::cell::RefCell::new(None);
+        let warnings = std::cell::RefCell::new(Vec::new());
+        let sampler = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            available.set(available.get() || land_present(frame));
+            if land_present(frame) && defines.borrow().is_none() {
+                *defines.borrow_mut() =
+                    Some(query_defines(source, context, &mut warnings.borrow_mut())?);
+            }
+            let mut samples = sample(frame, None, *defines.borrow())?;
+            if let Some(requested) = requested {
+                for key in requested {
+                    samples.entry(key.clone()).or_insert((None, None));
+                }
+            }
+            Ok(samples)
+        };
+        let tail = progressive::tail(
+            source,
+            branch,
+            coverage,
+            TABLES,
+            &requested,
+            (from, to),
+            &sampler,
+            cancelled,
+        )?;
+        Ok(PointSample {
+            tail,
+            available: available.get(),
+            warnings: warnings.into_inner(),
+        })
+    };
+    let point = if from == to && coverage.is_none_or(|coverage| from > coverage.last_hour) {
+        source.replay_ref().index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= from && from <= block.last_hour
+        })
+    } else {
+        None
+    };
+    let observed = if let Some(block) = point {
+        dashboard_base::prepared::query::observations::scope(
+            source,
+            "supply-health:point",
+            Some(&key),
+        )
+        .get(
+            block,
+            &(
+                from,
+                &requested,
+                context
+                    .content
+                    .as_ref()
+                    .map(dashboard_base::catalogue::binding),
+            ),
+            cancelled,
+            PointSample::bytes,
+            || read(None),
+        )?
+    } else {
+        std::sync::Arc::new(read(coverage)?)
+    };
+    let tail = &observed.tail;
     let history = progressive::histories(
         &store,
         &key,
@@ -707,7 +759,7 @@ fn progressive_query(
     } else {
         None
     };
-    let mut warnings = warnings.into_inner();
+    let mut warnings = observed.warnings.clone();
     if let Some(prefix) = &prefix {
         warnings.extend(prefix.warnings.iter().cloned());
     }
@@ -728,7 +780,7 @@ fn progressive_query(
         .map(|row| (row.tag.as_str(), row))
         .collect();
     let mut scan = Scan::new(&tags.into_iter().collect::<Vec<_>>());
-    scan.available = available.get() || prefix.as_ref().is_some_and(|prefix| prefix.available);
+    scan.available = observed.available || prefix.as_ref().is_some_and(|prefix| prefix.available);
     for row in &mut scan.series {
         if let Some(prefix) = prefix_rows.get(row.tag.as_str()) {
             row.runs = prefix.runs.clone();

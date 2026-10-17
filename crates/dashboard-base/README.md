@@ -125,6 +125,16 @@ exactly read hour's recorded updates (`Recorded`), so a sampler can carry its ow
 state from hour to hour; a frame read alone (a keyframe, the hour before a window)
 comes without them.
 
+Stateless country measure, stability and fuel queries use `tail_cached` and
+`state_tail_cached`. Related measures share a selection of countries and channels:
+one keyframe observation per block for wide tails, one exact fold per block for
+state hours and short windows. Re-asks clip these immutable facts to their
+viewport and moving prefix; blocks covered by the prefix are not sampled.
+Crossing the exact-zoom threshold replaces keyframe approximations with hourly
+folds, including the preceding hour's identity/value continuity.
+When no whole fold is held, an exact read caches only the requested extent of
+an edge block. Errors propagate directly; a failure never retries the read.
+
 A family read at its own cadence (a daily read) whose sampler answers only from
 a read it has seen uses `tail_first_read` and `state_tail_recorded`. A short
 tail, and each state hour's block, is read exactly after every block intersecting
@@ -148,8 +158,8 @@ or one inside a gap samples nothing.
 
 Compact observations also live in a shared per-source cache
 ([prepared/query/observations.rs](src/prepared/query/observations.rs)). Keys contain
-the product, block bounds, result type and the parameters affecting extraction;
-the prepared prefix only clips a cached observation. Concurrent requests share an
+the product, branch, optional block bounds, result type and extraction parameters;
+the prepared prefix clips observations covering its window. Concurrent requests share an
 extraction. Recording revisions start empty; dashboard requests bind the whole
 cache to their recording/content key, and products can bind their own scope.
 Failures and cancellations are not retained. Each product's LRU budget is its
@@ -159,6 +169,17 @@ window working set; parameter variants share that budget. Caller-held values and
 in-flight extraction are transient. `usage` exposes retained bytes, bound and
 extraction count in test builds. The cache accepts arbitrary immutable block
 facts or proved windows, without assuming a decoder, cadence or predecessor.
+`get_query` also retains answers assembled from prepared pages, with their
+publication identities in the key. `get_entry` retains at most one current
+branch-wide answer per request without a block identity. Its publication binding is separate
+from the request parameters: a changed binding releases the previous answer,
+including its charged capacity. Branch answers share the product's ordinary
+bounded LRU with block observations: largest observed entry times live blocks.
+Distinct request selections and viewports can evict each other. Superseded
+in-flight extractions finish for their callers without replacing the current
+entry. A miss can read prepared pages on the prepared lane; recording reads
+inside it enforce the ordinary decode boundary, and busy observations refuse
+that lane instead of waiting for another extraction.
 
 Subjects keep compact relation/level observations for each keyframe. Banked
 experience keeps all three banks and the read hour once per native holder at a
@@ -167,6 +188,8 @@ exact state and short-window queries cache each whole block's selected observati
 with its supplying-read predecessor, shared by all bank measures, and clip them
 for each reached hour or moving prefix. Changing a requested hour inside an
 already held block therefore needs no new observation.
+Held first-read observations also answer long experience tails on the prepared
+lane, without scheduling keyframe workers.
 
 Capacity charges use actual vector and string capacities. On a 64-bit target a
 banked holder's compact observation has 64 inline bytes plus its fitted native

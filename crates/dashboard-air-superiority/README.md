@@ -29,6 +29,12 @@ keeps each block's projected sample by viewpoint and country mode, bound to the
 recording/content key and charged for its retained allocations under the live
 block budget. Re-asks clip retained samples to the moving prefix and share each
 snapshot across the days it represents.
+Prepared timelines retain complete days' numeric scores, availability and
+auxiliary inputs per accepted recording block in the shared observation cache.
+Viewpoint and side selection reuse those inputs; current group history still
+classifies them on each reply. Partial days and days ending in gaps read their
+reached hours directly. Amount reads find the hour's batch once, without
+reconstructing each field's original run bounds.
 Moment windows read their accepted prefix too. Its observation/side projection
 is marked approximate while later history can revise side classification;
 requested hours outside that prefix stay pending, with no invented scores.

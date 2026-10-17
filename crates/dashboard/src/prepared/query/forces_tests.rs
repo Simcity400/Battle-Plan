@@ -43,10 +43,64 @@ mod families {
     use serde_json::json;
     use std::sync::atomic::AtomicBool;
 
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "synthetic content and repeated first-view reply publications"
+    )]
+    fn a_request_retains_one_reply_across_store_epochs() {
+        let fixture = Fixture::new();
+        let params = json!({"branchId":"1", "family":{"kind":"army-size","measure":"strength","countFor":"owner"},
+            "tags":[tag(0)], "from":0, "to":31, "width":32});
+        let first = fixture.query("series-summary", params.clone());
+        let retained = || {
+            dashboard_base::prepared::query::observations::usage(
+                &fixture.source,
+                "queries:series-summary",
+            )
+        };
+        let bytes = retained().0;
+        for _ in 0..27 {
+            let progress = fixture.source.state::<crate::prepared::Progress>();
+            crate::prepared::invalidate(&mut progress.lock().unwrap());
+            assert_eq!(fixture.query("series-summary", params.clone()), first);
+            let (current, bound, _) = retained();
+            assert!(
+                current < 2 * bytes,
+                "superseded replies accumulate: {current} > {bytes}"
+            );
+            assert!(current <= bound);
+        }
+        assert_eq!(retained().2, 28);
+    }
+
     fn tail_and_zoom<F: Family>(family: Value, expected: f64) {
         let fixture = Fixture::new();
         let params = |from| json!({"branchId":"1", "family":family, "tags":[tag(0), tag(1)], "from":from, "to":31, "width":32});
         let cold = fixture.query("series-summary", params(0));
+        let computed = dashboard_base::prepared::query::observations::usage(
+            &fixture.source,
+            "queries:series-summary",
+        )
+        .2;
+        assert_eq!(computed, 1);
+        let (again, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                fixture.query("series-summary", params(0))
+            });
+        assert!(
+            !refused,
+            "an unchanged gate reuses the reply and its sampled metadata"
+        );
+        assert_eq!(again, cold);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &fixture.source,
+                "queries:series-summary",
+            )
+            .2,
+            computed
+        );
         assert!(
             !cold["summaries"][0]["summary"]["approximate"]
                 .as_array()
@@ -118,6 +172,14 @@ mod families {
             .range_count(&fixture.key, &format!("{}-values-1-{channel}", F::NAME))
             .unwrap();
         let rough = fixture.query("series-summary", params(0));
+        assert!(
+            dashboard_base::prepared::query::observations::usage(
+                &fixture.source,
+                "queries:series-summary",
+            )
+            .2 > computed,
+            "a publication invalidates the reply"
+        );
         assert_eq!(rough["coverage"]["lastHour"], 1);
         let exact = fixture.query("series-summary", params(6));
         for row in exact["summaries"].as_array().unwrap() {
@@ -466,12 +528,130 @@ mod supply {
     #[test]
     #[cfg_attr(
         not(feature = "slow-tests"),
+        ignore = "synthetic content and progressive supply endpoint"
+    )]
+    fn cached_supply_endpoint_refuses_after_unverified_content_is_disabled() {
+        crate::prepared::pipeline::with_test_hourly(|| {
+            let mut fixture = Fixture::new();
+            assert!(matches!(
+                fixture.source.replay_ref().identity.verification,
+                replay::identity::Verification::Unchecked
+            ));
+            let params =
+                serde_json::json!({"branchId":"1", "tags":[tag(0)], "from":31, "to":31, "width":1});
+            let first = fixture.query("supply-health", params.clone());
+            assert!(first["available"].as_bool().unwrap());
+            assert!(
+                first["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|warning| warning.as_str().unwrap().contains("UNVERIFIED CONTENT"))
+            );
+            let usage = || {
+                dashboard_base::prepared::query::observations::usage(
+                    &fixture.source,
+                    "supply-health:point",
+                )
+                .2
+            };
+            assert_eq!(usage(), 1);
+            let flag = AtomicBool::new(false);
+            // Check the lower cache directly: a fresh whole reply must not hide
+            // an endpoint which still accepts the previous verification choice.
+            let again = crate::products::supply_health::prepared::query(
+                &fixture.source,
+                &params,
+                &fixture.context,
+                &flag,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(again.available);
+            assert_eq!(usage(), 1);
+            assert!(
+                dashboard_base::prepared::coverage::coverage(
+                    &fixture.source,
+                    fixture.context.content.as_ref(),
+                    1,
+                    &flag,
+                )
+                .unwrap()
+                .is_none()
+            );
+            fixture.context.content.as_mut().unwrap().allow_unverified = false;
+            let (_, current) =
+                dashboard_base::prepared::files(&fixture.source, fixture.context.content.as_ref())
+                    .unwrap();
+            assert_eq!(current, fixture.key, "file stamps are unchanged");
+            let progress = fixture.source.state::<crate::prepared::Progress>();
+            crate::prepared::invalidate(&mut progress.lock().unwrap());
+            let error = crate::products::supply_health::prepared::query(
+                &fixture.source,
+                &params,
+                &fixture.context,
+                &flag,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("recording has unverified content"),
+                "{error}"
+            );
+            let request = crate::transport::ProductRequest {
+                source_id: fixture.source.key().source_id.clone(),
+                revision: fixture.source.key().revision.clone(),
+                product: "supply-health".into(),
+                params,
+            };
+            let error = crate::prepared::query::query(
+                &fixture.source,
+                &request,
+                fixture.context.content.as_ref(),
+                &flag,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("recording has unverified content"),
+                "{error}"
+            );
+            assert_eq!(usage(), 1, "refused endpoints are not cached");
+        });
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
         ignore = "slow: runs in the full suite (--features slow-tests)"
     )]
     fn supply_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing()
     {
         use serde_json::json;
         let fixture = Fixture::new();
+        let point = json!({"branchId":"1", "tags":[tag(0),tag(1)], "from":31, "to":31, "width":1});
+        let cold_point = fixture.query("supply-health", point.clone());
+        let mut history_point = point.clone();
+        history_point.as_object_mut().unwrap().remove("width");
+        let (history_point, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                fixture.query("supply-health", history_point)
+            });
+        assert!(
+            !refused,
+            "the two mounted point views share the same extraction"
+        );
+        assert_eq!(history_point["series"], cold_point["series"]);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &fixture.source,
+                "supply-health:point",
+            )
+            .2,
+            1
+        );
         let params =
             |from| json!({"branchId":"1","tags":[tag(0),tag(1)],"from":from,"to":31,"width":32});
         let cold = fixture.query("supply-health", params(0));
@@ -531,6 +711,23 @@ mod supply {
             .range_count(&fixture.key, "supply-runs-1")
             .unwrap();
         let rough = fixture.query("supply-health", params(0));
+        let (advanced_point, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                fixture.query("supply-health", point)
+            });
+        assert!(
+            !refused,
+            "a moved prefix does not resample the unchanged endpoint"
+        );
+        assert_eq!(advanced_point["coverage"]["lastHour"], 1);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(
+                &fixture.source,
+                "supply-health:point",
+            )
+            .2,
+            1
+        );
         assert_eq!(rough["coverage"]["lastHour"], 1);
         let exact = fixture.query("supply-health", params(6));
         for row in exact["summaries"].as_array().unwrap() {

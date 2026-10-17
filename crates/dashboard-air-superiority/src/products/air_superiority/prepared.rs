@@ -5,6 +5,7 @@ use replay::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 
 mod first_view;
+mod values;
 
 #[derive(Serialize, Deserialize)]
 enum Field {
@@ -879,6 +880,7 @@ impl Prepared {
     #[allow(clippy::too_many_arguments)]
     fn samples(
         &self,
+        source: &Source,
         store: &store::Store,
         key: &store::SourceKey,
         branch: u64,
@@ -941,6 +943,19 @@ impl Prepared {
             .iter()
             .map(|(field, &id)| serde_json::from_str::<Field>(field).map(|field| (field, id)))
             .collect::<Result<_, _>>()?;
+        let observed = values::samples(
+            source,
+            key,
+            branch,
+            self.previous_hour,
+            params.view == AirView::Timeline,
+            &wanted,
+            &fields,
+            &mut hours,
+            &mut values,
+            &mut events,
+            cancelled,
+        )?;
         let mut indices = sides
             .iter()
             .enumerate()
@@ -948,57 +963,9 @@ impl Prepared {
             .collect();
         let mut samples = Vec::new();
         let mut rosters = scan::RosterRead::default();
-        for hour in wanted {
+        for (hour, observed) in observed {
             check_cancel(cancelled)?;
-            let (_, operands) = events
-                .latest_event(0, hour)?
-                .ok_or_else(|| invalid("Prepared air score operands are missing"))?;
-            let (_, auxiliary) = events
-                .latest_event(1, hour)?
-                .ok_or_else(|| invalid("Prepared air auxiliary operands are missing"))?;
-            let mut projection = scan::CountryScores {
-                operands: serde_json::from_value(operands)?,
-                ..Default::default()
-            };
-            let mut auxiliary: scan::Auxiliary = serde_json::from_value(auxiliary)?;
-            let (_, read) = events
-                .latest_event(2, hour)?
-                .ok_or_else(|| invalid("Prepared air theatre read is missing"))?;
-            auxiliary.theatre_read = serde_json::from_value(read)?;
-            for (field, id) in &fields {
-                let Some(run) = values.value_at(*id, hour)? else {
-                    continue;
-                };
-                match field {
-                    Field::Friendly(tag, region) => {
-                        projection
-                            .pairs
-                            .entry((tag.clone(), *region))
-                            .or_default()
-                            .0 = i64::try_from(run.value)
-                            .map_err(|_| invalid("Prepared friendly score is invalid"))?;
-                    }
-                    Field::Enemy(tag, region) => {
-                        projection
-                            .pairs
-                            .entry((tag.clone(), *region))
-                            .or_default()
-                            .1 = i64::try_from(run.value)
-                            .map_err(|_| invalid("Prepared enemy score is invalid"))?;
-                    }
-                    Field::Wings(region) if run.value > 0 => {
-                        auxiliary.wings.insert(
-                            *region,
-                            u32::try_from(run.value)
-                                .map_err(|_| invalid("Prepared air wing count is invalid"))?,
-                        );
-                    }
-                    Field::Active(region) if run.value != 0 => {
-                        projection.active.insert(*region);
-                    }
-                    _ => {}
-                }
-            }
+            let (projection, auxiliary) = &*observed;
             let view = (
                 (params.mode == Some(AirMode::Viewpoint))
                     .then_some(params.viewpoint.as_deref())
@@ -1007,14 +974,14 @@ impl Prepared {
             );
             let mut sample = scan::prepared_snapshot(
                 hour,
-                &projection,
+                projection,
                 groups,
                 anchors,
                 view,
                 (&mut *sides, &mut indices),
                 &mut rosters,
             )?;
-            scan::apply_auxiliary(&mut sample, &auxiliary);
+            scan::apply_auxiliary(&mut sample, auxiliary);
             samples.push(sample);
         }
         Ok(samples)
@@ -1162,7 +1129,7 @@ pub fn query(
         Vec::new()
     };
     let samples = state.samples(
-        &store, &key, branch, &params, &groups, &anchors, &mut sides, cancelled,
+        source, &store, &key, branch, &params, &groups, &anchors, &mut sides, cancelled,
     )?;
     let reply = if params.view == AirView::Moment {
         let mut reply = AirReply::Moment(moment_reply(samples, sides, &groups, &params, &anchors)?);
@@ -1500,7 +1467,17 @@ mod tests {
     }
 
     fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
-        let replay = recording(frames.to_vec());
+        let replay = Arc::new(recording(frames.to_vec()));
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "air-prepared-parity".into(),
+                revision: "1".into(),
+            },
+            "synthetic.battleplan".into(),
+            Arc::clone(&replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         let groups = groups(&replay);
         let flag = AtomicBool::new(false);
         let state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
@@ -1532,6 +1509,7 @@ mod tests {
         let first = frames.first().unwrap().hour;
         let last = frames.last().unwrap().hour;
         for view in [AirView::Moment, AirView::Timeline] {
+            let mut computed = None;
             for (viewpoint, country) in [(None, false), (Some("f:9"), false), (Some("MOD"), true)] {
                 let mut cache = state.catalogue(&groups);
                 let mut request = params(view, first, last);
@@ -1552,6 +1530,7 @@ mod tests {
                 };
                 let samples = state
                     .samples(
+                        &source,
                         &fixture.store,
                         &fixture.key,
                         1,
@@ -1562,6 +1541,28 @@ mod tests {
                         &flag,
                     )
                     .unwrap();
+                if view == AirView::Timeline {
+                    let (bytes, bound, count) =
+                        dashboard_base::prepared::query::observations::usage(
+                            &source,
+                            "air-superiority:daily-values",
+                        );
+                    if let Some(previous) = computed {
+                        assert_eq!(
+                            count, previous,
+                            "viewpoint changes reuse numeric daily inputs"
+                        );
+                    } else {
+                        if frames
+                            .iter()
+                            .any(|frame| frame.hour.rem_euclid(DAY_HOURS) == DAY_HOURS - 1)
+                        {
+                            assert!(count > 0 && bytes > 0);
+                        }
+                        assert!(bytes <= bound);
+                        computed = Some(count);
+                    }
+                }
                 if view == AirView::Moment {
                     let actual =
                         moment_reply(samples, sides, &groups, &request, &cache.anchors).unwrap();

@@ -903,6 +903,11 @@ impl RangeId {
         len: 0,
     };
 
+    /// Serializable identity for transient cache keys, without a pack handle.
+    pub fn cache_key(&self) -> [u64; 3] {
+        [self.pack, self.offset, self.len]
+    }
+
     pub fn len(&self) -> u64 {
         self.len
     }

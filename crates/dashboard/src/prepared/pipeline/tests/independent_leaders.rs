@@ -540,8 +540,7 @@ fn leaders_take_the_block_readers_changes_and_read_only_their_bound_tables() {
     let replay = scenario(LAST, true);
     let blocks = replay.index.len();
     let mut fixture = Fixture::new(&replay);
-    let hourly =
-        independent::with_test_hourly(|| prepared(&mut fixture, "leaders-bound", &plain));
+    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "leaders-bound", &plain));
     for whole in [false, true] {
         let label = format!("read whole {whole}");
         let counts = || {
