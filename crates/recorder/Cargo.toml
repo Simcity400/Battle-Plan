@@ -17,6 +17,8 @@ test = false
 
 [features]
 alloc-fault-injection = []
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
 
 [dependencies]
 recorder-oracle.workspace = true

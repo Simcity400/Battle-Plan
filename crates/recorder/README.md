@@ -215,6 +215,14 @@ Every hour must occur exactly once. Gaps, undated loss, partial/recovered files,
 
 ## Recovery and checking changes
 
+The derivation command regression uses synthetic content and recordings, with
+executable metadata read from `BATTLE_PLAN_GAME_DIR`. It runs behind `slow-tests` because
+authenticating that metadata exceeds the default test time budget:
+
+```powershell
+cargo test -p recorder --features slow-tests --lib derived_command_tests::derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison -- --exact
+```
+
 Wait for detach/finalization before reading completion. `status.json`/`completed.json` retain failure/hour, partial and drain facts; draining cannot certify capture success. The recorder polls the fixed terminal witness while the collector is loaded, publishes `capture_failed`, and requests detach automatically. Refresh refuses immediately after terminal failure. Authenticated raw-allocation sidecar details supply the attempted family and byte request in status. Finalization still waits for proved collector absence or game exit before recovering the committed prefix. Partial replays open verified prefixes with visible failure notices.
 
 After confirmed collector absence or game exit, set `$sessionDirectory` to a retained session and recover with:

@@ -1,3 +1,5 @@
+#![cfg(feature = "slow-tests")]
+
 use replay::{
     container::Replay,
     day_night::{self, Clock},
@@ -22,7 +24,20 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
         fs::create_dir_all(game.join(directory)).unwrap();
     }
     fs::create_dir_all(&user).unwrap();
-    fs::write(game.join("hoi4.exe"), b"synthetic executable").unwrap();
+    // The command authenticates executable metadata before reading the
+    // synthetic content and recording used for its derivation verdicts.
+    let installation = std::path::PathBuf::from(
+        std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for executable metadata"),
+    );
+    for path in [
+        "hoi4.exe",
+        "documentation/dynamic_variables_documentation.md",
+    ] {
+        let destination = game.join(path);
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::copy(installation.join(path), destination).unwrap();
+    }
     fs::write(user.join("settings.txt"), "language=\"english\"").unwrap();
     fs::write(
         user.join("dlc_load.json"),
@@ -31,7 +46,15 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
     .unwrap();
     fs::write(
         game.join("common/defines/test.lua"),
-        "NDefines={NGraphics={GMT_OFFSET=0,SOUTH_POLE_OFFSET=0,NORTH_POLE_OFFSET=1,DAY_NIGHT_FEATHER=0.1}}",
+        r#"NDefines={
+            NGraphics={GMT_OFFSET=0,SOUTH_POLE_OFFSET=0,NORTH_POLE_OFFSET=1,DAY_NIGHT_FEATHER=0.1},
+            NMilitary={
+                AMPHIBIOUS_INVADE_MOVEMENT_COST=1,LAND_SPEED_MODIFIER=1,
+                RIVER_CROSSING_SPEED_PENALTY=0,RIVER_CROSSING_SPEED_PENALTY_LARGE=0,
+                RIVER_SMALL_START_INDEX=1,RIVER_SMALL_STOP_INDEX=1,RIVER_LARGE_STOP_INDEX=2
+            },
+            NNavy={NAVAL_SPEED_MODIFIER=1,AMPHIBIOUS_INVADE_SPEED_BASE=1}
+        }"#,
     )
     .unwrap();
     fs::write(
@@ -66,6 +89,10 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
     bitmap[56] = 1;
     fs::write(game.join("map/provinces.bmp"), &bitmap).unwrap();
     fs::write(game.join("map/terrain.bmp"), &bitmap).unwrap();
+    // Movement content is loaded even when the fixture records no movers.
+    bitmap[28..30].copy_from_slice(&8_u16.to_le_bytes());
+    bitmap[54..].fill(0);
+    fs::write(game.join("map/rivers.bmp"), &bitmap).unwrap();
     let gathered = installed_content::gather(&installed_content::GatherOptions {
         game_dir: game.clone(),
         user_dir: user.clone(),
@@ -73,7 +100,8 @@ fn derived_command_fails_on_wrong_current_checksum_and_incomplete_comparison() {
         dlc_order: Some(Vec::new()),
     })
     .unwrap();
-    let executable = engine::build::hash_executable(&b"synthetic executable"[..]).unwrap();
+    let executable =
+        engine::build::hash_executable(fs::File::open(game.join("hoi4.exe")).unwrap()).unwrap();
     let mut identity = gathered
         .identity(
             "synthetic".into(),

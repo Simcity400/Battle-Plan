@@ -49,20 +49,20 @@ use dashboard_base::{
     products::BranchParams, products::Product, products::country_history::CountryIdentityRun,
     products::country_measure::FixedRun,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use dashboard_base::{products::LoadContext, products::country_history::branch_histories};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 use dashboard_text::metadata::{link_slots, slot_read};
 use engine::{cthreat_source, cworld_threat};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use replay::{container::Replay, frame::FrameDecoder};
 use replay::{
     frame::{DecodedFrame, TableView},
     rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::{
     collections::VecDeque,
     sync::{Arc, atomic::Ordering},
@@ -283,7 +283,7 @@ fn aggregate_operands(frame: &DecodedFrame) -> Option<Vec<(u32, i64)>> {
 }
 
 /// Scans one branch for its tension reads, contributions and events.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedTension> {
     let selected = [
         TableId::Campaign,
@@ -959,7 +959,7 @@ impl Scan {
 }
 
 #[derive(Default)]
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct Cache {
     entries: VecDeque<(u64, Arc<ScannedTension>)>,
 }
@@ -999,7 +999,7 @@ impl Product for WorldTension {
         params.validate()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &Self::Params,

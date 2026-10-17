@@ -151,7 +151,7 @@ impl Product for Subjects {
             .map_err(|_| "Invalid subjects branch")
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &Self::Params,

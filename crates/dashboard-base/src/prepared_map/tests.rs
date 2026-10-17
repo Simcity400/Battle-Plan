@@ -329,18 +329,15 @@ fn sparse_map_checkpoints_equal_hourly_bytes_across_short_blocks_gaps_branches_a
         )])
         .unwrap();
     replay = replay.append(&[records(2, frames(2, &[20, 21]))]).unwrap();
+    // A new session starts a new branch instead of re-entering session 1.
     replay = replay
-        .append(&[continuation_records(
-            &replay,
-            1,
-            frames(1, &[108, 109, 110]),
-        )])
+        .append(&[records(3, frames(3, &[108, 109, 110]))])
         .unwrap();
     let appended = replay
         .append(&[continuation_records(
             &replay,
-            1,
-            frames(1, &[111, 112, 113]),
+            3,
+            frames(3, &[111, 112, 113]),
         )])
         .unwrap();
     let control = crate::prepared::series::tests::Fixture::new();

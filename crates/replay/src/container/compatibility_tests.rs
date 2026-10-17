@@ -3,7 +3,9 @@ use crate::{
     format::FormatVersion,
     rows::{
         self, RowCodec,
-        compatibility::{HISTORY, LastChange, PROVEN_FROM, RECORDER_INPUTS_FORMAT},
+        compatibility::{
+            HISTORY, LastChange, PROVEN_FROM, RECORDER_INPUTS_FORMAT, RETIRED_INPUTS_FORMAT,
+        },
     },
 };
 use std::collections::BTreeSet;
@@ -958,8 +960,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
         TableView::Unavailable {
             reason: format!(
                 "OwnedWargoals retired at format {}; this recording is format {}",
-                crate::FORMAT_VERSION,
-                RECORDER_INPUTS_FORMAT
+                RETIRED_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT
             )
         }
     );

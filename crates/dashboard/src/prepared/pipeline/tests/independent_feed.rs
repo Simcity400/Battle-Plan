@@ -441,7 +441,14 @@ fn feed_refusals(source: &Source, own: bool) -> BTreeMap<u64, Option<Refusal>> {
 
 #[test]
 fn event_feed_prepared_on_its_own_refuses_where_hourly_preparation_does() {
-    let replay = scenario(LAST, true);
+    // Refusals match family and hour, so the unaffected branch must not
+    // repeat the hours whose refusals this test injects.
+    let replay = scenario(LAST, false)
+        .append(&[records(
+            2,
+            (200..=204).map(|hour| feed_frame(2, hour)).collect(),
+        )])
+        .unwrap();
     let mut fixture = Fixture::new(&replay);
     let flag = AtomicBool::new(false);
     // The feed's own refusal and one of the identities its observation

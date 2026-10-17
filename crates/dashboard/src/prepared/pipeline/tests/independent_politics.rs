@@ -1007,6 +1007,14 @@ fn quiet_politics_event_pages_answer_their_prepared_prefix_with_the_hours_still_
         assert!(!accepted.complete && (141..189).contains(&accepted.last_hour));
         let prefix = query(&source, "events-page", page.clone()).unwrap();
         assert_eq!(prefix["coverage"], serde_json::to_value(&accepted).unwrap());
+        assert_eq!(
+            prefix["approximate"],
+            serde_json::json!([
+                { "firstHour": 100, "lastHour": 135 },
+                { "firstHour": 138, "lastHour": accepted.last_hour },
+            ]),
+            "accepted peace outcomes remain revisable until the branch is complete"
+        );
         let pending = crate::prepared::prefix::pending(&source, 1, accepted.last_hour, None);
         assert_eq!(
             pending.first().map(|span| span.first_hour),
@@ -1042,6 +1050,7 @@ fn quiet_politics_event_pages_answer_their_prepared_prefix_with_the_hours_still_
         let mut hourly = peace_reply(&source, "1");
         hourly["coverage"] = complete["coverage"].clone();
         hourly["pending"] = serde_json::json!([]);
+        hourly["approximate"] = serde_json::json!([]);
         assert_eq!(complete, hourly);
         assert!(
             complete["deals"]
