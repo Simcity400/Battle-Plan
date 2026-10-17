@@ -663,8 +663,11 @@ fn air_superiority_answers_from_its_own_coverage_while_the_hourly_walk_accepts_n
             let source = fixture.source("superiority-stalled");
             let flag = AtomicBool::new(false);
             assert!(
-                query(&source, requests("1", 100, LAST).remove(0)).is_null(),
-                "{label}: nothing is prepared yet"
+                !query(&source, requests("1", 100, LAST).remove(0))["approximate"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{label}: a cold choices reply samples the blocks"
             );
             // The hourly walk stalls: it is cancelled at its first commit.
             let mut commits = 0;
@@ -758,4 +761,166 @@ fn air_superiority_quiet_hours_build_no_frame() {
             "{label}: every frame kept and observed once"
         );
     }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "cold, prefix and complete first-view preparation parity"
+)]
+fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values() {
+    let replay = scenario(LAST, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("air-sampled-first-view");
+        let params = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":100, "lastHour":LAST, "mode":"sides", "top":10});
+        let cold = query(&source, params.clone());
+        assert!(
+            cold["coverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+                && cold["coverage"]["complete"] == false
+        );
+        assert_eq!(cold["rowsApproximate"], true);
+        assert!(!cold["rows"].as_array().unwrap().is_empty());
+        assert_eq!(cold["pending"], serde_json::json!([]));
+        let (again, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                query(&source, params.clone())
+            });
+        assert!(!refused, "a re-ask must reuse every block sample");
+        assert_eq!(again, cold);
+        let (bytes, bound, computed) =
+            dashboard_base::prepared::query::observations::usage(&source, "air-superiority");
+        assert!(bytes > 0 && bytes <= bound);
+        assert_eq!(
+            computed,
+            source.replay_ref().index.len(),
+            "one shared observation per block"
+        );
+        let narrow = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":124, "lastHour":LAST, "mode":"sides", "top":1});
+        query(&source, narrow);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(&source, "air-superiority").2,
+            computed,
+            "range and row selection reuse the same block observations"
+        );
+
+        run_measured(
+            &source,
+            None,
+            &AtomicBool::new(false),
+            true,
+            Duration::ZERO,
+            |_| {},
+        )
+        .unwrap();
+        run_measured(
+            &source,
+            None,
+            &AtomicBool::new(false),
+            true,
+            Duration::ZERO,
+            |_| {},
+        )
+        .unwrap();
+        let partial = query(&source, params.clone());
+        assert_eq!(partial["coverage"]["lastHour"], 123);
+        assert_eq!(partial["rowsApproximate"], true);
+        plain(&source);
+        let complete = query(&source, params);
+        assert!(complete.get("approximate").is_none());
+        assert!(complete.get("rowsApproximate").is_none());
+        // Only whole prepared days are exact when a daily cell crosses coverage.
+        assert_eq!(partial["days"][0], complete["days"][0]);
+        assert_eq!(air_day_values(&partial, 0), air_day_values(&complete, 0));
+        clear(source);
+    });
+}
+
+fn air_day_values(reply: &serde_json::Value, day: usize) -> serde_json::Value {
+    let sides = reply["sides"].as_array().unwrap();
+    let mut rows = BTreeMap::new();
+    for row in reply["rows"].as_array().unwrap() {
+        let mut through = 0;
+        for run in row["cells"].as_array().unwrap() {
+            through += run[0].as_u64().unwrap() as usize;
+            if through <= day {
+                continue;
+            }
+            let mut cell = run[1].clone();
+            let remap_scores = |scores: &mut serde_json::Value| {
+                if let Some(scores) = scores.as_array_mut() {
+                    for score in scores.iter_mut() {
+                        score[0] = sides[score[0].as_u64().unwrap() as usize]["key"].clone();
+                    }
+                    scores.sort_by_key(|score| score[0].as_str().unwrap().to_owned());
+                }
+            };
+            if cell.is_array() {
+                remap_scores(&mut cell);
+            } else if cell.is_object() {
+                for field in ["scores", "viewpoints"] {
+                    remap_scores(&mut cell[field]);
+                }
+                for field in ["unknown", "noAirObject"] {
+                    if let Some(indices) = cell[field].as_array_mut() {
+                        for index in indices.iter_mut() {
+                            *index = sides[index.as_u64().unwrap() as usize]["key"].clone();
+                        }
+                        indices.sort_by_key(|index| index.as_str().unwrap().to_owned());
+                    }
+                }
+            }
+            rows.insert(row["region"].as_u64().unwrap(), cell);
+            break;
+        }
+    }
+    serde_json::to_value(rows).unwrap()
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "5,000-country sampled air comparison"
+)]
+fn sampled_air_comparison_keeps_five_thousand_countries() {
+    let mut first = frame(1, 120, 5000);
+    for rows in [
+        TableRows::Factions(vec![]),
+        TableRows::FactionMembers(vec![]),
+        TableRows::WarRelations(vec![]),
+        TableRows::HumanControllers(vec![]),
+        TableRows::Capitulation(vec![]),
+        TableRows::AirWings(vec![]),
+        TableRows::AirTheatres(vec![]),
+        TableRows::AirTheatreGroups(vec![]),
+        TableRows::AirTheatreMembers(vec![]),
+    ] {
+        let table = rows.table();
+        *first.tables[table.index()] = TableView::Complete(rows);
+    }
+    *first.tables[TableId::RaidAirScores.index()] = TableView::Complete(TableRows::RaidAirScores(
+        (0..5000)
+            .map(|id| RaidAirScoreRow {
+                country: 100_000 + id,
+                region: 7000,
+                friendly: i64::from(id) + 7,
+                enemy: 3,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    let mut last = first.clone();
+    last.hour = 121;
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, last])]).unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("air-sample-5000");
+    let params = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":120,"lastHour":121, "mode":"sides", "regions":[7000]});
+    let cold = query(&source, params.clone());
+    assert_eq!(cold["sides"].as_array().unwrap().len(), 5000);
+    plain(&source);
+    let complete = query(&source, params);
+    assert_eq!(air_day_values(&cold, 0), air_day_values(&complete, 0));
+    clear(source);
 }

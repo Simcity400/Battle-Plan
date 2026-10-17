@@ -30,6 +30,7 @@ fn country_reader<'a>(
 
 fn pages(first: u64, rows: u64) -> Pages {
     Pages {
+        sampled: false,
         first,
         count: rows.div_ceil(PAGE_ROWS as u64),
         rows,
@@ -103,7 +104,8 @@ pub fn query_hour(
         country_id: event.country_id,
         hour: first.max(presence.first_hour),
         last_hour: next.map_or(presence.last_hour, |next| presence.last_hour.min(next - 1)),
-        order_first_hour: event.order_first_hour,
+        order_first_hour: Some(event.order_first_hour),
+        preparing: Vec::new(),
         current: event.current,
         continuous: event.continuous,
         paused: event.paused,
@@ -112,6 +114,138 @@ pub fn query_hour(
         progress_raw: progress.raw.to_string(),
         daily_gain_raw: daily_gain(&progress).map(|gain| gain.to_string()),
     }))
+}
+
+/// The recorded order and progress, without attributing dates to completions.
+pub fn sampled_hour(
+    source: &Source,
+    branch: u64,
+    tag: &str,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Hour>> {
+    use crate::prepared::query::progressive;
+    // One focus update period, including the hour before its latest gain.
+    let frames = progressive::read_window(
+        source,
+        branch,
+        hour.saturating_sub(replay::cadence::STAGGER_PERIOD),
+        hour,
+        &READ_TABLES,
+        cancelled,
+    )?;
+    let Some(frame) = frames.last().filter(|frame| frame.hour == hour) else {
+        return Ok(None);
+    };
+    let read = read_hour(frame, Some(tag), &HourRead::default(), false);
+    let Some(observation) = read.tags.get(tag) else {
+        return Ok(None);
+    };
+    let mut builder = Builder::new(Some(tag));
+    for frame in &frames {
+        builder.hour(frame)?;
+    }
+    let facts = builder.finish();
+    let progress = facts
+        .tags
+        .get(tag)
+        .and_then(|stretches| stretches.last())
+        .filter(|stretch| stretch.last == hour)
+        .map(|stretch| stretch_progress(None, stretch));
+    let mut completed = pages(0, observation.order.completed.len as u64);
+    completed.sampled = true;
+    let supplying = progressive::latest_read(
+        source,
+        branch,
+        hour,
+        TableId::Focus,
+        replay::cadence::STAGGER_PERIOD,
+        &[TableId::Focus],
+        cancelled,
+    )?;
+    let daily_gain_raw = progress
+        .as_ref()
+        .filter(|progress| {
+            supplying
+                .as_ref()
+                .is_some_and(|read| read.hour >= progress.first)
+        })
+        .and_then(daily_gain)
+        .map(|gain| gain.to_string());
+    let mut preparing = vec!["orderFirstHour".into(), "completedByHour".into()];
+    if daily_gain_raw.is_none() && observation.order.current.is_some() {
+        preparing.push("dailyGainRaw".into());
+    }
+    Ok(Some(Hour {
+        schema: StateSchema,
+        slot: observation.slot,
+        country_id: observation.country_id,
+        hour,
+        last_hour: hour,
+        order_first_hour: None,
+        preparing,
+        current: observation.order.current.as_ref().map(Recorded::text),
+        continuous: observation.order.continuous.as_ref().map(Recorded::text),
+        paused: observation.order.paused,
+        completed,
+        at: hour,
+        progress_raw: observation.progress.to_string(),
+        daily_gain_raw,
+    }))
+}
+
+pub fn sampled_page(
+    source: &Source,
+    branch: u64,
+    tag: &str,
+    hour: i32,
+    requested: &Pages,
+    page: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let Some(frame) = crate::prepared::query::progressive::frame_at(
+        source,
+        branch,
+        hour,
+        &READ_TABLES,
+        cancelled,
+    )?
+    else {
+        return Ok(serde_json::Value::Null);
+    };
+    let read = read_hour(&frame, Some(tag), &HourRead::default(), false);
+    let Some(observation) = read.tags.get(tag) else {
+        return Ok(serde_json::Value::Null);
+    };
+    let actual = pages(0, observation.order.completed.len as u64);
+    if (actual.first, actual.count, actual.rows)
+        != (requested.first, requested.count, requested.rows)
+    {
+        return Err(crate::invalid(
+            "Recorded focus page changed. Refresh this view.",
+        ));
+    }
+    if page >= actual.count {
+        return Ok(serde_json::Value::Null);
+    }
+    let first = page
+        .checked_mul(PAGE_ROWS as u64)
+        .ok_or_else(|| crate::invalid("Focus page index overflow"))?;
+    let entries: Vec<_> = observation
+        .order
+        .completed
+        .tokens()
+        .into_iter()
+        .enumerate()
+        .skip(usize::try_from(first).map_err(|_| crate::invalid("Focus page index overflow"))?)
+        .take(PAGE_ROWS)
+        .map(|(ordinal, token)| FocusEntry {
+            ordinal: ordinal as u32,
+            token: token.text(),
+            completed_by_hour: None,
+        })
+        .collect();
+    Ok(serde_json::to_value(entries)?)
 }
 
 /// `tag`'s progress at `hour` of `block`: the block read from its first hour

@@ -334,16 +334,9 @@ pub fn query(
     let history = if params.selection.tags.is_empty() {
         None
     } else {
-        let Some(history) = country_history::prepared_branch_histories(
-            source,
-            branch,
-            context.content.as_ref(),
-            cancelled,
-        )?
-        else {
-            return Ok(None);
-        };
-        Some(history)
+        Some(super::super::intelligence_prepared::first_views::histories(
+            source, context, store, key, branch, cancelled,
+        )?)
     };
     let mut reader = Reader::new(
         store,
@@ -410,9 +403,69 @@ pub fn query(
         context,
         cancelled,
         &state.scan,
-        history.as_deref(),
+        history.as_ref(),
     )?))
 }
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn first_view(
+    source: &Source,
+    params: &Params,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    AgencyComparison::validate(&params.selection).map_err(dashboard_core::invalid)?;
+    let branch = params
+        .selection
+        .branch_id
+        .parse()
+        .map_err(|_| dashboard_core::invalid("Invalid agency branch"))?;
+    let first = params
+        .first_hour
+        .ok_or_else(|| dashboard_core::invalid("Missing agency day"))?;
+    let last = params.last_hour.unwrap_or(first);
+    let mut scan = ScannedAgencies::default();
+    let mut countries = super::super::operative_rows::CountryInputs::default();
+    super::super::intelligence_prepared::first_views::day(
+        source,
+        branch,
+        first,
+        last,
+        &[
+            TableId::Campaign,
+            TableId::Countries,
+            TableId::CountryLinks,
+            TableId::IntelligenceAgencies,
+            TableId::AgencyUpgradeLevels,
+            TableId::LexicalTokens,
+            TableId::OperativeMemberships,
+        ],
+        cancelled,
+        |frame| {
+            countries.update(frame, None);
+            scan.observe_frame_countries(frame, source.replay_ref(), &countries, None)?;
+            if frame.hour < first {
+                for track in scan.tracks.values_mut() {
+                    if track.entries.len() > 1 {
+                        track.entries.drain(..track.entries.len() - 1);
+                    }
+                    if track.rosters.len() > 1 {
+                        track.rosters.drain(..track.rosters.len() - 1);
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    serde_json::to_value(super::reply(
+        source,
+        &params.selection,
+        context,
+        cancelled,
+        &scan,
+        None,
+    )?)
+    .map_err(Into::into)
+}

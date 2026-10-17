@@ -30,7 +30,8 @@ export function validateTensionReply(data: unknown): TensionReply {
   const spans = <T extends { firstHour: number; lastHour: number }>(items: readonly T[]) => items.every((item, index) =>
     Number.isInteger(item.firstHour) && Number.isInteger(item.lastHour) && item.firstHour <= item.lastHour && (index === 0 || items[index - 1].lastHour < item.firstHour));
   const runs = (items: readonly FixedRun[]) => Array.isArray(items) && spans(items) && items.every(run => RAW.test(run.valueRaw));
-  const read = (item: TensionRead) => RAW.test(item.tensionRaw) && RAW.test(item.sumRaw) && RAW.test(item.unnamedRaw);
+  const read = (item: TensionRead) => RAW.test(item.tensionRaw) && RAW.test(item.sumRaw) && (item.unnamedRaw === null ? tensionReadPreparing(item, 'unnamedRaw') : RAW.test(item.unnamedRaw))
+    && (!('preparing' in item) || Array.isArray(item.preparing) && item.preparing.every(field => typeof field === 'string'));
   const event = (item: TensionEvent) => Number.isInteger(item.hour) && typeof item.reason === 'string' && (item.tag == null || typeof item.tag === 'string')
     && Array.isArray(item.added) && item.added.length > 0 && item.added.every(added => Number.isInteger(added.hour) && RAW.test(added.addedRaw));
   const ok = typeof reply === 'object' && reply != null && decimalsOf(reply.tensionScale) != null && decimalsOf(reply.contributionScale) != null
@@ -97,7 +98,8 @@ export function readAt(model: TensionModel, hour: number): TensionRead | null {
  * in, null where no read holds the hour. */
 export function contributionAt(model: TensionModel, key: string, hour: number): string | null {
   if (!readAt(model, hour)) return null;
-  return runAt(model.raw.get(key) ?? [], Math.floor(hour))?.valueRaw ?? '0';
+  return runAt(model.raw.get(key) ?? [], Math.floor(hour))?.valueRaw
+    ?? (tensionReadPreparing(readAt(model, hour)!, 'historicalContributors') ? null : '0');
 }
 
 /** World tension and contributions as percentages of world tension. */
@@ -202,6 +204,7 @@ export function tensionStack(model: TensionModel, keys: readonly string[], share
   const cuts = membership || countryIds ? [...new Set(held.flatMap(runs => runs.flatMap(run => [run.firstHour, run.lastHour + 1])))].sort((a, b) => a - b) : [];
   let cut = 0;
   for (const read of model.reply.reads) {
+    if (tensionReadPreparing(read, 'historicalContributors')) continue;
     while (cut < cuts.length && cuts[cut] <= read.firstHour) cut++;
     let firstHour = read.firstHour;
     while (firstHour <= read.lastHour) {
@@ -268,4 +271,9 @@ export function eventsWithin(events: readonly TensionEvent[], from: number, to: 
 export function eventsOutsideReads(model: TensionModel, events: readonly TensionEvent[], hour: number): TensionEvent[] {
   const at = Math.floor(hour);
   return readAt(model, at) ? [] : events.filter(event => event.hour === at);
+}
+
+/** Frame-only reads cannot establish historical contributor zeroes or unnamed attribution. */
+export function tensionReadPreparing(read: TensionRead, field: string): boolean {
+  return 'preparing' in read && Array.isArray(read.preparing) && read.preparing.includes(field);
 }

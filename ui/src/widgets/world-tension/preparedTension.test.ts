@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
-import { validatePreparedTension } from './preparedTension.ts';
-import { countryKey, tensionModel } from './tensionData.ts';
-import { tensionLookAt } from './tensionDrill.ts';
+import { mergePreparedTension, validatePreparedTension } from './preparedTension.ts';
+import { contributionAt, countryKey, tensionModel } from './tensionData.ts';
+import { tensionDrillAt, tensionLookAt } from './tensionDrill.ts';
 
 const bucket: ChartBucket = { firstHour: 0,lastHour: 31,firstValue: 2,lastValue: 3,lastValueHour: 30,
   minHour: 9,minValue: -7,maxHour: 21,maxValue: 11,firstBreak: false,hasBreak: false };
@@ -20,4 +20,33 @@ test('prepared exact values and original holder provenance stay separate from de
   const model = tensionModel(data,undefined,[],new Map(data.catalogue.map(country => [countryKey(country),country.firstHour])));
   assert.equal(tensionLookAt(model,countryKey(data.countries[0]),20,{firstHour:0,lastHour:30,gaps:[]}),null,'a later reached read cannot relabel the original holder');
   assert.throws(() => validatePreparedTension({...data,summaries:{world:{...total,width:0}}}));
+});
+
+test('frame contributors join a changing catalogue without inventing historical zeroes or unnamed attribution', () => {
+  const base = { branchId: '1', tensionScale: 1000, contributionScale: 100000, ceilingRaw: '10000000', warnings: [], events: [],
+    available: false, countries: [], catalogue: [], summaries: {}, exactHours: [], reads: [], coverage: { firstHour: 0, lastHour: -1, complete: false }, pending: [{ firstHour: 0, lastHour: 20 }] };
+  const current = validatePreparedTension({ ...base, available: true, preparing: ['events', 'historicalContributors'],
+    reads: [{ firstHour: 20, lastHour: 20, startsSegment: true, tensionRaw: '100', sumRaw: '10000', unnamedRaw: null,
+      preparing: ['historicalContributors', 'unnamedRaw', 'startsSegment'] }],
+    countries: [{ tag: 'A', slot: 1, runs: [{ firstHour: 20, lastHour: 20, startsSegment: true, valueRaw: '6000' }], identities: [{ firstHour: 20, lastHour: 20, slot: 1, countryId: 10 }] },
+      { tag: 'Old', slot: 9, runs: [], identities: [] }],
+    catalogue: [{ key: JSON.stringify(['A', 1]), tag: 'A', slot: 1, firstHour: 20 }, { key: '0', tag: 'Old', slot: 9, firstHour: 0 }],
+    preparingContributors: [{ hour: 20, slot: 9, valueRaw: '4000' }] });
+  const merged = mergePreparedTension(validatePreparedTension(base), current);
+  const model = tensionModel(merged);
+  assert.equal(contributionAt(model, countryKey({ tag: 'Old', slot: 9 }), 20), null);
+  const at = tensionDrillAt(model, 20)!;
+  assert.equal(at.read.unnamedRaw, null);
+  assert.equal(at.parts.find(part => part.preparing)?.raw, '4000');
+  assert.equal(at.remainder, '0');
+  const preparedRead = { ...current.reads[0], unnamedRaw: '0' };
+  delete preparedRead.preparing;
+  const complete = validatePreparedTension({ ...current, coverage: { firstHour: 0, lastHour: 20, complete: true }, pending: [], preparing: [], preparingContributors: [],
+    reads: [preparedRead],
+    countries: [current.countries[0], { ...current.countries[1], runs: [{ firstHour: 20, lastHour: 20, startsSegment: false, valueRaw: '4000' }] }] });
+  const exact = mergePreparedTension(complete, current);
+  assert.deepEqual(exact.reads, complete.reads);
+  assert.deepEqual(exact.preparingContributors, []);
+  assert.deepEqual(exact.preparing, []);
+  assert.throws(() => validatePreparedTension({ ...current, reads: [{ ...current.reads[0], preparing: [] }] }));
 });

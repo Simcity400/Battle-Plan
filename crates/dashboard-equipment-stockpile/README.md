@@ -26,3 +26,14 @@ compression helper.
 
 `cargo test -p dashboard-equipment-stockpile` builds and runs only this crate's
 tests.
+
+A table sampled before complete preparation retains exact supplying-read
+quantities, with its type attribution marked approximate at the requested hour.
+The complete branch can supply a later nonempty classification token. The table
+shows this distinction without changing the supplying-read sampler.
+
+The at-hour sampler also answers before the first commit, with the shared empty
+accepted extent. Its raw reply is retained in the existing observation cache,
+bound to content and keyed by holder tag, hour and membership spans. Re-asks
+update preparation metadata without repeating the supplying-read look-back.
+The retained-byte bound follows the live blocks in that read window.

@@ -4,7 +4,7 @@ use crate::prepared::series::tests::Fixture;
 use crate::prepared::series::{Accumulator, Run};
 use replay::{
     container::Replay,
-    frame::TableView,
+    frame::{DecodedFrame, TableView},
     rows::{TableId, TableRows},
 };
 
@@ -242,6 +242,141 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
             assert_eq!(at(&actual_leaf["runs"], date), at(&leaf["runs"], date));
         }
     }
+}
+
+/// Before production's coverage completes, a reply answers the prepared
+/// prefix's endpoints, names the later recorded hours pending and holds them
+/// as still being prepared; once complete it is the complete reply.
+#[test]
+fn production_spending_answers_the_prepared_prefix_with_the_hours_still_pending() {
+    let flag = AtomicBool::new(false);
+    let mut frames = day(
+        0,
+        vec![line(7, 1, 100_000)],
+        Some(vec![applied(7, 1, 1, 8_000)]),
+    );
+    frames.extend(day(
+        1,
+        vec![line(7, 1, 100_000)],
+        Some(vec![applied(7, 1, 2, 9_000)]),
+    ));
+    frames.extend(day(
+        2,
+        vec![line(7, 1, 100_000)],
+        Some(vec![applied(7, 1, 3, 12_000)]),
+    ));
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, frames.clone())],
+    )
+    .unwrap();
+    let format = replay.format;
+    let (source, root) = crate::test_fixtures::file_source(replay);
+    let (store, key) = crate::prepared::files(&source, None).unwrap();
+    let (prefix_last, last) = (hour(0) + 23, hour(2) + 23);
+    let request = |hour: i32| {
+        json!({"branchId": "1", "tag": "opaque|tag", "refits": false,
+            "from": null, "hour": hour, "end": hour})
+    };
+    let mut state = pages::ProductionAccumulator::new(format.version(), 1, hour(0));
+    // Commits as production prepared on its own commits: through the end of
+    // the first day, then through the branch's end.
+    let mut commit = |writer: &mut store::Writer, frames: &[DecodedFrame]| {
+        for frame in frames {
+            if let Some(page) = state
+                .ingest(format, frame, Named::default(), &flag)
+                .unwrap()
+            {
+                pages::publish_endpoint(writer, &mut state, &page).unwrap();
+            }
+        }
+        if let Some(page) = state.flush() {
+            pages::publish_endpoint(writer, &mut state, &page).unwrap();
+        }
+        pages::write_catalogue(writer, &mut state, &flag).unwrap();
+        let through = frames.last().unwrap().hour;
+        crate::prepared::coverage::publish_coverage(writer, 1, hour(0), through, through == last)
+            .unwrap();
+    };
+    let mut writer = store.replace(key.clone()).unwrap();
+    commit(&mut writer, &frames[..24]);
+    writer.commit().unwrap();
+    // The old reply waited for complete coverage and answered nothing.
+    let cold = query(&source, request(last), None, &flag)
+        .unwrap()
+        .expect("a prefix reply before completion");
+    let mut writer = store.extend(&key).unwrap();
+    commit(&mut writer, &frames[24..]);
+    writer.commit().unwrap();
+    assert_eq!(cold["coverage"]["complete"], false);
+    assert_eq!(cold["coverage"]["lastHour"], prefix_last);
+    assert_eq!(
+        cold["pending"],
+        json!([{"firstHour": hour(1), "lastHour": last}])
+    );
+    assert_eq!(cold["exactHours"], json!([prefix_last]));
+    assert_eq!(
+        cold["approximate"],
+        json!([{"firstHour": hour(0), "lastHour": prefix_last}])
+    );
+    // The prefix's amounts are those the complete reply answers at that hour.
+    let complete = query(&source, request(prefix_last), None, &flag)
+        .unwrap()
+        .unwrap();
+    assert_eq!(complete["coverage"]["complete"], true);
+    assert_eq!(complete["pending"], json!([]));
+    assert_eq!(complete["approximate"], json!([]));
+    assert!(at(&cold["total"], prefix_last).unwrap().0.is_string());
+    for field in ["total", "rocketTotal"] {
+        assert_eq!(
+            at(&cold[field], prefix_last),
+            at(&complete[field], prefix_last),
+            "{field}"
+        );
+        // Every later hour is still being prepared, never an unread hour.
+        assert_eq!(
+            at(&cold[field], last),
+            Some((Value::Null, json!("preparing"))),
+            "{field}"
+        );
+    }
+    for leaf in complete["leaves"].as_array().unwrap() {
+        let cold_leaf = cold["leaves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["variant"] == leaf["variant"] && item["rocket"] == leaf["rocket"])
+            .unwrap();
+        assert_eq!(
+            at(&cold_leaf["runs"], prefix_last),
+            at(&leaf["runs"], prefix_last)
+        );
+        assert_eq!(
+            at(&cold_leaf["runs"], last),
+            Some((Value::Null, json!("preparing")))
+        );
+    }
+    // Once complete, the last hour is answered as the branch scan answers it.
+    let oracle = serde_json::to_value(
+        reply(
+            &production::scan(source.replay_ref(), 1, &flag).unwrap(),
+            &ProductionSpendingParams {
+                branch_id: "1".into(),
+                tag: "opaque|tag".into(),
+                refits: false,
+            },
+            Named::default(),
+            Vec::new(),
+            &flag,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let whole = query(&source, request(last), None, &flag).unwrap().unwrap();
+    assert_eq!(whole["pending"], json!([]));
+    assert_eq!(at(&whole["total"], last), at(&oracle["total"], last));
+    drop(source);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

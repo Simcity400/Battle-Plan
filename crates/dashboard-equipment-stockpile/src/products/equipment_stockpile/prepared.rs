@@ -1665,27 +1665,194 @@ pub fn query(
     }
     let branch = country.branch();
     // The stockpile prepared on its own answers from its own coverage.
-    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
+    let coverage = dashboard_base::prepared::prefix::read_or_empty(
         source,
         context.content.as_ref(),
-        branch,
         "equipment-stockpile",
+        branch,
+        Some(request.to.ceil() as i32),
         cancelled,
     )?
-    else {
-        return Ok(None);
-    };
+    .coverage;
+    let window = request.kind.is_empty() || request.kind == "window";
+    // Before coverage completes, a table at one hour is the hour's own frame
+    // with each holder's last reads carried to it, as preparation carries them.
+    if !coverage.complete && window && request.from.floor() == request.to.floor() {
+        return sample_at(source, request, context, coverage, cancelled);
+    }
     // Final tokens and automatic choices describe the whole branch, including
     // observations after this viewport. A prefix cannot decide those facts.
-    if !coverage.complete
-        && (request.kind.is_empty()
-            || request.kind == "window"
-            || request.to.ceil() > f64::from(coverage.last_hour))
-    {
+    if !coverage.complete && (window || request.to.ceil() > f64::from(coverage.last_hour)) {
         return Ok(None);
     }
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
     read_window(source, request, context, &store, &key, cancelled)
+}
+
+/// The tables the frame step reads at a sampled hour: the stockpile, line and
+/// logistics tables, and the variant catalogue's with the countries and links.
+fn sample_tables() -> Vec<TableId> {
+    let mut tables: Vec<_> = [
+        TableId::Campaign,
+        TableId::Stockpiles,
+        TableId::ProductionLines,
+        TableId::LogisticsEquipment,
+    ]
+    .into_iter()
+    .chain(VariantCatalogue::TABLES)
+    .collect();
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
+/// The stockpile, line and logistics tables' read cadence: each is read once
+/// a day, so a day before an hour holds the reads that supply it.
+const READ_CADENCE_HOURS: i32 = 24;
+
+/// The reply at one hour while the stockpile's coverage is partial, from the
+/// recording (`firstView` a): the frame step over the hour's block from its
+/// keyframe, and over the blocks before it while the country's stock and
+/// logistics reads by the hour are not all found and the blocks stepped do
+/// not yet reach a day before the hour, so each last read carries to the hour
+/// as preparation carries it. The look-back is the tables' read cadence. Values at the hour are exact; variant names are the
+/// hours' own, and a type is classified by its latest nonempty token by the
+/// hour, which is the branch's own at its last hour. The reply carries the
+/// coverage, with no hour pending; it has no prepared display, whose
+/// automatic choices describe the whole branch.
+fn sample_at(
+    source: &Source,
+    request: Request,
+    context: &LoadContext,
+    coverage: dashboard_base::prepared::coverage::Coverage,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<serde_json::Value>> {
+    use dashboard_base::prepared::query::observations;
+    let branch: u64 = request
+        .branch_id
+        .parse()
+        .expect("validated stockpile branch");
+    let hour = request.to.floor() as i32;
+    let (_, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
+    let raw = if let Some(block) =
+        source.replay_ref().index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
+        }) {
+        let blocks = source
+            .replay_ref()
+            .index
+            .iter()
+            .filter(|block| {
+                block.branch == branch
+                    && block.first_hour <= hour
+                    && i64::from(block.last_hour) >= i64::from(hour) - i64::from(READ_CADENCE_HOURS)
+            })
+            .count();
+        observations::scope(source, "stockpile:at-hour", Some(&key))
+            .working_set(blocks)
+            .get(
+                block,
+                &(&request.tag, hour, &request.within),
+                cancelled,
+                observations::json_bytes,
+                || observe_at(source, &request, context, cancelled),
+            )?
+            .as_ref()
+            .clone()
+    } else {
+        observe_at(source, &request, context, cancelled)?
+    };
+    let mut data = raw;
+    dashboard_base::prepared::prefix::Prefix {
+        coverage,
+        pending: Vec::new(),
+    }
+    .mark(&mut data)?;
+    Ok(Some(data))
+}
+
+fn observe_at(
+    source: &Source,
+    request: &Request,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let hour = request.to.floor() as i32;
+    let country = CountryParams {
+        branch_id: request.branch_id.clone(),
+        tag: request.tag.clone(),
+    };
+    let branch = country.branch();
+    let replay = source.replay_ref();
+    let blocks: Vec<_> = replay
+        .index
+        .iter()
+        .filter(|block| block.branch == branch && block.first_hour <= hour)
+        .collect();
+    let member = request.within.as_ref().is_none_or(|within| {
+        within
+            .iter()
+            .any(|span| span.first_hour <= hour && hour <= span.last_hour)
+    });
+    let selected = sample_tables();
+    let step = |blocks: &[&replay::container::BlockIndex]| -> io::Result<ScannedStockpile> {
+        let mut state = ScanState::default();
+        for block in blocks {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let frames = replay.read_block_selected(block, &selected)?;
+            let mut decoder = replay::frame::FrameDecoder::for_tables(&selected);
+            for frame in &frames {
+                dashboard_text::metadata::check_cancel(cancelled)?;
+                let decoded = decoder.advance(frame)?;
+                if decoded.hour > hour {
+                    break;
+                }
+                let reads = decoded
+                    .complete::<tables::Countries>()
+                    .ok()
+                    .map(|countries| {
+                        dashboard_base::products::territory::CountryReads::new(decoded, countries)
+                    });
+                let input = FrameRows::resolved(decoded, reads.as_ref(), true, true);
+                state.result.variants.observe(replay.format, decoded);
+                state.observe(
+                    replay.format,
+                    &input,
+                    input.identities.get(&request.tag).copied(),
+                );
+            }
+        }
+        Ok(state.result)
+    };
+    let mut scanned = ScannedStockpile::default();
+    if member && let Some(mut first) = blocks.len().checked_sub(1) {
+        dashboard_base::prepared::query::progressive::decodes_allowed()?;
+        loop {
+            scanned = step(&blocks[first..])?;
+            let read = !scanned.reads.is_empty() && !scanned.logistics_reads.is_empty();
+            if read
+                || first == 0
+                || i64::from(blocks[first].first_hour)
+                    <= i64::from(hour) - i64::from(READ_CADENCE_HOURS)
+            {
+                break;
+            }
+            first -= 1;
+        }
+    }
+    let warnings = scanned.variants.warnings();
+    let (stock, daily) = (&scanned.stock.runs, &scanned.daily.runs);
+    scanned
+        .variants
+        .versions
+        .retain(|id, _| stock.contains_key(id) || daily.contains_key(id));
+    let reply = reply(source, &country, context, &scanned, warnings, cancelled)?;
+    let mut data = serde_json::to_value(reply)?;
+
+    // The quantities are the supplying reads' exact operands. A later
+    // nonempty variant token can still change their type attribution.
+    data["approximate"] = serde_json::json!([{"firstHour": hour, "lastHour": hour}]);
+    Ok(data)
 }
 
 fn read_window(

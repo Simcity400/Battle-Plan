@@ -35,4 +35,12 @@ keys from the shared catalogue.
 Ranking reads only records for battles in the selected windows and uses the same
 country filter, measure, tie order and reply builder as the recording product.
 Delayed finalizer facts repair their affected block pages. Manifests read prepared
-availability. The Land battles log and biggest list retain their parity row labels.
+availability. Before forward preparation covers the branch, the manifest and the
+newest window answer from the newest window published as soon as its look-back is
+proven; its content warnings, which read every earlier block's naming tables,
+follow later (`warningsComplete: false` until then), and earlier windows wait for
+coverage. The Land battles log and biggest list retain their parity row labels.
+
+The shared battle view retains the prepared-prefix metadata through loss/warning
+decoding. Cold windows are pending; provisional committed pages carry the
+Approximate coverage note until complete or an exact newest proof answers them.

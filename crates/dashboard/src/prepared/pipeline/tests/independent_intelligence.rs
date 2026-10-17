@@ -821,3 +821,163 @@ fn intelligence_answers_from_its_own_coverage_while_the_hourly_walk_accepts_noth
     });
     clear(source);
 }
+
+#[test]
+fn cold_intelligence_histories_answer_marked_prefixes_instead_of_null() {
+    let replay = scenario(2, false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("cold-intelligence-prefix");
+    for (product, params) in requests("1")
+        .into_iter()
+        .filter(|(_, params)| params["window"].is_null())
+    {
+        let reply = query(&source, product, params).unwrap();
+        assert!(reply.is_object(), "{product}: {reply}");
+        assert!(
+            reply["preparedCoverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(
+                    |first| reply["preparedCoverage"]["lastHour"].as_i64() == first.checked_sub(1)
+                )
+                && reply["preparedCoverage"]["complete"] == false
+        );
+        assert!(
+            !reply["pending"].as_array().unwrap().is_empty(),
+            "{product}"
+        );
+        if product == "decryption" {
+            assert!(reply["coverage"].is_array());
+        }
+    }
+    let roster = query(
+        &source,
+        "operatives-roster",
+        serde_json::json!({"branchId":"1","tags":[],"includeDeparted":false}),
+    )
+    .unwrap();
+    assert!(roster.is_object());
+    assert!(!roster["pending"].as_array().unwrap().is_empty());
+    clear(source);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: prepares the five intelligence products"
+)]
+fn intelligence_first_day_values_match_the_prepared_values_and_reasks_reuse_reads() {
+    let replay = scenario(SPANS.len(), false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("cold-intelligence-day");
+    let first = base(1) + 96;
+    let last = base(1) + 119;
+    let requests = [
+        (
+            "decryption",
+            serde_json::json!({"branchId":"1","firstHour":first,"lastHour":last}),
+        ),
+        (
+            "agency-comparison",
+            serde_json::json!({"selection":{"branchId":"1","tags":[],"top":null},"firstHour":first,"lastHour":last}),
+        ),
+        (
+            "operative-placements",
+            serde_json::json!({"branchId":"1","firstHour":first,"lastHour":last}),
+        ),
+    ];
+    let cold: Vec<_> = requests
+        .iter()
+        .map(|(product, params)| query(&source, product, params.clone()).unwrap())
+        .collect();
+    assert!(
+        cold.iter()
+            .all(|reply| reply["pending"].as_array().unwrap().is_empty())
+    );
+    let before = dashboard_base::prepared::query::frames::reads(&source);
+    for ((product, params), expected) in requests.iter().zip(&cold) {
+        assert_eq!(&query(&source, product, params.clone()).unwrap(), expected);
+    }
+    assert_eq!(
+        dashboard_base::prepared::query::frames::reads(&source),
+        before
+    );
+    for product in [
+        "decryption:day",
+        "agency-comparison:day",
+        "operative-placements:day",
+    ] {
+        let (bytes, bound, computations) =
+            dashboard_base::prepared::query::observations::usage(&source, product);
+        assert!(bytes > 0 && bytes <= bound, "{product}");
+        assert_eq!(computations, 1, "a re-ask reuses the {product} observation");
+    }
+    run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+    let full: Vec<_> = requests
+        .iter()
+        .map(|(product, params)| query(&source, product, params.clone()).unwrap())
+        .collect();
+    let at = |rows: &serde_json::Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|run| {
+                run["firstHour"].as_i64().unwrap() <= i64::from(last)
+                    && run["lastHour"].as_i64().unwrap() >= i64::from(last)
+            })
+            .cloned()
+    };
+    let agency_values = |reply: &serde_json::Value| {
+        reply["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|series| {
+                at(&series["entries"]).map(|entry| (series["tag"].clone(), entry["value"].clone()))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(agency_values(&cold[1]), agency_values(&full[1]));
+    let placements = |reply: &serde_json::Value| {
+        reply["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|pair| {
+                at(&pair["runs"]).map(|mut run| {
+                    run.as_object_mut().unwrap().remove("firstHour");
+                    run.as_object_mut().unwrap().remove("lastHour");
+                    (pair["id"].clone(), run)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(placements(&cold[2]), placements(&full[2]));
+    let cipher = |reply: &serde_json::Value| {
+        reply["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|pair| {
+                at(&pair["runs"]).map(|run| {
+                    let amount: i128 = run["startAmountRaw"].as_str().unwrap().parse().unwrap();
+                    let step: i128 = run["stepRawPerDay"].as_str().unwrap().parse().unwrap();
+                    let days = (i64::from(last) - run["firstHour"].as_i64().unwrap()) / 24;
+                    (
+                        pair["ownerId"].clone(),
+                        pair["targetId"].clone(),
+                        amount + step * i128::from(days),
+                        run["stateFlags"].clone(),
+                        run["thresholdRaw"].clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cipher(&cold[0]), cipher(&full[0]));
+    assert!(cold[0]["pairs"].as_array().unwrap().iter().all(|pair| {
+        pair["runs"].as_array().unwrap().iter().all(|run| {
+            run["started"].is_null() && run["preparing"] == serde_json::json!(["started", "breaks"])
+        })
+    }));
+    clear(source);
+}

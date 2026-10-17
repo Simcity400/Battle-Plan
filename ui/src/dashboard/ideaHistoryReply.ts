@@ -1,5 +1,11 @@
-import type { IdeaHistoryReply } from '../generated/dashboard';
+import { isOrderedSpans } from '../charts/series.ts';
+import type { HourSpan, IdeaSpan, IdeaHistoryReply } from '../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from './artwork.ts';
+
+export type IdeaHistoryFirstView = IdeaHistoryReply & {
+  approximate?: HourSpan[];
+  held?: { hour: number; slot: number; countryId: number; spans: IdeaSpan[]; preparing: string[] };
+};
 
 export type IdeaTooltipData = Pick<IdeaHistoryReply, 'ideas' | 'artwork' | 'modifiers' | 'texts'>;
 
@@ -37,15 +43,18 @@ export function validateIdeaTooltipData(data: unknown): IdeaTooltipData {
 }
 
 /** Checks the reply's shape before the widget reads it. */
-export function validateIdeaHistoryReply(data: unknown): IdeaHistoryReply {
-  const reply = data as IdeaHistoryReply;
+export function validateIdeaHistoryReply(data: unknown): IdeaHistoryFirstView {
+  const reply = data as IdeaHistoryFirstView;
   const ok = typeof reply === 'object' && reply != null && Array.isArray(reply.spans) && Array.isArray(reply.holders)
     && reply.holders.every(holder => typeof holder?.token === 'string' && typeof holder.name === 'string' && typeof holder.characterToken === 'string' && Number.isInteger(holder.character) && typeof holder.artwork === 'object' && holder.artwork != null)
     && Array.isArray(reply.categories) && Array.isArray(reply.unobserved) && Array.isArray(reply.warnings)
     && Array.isArray(reply.identityStarts) && reply.identityStarts.every(hour => Number.isInteger(hour))
     && isIdeaTooltipData(reply)
     && reply.spans.every(span => typeof span.token === 'string' && Number.isInteger(span.firstHour) && Number.isInteger(span.lastHour) && span.firstHour <= span.lastHour);
-  if (!ok) throw new Error('The idea history reply is malformed.');
+  if (!ok || reply.approximate !== undefined && !isOrderedSpans(reply.approximate)
+    || reply.held !== undefined && (!Number.isInteger(reply.held.hour) || !Number.isInteger(reply.held.slot) || !Number.isInteger(reply.held.countryId) || !Array.isArray(reply.held.spans)
+      || !reply.held.spans.every(span => typeof span.token === 'string' && span.firstHour === reply.held!.hour && span.lastHour === reply.held!.hour)
+      || !Array.isArray(reply.held.preparing) || !reply.held.preparing.every(field => typeof field === 'string'))) throw new Error('The idea history reply is malformed.');
   keepDrawableIcons(reply.artwork);
   return reply;
 }

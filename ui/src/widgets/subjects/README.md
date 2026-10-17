@@ -17,6 +17,7 @@ recording product used for exact comparisons.
 - Both endpoints and lanes key on native holders. Manual roots follow their holders/aliases; replacements using a tag get separate lanes. Smart groups retain hour/end/ever dates. Missing identity/coverage makes counts unknown, never proof of no subjects.
 - Names/flags use proved aliases at shown/hovered dates, bounded by holder and readable spans. Pending/refused flags retain reasons. An unrecorded hour says **Not recorded**, not an ended relation.
 - Live reveals reached lanes and grows bars; the shared timeline owns zoom, keyboard changes, complete tooltips and Jump. A changed overlord appears in the corresponding separate tree.
+- While preparation runs, the prepared prefix is exact and each later block shows the relations and levels of its keyframe, drawn approximate (faded, dashed) and named in the key line; a relation's start stays the game's recorded start, and an end inside those hours reads "around" its date. Hours no keyframe answered are **Still being prepared**: a light band, unknown rather than an ending. The exact history replaces both as preparation reaches them. Per-block relation/level observations are cached across re-asks, so a moving prefix does not resample the same keyframes.
 
 **Files:** [SubjectsWidget.tsx](SubjectsWidget.tsx) renders the [lane timeline](../../charts/timeline/README.md); [subjectsData.ts](subjectsData.ts) validates/shapes native trees and relation bounds, with adjacent tests. `subjects.css`, `definition.ts` and `index.ts` own styling, settings and registration.
 

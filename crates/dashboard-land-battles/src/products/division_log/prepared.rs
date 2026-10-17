@@ -3,6 +3,159 @@ use super::*;
 use dashboard_base::prepared::series;
 use serde_json::Value;
 
+pub fn first_view(
+    source: &Source,
+    product: &str,
+    params: Value,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use dashboard_base::prepared;
+    let branch = branch(
+        source,
+        params["branchId"]
+            .as_str()
+            .ok_or_else(|| dashboard_core::invalid("Invalid division branch"))?,
+    )?;
+    let windows = windows(source.replay_ref(), branch);
+    if windows.is_empty() {
+        return Err(dashboard_core::invalid("Empty division branch"));
+    }
+    let requested_window = params
+        .get("window")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| windows.get(index));
+    let requested = params
+        .get("lastHour")
+        .and_then(Value::as_i64)
+        .and_then(|hour| i32::try_from(hour).ok())
+        .or_else(|| requested_window.map(|window| window.last_hour));
+    let requested_first = params
+        .get("firstHour")
+        .and_then(Value::as_i64)
+        .and_then(|hour| i32::try_from(hour).ok())
+        .or_else(|| requested_window.map(|window| window.first_hour));
+    let mut prefix = prepared::prefix::read_or_empty(
+        source,
+        context.content.as_ref(),
+        product,
+        branch,
+        requested,
+        cancelled,
+    )?;
+    let accepted =
+        (prefix.coverage.first_hour <= prefix.coverage.last_hour).then(|| prefix.coverage.clone());
+    if let Some(first) = requested_first {
+        prefix.pending.retain(|span| span.last_hour >= first);
+        for span in &mut prefix.pending {
+            span.first_hour = span.first_hour.max(first);
+        }
+    }
+    let (store, key) = prepared::files(source, context.content.as_ref())?;
+    let mut data = match product {
+        "division-log-manifest" => {
+            let mut manifest = series::read_reply::<DivisionLogManifestReply>(
+                &store,
+                &key,
+                &format!("division-log-manifest-{branch}"),
+                0,
+            )?
+            .unwrap_or(DivisionLogManifestReply {
+                windows: windows.clone(),
+                available: false,
+                losses_available: false,
+                templates: Vec::new(),
+                content_warnings: Vec::new(),
+            });
+            if !prefix.coverage.complete {
+                let params = DivisionLogParams {
+                    branch_id: branch.to_string(),
+                    window: windows.len() - 1,
+                };
+                if let Some((newest, available, losses_available)) =
+                    super::newest::query(source, &params, context, cancelled)?
+                {
+                    manifest.available |= available;
+                    manifest.losses_available |= losses_available;
+                    for row in &newest.rows {
+                        manifest.losses_available |= row.kind != DivisionLogKind::Created;
+                        if let Some(id) = &row.template {
+                            if let Some(template) = manifest
+                                .templates
+                                .iter_mut()
+                                .find(|template| &template.id == id)
+                            {
+                                template.name.clone_from(&row.template_name);
+                            } else {
+                                manifest.templates.push(DivisionLogTemplate {
+                                    id: id.clone(),
+                                    name: row.template_name.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            manifest.templates.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+            serde_json::to_value(manifest)?
+        }
+        "division-log" => {
+            let typed: DivisionLogParams = serde_json::from_value(params.clone())?;
+            DivisionLog::validate(&typed).map_err(dashboard_core::invalid)?;
+            let interval = windows
+                .get(typed.window)
+                .ok_or_else(|| dashboard_core::invalid("Division window not in branch"))?
+                .clone();
+            if accepted.is_some()
+                && (prefix.coverage.complete || interval.last_hour <= prefix.coverage.last_hour)
+            {
+                query(source, product, params, &store, &key, cancelled)?
+            } else if let Some((reply, _, _)) =
+                super::newest::query(source, &typed, context, cancelled)?
+            {
+                let exact = interval.first_hour;
+                prefix.sampled(&[dashboard_base::products::country_groups::HourSpan {
+                    first_hour: exact,
+                    last_hour: interval.last_hour,
+                }]);
+                let mut data = serde_json::to_value(reply)?;
+                data["warningsComplete"] = serde_json::Value::Bool(false);
+                data["exact"] = Value::from(exact);
+                data
+            } else {
+                serde_json::to_value(DivisionLogReply {
+                    window: typed.window,
+                    interval,
+                    rows: Vec::new(),
+                    warnings: Vec::new(),
+                    content_warnings: Vec::new(),
+                })?
+            }
+        }
+        "division-log-totals" => {
+            let mut typed: DivisionLogTotalsParams = serde_json::from_value(params)?;
+            DivisionLogTotals::validate(&typed).map_err(dashboard_core::invalid)?;
+            let requested = typed.last_hour;
+            typed.last_hour = typed.last_hour.min(prefix.coverage.last_hour);
+            let mut data = if accepted.is_some() && typed.first_hour <= typed.last_hour {
+                serde_json::to_value(totals(&typed, &store, &key, branch, cancelled)?)?
+            } else {
+                serde_json::json!({"created":null,"lost":null,"transferred":null,"warnings":[]})
+            };
+            if accepted.is_none()
+                || !prefix.coverage.complete && requested > prefix.coverage.last_hour
+            {
+                data["preparing"] = serde_json::json!(["created", "lost", "transferred"]);
+            }
+            data
+        }
+        _ => unreachable!("division product"),
+    };
+    prefix.mark_coverage(&mut data, "coverage")?;
+    Ok(data)
+}
+
 // These are the actual totals queries' marginals, not prepared selector subsets.
 // Unknown actors/templates stay distinct from the all-actors/all-templates totals.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -37,10 +190,7 @@ impl dashboard_base::prepared::prepass::Held for Counter {
 /// Each page and count key, and the series' batch.
 impl dashboard_base::prepared::prepass::Held for Counts {
     fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
-        bytes
-            .heap(&self.pages)
-            .heap(&self.keys)
-            .heap(&self.series);
+        bytes.heap(&self.pages).heap(&self.keys).heap(&self.series);
     }
 }
 impl Counts {

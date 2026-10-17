@@ -8,6 +8,7 @@ import { isPreparedProduct, preparedSeriesQuery } from './preparedSeries.ts';
 import { validateCountryGroupReply } from './groupsReply.ts';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 import { newId } from '../shell/ids.ts';
+import { finalPreparedReply } from './preparedPrefix.ts';
 
 /** Each reply's length as the transport received it, so the cache sizes a reply
  * without serialising it again; a reply without one is measured by serialising. */
@@ -39,12 +40,6 @@ function usesPrepared(client: DashboardClient, request: ProductRequest, source?:
   const prepared = isPreparedProduct(request.product) || (!!client.preparedQuery && request.product === 'politics-ledger') || (!!source && !!client.preparedQuery && (request.product === 'army-size' || request.product === 'supply-health' || request.product === 'series-summary' || request.product === 'military-air-ledger' || request.product === 'air-aces' || request.product === 'air-ace-portraits' || request.product === 'raids' || request.product === 'air-superiority' || request.product === 'casualty-pairs' || request.product === 'equipment-losses' || request.product === 'subjects' || request.product === 'wars' || request.product === 'country-groups' || request.product === 'party-history' || request.product === 'scoreboard' || request.product === 'series-state' || request.product === 'unit-leaders' || request.product === 'construction-log' || request.product === 'construction-log-manifest' || request.product === 'construction-spending' || request.product === 'resource-balance' || request.product === 'trade-flows' || request.product === 'production-spending' || request.product === 'casualty-breakdown' || request.product === 'equipment-stockpile' || request.product === 'series-next-change' || request.product === 'events-page' || request.product === 'events-clusters' || request.product === 'occupied-states' || request.product === 'occupied-states-manifest' || request.product === 'land-owners' || request.product === 'espionage-log' || request.product === 'operative-placements' || request.product === 'operatives-roster' || request.product === 'agency-comparison' || request.product === 'decryption'));
   if (prepared && source && (source.id !== request.sourceId || source.revision !== request.revision)) throw new Error('The prepared product source does not match its request.');
   return prepared;
-}
-
-/** Coverage belongs to the native reply, even if a validator projects it away. */
-function finalPreparedReply(data: unknown): boolean {
-  return !data || typeof data !== 'object' || !('coverage' in data)
-    || (data as { coverage?: { complete: boolean } | null }).coverage?.complete === true;
 }
 
 /** One-shot loads return their first reply. Mounted prepared loads publish each
@@ -97,10 +92,14 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
   }, signal, () => final).then(reply => reply.data as T);
 }
 
-/** Prepared smart groups share the ordinary content/source cache and cancellation. */
-export function loadCountryGroups(client: DashboardClient, source: import('./client').DashboardSource, branchId: string, signal: AbortSignal, restart = false): Promise<import('../generated/dashboard').CountryGroupReply> {
+/** Prepared smart groups share the ordinary content/source cache and cancellation.
+ * With `publish`, each reply answered from the prepared prefix (carried on by
+ * later keyframes) is published as it grows, and the promise resolves with the
+ * complete reply; without it, the first reply. */
+export function loadCountryGroups(client: DashboardClient, source: import('./client').DashboardSource, branchId: string, signal: AbortSignal, restart = false,
+  publish?: (data: import('../generated/dashboard').CountryGroupReply) => void): Promise<import('../generated/dashboard').CountryGroupReply> {
   const request = { sourceId: source.id, revision: source.revision, product: 'country-groups', params: { branchId } };
-  return loadProduct(client, request, signal, validateCountryGroupReply, source, restart);
+  return loadProduct(client, request, signal, validateCountryGroupReply, source, restart, publish);
 }
 
 /** Load one product without caching it: for per-hour requests that follow playback

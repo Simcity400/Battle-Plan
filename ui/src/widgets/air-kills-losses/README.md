@@ -6,7 +6,11 @@
 
 **Settings:** Top-ten race by own losses by default; enemy losses, regions/causes, manual countries and smart groups, ratio, line/axis controls, one View selector for Race, Lines over time or Loss causes, and inline/pop-out drill. Chart controls appear in the views that use them; Loss causes keeps its future-history switch. Campaign, Follow, Pin and Range.
 
-Prepared queries load the shared ledger event pages; availability reads the saved family flag.
+Prepared queries load the shared ledger event pages through committed coverage,
+with the recorded hours after it marked pending. A shown hour outside that prefix
+says **This range is still being prepared.** It never presents a prefix total as
+the campaign total. Before the first commit the marked empty reply asserts no
+known zero or unavailable family. Availability reads the saved family flag.
 
 **Notable behaviour:**
 

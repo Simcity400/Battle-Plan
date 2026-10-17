@@ -65,7 +65,7 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
   });
   const indices = [...wanted].sort((a,b)=>a-b);
   const history = useProductWindows<NavalLossesReply>(client,identity,index => ({ sourceId:track!.source.id,revision:track!.source.revision,product:'naval-losses',params:{...params!,window:index} }),
-    indices,active && manifest.data?.available === true,validateNavalWindow);
+    indices,active && manifest.data?.available === true,validateNavalWindow,track?.source,true);
   const combined = useMemo(() => manifest.data ? mergeNavalWindows(manifest.data,history.data.values()) : undefined,[manifest.data,history.data]);
   const at = battleWindowIndex(windows,moment);
   const display = useWindowDisplay(identity,manifest.data && (at < 0 || !manifest.data.available || history.data.has(at)) ? combined : undefined,moment,client);

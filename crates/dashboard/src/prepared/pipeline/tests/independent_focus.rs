@@ -436,7 +436,8 @@ fn replies(source: &Source) -> Vec<serde_json::Value> {
     replies
 }
 
-/// Batches end every two blocks or once per branch: every reply, focus hours'
+/// Batches end every block, every two blocks, or only early (at powers of two)
+/// and at branch ends: every reply, focus hours'
 /// first and last hours and progress included, is the same, in both modes,
 /// so no run breaks where a commit falls.
 #[test]
@@ -572,15 +573,21 @@ fn focus_hour_answers_from_its_own_coverage_while_the_hourly_walk_accepts_nothin
         let source = fixture.source("focus-stalled");
         let flag = AtomicBool::new(false);
         let tag = String::from_utf8(scale_tag(0)).unwrap();
+        let cold = query(
+            &source,
+            "focus-hour",
+            serde_json::json!({ "branchId": "1", "tag": tag, "hour": LAST }),
+        )
+        .unwrap();
+        assert!(!cold.is_null());
+        assert_eq!(cold["orderFirstHour"], serde_json::Value::Null);
         assert!(
-            query(
-                &source,
-                "focus-hour",
-                serde_json::json!({ "branchId": "1", "tag": tag, "hour": LAST })
-            )
-            .unwrap()
-            .is_null()
+            cold["preparing"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("completedByHour"))
         );
+        assert!(!cold["pending"].as_array().unwrap().is_empty());
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;
         let error = run_checked(

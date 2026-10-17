@@ -90,7 +90,9 @@ test('actual dated log callers select all native holders and send the same bound
     '/dashboard/products.ts': `export const useProduct = (_client, request, active) => {
       const f = globalThis.__datedLogHolder;
       if (request) f.requests.push({ product: request.product, active, countries: request.params.countries });
-      return { data: request && f.replies[request.product], retry() {} };
+      const data = request && f.replies[request.product];
+      return { data: request?.product === 'air-aces' && request.params.view === 'roster'
+        ? { manifest: data, roster: f.windows['air-aces'], readHour: f.actor.hour, preparing: [] } : data, retry() {} };
     }; export const loadProduct = () => { throw new Error('Unexpected label request'); };`,
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, _identity, request) => ({
       data: new Map([[0, globalThis.__datedLogHolder.windows[request(0).product]]]), errors: new Map(), retry() {} });
@@ -101,7 +103,7 @@ test('actual dated log callers select all native holders and send the same bound
         data: globalThis.__datedLogHolder.replies['event-feed'], identity: 'fixture', pages: [{ key: '0',
           rows: active ? filteredEventRows(globalThis.__datedLogHolder.replies['event-feed'], filter) : [] }],
         warnings: [], errors: new Map(), onWantedPages() {}, retry() {}, retryPages() {} });`,
-    '/charts/log/LogList.tsx': 'export default props => { globalThis.__datedLogHolder.rows = props.rows ?? props.pages.flatMap(page => page.rows); return null; };',
+    '/charts/log/LogList.tsx': 'export const PreparedLogCoverage = () => null; export default props => { globalThis.__datedLogHolder.rows = props.rows ?? props.pages.flatMap(page => page.rows); return null; };',
     '/charts/table/Table.tsx': 'export default props => { globalThis.__datedLogHolder.rows = props.rows; return null; };',
     '/widgets/battles/BattleLog.tsx': 'export default props => { globalThis.__datedLogHolder.rows = props.rows; return null; };',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',

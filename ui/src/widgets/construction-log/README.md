@@ -55,6 +55,7 @@ Campaign/follow/pin/range are available. With Filter chips on, one line above th
   - The widget holds the shown hour's window, the next during Live and, back from there, as many rows below the drawn ones as are drawn. Short of them it reaches further back, filters included.
   - Rows dated before the oldest window held unbroken wait for it, so the list is always the whole log's newest rows.
   - A far jump keeps the last shown hour until its window arrives.
+  - Before preparation reaches the shown hour, the log shows its prepared prefix's last hour with "Prepared A to B; the rest is still being prepared." The manifest lists the building types prepared so far, and each window held is replaced as the prefix grows, since its projects' later history is still being prepared.
 
 - Parity builds expose the reached history boundary to the [browser harness](../../../e2e/README.md), so a stable newest window cannot certify a complete log. Ordinary builds expose no test metadata.
 - After normal visible screenshots, parity builds prepare every row through the original history reach, requiring the real history boundary. Complete models retain every ordered project operand, referenced building title and exact dated country/place reference. Complete-history preparation requests no offscreen names or artwork.
@@ -69,3 +70,16 @@ Campaign/follow/pin/range are available. With Filter chips on, one line above th
 | [ConstructionLogWidget.tsx](ConstructionLogWidget.tsx), [useConstructionLog.ts](useConstructionLog.ts) | Filters, row cells and visible-row names; products and the windows held. |
 | [constructionData.ts](constructionData.ts) | Validation, window merging and reach, project bounds, queue/status/factories, row wording and name requests; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [constructionLog.css](constructionLog.css) | Registration, settings, row grid and narrow/compact layouts. |
+
+The log requests a newest-window proof separately while already showing its prefix.
+A proven window shows the requested newest hour with a "Newest days exact" note.
+Its own building dictionary is remapped by recorded identity when windows merge.
+The look-back must include each selected project's real first queue read and its
+output-chain start; long projects extend it. Building spellings must already be
+resolved in the forward catalogue. Unreadable or unproven windows leave the prefix
+shown. Prefix rows say Approximate until complete. A proven numeric newest window
+is shared across re-asks without scanning again.
+
+A cold empty manifest is Still being prepared, rather than an assertion that
+construction was not recorded. Its ordinary progressive request supplies the
+first types and projects as the family publishes.

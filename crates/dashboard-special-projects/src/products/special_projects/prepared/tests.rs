@@ -31,6 +31,7 @@ fn params(tag: &str) -> SpecialProjectsParams {
         branch_id: "1".into(),
         tag: tag.into(),
         selection_tags: Vec::new(),
+        hour: None,
     }
 }
 fn compare(
@@ -3019,4 +3020,25 @@ fn skipped_holders_save_what_observing_them_again_saves() {
         serde_json::to_value(&metadata).unwrap(),
         serde_json::to_value(&expected_metadata).unwrap()
     );
+}
+
+#[test]
+fn current_cards_select_the_exact_holder_before_identity_preparation() {
+    let memory = source(&[frame(100, true, 1)]);
+    let (source, root) = dashboard_base::test_fixtures::file_source(
+        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
+    );
+    let context = LoadContext { content: None };
+    let flag = AtomicBool::new(false);
+    let mut request = params("opaque-1");
+    request.selection_tags = vec!["opaque-1".into()];
+    let selected = frame_reply(&source, &context, &request, 100, &flag).unwrap();
+    assert!(
+        !selected.projects.is_empty(),
+        "the exact frame supplies the selected new holder"
+    );
+    request.selection_tags = vec!["unseen holder".into()];
+    let unselected = frame_reply(&source, &context, &request, 100, &flag).unwrap();
+    assert!(unselected.projects.is_empty());
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -10,7 +10,7 @@
 
 - The mean uses unweighted state scalars and native signed fixed-point arithmetic at their supplying read. It is not the game's unrecorded cached occupied-country-group mean, nor an average of rounded UI values.
 - Membership uses active occupation/garrison rules, not owner/controller inequality. Covered/held counts remain explicit; incomplete inventory cannot establish the total. No readable held states means a gap, not zero.
-- Unprepared spans wait for preparation: the supplying resistance read freezes its controller and native country join, which a later held frame cannot reconstruct after ownership, identity or gap changes.
+- A reached hour beyond preparation reuses the occupied-state window?s proved look-back, preserving the supplying resistance read?s controller and native join. Unprepared lines sample each block at its first fresh resistance read and draw those spans approximate. Unsampled hours stay pending. Branch-wide identity/segment metadata is labelled **Still being prepared**; exact reached holder evidence replaces sampled aliases.
 - Country collaboration is separate from state compliance, off by default and requested only when enabled. Each context value keeps its own read date and unknown reason.
 - Manual roots follow native holders/aliases; smart groups retain counted dates and unknown-roster gaps. One-country choices fix a native holder; absence does not silently select another. Looks never use a later holder to name old values.
 - Display decimals and smooth geometry do not alter exact tooltip means. Resistance/compliance remain independent measures; Both uses different line styles. The shared race view owns keyboard, zoom and Jump.

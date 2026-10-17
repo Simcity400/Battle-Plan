@@ -12,3 +12,11 @@ The [dashboard](../dashboard/README.md) re-exports them at the old
 
 `cargo test -p dashboard-occupation` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation for the dashboard's tests.
+
+Unprepared state windows and reached occupier means share one proved look-back observation. Campaign geometry samples each block at its first fresh resistance read, marks those spans approximate and keeps branch-wide identity metadata preparing. Both kinds of observation use the shared content-bound cache; re-asks reuse their blocks and windows.
+
+An unproved window is an ordinary empty window with the shared prefix extent and
+pending hours. It supplies no occupation observation until a local proof or
+forward preparation covers it.
+
+Look-back read-ahead is bounded by half the available hardware threads, at least one, regardless of the proof length.

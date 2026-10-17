@@ -4,6 +4,7 @@ import { ButterflyChart } from '../../charts/butterfly';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import type { ButterflyItem } from '../../charts/butterfly';
 import { jumpItem } from '../../charts/jump';
+import { dayLabel } from '../../charts/draw';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { formatAxisValue } from '../../charts/valueAxis';
 import { runAt } from '../../charts/series';
@@ -43,7 +44,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
   const chosen = track ? casualtyRequest(track.branch.id, widget.countries, defaultCountryTag(track), groups.data, track.branch.lastHour) : null;
   const request = track && chosen && (widget.countries.kind === 'all' || chosen.params.top || chosen.params.tags.length)
     ? { sourceId: track.source.id, revision: track.source.revision, product: 'war-casualties', params: chosen.params } : null;
-  const { data, error, retry, hour } = usePreparedCasualties(runtime.client, track, request?.params ?? null, requestedHour, active);
+  const { data, error, retry, hour, prefix } = usePreparedCasualties(runtime.client, track, request?.params ?? null, requestedHour, active);
   const index = useMemo(() => data ? casualtyIndex(data) : null, [data]);
   const snapshot = useMemo(() => index ? casualtiesAt(index, hour, includeUnknown) : [], [index, hour, includeUnknown]);
   const selected = useMemo(() => selectCasualties(snapshot, widget.countries, groups.data, hour, track?.branch.lastHour ?? hour), [snapshot, widget.countries, groups.data, hour, track?.branch.lastHour]);
@@ -83,7 +84,11 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
     <PreparedLogCoverage coverage={!data ? null : undefined} />
     <WidgetState kind="loading" label="Loading casualties…" />
   </>;
-  const notes = <><PreparedLogCoverage coverage={hour !== requestedHour ? null : undefined} />
+  if (prefix && !data.observed.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  // Before preparation reaches the hour shown, the totals are the prepared
+  // prefix's at its last hour; a reply held at its own hour waits for its next.
+  const notes = <>{prefix ? <p className="chart-line-key" role="status">Casualties through {dayLabel(hour)}; the rest is still being prepared.</p>
+    : <PreparedLogCoverage coverage={hour !== requestedHour ? null : undefined} />}
     {data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
     {selected.some(row => row.atLeast) && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}</>;
   const withGap = (content: React.ReactNode) => <div ref={anchor} className="casualties">{content}{notes}</div>;

@@ -3,6 +3,8 @@ import type { ProducedGrouping, ProducedKey, ProducedParams, ProducedType } from
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { domainName, variantNameAt } from '../../dashboard/equipment.ts';
 import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
+import type { PreparedPrefixFields } from '../../dashboard/preparedPrefix';
 
 export interface ProductionValue { key: string; amount: string | null; equipmentAmount: string | null }
 export interface ProductionCountry {
@@ -15,16 +17,27 @@ export interface ProductionSelection {
   keys: ProducedKey[]; types: ProducedType[]; totalCountries: number;
   offset: string; valueMin: string; valueMax: string;
   countries: ProductionCountry[]; warnings: string[];
+  typeTotals?: [string, string][] | null;
+  /** Before preparation completes, the prepared prefix the page answers. */
+  coverage?: PreparedPrefixFields['coverage']; pending?: PreparedPrefixFields['pending']; approximate?: PreparedPrefixFields['approximate'];
 }
 export interface ProductionSelectionRequest { hour: number; selection: ProducedParams; offset: string; limit: number; ranked: boolean }
 const integer = (value: unknown): value is number => Number.isSafeInteger(value);
 const quantity = (value: unknown): value is string | null => value === null || typeof value === 'string' && /^-?(0|[1-9]\d*)$/.test(value);
 const text = (value: unknown) => value === null || typeof value === 'string';
 
+/** The hour a page answers for `request`: the requested hour, or, before
+ * preparation reaches it, the prepared prefix's last hour. */
+export const answeredHour = (page: ProductionSelection, request: ProductionSelectionRequest) => {
+  const prefix = preparedPrefix(page);
+  return prefix?.pending.length ? Math.min(request.hour, prefix.coverage.lastHour) : request.hour;
+};
+
 export function validateProductionSelection(value: unknown, request: ProductionSelectionRequest): ProductionSelection {
   const page = value as ProductionSelection;
+  const hour = page != null && typeof page === 'object' ? answeredHour(page, request) : request.hour;
   const ok = page != null && typeof page === 'object' && page.schema === 1 && page.branchId === request.selection.branchId
-    && integer(page.firstHour) && integer(page.lastHour) && page.firstHour <= request.hour && request.hour <= page.lastHour
+    && integer(page.firstHour) && integer(page.lastHour) && page.firstHour <= hour && hour <= page.lastHour
     && typeof page.known === 'boolean' && integer(page.totalCountries) && page.totalCountries >= 0
     && page.offset === request.offset && quantity(page.valueMin) && page.valueMin !== null
     && quantity(page.valueMax) && page.valueMax !== null && BigInt(page.valueMin) <= 0n && BigInt(page.valueMax) >= 0n
@@ -36,15 +49,27 @@ export function validateProductionSelection(value: unknown, request: ProductionS
     && Array.isArray(page.countries) && page.countries.length <= request.limit && page.countries.every(country => typeof country.tag === 'string'
       && integer(country.slot) && country.slot >= 0 && integer(country.countryId) && country.countryId >= 0
       && typeof country.segment === 'string' && /^(0|[1-9]\d*)$/.test(country.segment)
-      && integer(country.readHour) && country.readHour <= request.hour && (country.observation === null || integer(country.observation))
+      && integer(country.readHour) && country.readHour <= hour && (country.observation === null || integer(country.observation))
       && quantity(country.total) && quantity(country.equipmentTotal) && Array.isArray(country.values)
       && country.values.every(item => typeof item.key === 'string' && page.keys.some(key => key.key === item.key)
         && quantity(item.amount) && quantity(item.equipmentAmount))
       && new Set(country.values.map(item => item.key)).size === country.values.length)
     && new Set(page.countries.map(country => country.tag)).size === page.countries.length
+    && (page.typeTotals == null || Array.isArray(page.typeTotals) && page.typeTotals.every(pair => Array.isArray(pair) && pair.length === 2
+      && page.keys.some(key => key.key === pair[0]) && quantity(pair[1]) && pair[1] !== null))
     && Array.isArray(page.warnings) && page.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The prepared equipment produced page is malformed.');
   return page;
+}
+
+/** Same positive-total choice and key-order tie break as the history model. */
+export function mostDeliveredPrefix(page: ProductionSelection | undefined): string | null {
+  let best: string | null = null, maximum = 0;
+  for (const [key, raw] of page?.typeTotals ?? []) {
+    const total = Number(raw);
+    if (total > maximum) { best = key; maximum = total; }
+  }
+  return best;
 }
 
 export function productionKeyLabel(key: ProducedKey, grouping: ProducedGrouping, hour: number): string {

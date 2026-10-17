@@ -1,9 +1,10 @@
+import { preparedPrefix, pendingAt } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
-import LogList from '../../charts/log/LogList';
+import LogList, { PreparedLogCoverage } from '../../charts/log/LogList';
 import type { LogListProps } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -159,10 +160,11 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   if (needsGroups && groups.error) return <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading espionage operations…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
+  if (preparedPrefix(data)?.pending.length && !data.available.length && !data.completionsAvailable.length) return <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />;
   if (data.unavailable && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Operations unavailable." />;
   if (!inBranch || hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!data.available.length && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Espionage operations are not in this recording." />;
-  if (!history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading espionage window..." />;
+  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading espionage window..." />;
 
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
@@ -197,6 +199,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     </>;
   };
   return <div ref={root} className="espionage-log">
+    <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(history.data.get(browseIndex) as { exact?: number } | undefined)?.exact} />
     {navigation}
     {shownHour !== hour && <p className="espionage-muted">Showing operations through {formatDateTime(shownHour!)}</p>}
     {log.chips && chips.length > 1 && <div className="log-chips">
@@ -212,6 +215,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       tooltip={row => operationTooltip(data, row, tag => labels(row, tag),
         description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.text : undefined)}
       menu={row => operationJumpHours(row.item, shownHour ?? hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
-      empty={unread ? "Operations unavailable at this time." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
+      empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? hour) ? "This range is still being prepared." : unread ? "Operations unavailable at this time." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
   </div>;
 }

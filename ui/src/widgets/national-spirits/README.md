@@ -6,7 +6,7 @@ The country’s current national spirits as game icons in acquisition order; cam
 
 ## Products it reads
 
-[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), with [game-style idea tooltips](../../dashboard/useIdeaTooltips.ts).
+[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), with [game-style idea tooltips](../../dashboard/useIdeaTooltips.ts). Before preparation reaches the shown hour, `held` supplies the exact held set from that frame. Icons use content order, with acquisition order, dates and acquisition context visibly still being prepared. Jump waits for an acquisition date. Prepared history replaces this state and restores acquisition order.
 
 ## Settings
 

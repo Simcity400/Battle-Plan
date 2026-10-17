@@ -21,6 +21,9 @@ import type { ChartSummary } from '../chartSummary';
 import { extentOfAll, lineLabelHours } from '../series';
 import type { Run } from '../series';
 import TimeChart from '../TimeChart';
+import { pendingLayer } from '../prepared';
+import type { Span } from '../prepared';
+import { PreparedKey } from '../PreparedKey';
 import type { ChartLayer } from '../TimeChart';
 import type { ChartStrip } from '../TimeChart';
 import { CHART_LAYOUT } from '../tokens';
@@ -63,6 +66,7 @@ export interface CountryRaceViewProps {
     colours: ReadonlyMap<string, string>) => Iterable<TooltipContent>;
   timeTooltip?: (hour: number) => Iterable<TooltipContent> | null;
   keyHours?: readonly number[]; strip?: ChartStrip; beforeChart?: ReactNode;
+  pending?: readonly Span[];
   /** Dated events for lines and mix; race bars have no time-marker strip. */
   badges?: readonly EventBadge[];
   /** Actual lines/mix viewport, including zoom, pan and playback, for window loads. */
@@ -109,7 +113,7 @@ type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
  * identities, exact reads, chart controls and Jump to across all race widgets. */
 export default function CountryRaceView({ runtime, track, active, options, view, extent, playhead, moment, slots, ranked, lines, remoteRows,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
-  keyHours: suppliedHours, strip, beforeChart, badges, onViewChange: reportViewport, lineSummaries, onSummaryView, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, mixEmpty, resetKey,
+  keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, onSummaryView, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue }: CountryRaceViewProps) {
   const tokens = useChartTokens();
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
@@ -283,7 +287,8 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     {view === 'lines' && !endLabels && (presentation.countryLooks !== false || entityLooks) && <Legend label={lineLegendLabel} windowed={presentation.windowedLegend}
       items={[...new Set(lines.map(line => line.tag))].map(tag => ({ id: tag, label: nameOf(tag), color: country(tag) }))} />}
     {beforeChart}
-    {view !== 'race' && (linesView ? [...(lineSummaries?.values() ?? [])].some(summary => summary.approximate?.length) : mixApproximate?.length) ? <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p> : null}
+    {view !== 'race' && <PreparedKey pending={pending} approximate={linesView
+      ? [...(lineSummaries?.values() ?? [])].flatMap(summary => summary.approximate ?? []) : mixApproximate} />}
     {mixState}
     <div className="country-race-chart" onPointerLeave={() => showTip(null)}>
       {view === 'race' ? <RaceChart label={chartLabels?.race ?? `${label}, ${dayLabel(moment)}`} items={items} slots={slots} remoteRows={remoteRows}
@@ -300,7 +305,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
         onContextMenu={(key, x, y, item) => jump(raceHour(item), x, y, raceTag(key, item))} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
         empty={empty} hoursPerSecond={common.hoursPerSecond} active={active} resetKey={resetKey ?? `${track.source.id}:${track.branch.id}`} />
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(mixName) ?? `${label} over time`
-          : chartLabels?.lines ?? `${label} over time`} layers={linesView ? lineLayers : mixLayers} strip={strip} formatValue={formatAxis ?? formatTick}
+          : chartLabels?.lines ?? `${label} over time`} layers={[pendingLayer(pending), ...(linesView ? lineLayers : mixLayers)]} strip={strip} formatValue={formatAxis ?? formatTick}
           keyHours={timeHours} badges={badges?.length ? badges : undefined}
           onHover={hour => { if (hour === null) showTip(null); }}
           onViewChange={observeView}

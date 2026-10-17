@@ -38,12 +38,15 @@ function changes(v: unknown, value: (v: unknown) => boolean, spans: readonly Spa
 const fixed5Spans = (v: unknown, spans: readonly Span[]) => validateFixed5Runs(v, 0) && v.length === spans.length
   && v.every((run, i) => run.firstHour === spans[i].firstHour && run.lastHour === spans[i].lastHour);
 
+/** Law facts, each token once: a manifest's, or those a window answered
+ * before preparation reached it carries for its states. */
+const lawList = (laws: unknown) => Array.isArray(laws) && laws.every(law => object(law) && typeof law.token === 'string' && nullable(law.name) && nullable(law.missing)
+  && (law.icon === null || (typeof law.icon === 'string' && law.icon.startsWith('data:image/png;base64,'))))
+  && new Set(laws.map(law => (law as { token: string }).token)).size === laws.length;
+
 export function validateOccupiedStatesManifest(data: unknown): OccupiedStatesManifestReply {
   if (!object(data) || typeof data.branchId !== 'string' || !/^\d+$/.test(data.branchId) || data.decimals !== 5 || !ordered(data.windows)
-    || !Array.isArray(data.laws) || !data.laws.every(law => object(law) && typeof law.token === 'string' && nullable(law.name) && nullable(law.missing)
-      && (law.icon === null || (typeof law.icon === 'string' && law.icon.startsWith('data:image/png;base64,'))))
-    || new Set(data.laws.map(law => law.token)).size !== data.laws.length
-    || typeof data.strengthMissing !== 'string' || !strings(data.warnings)) {
+    || !lawList(data.laws) || typeof data.strengthMissing !== 'string' || !strings(data.warnings)) {
     throw new Error('The occupied states reply is malformed.');
   }
   return data as unknown as OccupiedStatesManifestReply;
@@ -52,7 +55,8 @@ export function validateOccupiedStatesManifest(data: unknown): OccupiedStatesMan
 export function validateOccupiedStatesReply(data: unknown): OccupiedStatesReply {
   const malformed = new Error('The occupied states window is malformed.');
   if (!object(data) || typeof data.branchId !== 'string' || !/^\d+$/.test(data.branchId) || !Number.isSafeInteger(data.window) || Number(data.window) < 0
-    || !span(data.interval) || !observations(data.observed, data.interval) || !strings(data.texts) || !strings(data.warnings) || !Array.isArray(data.states)) throw malformed;
+    || !span(data.interval) || !observations(data.observed, data.interval) || !strings(data.texts) || !strings(data.warnings) || !Array.isArray(data.states)
+    || data.laws !== undefined && !lawList(data.laws)) throw malformed;
   const reply = data as unknown as OccupiedStatesReply;
   const { interval, texts } = reply;
   const index = (check: (text: string) => boolean) => (v: unknown) => v === null || (Number.isInteger(v) && Number(v) >= 0 && Number(v) < texts.length && check(texts[Number(v)]));

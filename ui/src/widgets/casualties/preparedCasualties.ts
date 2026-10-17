@@ -4,10 +4,14 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { CasualtyParams, CasualtyReply } from '../../generated/dashboard';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
+import { preparedThrough } from '../../dashboard/preparedPrefix';
 import { validateCasualtyReply } from './casualtiesData';
 
 /** One reached-hour reply, owned by its source and selection. Pending playback
- * retains the previous reply at its own hour. */
+ * retains the previous reply at its own hour. Before preparation reaches the
+ * requested hour, the reply is the prepared prefix's totals at its last hour,
+ * republished as the prefix grows: `hour` is then that last hour and `prefix`
+ * is set. */
 export function usePreparedCasualties(client: DashboardClient, track: BoundTrack | undefined,
   params: CasualtyParams | null, hour: number, active: boolean) {
   const content = useContentRevision(client);
@@ -18,10 +22,14 @@ export function usePreparedCasualties(client: DashboardClient, track: BoundTrack
   useEffect(() => {
     if (!active || !track || !params) return;
     const controller = new AbortController();
+    const publish = (value: unknown) => {
+      const data = validateCasualtyReply(value);
+      if (!controller.signal.aborted) setState({ owner, hour, data });
+    };
     void preparedSeriesQuery(client, track.source, 'series-state', {
       branchId: params.branchId, tags: params.tags, family: { kind: 'war-casualties', top: params.top },
       reads: [{ tag: '', hour }],
-    }, controller.signal, attempt > 0).then(value => {
+    }, controller.signal, attempt > 0, undefined, undefined, publish).then(value => {
       const data = validateCasualtyReply(value);
       if (!controller.signal.aborted) setState({ owner, hour, data });
     }).catch(error => {
@@ -32,6 +40,7 @@ export function usePreparedCasualties(client: DashboardClient, track: BoundTrack
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, hour, active, attempt]);
   const current = state?.owner === owner ? state : undefined;
-  return { data: current?.data, hour: current?.data ? current.hour : hour, error: current?.error,
+  const answered = current?.data ? preparedThrough([current.data], current.hour) : hour;
+  return { data: current?.data, hour: answered, prefix: !!current?.data && answered < current.hour, error: current?.error,
     retry: () => { setState(undefined); setAttempt(value => value + 1); } };
 }

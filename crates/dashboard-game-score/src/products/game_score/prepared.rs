@@ -640,7 +640,12 @@ pub fn state(
         )?)?
     };
     if let Some(reply) = data.as_object_mut() {
-        reply.insert("coverage".into(), serde_json::to_value(accepted)?);
+        reply.insert(
+            "coverage".into(),
+            serde_json::to_value(dashboard_base::prepared::prefix::extent(
+                source, branch, accepted,
+            )?)?,
+        );
     }
     Ok(data)
 }

@@ -822,6 +822,242 @@ fn publish(
     Ok(())
 }
 
+/// The tables a progressive experience sample reads.
+pub const SAMPLE_TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryExperience,
+    TableId::CountryExperienceGains,
+];
+
+/// The measures a progressive sample answers: each branch's banked
+/// experience, a daily read held until the next. Daily gain and change per
+/// day need every hourly interval of a day, or a read exactly a day earlier,
+/// so only preparation answers them.
+pub const SAMPLED_MEASURES: [&str; 3] = ["army-banked", "navy-banked", "air-banked"];
+
+/// A progressive sampler of banked experience, stepping its own scan through
+/// the hours it is given in order as preparation does: an hour answers each
+/// requested country's bank as its last read at or before the hour holds it,
+/// dated by that read ([`READ_HOUR`]). An hour that does not follow the last
+/// one given starts afresh, so a held read never crosses hours the sampler
+/// did not see, and an hour before the first read it saw answers nothing.
+///
+/// [`READ_HOUR`]: crate::prepared_measure::query::READ_HOUR
+pub struct Sampler {
+    format: replay::format::FormatVersion,
+    scan: std::cell::RefCell<(Scan, Option<i32>)>,
+}
+
+struct BankedCountry {
+    key: String,
+    identity: (u32, u32),
+    hour: i32,
+    banked: [i64; 3],
+}
+struct BankedBlock(Vec<BankedCountry>);
+
+impl Sampler {
+    /// Exact cached folds hold all banks of the selected native holders, so
+    /// switching bank or showing all three does not observe their blocks again.
+    pub fn cache_keys(requested: &[(String, String)]) -> Vec<(String, String)> {
+        let countries: BTreeSet<_> = requested.iter().map(|(key, _)| key.clone()).collect();
+        let mut keys: Vec<_> = countries
+            .into_iter()
+            .flat_map(|key| {
+                SAMPLED_MEASURES
+                    .into_iter()
+                    .chain([crate::prepared_measure::query::READ_HOUR])
+                    .map(move |field| (key.clone(), field.to_owned()))
+            })
+            .collect();
+        keys.sort();
+        keys
+    }
+    /// All three banks share one compact observation of a block's first fresh
+    /// supplying read. Selection and measure only project this observation.
+    pub fn first_block(
+        source: &Source,
+        block: &replay::container::BlockIndex,
+        requested: &[(String, String)],
+        cancelled: &AtomicBool,
+    ) -> io::Result<crate::prepared::query::progressive::Samples> {
+        use crate::prepared::query::{observations, progressive};
+        use crate::prepared_measure::query::READ_HOUR;
+        let cache = observations::scope(source, "country-experience:first-read", None);
+        let selected: Vec<_> = SAMPLE_TABLES.iter().map(|table| table.index()).collect();
+        let observation = cache.get(
+            block,
+            &selected,
+            cancelled,
+            |value: &Option<BankedBlock>| {
+                std::mem::size_of::<Option<BankedBlock>>()
+                    + value.as_ref().map_or(0, |value| {
+                        value.0.capacity() * std::mem::size_of::<BankedCountry>()
+                            + value
+                                .0
+                                .iter()
+                                .map(|country| country.key.capacity())
+                                .sum::<usize>()
+                    })
+            },
+            || {
+                let replay = source.replay_ref();
+                let frames = replay.read_block_selected(block, &[])?;
+                let Some(read) = frames.iter().find(|frame| {
+                    slot_read(
+                        replay.format,
+                        &frame.metrics,
+                        TableId::CountryExperience,
+                        frame.hour,
+                    ) && !replay.gaps.iter().any(|gap| {
+                        gap.branch == block.branch
+                            && gap.first_hour <= frame.hour
+                            && frame.hour <= gap.last_hour
+                    })
+                }) else {
+                    return Ok(None);
+                };
+                let Some(frame) = progressive::frame_at(
+                    source,
+                    block.branch,
+                    read.hour,
+                    SAMPLE_TABLES,
+                    cancelled,
+                )?
+                else {
+                    return Ok(None);
+                };
+                let mut countries = Vec::new();
+                Scan::default().step(&frame, replay.format, None, |tag, identity, read| {
+                    countries.push(BankedCountry {
+                        key: {
+                            let mut key = serde_json::to_string(&(tag, identity.0, identity.1))?;
+                            key.shrink_to_fit();
+                            key
+                        },
+                        identity,
+                        hour: read.read_hour,
+                        banked: read.banked,
+                    });
+                    Ok(())
+                })?;
+                countries.shrink_to_fit();
+                Ok(Some(BankedBlock(countries)))
+            },
+        )?;
+        let mut samples = progressive::Samples::new();
+        let wanted: BTreeSet<_> = requested.iter().cloned().collect();
+        let wanted_countries: BTreeSet<_> = requested.iter().map(|(key, _)| key.as_str()).collect();
+        for country in observation
+            .as_ref()
+            .as_ref()
+            .into_iter()
+            .flat_map(|block| &block.0)
+        {
+            for (index, measure) in SAMPLED_MEASURES.iter().enumerate() {
+                let key = (country.key.clone(), (*measure).to_owned());
+                if wanted.contains(&key) {
+                    samples.insert(
+                        key,
+                        (
+                            Some(country.identity),
+                            Some(i128::from(country.banked[index])),
+                        ),
+                    );
+                }
+            }
+            let key = (country.key.clone(), READ_HOUR.to_owned());
+            if wanted.contains(&key) || wanted_countries.contains(country.key.as_str()) {
+                samples.insert(
+                    key,
+                    (Some(country.identity), Some(i128::from(country.hour))),
+                );
+            }
+        }
+        for key in requested {
+            samples.entry(key.clone()).or_insert((None, None));
+        }
+        Ok(samples)
+    }
+    pub fn new(format: replay::format::FormatVersion) -> Self {
+        Self {
+            format,
+            scan: std::cell::RefCell::new((Scan::default(), None)),
+        }
+    }
+
+    /// The banked measures of `requested` (series keys: the JSON of tag,
+    /// slot and country id, with a measure) at `frame`'s hour, each with its
+    /// country's supplying read hour; every country's when none are requested.
+    pub fn sample(
+        &self,
+        frame: &replay::frame::DecodedFrame,
+        requested: Option<&[(String, String)]>,
+    ) -> io::Result<crate::prepared::query::progressive::Samples> {
+        use crate::prepared_measure::query::READ_HOUR;
+        // Each requested key, and its country's read hour, by recorded tag.
+        let mut keys = BTreeSet::new();
+        for (key, measure) in requested.into_iter().flatten() {
+            if measure != READ_HOUR && !SAMPLED_MEASURES.contains(&measure.as_str()) {
+                return Err(crate::invalid("Unknown experience sample measure"));
+            }
+            keys.insert((key.clone(), measure.clone()));
+            keys.insert((key.clone(), READ_HOUR.to_owned()));
+        }
+        let mut wanted: BTreeMap<String, Vec<((u32, u32), String, String)>> = BTreeMap::new();
+        for (key, measure) in &keys {
+            let (tag, slot, id): (String, u32, u32) = serde_json::from_str(key)
+                .map_err(|_| crate::invalid("Invalid experience sample key"))?;
+            wanted
+                .entry(tag)
+                .or_default()
+                .push(((slot, id), key.clone(), measure.clone()));
+        }
+        let mut result = crate::prepared::query::progressive::Samples::new();
+        let mut state = self.scan.borrow_mut();
+        let (scan, last) = &mut *state;
+        if last.and_then(|hour| hour.checked_add(1)) != Some(frame.hour) {
+            *scan = Scan::default();
+        }
+        *last = Some(frame.hour);
+        scan.step(frame, self.format, None, |tag, identity, read| {
+            let banked = read.values()[0];
+            let mut answer = |key: String, measure: &str| {
+                let value = match measure {
+                    READ_HOUR => Some(i128::from(read.read_hour)),
+                    _ => SAMPLED_MEASURES
+                        .iter()
+                        .position(|sampled| *sampled == measure)
+                        .and_then(|index| banked[index]),
+                };
+                result.insert((key, measure.to_owned()), (Some(identity), value));
+            };
+            match requested {
+                None => {
+                    let key = serde_json::to_string(&(tag, identity.0, identity.1))?;
+                    for measure in SAMPLED_MEASURES.into_iter().chain([READ_HOUR]) {
+                        answer(key.clone(), measure);
+                    }
+                }
+                Some(_) => {
+                    for (at, key, measure) in wanted.get(tag).into_iter().flatten() {
+                        if *at == identity {
+                            answer(key.clone(), measure);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        for key in keys {
+            result.entry(key).or_insert((None, None));
+        }
+        Ok(result)
+    }
+}
+
 #[derive(Default)]
 struct Cache {
     entries: BTreeMap<(u64, String), Vec<RawRead>>,

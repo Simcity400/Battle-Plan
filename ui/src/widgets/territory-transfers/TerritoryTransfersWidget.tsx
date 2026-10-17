@@ -20,6 +20,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useParityRows } from '../../dashboard/parityRows';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { COUNTRY_SORT, OPTIONS, TRANSFER_BREAKDOWN, TRANSFER_SORT, TRANSFER_SORT_KEY } from './definition';
 import TransferDrill from './TransferDrill';
@@ -168,7 +169,9 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const gapHint = transferGapHint(transferGaps(data, Math.max(rangeFrom, gapFrom), until));
   const count = pinned ? drillRows.length : shown.length;
   const header = headerSlot && count > 0 && createPortal(<span className="pill">{usNumber.format(count)} {count === 1 ? 'transfer' : 'transfers'}</span>, headerSlot);
+  // Before preparation covers the branch, the transfers its prepared prefix settled.
   const notes = <>
+    <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />
     {conference && <p className="transfer-note">{transferConferenceLabel(conference)}</p>}
     {gapHint && <p className="transfer-note has-hint" data-tooltip={gapHint}>Some transfers may be missing.</p>}
   </>;

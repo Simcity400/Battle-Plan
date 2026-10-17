@@ -71,7 +71,7 @@ pub struct ProductionPresenceRun {
     pub empty_census_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Default, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionSpendingReply {
     pub branch_id: String,

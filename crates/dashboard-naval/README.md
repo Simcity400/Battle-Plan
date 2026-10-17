@@ -38,3 +38,21 @@ keys and sources; the dashboard publishes it first and answers the manifest and
 that window from it until the naval family covers the branch.
 
 `cargo test -p dashboard-naval` builds and runs only these products' tests.
+
+Naval-loss manifests and reached windows answer from the naval prefix with root
+coverage and pending hours. Their holder history comes from the naval scan's own
+recorded identity spans, so the prefix does not wait for complete independent
+identity preparation. Unreached totals stay pending; neither retained ship
+vectors nor convoy bucket endpoints are stateless cumulative totals.
+
+The sinking log also answers its prepared prefix. Its manifest keeps all replay
+windows with class choices from published history; browsing starts at the newest
+covered window and the log names the pending tail. No newest sinking page is
+published by the naval combat/result proof: sinking occurrence ordinals and late
+country-attribution repairs require the retained multiset history as well.
+
+Naval battle manifests and log windows fall back to the committed prefix while
+the newest proof is unavailable. Cold replies have no accepted observations or
+rows, with the ordinary empty prefix extent and pending hours. Prefix battle
+pages are approximate while later terminal reads can repair them. Proven newest
+pages retain their exact first hour and continue following preparation coverage.

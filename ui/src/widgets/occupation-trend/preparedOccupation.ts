@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products.ts';
+import { overlayCountryIdentities } from '../../dashboard/countryIdentity.ts';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { HourSpan, OccupationTrendParams, OccupationTrendReply, OccupationTrendSeries } from '../../generated/dashboard';
@@ -9,6 +10,9 @@ import { validateMeasureSummaries } from '../country-measure/preparedMeasureData
 import type { MeasureSummaries } from '../country-measure/preparedMeasureData';
 import { validateOccupationTrendReply } from './occupationTrendData.ts';
 import type { ShownMeasure } from './occupationTrendData';
+
+type FirstView = { pending?: HourSpan[]; preparing?: string[] };
+type OccupationReply = OccupationTrendReply & FirstView;
 
 export function validateOccupationSummaries(value: unknown): MeasureSummaries {
   const reply = value as MeasureSummaries;
@@ -73,7 +77,7 @@ export function usePreparedOccupation(client: DashboardClient, track: BoundTrack
 
 /** Dated chart geometry never supplies exact state counts, reads or collaboration. */
 export function mergeOccupationReads(head: OccupationTrendReply | undefined, hover: OccupationTrendReply | undefined,
-  resistance?: MeasureSummaries, compliance?: MeasureSummaries): OccupationTrendReply | undefined {
+  resistance?: MeasureSummaries, compliance?: MeasureSummaries): OccupationReply | undefined {
   if (!head) return undefined;
   const series = new Map<string, OccupationTrendSeries>();
   for (const reply of [head, hover]) for (const line of reply?.series ?? []) {
@@ -89,5 +93,13 @@ export function mergeOccupationReads(head: OccupationTrendReply | undefined, hov
     series.set(line.tag, { tag: line.tag, runs: [...exact.values()].sort((a,b)=>a.firstHour-b.firstHour), segments: metadata.segments ?? previous?.segments ?? [],
       identities: metadata.identities ?? previous?.identities, membership: previous?.membership ?? null });
   }
-  return { ...head, series: [...series.values()], warnings: [...new Set([head, hover, resistance, compliance].flatMap(reply => reply?.warnings ?? []))] };
+  let exactIdentities: { tag: string; identities: NonNullable<OccupationTrendSeries['identities']> }[] = [];
+  for (const reply of [head, hover]) exactIdentities = overlayCountryIdentities(exactIdentities,
+    reply?.series.flatMap(line => line.identities ? [{ tag: line.tag, identities: line.identities }] : []) ?? []);
+  const rough = [...series.values()].flatMap(line => line.identities ? [{ tag: line.tag, identities: line.identities }] : []);
+  const overlaid = new Map(overlayCountryIdentities(rough, exactIdentities).map(history => [history.tag, history.identities]));
+  const firstViews = [resistance, compliance, head, hover].filter(Boolean) as (FirstView & object)[];
+  return { ...head, pending: firstViews.find(reply => reply.pending !== undefined)?.pending ?? [],
+    preparing: [...new Set(firstViews.flatMap(reply => reply.preparing ?? []))],
+    series: [...series.values()].map(line => ({ ...line, identities: overlaid.get(line.tag) ?? line.identities })), warnings: [...new Set([head, hover, resistance, compliance].flatMap(reply => reply?.warnings ?? []))] };
 }

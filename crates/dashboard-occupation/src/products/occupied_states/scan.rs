@@ -57,6 +57,13 @@ pub(super) struct Scan<'a> {
     pub(super) trend: trend::TrendScan,
     #[serde(skip)]
     runtime_ready: bool,
+    /// How many times an observation dropped the carried state (a gap, an
+    /// unreadable hour or one without resistance rows), not counting the
+    /// first observation of a scan that carries nothing: after one, this
+    /// scan holds what any scan of the same hours holds, however far back it
+    /// began ([`super::prepared::look_back_window`]).
+    #[serde(skip)]
+    pub(super) resets: usize,
     #[cfg(test)]
     #[serde(skip)]
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
@@ -212,6 +219,7 @@ impl<'a> Scan<'a> {
             country_refused: Refusals::default(),
             trend: trend::TrendScan::default(),
             runtime_ready: true,
+            resets: 0,
             #[cfg(test)]
             work: dashboard_base::prepared::observer_tests::Work {
                 content_loads: cat.map_or(0, |cat| {
@@ -261,6 +269,7 @@ impl<'a> Scan<'a> {
             country_refused: self.country_refused,
             trend: self.trend,
             runtime_ready: self.runtime_ready,
+            resets: self.resets,
             #[cfg(test)]
             work: self.work,
         };
@@ -294,6 +303,12 @@ impl<'a> Scan<'a> {
                 .values()
                 .any(|law| !law.visible.is_empty() || !law.available.is_empty())
         })
+    }
+
+    /// Whether the scan holds a supplying read: the latest daily read since
+    /// it last dropped the carried state.
+    pub(super) fn holds_read(&self) -> bool {
+        self.read_hour.is_some()
     }
 
     /// Retain the carried observation and active state value for the next window.
@@ -857,9 +872,11 @@ impl<'a> Scan<'a> {
         let previous_hour = self.last_hour;
         self.trend.changed.clear();
         if self.last_hour.and_then(|hour| hour.checked_add(1)) != Some(hour) {
+            self.resets += usize::from(self.last_hour.is_some());
             self.gap();
         }
         if !has_rows(frame, TableId::StateResistance) {
+            self.resets += 1;
             self.gap();
             return Ok(());
         }
@@ -868,6 +885,7 @@ impl<'a> Scan<'a> {
             frame.complete::<tables::Countries>(),
             frame.complete::<tables::CountryLinks>(),
         ) else {
+            self.resets += 1;
             self.gap();
             return Ok(());
         };

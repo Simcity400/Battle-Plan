@@ -1,3 +1,4 @@
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import type { BattleRow, BattleSide, BattleValue, BattleWindow, NavalBattleHistory, NavalBattleRun, NavalBattlesReply,
   NavalBattlesManifestReply, NavalBattlesRankingReply } from '../../generated/dashboard';
 import { isBattleRow, isBattleValue, battleValueText } from '../battles/battleRows.ts';
@@ -44,7 +45,7 @@ export function validateNavalBattlesManifest(v: unknown): NavalBattlesManifestRe
   const windows = object(v) && Array.isArray(v.windows) ? v.windows : null;
   if (!object(v) || windows === null || !windows.every(span)
     || !windows.every((w, i) => i === 0 || windows[i - 1].lastHour < w.firstHour)
-    || typeof v.available !== 'boolean' || !(v.available ? v.unavailable === null : typeof v.unavailable === 'string' && v.unavailable.length > 0)
+    || typeof v.available !== 'boolean' || !(v.available ? v.unavailable === null : (v.unavailable === null && preparedPrefix(v)?.coverage.complete === false) || typeof v.unavailable === 'string' && v.unavailable.length > 0)
     || !contentWarnings(v.contentWarnings)) {
     throw new Error('The naval battles manifest is malformed.');
   }

@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 pub(crate) use dashboard_base::prepared::observer_tests;
-pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, series};
+pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, prefix, series};
 pub mod pipeline;
 pub(crate) mod prepass;
 pub mod query;
@@ -74,12 +74,21 @@ pub struct Reply {
     pub background_enabled: bool,
     pub state: State,
     pub sections: Vec<Section>,
+    /// The hourly walk's coverage, by branch.
     pub coverage: std::collections::BTreeMap<String, pipeline::Coverage>,
+    /// Each family prepared on its own's coverage, by family and branch. A
+    /// prepared reply's `gate` names the entries it waits for: these
+    /// families, or `walk` for `coverage`.
+    pub families: Families,
     pub bytes: String,
     pub error: Option<String>,
     // Set while `state` is `Paused`.
     pub pause_reason: Option<PauseReason>,
 }
+
+/// Coverage by family prepared on its own, then by branch.
+pub type Families =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, pipeline::Coverage>>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +103,7 @@ pub struct Progress {
     pub state: State,
     pub sections: Vec<Section>,
     pub coverage: std::collections::BTreeMap<String, pipeline::Coverage>,
+    pub families: Families,
     pub bytes: u64,
     pub error: Option<String>,
     pub cancelled: Arc<AtomicBool>,
@@ -129,6 +139,7 @@ impl Default for Progress {
             state: State::Idle,
             sections: Vec::new(),
             coverage: Default::default(),
+            families: Default::default(),
             bytes: 0,
             error: None,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -157,6 +168,7 @@ pub fn status(source: &Source, source_id: &str, request_id: &str) -> Reply {
         state: progress.state,
         sections: progress.sections.clone(),
         coverage: progress.coverage.clone(),
+        families: progress.families.clone(),
         bytes: progress.bytes.to_string(),
         error: progress.error.clone(),
         pause_reason: progress.paused.filter(|_| progress.state == State::Paused),
@@ -285,6 +297,7 @@ pub fn start(
         finish(&mut state, State::Ready);
         state.sections = restored.sections;
         state.coverage = restored.coverage;
+        state.families = restored.families;
         state.bytes = restored.bytes;
         state.error = None;
         return Ok(());
@@ -318,6 +331,7 @@ pub fn start(
                     state.bytes = accepted.bytes;
                     state.sections = accepted.sections.clone();
                     state.coverage = accepted.coverage.clone();
+                    state.families = accepted.families.clone();
                 })
             })
         }));
@@ -331,6 +345,7 @@ pub fn start(
                 state.bytes = accepted.bytes;
                 state.sections = accepted.sections;
                 state.coverage = accepted.coverage;
+                state.families = accepted.families;
                 state.error = None;
             }
             Ok(Err(error)) => {
@@ -424,6 +439,7 @@ pub fn clear(
         state.claimed = false;
         state.sections.clear();
         state.coverage.clear();
+        state.families.clear();
         state.bytes = 0;
         state.error = None;
     }

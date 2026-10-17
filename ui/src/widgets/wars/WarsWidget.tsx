@@ -23,16 +23,37 @@ import { useParityRows } from '../../dashboard/parityRows';
 import { STYLES, useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
-import type { CountryStyle } from '../../generated/dashboard';
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
+import { PreparedKey } from '../../charts/PreparedKey';
+import { formatAmount } from '../../charts/valueAxis';
+import type { CountryStyle, WarsAtHour } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color';
 import { OPTIONS } from './definition';
-import { NAME_WORDS, casualtiesAt, countryTagAt, labelObservationAt, laneCountries, observationAt, participantHoldingAt, prepareWars, retainExpandedWars, validateWarsReply, viewpointAt, viewpointSummary, warsLanes, warsReplyState } from './warsData';
+import { NAME_WORDS, casualtiesAt, countryTagAt, currentWarsAt, labelObservationAt, laneCountries, observationAt, participantHoldingAt, prepareWars, retainExpandedWars, validateWarsReply, viewpointAt, viewpointSummary, warsLanes, warsReplyState } from './warsData';
 import type { CountryResolver, WarsColour, WarsLaneInfo, WarsView } from './warsData';
 import { warTooltip } from './warsTooltip';
 import { warsColourPlan, warsCountryColours, warsFixedColourKey, warsLookStart, warsSideColours } from './warsColours';
 
 const NO_WARNINGS: string[] = [];
 const pendingCountry = () => ({ name: NAME_WORDS.pending });
+
+/** The groups at an hour past the prepared prefix, each from that hour's frame
+ * alone: names, sides and casualty counters, without history. */
+function CurrentWars({ current, country }: { current: WarsAtHour; country: CountryResolver }) {
+  const side = (tags: readonly string[]) => [...new Set(tags)].map(tag => country(tag).name).join(', ');
+  return <div role="group" aria-label={`Wars at ${dayLabel(current.hour)}`}>
+    <p className="chart-line-key" role="status">History still being prepared. At {dayLabel(current.hour)}:</p>
+    {!current.available ? <p className="chart-line-key">Not recorded.</p>
+      : !current.wars.length ? <p className="chart-line-key">No wars at this hour.</p>
+        : current.wars.map(war => {
+          const observation = war.observations[0];
+          const losses = war.casualties[0];
+          return <p key={war.id} className="chart-line-key"><b>{observation?.name.known ? observation.name.text : 'Name not recorded'}</b>
+            {observation ? `: ${side(observation.viewpointSide)} against ${side(observation.opposingSide)}` : ''}
+            {losses ? `; casualties ${formatAmount(losses[2], 0, 0)} and ${formatAmount(losses[4], 0, 0)}` : ''}</p>;
+        })}
+  </div>;
+}
 
 export default function WarsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -56,6 +77,12 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
     params:{branchId:track.branch.id,viewpointTag,reads:[...new Set([at,...(hoverHour===null ? [] : [hoverHour])])].map(hour=>({hour}))}} : null,
     active,validateWarsReply,track?.source);
   const data = product.data;
+  // Before preparation covers the branch, the lanes are the prepared prefix's
+  // and the hours after it are still being prepared; a read past it lists the
+  // groups at that hour from its frame alone.
+  const prefix = useMemo(() => preparedPrefix(data), [data]);
+  const preparedThrough = prefix?.pending.length ? prefix.coverage.lastHour : null;
+  const current = preparedThrough != null && at > preparedThrough ? currentWarsAt(exact.data, at) : null;
   const exactWars=useMemo(()=>new Map(exact.data?.wars.map(war=>[war.id,war]) ?? []),[exact.data]);
   const groups = useCountryGroups(runtime, track, active);
   const factions = useFactionColours(runtime.client, track?.source);
@@ -106,7 +133,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const viewpoint = data ? viewpointAt(data, at) : null;
   // Both names and flags ask only for visible lanes, with the shared margin.
   const requests = laneRequests(lanes, inView);
-  const wantedKey = JSON.stringify([...new Set([...laneCountries(requests.looks, info, at), ...(viewpoint ? [viewpoint] : [])])]);
+  const currentTags = current?.wars.flatMap(war => war.observations.flatMap(item => [...item.viewpointSide, ...item.opposingSide])) ?? [];
+  const wantedKey = JSON.stringify([...new Set([...laneCountries(requests.looks, info, at), ...(viewpoint ? [viewpoint] : []), ...currentTags])]);
   useEffect(() => { setNamed(JSON.parse(wantedKey) as string[]); }, [wantedKey]);
   const onLanesInView = useCallback((start: number, end: number) => setInView([start, end]), []);
   const activate = useCallback((lane: TimelineLane) => {
@@ -142,7 +170,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const state = warsReplyState(data, product.error);
   if (state === 'error') return <WidgetState kind="error" detail={product.error!} onRetry={product.retry} />;
   if (exact.error) return <WidgetState kind="error" detail={exact.error} onRetry={exact.retry} />;
-  if (state === 'unavailable') return <WidgetState kind="unavailable" />;
+  if (state === 'unavailable' && !current?.available) return preparedThrough != null
+    ? <WidgetState kind="loading" label="This range is still being prepared." /> : <WidgetState kind="unavailable" />;
   if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !prepared) return <WidgetState kind="loading" label="Loading wars…" />;
 
@@ -172,7 +201,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
     if (recorded) hover.ask(hour, tags.filter(tag => prepared.identities?.keyAt(tag, hour) !== null));
     const participant = about.kind === 'participant' ? about.participant : bar?.participant;
     const content = warTooltip({ war, observation, losses: exactWars.has(war.id) ? casualtiesAt(exactWars.get(war.id)!,hour) : null,
-      lossesPending:!exact.data, hour, until: at,
+      lossesPending:!exact.data, hour, until: at, preparedThrough,
       branchLast: track.branch.lastHour, unobserved: data.unobserved, branchGaps: track.branch.gaps, capitulationsUnobserved: data.capitulationsUnobserved,
       country: labels, day: dayLabel,
       ...(tag ? { participant: { tag, run: bar?.holding ?? (participant ? participantHoldingAt(participant, hour) : null),
@@ -182,12 +211,15 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   };
   const seenAs = viewpoint ? countries(viewpoint) : null;
   const summary = viewpointSummary(seenAs);
+  const pendingAt = preparedThrough != null && at > preparedThrough;
   return <div ref={root} className="timeline-scroll">
-    {!lanes.length ? <WidgetState kind="empty" message={data.unobserved.some(gap => gap.firstHour <= at && at <= gap.lastHour) ? 'Not recorded.' : 'No wars yet.'} />
+    {current && <CurrentWars current={current} country={countries} />}
+    {!lanes.length ? current ? null : pendingAt ? <WidgetState kind="loading" label="This range is still being prepared." />
+      : <WidgetState kind="empty" message={data.unobserved.some(gap => gap.firstHour <= at && at <= gap.lastHour) ? 'Not recorded.' : 'No wars yet.'} />
       : <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${viewpointTag ?? ''}`} label="Wars timeline"
         extent={extent} playhead={playhead} labelHour={at} lanes={lanes} emptyLabel="Not recorded"
         labelCatalogue={prepared.labelCatalogue} preserveZoomOnExtentChange={options.grow === true}
-        showIcons={false} showNames={false} active={active} unobserved={data.unobserved}
+        showIcons={false} showNames={false} active={active} unobserved={data.unobserved} pending={prefix?.pending} approximate={prefix?.approximate}
         onHover={hour=>setHoverHour(hour===null ? null : Math.floor(hour))}
         onLaneActivate={activate} onLanesInView={onLanesInView}
         revision={`${revision}:${looks.revision}:${hover.revision}`} tooltip={tooltip}
@@ -196,6 +228,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
           const bounded = Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, hour));
           menu.open(x, y, [jumpItem(runtime, track.id, bounded)]);
         }} />}
+    <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     {menu.menu}
   </div>;
 }

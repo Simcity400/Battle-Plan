@@ -4,6 +4,8 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use replay::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 
+mod first_view;
+
 #[derive(Serialize, Deserialize)]
 enum Field {
     Friendly(String, u32),
@@ -1067,22 +1069,18 @@ pub fn query(
         check_reply_size(&reply)?;
         return serde_json::to_value(reply).map_err(Into::into);
     }
-    // Air superiority's own coverage: the branch's, or its own while it is
-    // prepared on its own.
-    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
         "air-superiority",
         cancelled,
-    )?
-    else {
-        return Ok(serde_json::Value::Null);
-    };
-    if !coverage.complete {
-        // Stable side keys require the final country-group identity, membership
-        // and war history. A single frame cannot supply a regional comparison.
-        return Ok(serde_json::Value::Null);
+    )?;
+    if coverage.as_ref().is_none_or(|coverage| !coverage.complete) {
+        if params.view == AirView::Moment {
+            return first_view::moment(source, &params, context, coverage, cancelled);
+        }
+        return first_view::query(source, &params, context, coverage, cancelled);
     }
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
     let state = Prepared::read(&store, &key, None, branch)?;

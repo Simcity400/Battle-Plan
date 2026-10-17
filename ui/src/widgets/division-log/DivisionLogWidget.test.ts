@@ -26,7 +26,7 @@ test('division rows forward dated flag state while null actors and the unknown k
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: hour => tag => {
       globalThis.__divisionFlagReads.push([hour, tag]); return globalThis.__divisionFlagLabels[hour + ':' + tag]; } });`,
-    '/charts/log/LogList.tsx': `import { createElement } from 'react'; export default props => createElement('div', null,
+    '/charts/log/LogList.tsx': `export const PreparedLogCoverage = () => null; import { createElement } from 'react'; export default props => createElement('div', null,
       props.rows.map(row => { globalThis.__divisionFlagTips.push(...props.tooltip(row)); return createElement('div', { key: row.key }, props.renderRow(row)); }));`,
   };
   const host = globalThis as typeof globalThis & {

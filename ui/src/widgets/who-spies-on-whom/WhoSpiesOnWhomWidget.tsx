@@ -1,3 +1,4 @@
+import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -97,6 +98,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
   if (error || groups.error) return <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
   if (!data || !current) return <WidgetState kind="loading" label="Loading operative placements…" />;
+  if (pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (current.period?.availability !== 'recorded') return <WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
     ? 'Intelligence agencies were disabled.' : 'Operatives were not recorded at this time.'} />;
   if (picked?.reason) return <WidgetState kind="unavailable" message={picked.reason} />;

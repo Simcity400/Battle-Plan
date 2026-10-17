@@ -5,7 +5,9 @@ import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { loadCountryGroups } from './products';
 
-/** The branch's smart-group history, loaded once and shared through the product cache. */
+/** The branch's smart-group history, loaded once and shared through the product cache.
+ * Before preparation covers the branch it is the prepared prefix's, carried on by
+ * later keyframes (marked `approximate`), replaced as preparation goes on. */
 export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, active = true) {
   const { client } = runtime;
   const content = useContentRevision(client);
@@ -15,8 +17,9 @@ export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: 
   useEffect(() => {
     if (!active || !track) return;
     const controller = new AbortController();
-    void loadCountryGroups(client, track.source, track.branch.id, controller.signal, attempt > 0).then(
-      data => { if (!controller.signal.aborted) setState({ client, key, data }); },
+    const publish = (data: CountryGroupReply) => { if (!controller.signal.aborted) setState({ client, key, data }); };
+    void loadCountryGroups(client, track.source, track.branch.id, controller.signal, attempt > 0, publish).then(
+      publish,
       error => { if (!controller.signal.aborted) setState({ client, key, error: error instanceof Error ? error.message : String(error) }); },
     );
     return () => controller.abort();

@@ -497,15 +497,9 @@ pub fn query(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<OperativeRosterReply>> {
     validate_countries(&params.branch_id, &params.tags).map_err(dashboard_core::invalid)?;
-    let Some(history) = dashboard_base::products::country_history::prepared_branch_histories(
-        source,
-        branch,
-        context.content.as_ref(),
-        cancelled,
-    )?
-    else {
-        return Ok(None);
-    };
+    let history = super::super::intelligence_prepared::first_views::histories(
+        source, context, store, source_key, branch, cancelled,
+    )?;
     query_history(store, source_key, branch, params, &history, cancelled)
 }
 
@@ -738,3 +732,111 @@ fn query_history(
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn first_view(
+    source: &Source,
+    params: &Params,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    validate_countries(&params.branch_id, &params.tags).map_err(dashboard_core::invalid)?;
+    let branch = params
+        .branch_id
+        .parse()
+        .map_err(|_| dashboard_core::invalid("Invalid operative branch"))?;
+    let first = params
+        .first_hour
+        .ok_or_else(|| dashboard_core::invalid("Missing operative day"))?;
+    let last = params.last_hour.unwrap_or(first);
+    let content = super::super::operative_content::content(source, context);
+    if content
+        .as_ref()
+        .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
+    {
+        return Err(content.err().expect("interrupted content"));
+    }
+    let mut scan = Scan::new(
+        &[],
+        content.as_ref().ok().and_then(|content| content.as_deref()),
+        content.as_ref().err().map(ToString::to_string),
+        true,
+    )?;
+    let branch_first = source
+        .block_windows(branch)
+        .first()
+        .expect("branch windows")
+        .first_hour;
+    let mut identities = dashboard_base::products::country_history::HistoryScan::new(false, &[]);
+    let mut supplying = None;
+    let mut operations_supply = None;
+    let mut countries = super::super::operative_rows::CountryInputs::default();
+    super::super::intelligence_prepared::first_views::day(
+        source,
+        branch,
+        first,
+        last,
+        &super::super::intelligence_prepared::TABLES,
+        cancelled,
+        |frame| {
+            if frame.hour == branch_first || super::super::operative_rows::membership_read(frame) {
+                supplying.get_or_insert(frame.hour);
+            }
+            if frame.hour == branch_first || super::super::operative_rows::operations_read(frame) {
+                operations_supply.get_or_insert(frame.hour);
+            }
+            identities.observe(frame);
+            countries.update(frame, None);
+            scan.add_tags(&countries);
+            scan.observe_indices(
+                frame,
+                content.as_ref().ok().and_then(|content| content.as_deref()),
+                None,
+                None,
+                None,
+                (false, true),
+                &countries,
+            )?;
+            if frame.hour < first {
+                for history in &mut scan.histories {
+                    for entry in &mut history.reply.operatives {
+                        if entry.runs.len() > 1 {
+                            entry.runs.drain(..entry.runs.len() - 1);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    for history in &mut scan.histories {
+        history.reply.operatives.retain(|entry| {
+            entry.runs.iter().any(|run| run.last_hour >= first)
+                || params.include_departed && entry.departed_hour.is_some_and(|hour| hour <= last)
+        });
+    }
+    let selected = dashboard_base::products::country_history::selected_identities(
+        &identities.finish(),
+        &params.tags,
+    );
+    let mut data = serde_json::to_value(scan.reply(branch, Some(&selected))?)?;
+    for country in data["countries"]
+        .as_array_mut()
+        .expect("operative countries")
+    {
+        for entry in country["operatives"]
+            .as_array_mut()
+            .expect("operative entries")
+        {
+            entry["preparing"] = serde_json::json!(["joinedHour", "departedHour"]);
+        }
+    }
+    data["sampledFrom"] = serde_json::to_value(
+        supplying
+            .zip(operations_supply)
+            .map(|(roster, operations)| roster.max(operations)),
+    )?;
+    if params.include_departed {
+        data["preparing"] = serde_json::json!(["departed"]);
+    }
+    Ok(data)
+}

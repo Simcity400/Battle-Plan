@@ -3,6 +3,7 @@ import { isBuildingInfo, isSpendingGap, isStateName, placeName, typeName } from 
 import type { StateNameAt } from '../../dashboard/construction';
 import type { SunburstItem } from '../../charts/sunburst/layout';
 import { formatIc } from '../../dashboard/icDecimals.ts';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 
 
 /** The hierarchy's levels, innermost first, and the option that switches each off. */
@@ -37,6 +38,7 @@ export function validateSpendingReply(data: unknown): ConstructionSpendingReply 
     && Array.isArray(reply.unattributed) && reply.unattributed.every(gap => int(gap.knownAt) && isSpendingGap(gap.reason) && typeof gap.project === 'string' && (gap.until == null || (int(gap.until) && gap.until > gap.knownAt)))
     && Array.isArray(reply.leaves) && reply.leaves.every(leaf => isLeaf(leaf, reply.types.length));
   if (!ok) throw new Error('The construction spending reply is malformed.');
+  preparedPrefix(reply);
   return reply;
 }
 
@@ -143,17 +145,23 @@ const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '
 
 /** The note under the legend, saying plainly what the amounts leave out: earlier
  * spending, and in what is shown, output not recorded exactly (partial amounts) and
- * output no country can be given. */
-export function footnote(reply: ConstructionSpendingReply, items: readonly SunburstItem[]): string | undefined {
+ * output no country can be given. `prepared`, for a reply answered from a prepared
+ * prefix before the hour shown, says through when it is spent; it replaces the
+ * partial amounts' note about output still being prepared. */
+export function footnote(reply: ConstructionSpendingReply, items: readonly SunburstItem[], prepared?: string): string | undefined {
   const notes: string[] = [];
   if (reply.beforeFirstRead) notes.push(`Earlier spending on ${plural(reply.beforeFirstRead, 'project')} isn’t counted.`);
+  if (prepared) notes.push(prepared);
   const shown = items.filter(item => item.present !== false);
-  if (shown.some(item => item.path.length > 0 && Object.keys(item.unknown ?? {}).length > 0))
+  const partial = new Set(shown.flatMap(item => item.path.length > 0 ? Object.keys(item.unknown ?? {}) : []));
+  if ([...partial].some(reason => reason !== 'preparing'))
     notes.push('Partial amounts leave out output that wasn’t recorded exactly.');
+  if (partial.has('preparing') && !prepared) notes.push('Partial amounts leave out output still being prepared.');
   const unowned: Record<string, number> = {};
   for (const item of shown) if (item.path.length === 0) for (const [reason, count] of Object.entries(item.unknown ?? {})) unowned[reason] = (unowned[reason] ?? 0) + count;
-  const { ownerUnknown = 0, ...unread } = unowned;
+  const { ownerUnknown = 0, preparing = 0, ...unread } = unowned;
   if (ownerUnknown) notes.push(`Output of ${plural(ownerUnknown, 'project')} not traced to a country isn’t counted.`);
+  if (preparing) notes.push(`Output of ${plural(preparing, 'project')} is still being prepared.`);
   if (Object.keys(unread).length) notes.push('Output in hours that weren’t recorded isn’t counted.');
   return notes.length ? notes.join(' ') : undefined;
 }

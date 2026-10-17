@@ -8,7 +8,7 @@ import type { DashboardClient, DashboardSource, ProductRequest } from './client.
 const source = { id: 'progressive', revision: '1' } as DashboardSource;
 const request = { sourceId: source.id, revision: source.revision, product: 'party-history', params: { branchId: '1' } };
 const partial = { coverage: { firstHour: 0, lastHour: 9, complete: false }, rows: ['prefix'] };
-const complete = { coverage: { firstHour: 0, lastHour: 19, complete: true }, rows: ['prefix', 'tail'] };
+const complete = { coverage: { firstHour: 0, lastHour: 19, complete: true }, approximate: false, rows: ['prefix', 'tail'] };
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function gate<T>() {
   let resolve!: (value: T) => void;
@@ -78,8 +78,8 @@ test('mounted prepared useProduct publishes a prefix then replaces it once and c
   } finally { hook.unmount(); status.resolve(); }
 });
 
-test('one-shot prepared loads return the first reply but never retain incomplete or null coverage', async () => {
-  for (const coverage of [partial.coverage, null]) {
+test('one-shot prepared loads return the first reply but never retain incomplete or empty coverage', async () => {
+  for (const coverage of [partial.coverage, { firstHour: 0, lastHour: -1, complete: false }]) {
     let queries = 0;
     const client = { preparedQuery: async () => {
       assert.ok(++queries <= 3, 'two partial one-shot reads and one final read');
@@ -223,4 +223,38 @@ test('caching mounted completion keeps concurrent one-shot work reachable by sou
     await stopped;
     assert.deepEqual({ queries, statuses }, { queries: 3, statuses: 1 });
   } finally { hook.unmount(); status.resolve(); forgetProducts(client, source.id); }
+});
+
+const unfinishedReplies = [
+  { coverage: null },
+  { coverage: null, pending: [{ firstHour: 0, lastHour: 19 }] },
+  { pending: [{ firstHour: 0, lastHour: 19 }] },
+  { approximate: [{ firstHour: 0, lastHour: 19 }] },
+];
+
+test('one-shot replies with null coverage or unfinished spans never enter the final cache', async () => {
+  for (const metadata of unfinishedReplies) {
+    let reads = 0;
+    const client = { preparedQuery: async () => ++reads < 3 ? { ...metadata, rows: [String(reads)] } : complete } as unknown as DashboardClient;
+    const validate = (reply: unknown) => (reply as typeof partial).rows;
+    for (const expected of [['1'], ['2'], complete.rows, complete.rows])
+      assert.deepEqual(await loadProduct(client, request, new AbortController().signal, validate, source), expected);
+    assert.equal(reads, 3);
+  }
+});
+
+test('mounted replies with null coverage or unfinished spans poll through completion', async () => {
+  for (const metadata of unfinishedReplies) {
+    let reads = 0;
+    const publications: unknown[] = [];
+    const unfinished = { ...metadata, rows: ['unprepared'] };
+    const client = { preparedQuery: async () => ++reads === 1 ? unfinished : complete,
+      preparationStatus: async (input: object) => ({ ...input, state: 'ready', sections: [], backgroundEnabled: true,
+        bytes: '0', error: null, coverage: { '1': complete.coverage } }),
+    } as unknown as DashboardClient;
+    assert.equal(await loadProduct(client, request, new AbortController().signal, undefined, source, false,
+      data => publications.push(data)), complete);
+    assert.deepEqual(publications, [unfinished, complete]);
+    assert.equal(reads, 2);
+  }
 });

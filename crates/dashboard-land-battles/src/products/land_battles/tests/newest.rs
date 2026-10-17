@@ -825,3 +825,96 @@ fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
         );
     }
 }
+
+/// A refusing name found only in an earlier block withholds the diagnostics,
+/// while the proven window stays queryable with its exact page bytes.
+#[test]
+fn newest_window_survives_a_variant_naming_refusal_in_its_diagnostics() {
+    let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
+        "localisation/mod_l_english.yml",
+        "\u{feff}l_english:\n mod_rifle_1:0 \"a\u{a4}b\"\n",
+    )]);
+    let quiet = |_: i32| -> Vec<Combat> { Vec::new() };
+    let mut earlier = block(1, 100..=123, &quiet);
+    for frame in &mut earlier {
+        *frame.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+                id: 7,
+                equipment_token: 5,
+                creator_link: 1,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 5,
+                literal: b"mod_rifle_1".to_vec(),
+            }]));
+    }
+    let (first, context) = dashboard_base::test_fixtures::source_with_content(earlier, &folder.0);
+    let mut grown: Option<Replay> = None;
+    for hours in [124..=127, 128..=131] {
+        let replay = grown.as_ref().unwrap_or_else(|| first.replay_ref());
+        grown = Some(
+            replay
+                .append(&[dashboard_base::test_fixtures::continuation_records(
+                    replay,
+                    1,
+                    block(1, hours, &quiet),
+                )])
+                .unwrap(),
+        );
+    }
+    let replay = grown.unwrap();
+    let flag = AtomicBool::new(false);
+    let source = Source::from_replay(
+        dashboard_base::SourceKey {
+            source_id: "newest-refusing-name".into(),
+            revision: "1".into(),
+        },
+        "newest-refusing-name.battleplan".into(),
+        Arc::new(replay),
+        &flag,
+    )
+    .unwrap();
+    let (proven, mut report) = first::prove_reported(&source, 1, &context, &flag).unwrap();
+    let proven = proven.expect("a proven window");
+    assert_eq!(report.outcome, Outcome::Proven);
+    assert_eq!(report.tried.len(), 1, "one change-selected look-back");
+    assert_eq!(report.naming, 0, "the proof reads no earlier diagnostics");
+    let newest = Fixture::new();
+    let mut writer = newest.writer();
+    proven.write(&mut writer).unwrap();
+    writer.commit().unwrap();
+    let params = json!({ "branchId": "1", "window": 2 });
+    let query = || {
+        first::query(
+            &source,
+            "land-battles",
+            1,
+            &params,
+            &newest.store,
+            &newest.key,
+        )
+        .unwrap()
+        .expect("the proven window stays available")
+    };
+    let before = query();
+    assert_eq!(before["warningsComplete"], false);
+    assert!(
+        proven
+            .diagnose_reported(source.replay_ref(), 1, &flag, &mut report)
+            .unwrap()
+            .is_none(),
+        "the earlier variant's refusing name withholds the diagnostics"
+    );
+    assert_eq!(report.outcome, Outcome::NamingRefuses);
+    assert_eq!(report.naming, 1, "the earlier block supplies diagnostics");
+    assert_eq!(report.tried.len(), 1, "diagnostics repeat no proof");
+    assert_eq!(query(), before);
+    let forwarded = Fixture::new();
+    forward(&source, 1, &forwarded);
+    assert_eq!(
+        bytes(&newest, "land-battles-newest-1", 0),
+        bytes(&forwarded, "land-battles-1", 2)
+    );
+}

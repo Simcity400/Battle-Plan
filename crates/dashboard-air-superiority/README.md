@@ -18,3 +18,17 @@ pipeline.
 
 `cargo test -p dashboard-air-superiority` builds and runs only this crate's
 tests.
+
+Choices and daily timelines answer before complete preparation. Published daily
+values supply the prefix; one keyframe per later block supplies approximate
+cells, the side identities and the most-active row selection. Samples keep their
+actual supplying hours in `sampleHours`, independently of the days they stand
+for. A daily cell crossing the prefix boundary is wholly approximate. Unread
+keyframes stay pending and recorded gaps retain their own shading. The shared observation cache
+keeps each block's projected sample by viewpoint and country mode, bound to the
+recording/content key and charged for its retained allocations under the live
+block budget. Re-asks clip retained samples to the moving prefix and share each
+snapshot across the days it represents.
+Moment windows read their accepted prefix too. Its observation/side projection
+is marked approximate while later history can revise side classification;
+requested hours outside that prefix stay pending, with no invented scores.

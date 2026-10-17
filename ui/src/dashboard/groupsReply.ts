@@ -31,6 +31,8 @@ export function validateCountryGroupReply(data: unknown): CountryGroupReply {
     && listOf(reply.identityChanges, change => isObject(change) && isHour(change.hour) && typeof change.from === 'string' && typeof change.to === 'string')
     && validCountryIdentityHistories(reply.countryIdentities)
     && isObject(unobserved) && listOf(unobserved.humans, isSpan) && listOf(unobserved.factions, isSpan) && listOf(unobserved.wars, isSpan);
-  if (!ok) throw new Error('The country groups reply is malformed.');
+  // A reply answered from the prepared prefix names the hours later keyframes stand for.
+  if (!ok || 'approximate' in reply && !isOrderedSpans(reply.approximate)
+    || 'eventsApproximate' in reply && !isOrderedSpans(reply.eventsApproximate)) throw new Error('The country groups reply is malformed.');
   return data as CountryGroupReply;
 }

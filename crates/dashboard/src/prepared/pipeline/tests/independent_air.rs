@@ -811,6 +811,20 @@ fn aces_frame(branch: u64, hour: i32) -> DecodedFrame {
             TableId::VariantUpgrades,
         ],
     );
+    *observed.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![
+            replay::rows::VariantDefinitionRow {
+                id: 900,
+                display_name: b"Synthetic aircraft".to_vec(),
+                equipment_token: 50,
+                ..Default::default()
+            },
+        ]));
+    *observed.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 50,
+            literal: b"mod_aircraft".to_vec(),
+        }]));
     observed
 }
 
@@ -907,4 +921,159 @@ fn aces_answer_from_their_own_coverage_while_the_hourly_walk_accepts_nothing() {
         ("air-aces", serde_json::json!({"branchId": "2"})),
     ];
     assert_answers_while_stalled(&air::ACES, &replay, &requests);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "cold, prefix and complete first-view preparation parity"
+)]
+fn air_ledger_cold_and_prefix_replies_never_claim_unprepared_totals() {
+    use crate::products::{LoadContext, Product};
+    use military_air_ledger::{MilitaryAirLedger, MilitaryAirParams};
+    let replay = blocks(6, false, ledger_frame);
+    let mut fixture = Fixture::new(&replay);
+    let mut short_fixture = Fixture::new(&blocks(1, false, ledger_frame));
+    independent::with_test_hourly(|| {
+        let source = fixture.source("air-ledger-prefix");
+        let short = short_fixture.source("air-ledger-first-block");
+        let flag = AtomicBool::new(false);
+        for family in ["airLosses", "bombing"] {
+            let params = serde_json::json!({"branchId":"1", "family":family});
+            let cold = query(&source, "military-air-ledger", params).unwrap();
+            assert!(
+                cold["coverage"]["firstHour"].as_i64().is_some_and(|first| {
+                    cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1)
+                }) && cold["coverage"]["complete"] == false
+            );
+            assert!(!cold["pending"].as_array().unwrap().is_empty());
+            assert_eq!(cold["leaves"], serde_json::json!([]));
+        }
+        run_measured(&source, None, &flag, true, Duration::ZERO, |_| {}).unwrap();
+        assert_eq!(
+            coverage(&source, None, 1, &flag)
+                .unwrap()
+                .unwrap()
+                .last_hour,
+            103
+        );
+        for family in ["airLosses", "bombing"] {
+            let params = serde_json::json!({"branchId":"1", "family":family});
+            let mut actual = query(&source, "military-air-ledger", params.clone()).unwrap();
+            assert_eq!(actual["coverage"]["complete"], false);
+            assert_eq!(
+                actual["pending"],
+                serde_json::json!([
+                    {"firstHour":104,"lastHour":111}, {"firstHour":114,"lastHour":125}
+                ])
+            );
+            for key in ["coverage", "pending"] {
+                actual.as_object_mut().unwrap().remove(key);
+            }
+            let selection: MilitaryAirParams = serde_json::from_value(params).unwrap();
+            let mut oracle = serde_json::to_value(
+                MilitaryAirLedger::load(&short, &selection, &LoadContext { content: None }, &flag)
+                    .unwrap(),
+            )
+            .unwrap();
+            // The reply dates the source extent independently of its accepted events.
+            oracle["lastHour"] = serde_json::json!(125);
+            assert_eq!(actual, oracle);
+        }
+        plain(&source);
+        for family in ["airLosses", "bombing"] {
+            let params = serde_json::json!({"branchId":"1", "family":family});
+            let mut actual = query(&source, "military-air-ledger", params.clone()).unwrap();
+            assert_eq!(actual["pending"], serde_json::json!([]));
+            for key in ["coverage", "pending"] {
+                actual.as_object_mut().unwrap().remove(key);
+            }
+            let selection = serde_json::from_value(params).unwrap();
+            let oracle = serde_json::to_value(
+                MilitaryAirLedger::load(&source, &selection, &LoadContext { content: None }, &flag)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(actual, oracle);
+        }
+        clear(short);
+        clear(source);
+    });
+}
+
+fn roster_values(reply: &serde_json::Value, hour: i64) -> serde_json::Value {
+    let texts = reply["roster"]["texts"].as_array().unwrap();
+    let rows: Vec<_> = reply["roster"]["aces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|ace| {
+            let run = ace["runs"].as_array().unwrap().iter().find(|run| {
+                run["firstHour"].as_i64().unwrap() <= hour
+                    && run["lastHour"].as_i64().unwrap() >= hour
+            })?;
+            let mut value = run.clone();
+            for field in ["name", "callsign", "wingName"] {
+                value[field] = value[field]
+                    .as_u64()
+                    .map_or(serde_json::Value::Null, |index| {
+                        texts[index as usize].clone()
+                    });
+            }
+            for field in ["firstHour", "lastHour"] {
+                value.as_object_mut().unwrap().remove(field);
+            }
+            if value["death"].is_object() {
+                value["death"]["lastAlive"] = serde_json::Value::Null;
+                value["death"]["byHour"] = serde_json::Value::Null;
+            }
+            Some(serde_json::json!({"id":ace["id"], "value":value}))
+        })
+        .collect();
+    serde_json::json!(rows)
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "cold, prefix and complete first-view preparation parity"
+)]
+fn aces_cold_roster_matches_prepared_values_and_never_dates_a_first_sighting() {
+    let replay = ace_blocks(7, false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("ace-roster-first-view");
+    let params = serde_json::json!({"branchId":"1", "view":"roster", "hour":195});
+    let cold = query(&source, "air-aces", params.clone()).unwrap();
+    assert_eq!(cold["readHour"], 189);
+    assert_eq!(cold["preparing"], serde_json::json!(["firstSeen", "death"]));
+    assert!(!cold["roster"]["aces"].as_array().unwrap().is_empty());
+    for ace in cold["roster"]["aces"].as_array().unwrap() {
+        assert!(ace["firstSeen"].is_null());
+    }
+    let reads = dashboard_base::prepared::query::frames::reads(&source);
+    assert_eq!(query(&source, "air-aces", params.clone()).unwrap(), cold);
+    assert_eq!(
+        dashboard_base::prepared::query::frames::reads(&source),
+        reads,
+        "re-ask reuses the supplying blocks"
+    );
+    plain(&source);
+    let exact = query(&source, "air-aces", params).unwrap();
+    assert_eq!(exact["preparing"], serde_json::json!([]));
+    assert_eq!(roster_values(&cold, 189), roster_values(&exact, 189));
+    let name = |reply: &serde_json::Value| {
+        let mut name = reply["manifest"]["variants"]["900"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|name| name["firstHour"].as_i64().unwrap() <= 189)
+            .cloned()
+            .expect("the supplying variant name");
+        name.as_object_mut().unwrap().remove("firstHour");
+        name
+    };
+    assert_eq!(name(&cold)["known"], true);
+    assert_eq!(name(&cold), name(&exact));
+    clear(source);
 }

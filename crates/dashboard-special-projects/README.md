@@ -22,3 +22,7 @@ or the previous deadline is reached; every due completion is still observed.
 `cargo test -p dashboard-special-projects` builds and runs only this product's
 tests. The `test-support` feature compiles its test oracles and instrumentation
 for the dashboard's tests.
+
+Current requests name an hour. Running cards before history reaches that hour use the frame, the preparation observer and its episode/presentation builders. Starts and completed/cancelled history remain preparing. The separate `current` reply cannot enter History lanes or expose a fabricated start date.
+
+Current-card selections include exact holders witnessed in the requested frame, including countries not yet reached by the identity prefix.

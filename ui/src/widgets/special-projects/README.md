@@ -28,7 +28,7 @@ Countries/groups, campaign/follow/pin/range. The Current/History switch sits in 
 
 ## Notable behaviour
 
-- Starts are observation bounds ("by"). Recognized native completion history dates a completion exactly; otherwise it is bounded by the read. A future completion stays hidden until observed. Progress is stepped and gaps never fill missing hours.
+- While preparation runs, a shown hour it has not reached shows running and paused cards from that hour?s frame and completed/cancelled projects through the prepared range. Start dates remain **Still being prepared**, with their Jump disabled. History bands the pending hours and uses no transient cards. The time axis and Still being prepared key remain visible when the prepared prefix has no project lanes. Starts are observation bounds ("by"). Recognized native completion history dates a completion exactly; otherwise it is bounded by the read. A future completion stays hidden until observed. Progress is stepped and gaps never fill missing hours.
 - Iteration counts are the native completed-history count, without a denominator. The game's localized count text appears in the tooltip. Country breakthrough points are not attributable to a project.
 - Completion clears the scientist reference, so a completed project names the scientist from an earlier observation in that episode and the tooltip dates it. Gaps cannot supply attribution. Missing portraits and blueprints use the helmet and flask fallbacks.
 

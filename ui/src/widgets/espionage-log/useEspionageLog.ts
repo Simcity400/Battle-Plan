@@ -22,5 +22,5 @@ export function useEspionageWindows(track: WidgetRuntime['tracks'][number] | und
   const identity = track ? operationWindowIdentity(track.source.id, track.source.revision, track.branch.id, content) : null;
   return useProductWindows<EspionageLogReply>(runtime.client, identity, window => ({ sourceId: track!.source.id,
     revision: track!.source.revision, product: 'espionage-log', params: { branchId: track!.branch.id, window } }),
-  wanted, active, validateEspionageLogReply, track?.source);
+  wanted, active, validateEspionageLogReply, track?.source, true);
 }

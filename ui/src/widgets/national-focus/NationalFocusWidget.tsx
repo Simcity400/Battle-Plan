@@ -38,8 +38,8 @@ export function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large
   return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="target" />}</span>;
 }
 
-export function FocusCompletion({ entry, art, reason, pending, description, open, onToggle }: {
-  entry: FocusEntry; art?: Artwork; reason?: string; pending?: boolean; description?: string | null;
+export function FocusCompletion({ entry, art, reason, pending, datePreparing, description, open, onToggle }: {
+  entry: FocusEntry; art?: Artwork; reason?: string; pending?: boolean; datePreparing?: boolean; description?: string | null;
   open: boolean; onToggle: (open: boolean) => void;
 }) {
   const date = entry.completedByHour == null ? null : gameDate(entry.completedByHour);
@@ -48,9 +48,9 @@ export function FocusCompletion({ entry, art, reason, pending, description, open
       <span className="focus-number" aria-label={`Focus ${entry.ordinal + 1}`}>{String(entry.ordinal + 1).padStart(2, '0')}</span>
       <FocusArt art={art} size="small" />
       <span className="focus-label"><strong data-tooltip={contentTitleHint(entry.token, reason)}>{contentTitle(art?.name, entry.token, 'Focus name unavailable', pending)}</strong>
-        <span className="focus-date" data-tooltip={date == null ? 'Completion date unknown.'
+        <span className="focus-date" data-tooltip={datePreparing ? 'Completion date is still being prepared.' : date == null ? 'Completion date unknown.'
           : 'Completed by this date. Focuses are read once a game day, so it may have finished a day or so earlier.'}>
-          {date == null ? 'Date not recorded' : formatDate(date)}
+          {datePreparing ? 'Still being prepared' : date == null ? 'Date not recorded' : formatDate(date)}
         </span>
       </span>
       <svg className="focus-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>

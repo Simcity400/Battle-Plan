@@ -48,7 +48,7 @@ export function airColourPlan(data: Reply | undefined, day: AirMoment | undefine
       if (key) group.viewpoint = key;
     }
   };
-  if (data?.view === 'timeline') for (const at of data.days) { if (at != null) add(data, at); }
+  if (data?.view === 'timeline') for (const at of new Set(data.days.map((at, index) => data.sampleHours?.[index] ?? at))) { if (at != null) add(data, at); }
   if (data) add(data, hour);
   if (day && dayHour != null) add(day, dayHour);
   return { sources, wanted: [...wanted.values()], keys: new Set(wanted.keys()) as ReadonlySet<string>,

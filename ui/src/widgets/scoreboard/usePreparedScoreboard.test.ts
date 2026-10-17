@@ -3,9 +3,10 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import type { PreparationReply, PreparationRequest } from '../../shell/preparation/contract';
 import type { ScoreboardPreparedParams, ScoreboardPreparedReply } from '../../generated/dashboard';
 
-test('the actual scoreboard hook bounds 5000-country requests, carries their hour, and stops on incomplete cells', { timeout: 15_000 }, async () => {
+test('the actual scoreboard hook bounds 5000-country requests and retains cell errors across index publications', { timeout: 15_000 }, async () => {
   const states: unknown[] = [];
   const dependencies: (readonly unknown[])[] = [];
   const cleanups: (() => void)[] = [];
@@ -64,13 +65,19 @@ test('the actual scoreboard hook bounds 5000-country requests, carries their hou
       return page(request);
     }, product: () => { throw new Error('whole-branch scoreboard request'); } } as unknown as DashboardClient;
     let visible: ReturnType<typeof preparedScoreboardRows> = [];
-    const render = (next = request, current = source) => {
+    let lastRequest = request, lastSource = source, lastClient = client;
+    const render = (next = request, current = source, transport = client) => {
+      lastRequest = next; lastSource = current; lastClient = transport;
       cursor = effectCursor = 0;
-      const result = usePreparedScoreboard(client, current, next, visible, true);
+      const result = usePreparedScoreboard(transport, current, next, visible, true);
       for (const [index, callback] of effects) { cleanups[index]?.(); cleanups[index] = callback() || (() => {}); }
       effects.clear(); return result;
     };
-    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const settle = async () => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      render(lastRequest, lastSource, lastClient);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    };
     render(); await settle();
     let state = render();
     assert.equal(state.index.data.series.length, 5000);
@@ -105,6 +112,58 @@ test('the actual scoreboard hook bounds 5000-country requests, carries their hou
     state.retry(); render(departed, incomplete); await settle(); state = render(departed, incomplete);
     assert.match(state.error, /did not supply/);
     assert.equal(queries.length, stopped + 2, 'an explicit retry issues one index and one cell request');
+
+    let through = -1, cellReads = 0;
+    let notifyStatus = () => {};
+    const statuses: { request: PreparationRequest; resolve: (reply: PreparationReply) => void }[] = [];
+    const preparingClient = {
+      preparedQuery: async (_source: DashboardSource, _product: string, demand: ScoreboardPreparedParams) => {
+        if (!demand.index) { cellReads++; throw new Error('Cells failed'); }
+        return { ...page(demand), coverage: { firstHour: 0, lastHour: through, complete: false },
+          pending: [{ firstHour: through + 1, lastHour: 99 }] };
+      },
+      preparationStatus: async (request: PreparationRequest) => new Promise<PreparationReply>(resolve => {
+        statuses.push({ request, resolve }); notifyStatus();
+      }),
+    } as unknown as DashboardClient;
+    const preparing = { id: 'preparing', revision: '1' } as DashboardSource;
+    visible = [];
+    const draw = () => render(request, preparing, preparingClient);
+    draw(); await settle(); state = draw();
+    assert.match(state.error, /Cells failed/);
+    assert.equal(cellReads, 1);
+    const advance = async (lastHour: number) => {
+      if (!statuses.length) await new Promise<void>(resolve => { notifyStatus = resolve; });
+      const next = statuses.shift()!;
+      through = lastHour;
+      next.resolve({ ...next.request, state: 'preparing', sections: [], backgroundEnabled: true, bytes: '0', error: null,
+        coverage: { '1': { firstHour: 0, lastHour, complete: false } } });
+      await settle(); state = draw();
+      assert.equal(state.index.coverage.lastHour, lastHour);
+    };
+    for (const lastHour of [3, 6, 9]) {
+      await advance(lastHour);
+      assert.match(state.error, /Cells failed/, 'index publications retain the failed cell request');
+      assert.equal(cellReads, 1, 'preparation progress cannot retry failed cells');
+    }
+    state.retry(); draw(); await settle(); state = draw();
+    assert.equal(cellReads, 2, 'Retry permits one new cell request');
+    assert.match(state.error, /Cells failed/);
+    visible = preparedScoreboardRows(state.index, undefined, 'factories', true).slice(10, 12);
+    draw(); await settle(); state = draw();
+    assert.equal(cellReads, 3, 'different wanted cells start a new request');
+    assert.match(state.error, /Cells failed/);
+    visible = [...visible].reverse();
+    draw(); await settle(); state = draw();
+    assert.equal(cellReads, 3, 'reordering the same wanted set does not retry');
+    const changedHour = { ...request, hour: 11 };
+    render(changedHour, preparing, preparingClient); await settle(); state = render(changedHour, preparing, preparingClient);
+    assert.equal(cellReads, 4, 'a different hour starts a new cell request');
+    assert.match(state.error, /Cells failed/);
+    const changedSource = { ...preparing, revision: '2' };
+    render(changedHour, changedSource, preparingClient); await settle(); state = render(changedHour, changedSource, preparingClient);
+    assert.equal(cellReads, 5, 'a different source revision starts a new cell request');
+    assert.match(state.error, /Cells failed/);
   } finally {
     for (const cleanup of cleanups) cleanup?.();
     await vite.close(); delete globals.__scoreboardHookFixture;

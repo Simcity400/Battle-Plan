@@ -27,3 +27,9 @@ All created agencies by default, manual/groups/Top N; campaign/follow/pin, inclu
 | [AgencyComparisonWidget.tsx](AgencyComparisonWidget.tsx) | Shared table and visible-row country facts. |
 | [agencyData.ts](agencyData.ts) | Validation, exact ranking/rows and tooltip text; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [agencyComparison.css](agencyComparison.css) | Options, registration and layout. |
+
+Beyond prepared history the all-country day table reads exact agency screen
+values and acquired upgrades from local frames, with the preceding supplying
+operative read. Manual selections that need earlier holder aliases retain their
+joint prefix and show Still being prepared for its pending hours. Capture
+observation spans and preparation coverage remain separate.

@@ -27,6 +27,14 @@ pub struct Prepared {
     bound: bool,
 }
 
+mod first_view;
+
+struct WindowObservation {
+    states: OccupiedStatesReply,
+    trend: History,
+    identities: dashboard_base::products::country_history::RecordedHistories,
+}
+
 /// One block's occupied-states window page and the manifest after it,
 /// encoded as [`series::write_reply`] writes them, for a writer that commits
 /// them after the block ([`Prepared::hold_block`]).
@@ -254,26 +262,37 @@ impl Prepared {
         self.own(|state| state.hold_own_window(branch, window, interval))
     }
 
+    /// The window of `interval` as the scan holds it now, with the scan's
+    /// states, laws and warnings it is cut from.
+    fn current_window(
+        &mut self,
+        branch: u64,
+        window: usize,
+        interval: HourSpan,
+    ) -> (OccupiedStatesReply, OccupiedScan) {
+        self.scan.seal();
+        let scan = std::mem::take(&mut self.scan).bind(self.catalogue.as_deref());
+        let snapshot = scan.snapshot();
+        let reply = window_reply(&snapshot.states, &branch.to_string(), window, interval);
+        self.scan = scan.bind(None);
+        (reply, snapshot.states)
+    }
+
     fn hold_own_window(
         &mut self,
         branch: u64,
         window: usize,
         interval: HourSpan,
     ) -> io::Result<HeldWindow> {
-        self.scan.seal();
-        let scan = std::mem::take(&mut self.scan).bind(self.catalogue.as_deref());
-        let snapshot = scan.snapshot();
-        let reply = window_reply(&snapshot.states, &branch.to_string(), window, interval);
-        let page = encoded_reply(&reply);
-        self.scan = scan.bind(None);
-        let page = page?;
+        let (reply, states) = self.current_window(branch, window, interval);
+        let page = encoded_reply(&reply)?;
         let manifest = encoded_reply(&OccupiedStatesManifestReply {
             branch_id: branch.to_string(),
             decimals: 5,
             windows: Vec::new(),
-            laws: snapshot.states.laws,
+            laws: states.laws,
             strength_missing: STRENGTH_MISSING.into(),
-            warnings: snapshot.states.warnings,
+            warnings: states.warnings,
         })?;
         self.scan.finish_window();
         self.next_window = window + 1;
@@ -394,6 +413,224 @@ impl Prepared {
     }
 }
 
+/// The tables the observation reads: those of
+/// [`scan::scan_history`] and, when a law's eligibility can read the trigger
+/// world, the shared trigger kit.
+fn observed_tables(world: bool) -> Vec<TableId> {
+    let mut tables = vec![
+        TableId::Campaign,
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::States,
+        TableId::StateResistance,
+        TableId::StateGarrisons,
+        TableId::StateOccupationLaws,
+        TableId::OccupationSettings,
+        TableId::StateAssignedManpower,
+        TableId::CountryCollaboration,
+        TableId::LexicalTokens,
+    ];
+    if world {
+        tables.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
+    }
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
+/// What observing a window's look-back found.
+enum LookBack {
+    /// The window as hourly preparation writes it.
+    Window(Box<WindowObservation>),
+    /// At the window's first hour the fresh observation may lack state the
+    /// branch's observation carries: look further back.
+    Unanchored,
+    /// A block or hour could not be read: the window waits for preparation.
+    Unreadable,
+}
+
+/// Window `window` of `branch` exactly as hourly preparation writes it, read
+/// before preparation reaches it from the window's block and the blocks just
+/// before it alone. A window lists each state where its values change,
+/// restating every value where a span starts, so it decodes alone; its first
+/// observation can hold the latest daily read before it. A fresh observation
+/// holds what the branch's holds once it has seen a supplying read, or has
+/// dropped its carried state (a gap, an unreadable hour, an hour without
+/// resistance rows) as the branch's does there too; from the branch's first
+/// block it is the branch's observation. So the look-back reads the block
+/// before the window, then twice as many, until the observation is anchored
+/// at the window's first hour. The laws the window's states hold come with
+/// it. None when a block cannot be read.
+pub fn look_back_window(
+    source: &Source,
+    context: &LoadContext,
+    branch: u64,
+    window: usize,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<OccupiedStatesReply>> {
+    Ok(observed_window(source, context, branch, window, cancelled)?
+        .map(|observation| observation.states.clone()))
+}
+
+fn observed_window(
+    source: &Source,
+    context: &LoadContext,
+    branch: u64,
+    window: usize,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Arc<WindowObservation>>> {
+    check_cancel(cancelled)?;
+    let (_, binding) = dashboard_base::prepared::files(source, context.content.as_ref())?;
+    let cache = dashboard_base::prepared::query::observations::scope(
+        source,
+        "occupation:window",
+        Some(&binding),
+    );
+    let replay = source.replay_ref();
+    let mut blocks: Vec<&replay::container::BlockIndex> = replay
+        .index
+        .iter()
+        .filter(|block| block.branch == branch)
+        .collect();
+    blocks.sort_by_key(|block| block.first_hour);
+    if window >= blocks.len() {
+        return Err(dashboard_core::invalid(
+            "Occupied states window not in this recording",
+        ));
+    }
+    let observation = cache.get(
+        blocks[window],
+        &window,
+        cancelled,
+        |observation: &Option<Arc<WindowObservation>>| {
+            std::mem::size_of::<Option<Arc<WindowObservation>>>()
+                + observation
+                    .as_ref()
+                    .map_or(0, |observation| first_view::window_bytes(observation))
+        },
+        || {
+            let mut back = 1_usize;
+            loop {
+                let start = window.saturating_sub(back);
+                match observe_window(
+                    source,
+                    context,
+                    branch,
+                    window,
+                    &blocks[start..=window],
+                    start == 0,
+                    cancelled,
+                )? {
+                    LookBack::Window(reply) => return Ok(Some(Arc::new(*reply))),
+                    LookBack::Unreadable => return Ok(None),
+                    LookBack::Unanchored if start == 0 => {
+                        return Err(dashboard_core::invalid(
+                            "An occupation look-back from the branch's first block is anchored",
+                        ));
+                    }
+                    LookBack::Unanchored => back = back.saturating_mul(2),
+                }
+            }
+        },
+    )?;
+    Ok(observation.as_ref().clone())
+}
+
+fn look_back_read_ahead(blocks: usize, workers: usize) -> usize {
+    blocks.saturating_sub(1).min(workers.max(1))
+}
+
+/// Observe `blocks` (ending with window `window`'s) on a fresh observation,
+/// read ahead together, and cut the last one's window when the observation
+/// is anchored at its first hour ([`look_back_window`]).
+fn observe_window(
+    source: &Source,
+    context: &LoadContext,
+    branch: u64,
+    window: usize,
+    blocks: &[&replay::container::BlockIndex],
+    from_start: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<LookBack> {
+    dashboard_base::prepared::query::progressive::decodes_allowed()?;
+    let replay = source.replay_ref();
+    let mut prepared = Prepared::default();
+    let mut identities = dashboard_base::products::country_history::HistoryScan::new(false, &[]);
+    prepared.configure(source, context);
+    let tables = observed_tables(prepared.reads_trigger_world());
+    let read = |block: &replay::container::BlockIndex| replay.read_block_selected(block, &tables);
+    let count = blocks.len();
+    dashboard_core::blocks::scan_blocks_by(
+        blocks.to_vec(),
+        look_back_read_ahead(
+            count,
+            std::thread::available_parallelism().map_or(1, |threads| (threads.get() / 2).max(1)),
+        ),
+        cancelled,
+        &read,
+        |reads| {
+            let mut anchored = from_start;
+            for (position, (block, frames)) in reads.enumerate() {
+                dashboard_base::prepared::prepass::note("occupation.look-back");
+                let target = position + 1 == count;
+                let Ok(frames) = frames else {
+                    return Ok(LookBack::Unreadable);
+                };
+                // Before the window's first hour: a read held, or a drop seen.
+                anchored |= target && (prepared.scan.holds_read() || prepared.scan.resets > 0);
+                let resets = prepared.scan.resets;
+                let mut decoder = replay::frame::FrameDecoder::for_tables(&tables);
+                for (index, frame) in frames.iter().enumerate() {
+                    check_cancel(cancelled)?;
+                    let Ok(decoded) = decoder.advance(frame) else {
+                        return Ok(LookBack::Unreadable);
+                    };
+                    prepared.observe_frame(decoded, replay.format, None)?;
+                    if target {
+                        identities.observe(decoded);
+                    }
+                    // A drop at the window's first hour (a gap before it)
+                    // anchors it too.
+                    anchored |= target && index == 0 && prepared.scan.resets > resets;
+                }
+                if !target {
+                    prepared.scan.seal();
+                    prepared.scan.finish_window();
+                    continue;
+                }
+                if !anchored {
+                    return Ok(LookBack::Unanchored);
+                }
+                let interval = HourSpan {
+                    first_hour: block.first_hour,
+                    last_hour: block.last_hour,
+                };
+                let (mut reply, states) = prepared.current_window(branch, window, interval);
+                let held: std::collections::BTreeSet<&str> = reply
+                    .states
+                    .iter()
+                    .flat_map(|series| series.law.iter())
+                    .filter_map(|&(_, index)| index)
+                    .filter_map(|index| reply.texts.get(index).map(String::as_str))
+                    .collect();
+                let laws = states
+                    .laws
+                    .into_iter()
+                    .filter(|law| held.contains(law.token.as_str()))
+                    .collect();
+                reply.laws = Some(laws);
+                let trend = prepared.scan.trend.history(Some(interval.last_hour));
+                return Ok(LookBack::Window(Box::new(WindowObservation {
+                    states: reply,
+                    trend,
+                    identities: std::mem::take(&mut identities).finish(),
+                })));
+            }
+            Ok(LookBack::Unreadable)
+        },
+    )
+}
+
 pub fn window_query(
     source: &Source,
     context: &LoadContext,
@@ -428,15 +665,23 @@ pub fn window_query(
     let params: BranchParams = serde_json::from_value(value)?;
     params.validate().map_err(dashboard_core::invalid)?;
     let branch = params.branch();
-    let Some(mut reply) = series::read_reply::<OccupiedStatesManifestReply>(
+    // The manifest each published window wrote last: its laws and warnings
+    // are those of the windows through it. Before the first, the windows
+    // alone, which are the branch's blocks.
+    let mut reply = series::read_reply::<OccupiedStatesManifestReply>(
         &store,
         &key,
         &format!("occupied-states-manifest-{branch}"),
         0,
     )?
-    else {
-        return Ok(Value::Null);
-    };
+    .unwrap_or_else(|| OccupiedStatesManifestReply {
+        branch_id: branch.to_string(),
+        decimals: 5,
+        windows: Vec::new(),
+        laws: Vec::new(),
+        strength_missing: STRENGTH_MISSING.into(),
+        warnings: Vec::new(),
+    });
     reply.windows = source.block_windows(branch).to_vec();
     Ok(serde_json::to_value(reply)?)
 }
@@ -518,28 +763,92 @@ pub fn trend_query(
     };
     occupation_trend::OccupationTrend::validate(&selection).map_err(dashboard_core::invalid)?;
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let Some((tags, (mut warnings, collaboration_warnings))) =
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
+        source,
+        context.content.as_ref(),
+        branch,
+        "occupation-trend",
+        cancelled,
+    )?;
+    let tail = first_view::tail(
+        source,
+        context,
+        product,
+        &params,
+        coverage.as_ref(),
+        cancelled,
+    )?;
+    let (mut tags, (mut warnings, collaboration_warnings)) =
         series::read_catalogue::<(Vec<String>, Vec<String>)>(
             &store,
             &key,
             "occupation-trend",
             branch,
         )?
-    else {
-        return Ok(Value::Null);
-    };
+        .unwrap_or_default();
     if params.family.collaboration {
         warnings.extend(collaboration_warnings);
     }
-    let Some(histories) = dashboard_base::products::country_history::prepared_branch_histories(
+    let complete_histories = dashboard_base::products::country_history::prepared_branch_histories(
         source,
         branch,
         context.content.as_ref(),
         cancelled,
-    )?
-    else {
-        return Ok(Value::Null);
+    )?;
+    let identities_preparing = complete_histories.is_none();
+    let histories = match complete_histories {
+        Some(history) => history,
+        None => {
+            let accepted = dashboard_base::prepared::coverage::product_coverage(
+                source,
+                context.content.as_ref(),
+                branch,
+                "country-identities",
+                cancelled,
+            )?;
+            let none = BTreeMap::new();
+            let (identities, exact) = if product == "series-state" {
+                (&none, &tail.identities)
+            } else {
+                (&tail.identities, &none)
+            };
+            Arc::new(dashboard_base::prepared::query::progressive::histories(
+                &store,
+                &key,
+                branch,
+                accepted.as_ref(),
+                identities,
+                exact,
+                source.replay_ref(),
+                &params.tags,
+                cancelled,
+            )?)
+        }
     };
+    for tag in tail.history.series.keys() {
+        let next = tags.len() as u64;
+        tags.entry(tag.clone()).or_insert(next);
+    }
+    let tail_membership = params
+        .family
+        .top
+        .map(|count| {
+            dashboard_base::ranking::top_membership(
+                &tail.history.series,
+                count as usize,
+                |run| (run.first_hour, run.last_hour),
+                |run| {
+                    (match params.family.rank_measure {
+                        OccupationMeasure::Resistance => &run.resistance_raw,
+                        OccupationMeasure::Compliance => &run.compliance_raw,
+                    })
+                    .parse::<i64>()
+                    .ok()
+                },
+                cancelled,
+            )
+        })
+        .transpose()?;
     let selected: Vec<String> = if params.family.top.is_some() || params.tags.is_empty() {
         tags.keys().cloned().collect()
     } else {
@@ -608,7 +917,7 @@ pub fn trend_query(
         format!("occupation-trend-ranks-{branch}-{rank_column}"),
         cancelled,
     )?;
-    match product {
+    let mut data = match product {
         "series-summary" => {
             let view = series::viewport(params.from, params.to, params.width)?;
             let bounds = (view.0.floor() as i32, view.1.ceil() as i32);
@@ -625,15 +934,31 @@ pub fn trend_query(
                     continue;
                 };
                 let mut spans = within.get(&tag).cloned();
-                let mut summary = values.summary_within(
+                let numeric = first_view::numeric(&tail.history, &tag, column);
+                let mut summary = values.summary_with_tail(
                     actor,
                     bounds,
                     view,
                     5,
+                    &numeric,
                     within.get(&tag).map(Vec::as_slice),
                 )?;
                 if let Some(top) = params.family.top {
-                    let membership = ranks.summary(actor * 2 + 1, bounds, view, 0)?;
+                    let rank_tail: Vec<Run> = tail_membership
+                        .as_ref()
+                        .and_then(|members| members.get(&tag))
+                        .into_iter()
+                        .flatten()
+                        .map(|span| Run::new(span.first_hour, span.last_hour, 1, true))
+                        .collect();
+                    let membership = ranks.summary_with_tail(
+                        actor * 2 + 1,
+                        bounds,
+                        view,
+                        0,
+                        &rank_tail,
+                        None,
+                    )?;
                     if !membership
                         .buckets
                         .iter()
@@ -652,8 +977,14 @@ pub fn trend_query(
                             })
                             .collect();
                         spans = Some(ranked);
-                        summary =
-                            values.summary_within(actor, bounds, view, 5, spans.as_deref())?;
+                        summary = values.summary_with_tail(
+                            actor,
+                            bounds,
+                            view,
+                            5,
+                            &numeric,
+                            spans.as_deref(),
+                        )?;
                     } else {
                         for (bucket, rank) in summary.buckets.iter_mut().zip(membership.buckets) {
                             if rank.is_none_or(|rank| rank.min_value > f64::from(top)) {
@@ -663,7 +994,7 @@ pub fn trend_query(
                         summary.runs = None;
                     }
                 }
-                if summary.runs.is_some() {
+                if summary.runs.is_some() && tail.approximate.is_empty() {
                     let mut raw = fact_runs(&mut facts, actor, bounds.0, view.1.floor() as i32)?;
                     for run in &mut raw {
                         let canonical =
@@ -729,6 +1060,11 @@ pub fn trend_query(
                             .collect(),
                     );
                 }
+                dashboard_base::prepared::query::progressive::clip_approximate(
+                    &mut summary,
+                    &tail.approximate,
+                    spans.as_deref(),
+                );
                 series::summary_budget(view.0, view.1, view.2, lines.len() + 1)?;
                 let end_run = if let Some(end) = summary
                     .buckets
@@ -858,7 +1194,14 @@ pub fn trend_query(
                 }) {
                     continue;
                 }
-                let runs = fact_runs(&mut facts, actor, read.hour, read.hour)?;
+                let runs = if coverage
+                    .as_ref()
+                    .is_none_or(|coverage| read.hour > coverage.last_hour)
+                {
+                    tail.history.series.get(&tag).cloned().unwrap_or_default()
+                } else {
+                    fact_runs(&mut facts, actor, read.hour, read.hour)?
+                };
                 if !runs.is_empty() {
                     history.series.insert(tag.clone(), runs);
                 }
@@ -881,7 +1224,33 @@ pub fn trend_query(
             )?)
         }
         _ => Err(dashboard_core::invalid("Unknown occupation series query")),
+    }?;
+    let mut prefix = dashboard_base::prepared::prefix::Prefix::new(
+        source,
+        branch,
+        dashboard_base::prepared::prefix::extent(source, branch, coverage.clone())?,
+        if product == "series-state" {
+            params.reads.first().map(|read| read.hour)
+        } else {
+            params.to.map(|hour| hour.floor() as i32)
+        },
+    );
+    prefix.answered(&tail.answered);
+    data["pending"] = serde_json::to_value(prefix.pending)?;
+    if identities_preparing {
+        data["preparing"] = json!(["identities", "segments", "startsSegment"]);
     }
+    data["coverage"] = serde_json::to_value(
+        dashboard_base::prepared::query::progressive::identity_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            coverage.as_ref(),
+            !identities_preparing,
+            cancelled,
+        )?,
+    )?;
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -890,6 +1259,17 @@ mod tests {
     use dashboard_base::prepared::series::tests::Fixture;
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::rows::{CountryLinkRow, CountryRow, StateGarrisonRow, TableRows};
+
+    #[test]
+    fn look_back_reads_only_a_worker_bounded_number_of_blocks_ahead() {
+        for workers in [1, 4, 8] {
+            assert_eq!(look_back_read_ahead(1, workers), 0);
+            assert_eq!(look_back_read_ahead(2, workers), 1);
+            for blocks in [32, 663, 5000] {
+                assert_eq!(look_back_read_ahead(blocks, workers), workers);
+            }
+        }
+    }
 
     fn frame(hour: i32, count: u32) -> DecodedFrame {
         let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));

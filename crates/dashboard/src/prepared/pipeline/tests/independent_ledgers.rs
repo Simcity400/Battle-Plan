@@ -828,6 +828,433 @@ fn economy_ledgers_read_by_their_changes_build_no_frame_at_quiet_hours() {
     }
 }
 
+/// Before production's coverage completes, a selection after the prepared
+/// prefix answers at the prefix's last hour, as the complete pages answer
+/// that hour, and names the later recorded hours pending; the old selection
+/// waited for complete coverage.
+#[test]
+fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending() {
+    use crate::prepared_production::{self as production, ProductionAccumulator, ProductionNaming};
+    independent::with_test_hourly(|| {
+        let replay = scenario(5, false);
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("production-prefix");
+        let flag = AtomicBool::new(false);
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let format = source.replay_ref().format;
+        let naming =
+            ProductionNaming::load(&source, &crate::products::LoadContext { content: None });
+        let mut state = ProductionAccumulator::new(format.version(), 1, BASE);
+        // Commits through the second block, then through the branch's end.
+        let mut commit = |writer: &mut store::Writer, offsets: &[i32], last: i32, complete| {
+            for &offset in offsets {
+                let frame = ledger_frame(1, BASE + offset);
+                if let Some(page) = state.ingest(format, &frame, naming.named(), &flag).unwrap() {
+                    production::publish_endpoint(writer, &mut state, &page).unwrap();
+                }
+            }
+            if let Some(page) = state.flush() {
+                production::publish_endpoint(writer, &mut state, &page).unwrap();
+            }
+            production::write_catalogue(writer, &mut state, &flag).unwrap();
+            json(
+                writer,
+                &coverage_section(1),
+                &Coverage {
+                    schema: SCHEMA,
+                    first_hour: BASE,
+                    last_hour: BASE + last,
+                    complete,
+                },
+            )
+            .unwrap();
+        };
+        let selection = |hour: i32| {
+            serde_json::json!({"hour": hour, "selection": {"branchId": "1", "tags": [], "top": 10,
+                "measure": "total", "count": "units", "grouping": "type", "included": [], "refits": false},
+                "offset": "0", "limit": 10, "ranked": true})
+        };
+        let mut writer = store.replace(key.clone()).unwrap();
+        commit(&mut writer, &(0..=11).collect::<Vec<_>>(), 11, false);
+        writer.commit().unwrap();
+        let cold = query(&source, "production-select", selection(BASE + 31)).unwrap();
+        let mut writer = store.extend(&key).unwrap();
+        let rest: Vec<i32> = (12..=17).chain(20..=31).collect();
+        commit(&mut writer, &rest, 31, true);
+        writer.commit().unwrap();
+        assert!(!cold.is_null(), "a prefix selection before completion");
+        assert_eq!(cold["coverage"]["lastHour"], BASE + 11);
+        assert_eq!(cold["coverage"]["complete"], false);
+        assert_eq!(
+            cold["approximate"],
+            serde_json::json!([{"firstHour": BASE, "lastHour": BASE + 11}])
+        );
+        assert_eq!(
+            cold["pending"],
+            serde_json::json!([{"firstHour": BASE + 12, "lastHour": BASE + 17},
+                {"firstHour": BASE + 20, "lastHour": BASE + 31}]),
+            "the recorded gap between blocks is not pending"
+        );
+        assert!(cold["firstHour"].as_i64().unwrap() <= i64::from(BASE + 11));
+        assert!(cold["lastHour"].as_i64().unwrap() >= i64::from(BASE + 11));
+        assert!(
+            !cold["countries"].as_array().unwrap().is_empty(),
+            "the prefix delivered equipment"
+        );
+        // The prefix's countries are those the complete pages give at its last hour.
+        let complete = query(&source, "production-select", selection(BASE + 11)).unwrap();
+        assert_eq!(complete["coverage"]["complete"], true);
+        assert_eq!(complete["pending"], serde_json::json!([]));
+        assert_eq!(cold["countries"], complete["countries"]);
+        assert_eq!(cold["totalCountries"], complete["totalCountries"]);
+        assert_eq!(complete["approximate"], serde_json::json!([]));
+        clear(source);
+    });
+}
+
+/// Commits experience prepared from `offsets` (after BASE) of branch 1's
+/// ledger frames, with the hourly walk's coverage through `last`.
+fn commit_experience(
+    writer: &mut store::Writer,
+    accumulator: &mut crate::prepared_stability::ExperienceAccumulator,
+    format: replay::format::FormatVersion,
+    offsets: impl IntoIterator<Item = i32>,
+    last: i32,
+    complete: bool,
+) {
+    for offset in offsets {
+        accumulator
+            .observe(&ledger_frame(1, BASE + offset), format)
+            .unwrap();
+    }
+    accumulator
+        .flush(writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    json(
+        writer,
+        &coverage_section(1),
+        &Coverage {
+            schema: SCHEMA,
+            first_hour: BASE,
+            last_hour: BASE + last,
+            complete,
+        },
+    )
+    .unwrap();
+}
+
+/// The first country's banked army experience at `hours`, as series states.
+fn banked_states(source: &Source, hours: &[i32]) -> serde_json::Value {
+    let tag = serde_json::to_string(&("000", 0, COUNTRY)).unwrap();
+    query(
+        source,
+        "series-state",
+        serde_json::json!({
+            "branchId": "1",
+            "family": { "kind": "country-experience", "measure": "army-banked" },
+            "reads": hours
+                .iter()
+                .map(|hour| serde_json::json!({ "tag": tag, "hour": BASE + hour }))
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .unwrap()
+}
+
+/// Branch 1 as fourteen blocks of six hours from BASE, without gaps: daily
+/// reads of banked experience fall at +13 and +17, +41 and +65.
+fn daily_scenario() -> Replay {
+    let frames = |block: i32| -> Vec<DecodedFrame> {
+        (block * 6..block * 6 + 6)
+            .map(|offset| ledger_frame(1, BASE + offset))
+            .collect()
+    };
+    let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(0))]).unwrap();
+    for block in 1..14 {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, frames(block))])
+            .unwrap();
+    }
+    replay
+}
+
+#[test]
+fn exact_banked_experience_keeps_its_cadence_read_across_one_hour_blocks() {
+    independent::with_test_hourly(|| {
+        let observed = |offset| {
+            let mut observed = ledger_frame(1, BASE + offset);
+            if let TableView::Complete(TableRows::CountryExperience(rows)) =
+                &mut *observed.tables[TableId::CountryExperience.index()]
+            {
+                rows[0].army_raw = if offset < 41 { 100 } else { 200 };
+            }
+            observed
+        };
+        let mut replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![observed(0)])]).unwrap();
+        for hour in 1..24 {
+            replay = replay
+                .append(&[continuation_records(&replay, 1, vec![observed(hour)])])
+                .unwrap();
+        }
+        replay = replay
+            .append(&[continuation_records(
+                &replay,
+                1,
+                (24..48).map(observed).collect(),
+            )])
+            .unwrap();
+        assert_eq!(replay.index.len(), 25);
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("experience-one-hour-predecessors");
+        let hours = [24, 40, 41, 42, 47];
+        let cold = banked_states(&source, &hours);
+        for (index, hour) in hours.iter().enumerate() {
+            let state = &cold["states"][index];
+            assert_eq!(state["approximate"], false, "hour {hour}");
+            assert_eq!(
+                state["run"]["valueRaw"],
+                if *hour < 41 { "100" } else { "200" },
+                "hour {hour}: the latest supplying read, not the block's keyframe"
+            );
+            assert_eq!(state["readHour"], BASE + if *hour < 41 { 17 } else { 41 });
+        }
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let mut writer = store.replace(key).unwrap();
+        let mut accumulator = crate::prepared_stability::ExperienceAccumulator::default();
+        for hour in 0..48 {
+            accumulator.observe(&observed(hour), replay.format).unwrap();
+        }
+        accumulator
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        json(
+            &mut writer,
+            &coverage_section(1),
+            &Coverage {
+                schema: SCHEMA,
+                first_hour: BASE,
+                last_hour: BASE + 47,
+                complete: true,
+            },
+        )
+        .unwrap();
+        writer.commit().unwrap();
+        let complete = banked_states(&source, &hours);
+        assert_eq!(complete["coverage"]["complete"], true);
+        for index in 0..hours.len() {
+            assert_eq!(
+                cold["states"][index]["run"]["valueRaw"],
+                complete["states"][index]["run"]["valueRaw"]
+            );
+            for field in ["readHour", "approximate"] {
+                assert_eq!(
+                    cold["states"][index][field],
+                    complete["states"][index][field]
+                );
+            }
+        }
+        clear(source);
+    });
+}
+
+/// Before experience's coverage completes, banked experience after the
+/// prepared prefix is sampled from the recorded blocks as preparation reads
+/// it: a short tail exactly, the read before it carried into its first
+/// hours, each state dated by its read. Gains still wait. The old reply
+/// waited for coverage.
+#[test]
+fn banked_experience_after_the_prepared_prefix_is_read_as_preparation_reads_it() {
+    independent::with_test_hourly(|| {
+        let replay = daily_scenario();
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("experience-prefix");
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let format = source.replay_ref().format;
+        let mut accumulator = crate::prepared_stability::ExperienceAccumulator::default();
+        let hours = [18, 30, 40, 41, 83];
+        // Through the third block, whose daily read the tail carries.
+        let mut writer = store.replace(key.clone()).unwrap();
+        commit_experience(&mut writer, &mut accumulator, format, 0..=17, 17, false);
+        writer.commit().unwrap();
+        let cold = banked_states(&source, &hours);
+        let tag = serde_json::to_string(&("000", 0, COUNTRY)).unwrap();
+        let gain = query(
+            &source,
+            "series-state",
+            serde_json::json!({
+                "branchId": "1",
+                "family": { "kind": "country-experience", "measure": "army-gain" },
+                "reads": [{ "tag": tag, "hour": BASE + 20 }],
+            }),
+        )
+        .unwrap();
+        assert!(gain.is_null(), "daily gains need every hour of a day");
+        let mut writer = store.extend(&key).unwrap();
+        commit_experience(&mut writer, &mut accumulator, format, 18..=83, 83, true);
+        writer.commit().unwrap();
+        let complete = banked_states(&source, &hours);
+        assert!(
+            !cold.is_null(),
+            "banked experience answers before completion"
+        );
+        assert_eq!(complete["coverage"]["complete"], true);
+        assert!(
+            cold["states"][0]["run"]["valueRaw"].is_string(),
+            "the read before the tail carries into its first hour"
+        );
+        for (index, hour) in hours.iter().enumerate() {
+            let (cold, complete) = (&cold["states"][index], &complete["states"][index]);
+            assert_eq!(cold["approximate"], false, "a short tail is read exactly");
+            assert_eq!(
+                cold["run"]["valueRaw"], complete["run"]["valueRaw"],
+                "{hour}"
+            );
+            assert_eq!(cold["readHour"], complete["readHour"], "{hour}");
+        }
+        clear(source);
+    });
+}
+
+/// A long tail samples each block at its first daily read: that read stands
+/// for the block's hours, approximate, and a block without a read is not
+/// sampled; gains still wait for preparation.
+#[test]
+fn banked_experience_samples_each_block_of_a_long_tail_at_its_first_read() {
+    independent::with_test_hourly(|| {
+        let replay = daily_scenario();
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("experience-long-tail");
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let format = source.replay_ref().format;
+        let mut accumulator = crate::prepared_stability::ExperienceAccumulator::default();
+        let mut writer = store.replace(key.clone()).unwrap();
+        commit_experience(&mut writer, &mut accumulator, format, 0..=5, 5, false);
+        writer.commit().unwrap();
+        let tag = serde_json::to_string(&("000", 0, COUNTRY)).unwrap();
+        let summary = |measure: &str| {
+            query(
+                &source,
+                "series-summary",
+                serde_json::json!({
+                    "branchId": "1",
+                    "family": { "kind": "country-experience", "measure": measure },
+                    "tags": [tag],
+                    "from": BASE,
+                    "to": BASE + 83,
+                    "width": 84,
+                    "withMarks": false,
+                }),
+            )
+            .unwrap()
+        };
+        let banked = summary("army-banked");
+        assert!(!banked.is_null(), "the long tail answers before completion");
+        // The third, seventh and eleventh blocks hold a daily read.
+        let span = |first: i32, last: i32| serde_json::json!({ "firstHour": BASE + first, "lastHour": BASE + last });
+        assert_eq!(
+            banked["series"][0]["summary"]["approximate"],
+            serde_json::json!([span(12, 17), span(36, 41), span(60, 65)])
+        );
+        assert!(
+            summary("army-gain").is_null(),
+            "daily gains need every hour of a day"
+        );
+        clear(source);
+    });
+}
+
+/// Before the stockpile's coverage completes, a table at one hour answers
+/// from the recording without a prepared page: each holder's last stock, line
+/// and logistics reads carry to the hour as preparation carries them, looking
+/// back over earlier blocks within a day. Its values at the hour are those
+/// the complete reply gives. The old reply waited for complete coverage.
+#[test]
+fn a_stockpile_table_at_an_hour_answers_from_the_recording_before_coverage_completes() {
+    independent::with_test_hourly(|| {
+        let replay = daily_scenario();
+        let mut fixture = Fixture::new(&replay);
+        let table = |source: &Source, hour: i32| {
+            query(
+                source,
+                "equipment-stockpile",
+                serde_json::json!({ "branchId": "1", "tag": "000", "from": BASE + hour,
+                    "to": BASE + hour, "width": 1, "included": [] }),
+            )
+            .unwrap()
+        };
+        // Before the first reads, inside a block after a read, after reads
+        // in earlier blocks of the day before, and at the branch's end.
+        let hours = [6, 10, 40, 83];
+        let source = fixture.source("stockpile-at-hour");
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let mut writer = store.replace(key.clone()).unwrap();
+        json(
+            &mut writer,
+            &coverage_section(1),
+            &Coverage {
+                schema: SCHEMA,
+                first_hour: BASE,
+                last_hour: BASE + 5,
+                complete: false,
+            },
+        )
+        .unwrap();
+        writer.commit().unwrap();
+        let cold: Vec<_> = hours.iter().map(|&hour| table(&source, hour)).collect();
+        clear(source);
+        let source = fixture.source("stockpile-at-hour");
+        plain(&source);
+        let at = |runs: &serde_json::Value, hour: i32| {
+            runs.as_array()
+                .unwrap()
+                .iter()
+                .find(|run| {
+                    run["firstHour"].as_i64().unwrap() <= i64::from(BASE + hour)
+                        && i64::from(BASE + hour) <= run["lastHour"].as_i64().unwrap()
+                })
+                .map(|run| run["amountRaw"].clone())
+        };
+        for (&hour, cold) in hours.iter().zip(&cold) {
+            assert!(!cold.is_null(), "a table at {hour} before completion");
+            assert_eq!(cold["coverage"]["complete"], false);
+            assert_eq!(cold["pending"], serde_json::json!([]));
+            assert_eq!(
+                cold["approximate"],
+                serde_json::json!([{"firstHour": BASE + hour, "lastHour": BASE + hour}])
+            );
+            let complete = table(&source, hour);
+            assert!(complete["prepared"].is_object());
+            for (list, key, fields) in [
+                (
+                    "variants",
+                    "id",
+                    &["stock", "daily", "dailyIc", "unitCostLow", "unitCostHigh"][..],
+                ),
+                ("logistics", "key", &["balance", "stock", "available"][..]),
+            ] {
+                for row in complete[list].as_array().unwrap() {
+                    let sampled = cold[list]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|other| other[key] == row[key]);
+                    for field in fields {
+                        let expected = at(&row[*field], hour);
+                        let actual = sampled.and_then(|sampled| at(&sampled[*field], hour));
+                        assert_eq!(actual, expected, "{list} {field} at {hour}");
+                    }
+                }
+            }
+        }
+        assert!(
+            at(&cold[2]["variants"][0]["stock"], 40).is_some(),
+            "the stock read of the day before carries to the hour"
+        );
+        clear(source);
+    });
+}
+
 /// Fuel's frame at `hour` for its days: the fuel tables alone, with an
 /// off-slot read of the fuel table at +30 (a block's first hour, a day after
 /// +17 and inside a day of +41) and the second country's state ceded at +47
@@ -941,7 +1368,10 @@ fn fuel_read_by_its_changes_settles_its_days_inside_quiet_hours_as_hourly_prepar
         assert!(states >= 2, "{mode}: both branches' states");
         assert_eq!(observed + quiet, total, "{mode}: every hour folded once");
         assert!(quiet > total / 2, "{mode}: {quiet} of {total} hours quiet");
-        assert!(frames < total / 2, "{mode}: {frames} frames of {total} hours");
+        assert!(
+            frames < total / 2,
+            "{mode}: {frames} frames of {total} hours"
+        );
         assert_eq!(
             prepass::noted("fuel.fallback"),
             fallback,

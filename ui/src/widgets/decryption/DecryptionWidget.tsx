@@ -1,3 +1,4 @@
+import { pendingAt, preparedPrefix, fieldPreparing } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { HTMLAttributes } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -87,11 +88,13 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !selection.ready) return <WidgetState kind="loading" label="Loading decryption…" />;
+  if (pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   const coverage = runAt(data.coverage, hour);
   if (!coverage || (!coverage.complete && !rows.length)) return <WidgetState kind="unavailable"
     message="Decryption data is unavailable at this time." />;
   if (selection.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
   return <div ref={root} className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>
+    {rows.some(row => fieldPreparing(row.run, 'started')) && <p className="chart-line-key">Attempt histories, starts and breaks are still being prepared.</p>}
     <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race"
       onVisibleRows={setVisibleRows} empty={<WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />}>
       {row => <RaceCell row={row.item} labels={countries.pair(row.item)} active={active && row.phase !== 'leaving'} leaving={row.phase === 'leaving'}
@@ -140,7 +143,7 @@ function RaceCell({ row, labels, active, leaving, rowProps, descriptionId, conte
     </div>
     <div className="decryption-status">
       <b>{broken ? CIPHER_BROKEN : progressLabel(row.run)}</b>
-      <span>{broken ? observationDate(row.broken, row.hour) : workingStatus(row.run)}</span>
+      <span>{broken ? fieldPreparing(row.run, 'breaks') ? 'Break date still being prepared' : observationDate(row.broken, row.hour) : workingStatus(row.run)}</span>
       {!broken && row.run.progressPercent == null && <span className="decryption-amount">{amountText(row.run)}</span>}
       {bonus != null && <span className="pill warning">{bonus >= 0 ? '+' : ''}{bonus} bonus days</span>}
     </div>

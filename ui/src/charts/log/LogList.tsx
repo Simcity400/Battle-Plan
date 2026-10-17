@@ -1,5 +1,5 @@
 import type { PreparedCoverage } from '../../shell/preparation/contract';
-import { dayLabel } from '../draw';
+import { preparedRangeText } from '../prepared';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -19,16 +19,17 @@ import { logicalScroll, physicalScroll, scrollGeometry, scrollItemTop, wheelScro
 import '../charts.css';
 import './log.css';
 
-/** One status above a log, including its empty state. */
-export function PreparedLogCoverage({ coverage }: { coverage: PreparedCoverage | null | undefined }) {
-  if (coverage === undefined || coverage?.complete) return null;
-  return <p className="chart-line-key" role="status">{coverage
-    ? `Prepared ${dayLabel(coverage.firstHour)} to ${dayLabel(coverage.lastHour)}; the rest is still being prepared.`
-    : 'This range is still being prepared.'}</p>;
+/** One status above a log, including its empty state ([preparedRangeText]):
+ * `exact` is the first hour a proven newest window answers exactly. */
+export function PreparedLogCoverage({ coverage, exact = null, approximate = false }: { coverage: PreparedCoverage | null | undefined; exact?: number | null; approximate?: boolean }) {
+  const text = preparedRangeText(coverage, exact);
+  return text == null ? null : <p className="chart-line-key" role="status">{approximate ? 'Approximate. ' : ''}{text}</p>;
 }
 
 export interface LogListProps<T> {
   preparedCoverage?: PreparedCoverage | null;
+  preparedExactFrom?: number;
+  preparedApproximate?: boolean;
   /** Parity builds report whether demand-loaded recording windows cover the
    * requested history. It has no presentation or production behavior. */
   parityHistoryComplete?: boolean;
@@ -94,7 +95,7 @@ const viewAt = (top: number, height: number, width: number, outerHeight: number)
  * between pointer and keys), and it follows what its row is about (`rowId`) across
  * the row's keys, kept current or hidden as playback changes the rows. Right-click,
  * the context-menu key or Enter opens the row's menu. */
-export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, label, density, months, animate, playhead, layout = 'row', rowHeight, renderRow, columns, describe, tooltip, onTooltip, menu, empty, onVisible, anchorRows = false, parityHistoryComplete = true, paritySemantic, preparedCoverage }: LogListProps<T>) {
+export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, label, density, months, animate, playhead, layout = 'row', rowHeight, renderRow, columns, describe, tooltip, onTooltip, menu, empty, onVisible, anchorRows = false, parityHistoryComplete = true, paritySemantic, preparedCoverage, preparedExactFrom, preparedApproximate }: LogListProps<T>) {
   const owner = useId();
   const listId = useId();
   const parityEmptyRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
@@ -395,11 +396,11 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   const topMonth = months && view.top > 0 ? monthStarts.filter(month => month.top <= view.top).at(-1) : undefined;
   const optionId = (id: string) => `${listId}-${encodeURIComponent(JSON.stringify(id))}`;
 
-  if (!ordinals[items.length]) return <div className="log-empty" {...(import.meta.env.MODE === 'parity' ? { ref: parityEmptyRoot } : {})}><PreparedLogCoverage coverage={preparedCoverage} />{empty}</div>;
+  if (!ordinals[items.length]) return <div className="log-empty" {...(import.meta.env.MODE === 'parity' ? { ref: parityEmptyRoot } : {})}><PreparedLogCoverage coverage={preparedCoverage} exact={preparedExactFrom} approximate={preparedApproximate} />{empty}</div>;
   return <div className={`log${pages ? ' is-paged' : ''}${geometry.compressed ? ' is-compressed' : ''}${layout === 'card' ? ' is-card-log' : ''}${density === 'compact' ? ' is-compact' : ''}${animate ? '' : ' no-motion'}`}
     style={{ '--log-columns': typeof columns === 'string' ? columns : undefined } as React.CSSProperties}>
     {topMonth?.label && <div className="log-month is-sticky" aria-hidden="true">{topMonth.label}</div>}
-    <PreparedLogCoverage coverage={preparedCoverage} />
+    <PreparedLogCoverage coverage={preparedCoverage} exact={preparedExactFrom} approximate={preparedApproximate} />
     <div ref={setScroller} className="log-scroll" role="listbox" aria-label={label} tabIndex={0}
       aria-activedescendant={current ? optionId(current) : undefined}
       onScroll={event => readScroll(event.currentTarget)}

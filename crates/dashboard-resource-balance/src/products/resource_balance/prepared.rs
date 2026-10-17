@@ -734,6 +734,7 @@ pub fn query(
         fallback,
     ));
     let (store, source_key) = dashboard_base::prepared::files(source, content)?;
+    let extent = dashboard_base::prepared::prefix::extent(source, branch, coverage)?;
     read_pages(
         &store,
         &source_key,
@@ -747,7 +748,7 @@ pub fn query(
     )
     .map(|value| {
         value.map(|mut value| {
-            value["coverage"] = json!(coverage);
+            value["coverage"] = json!(extent);
             value
         })
     })
@@ -2277,7 +2278,12 @@ mod tests {
             cold["summaries"][0]["supply"]["approximate"],
             json!([{"firstHour":0,"lastHour":29}])
         );
-        assert!(cold["coverage"].is_null());
+        assert!(
+            cold["coverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+                && cold["coverage"]["complete"] == false
+        );
         assert!(
             query(
                 &source,

@@ -3,6 +3,20 @@ use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
 use serde_json::json;
 
+#[test]
+fn cold_spending_totals_are_an_empty_answer_ready_for_prefix_marking() {
+    let fixture = Fixture::new();
+    let data = query::query(&json!({ "branchId": "1", "tag": "mod/tag", "view": "spending", "hour": 100, "totals": true }), &fixture.store, &fixture.key, &AtomicBool::new(false)).unwrap();
+    assert!(!data.is_null());
+    let reply: PoliticsLedgerReply = serde_json::from_value(data).unwrap();
+    assert_eq!(
+        (reply.branch_id.as_str(), reply.tag.as_str(), reply.decimals),
+        ("1", "mod/tag", 5)
+    );
+    assert!(reply.spending.is_empty());
+    assert!(reply.spending_coverage.is_empty());
+}
+
 fn publish(prepared: &mut Prepared, fixture: &Fixture) {
     let mut writer = fixture.writer();
     prepared

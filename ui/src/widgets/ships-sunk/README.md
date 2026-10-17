@@ -4,7 +4,13 @@
 
 **Product(s) it reads:** [`ships-sunk`](../../../../crates/dashboard-naval/src/products/ships_sunk.rs) uses the shared [`sinkings`](../../../../crates/dashboard-naval/src/products/sinkings.rs) retained-history scan; [`ships-sunk-battle-titles`](../../../../crates/dashboard-naval/src/products/ships_sunk/battle_titles.rs) resolves drawn titles through [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs).
 
-The manifest supplies class choices; normal log demand holds playback and visible replay windows. Earlier/Latest sinkings reaches every native-date window. Late retained observations repair their native window, and its stable scan indices continue to identify title requests.
+The manifest supplies class choices from published history, with the prepared
+coverage and pending tail. Before the first commit, the log says the range is
+still being prepared. While partial, browsing starts at the newest covered
+window, the shared prepared-range line stays visible and a note bounds class
+choices to prepared history. A newest page is not claimed exact from the naval
+battle proof: stable sinking indices and late attribution need the retained
+multiset history. Normal log demand holds playback and visible replay windows. Earlier/Latest sinkings reaches every native-date window. Late retained observations repair their native window, and its stable scan indices continue to identify title requests.
 Published rows and attribution patches use shared dated events; continuation
 retains unresolved operands and class facts. Drawn battle titles read their
 immutable supplying-frame projection from prepared events.

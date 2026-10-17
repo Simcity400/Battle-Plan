@@ -656,6 +656,18 @@ fn faction_request(branch: &str, factories: bool, extra: serde_json::Value) -> s
     params
 }
 
+/// A faction-totals reply's values: everything but its coverage, which says
+/// how far preparation went, and its warnings, which count the reads the
+/// prepared catalogue saw.
+fn faction_values(reply: &serde_json::Value) -> serde_json::Value {
+    let mut values = reply.clone();
+    if let Some(values) = values.as_object_mut() {
+        values.remove("coverage");
+        values.remove("warnings");
+    }
+    values
+}
+
 /// Product requests, as (product, params).
 type Requests = Vec<(&'static str, serde_json::Value)>;
 
@@ -759,11 +771,30 @@ fn faction_factories_and_census_answer_from_their_families_while_the_hourly_walk
         let source = fixture.source("census-stalled");
         let flag = AtomicBool::new(false);
         let (own, _) = requests("1", 100, LAST);
+        // Nothing is prepared yet: the factory faction totals at a reached
+        // hour answer from its frames, as the prepared pages will, and their
+        // summary and next change wait.
         let (product, params) = own[0].clone();
+        let cold = query(&source, product, params);
+        assert!(!cold.is_null(), "the reached hour answers from its frames");
         assert!(
-            query(&source, product, params).is_null(),
-            "nothing is prepared yet"
+            cold["coverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+                && cold["coverage"]["complete"] == false,
+            "{cold}"
         );
+        assert_eq!(
+            faction_values(&cold),
+            faction_values(&expected[0][0]),
+            "the factory faction totals at the last hour as hourly preparation"
+        );
+        for (index, (product, params)) in own.into_iter().enumerate().skip(1).take(2) {
+            assert!(
+                query(&source, product, params).is_null(),
+                "{product} {index} waits"
+            );
+        }
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;
         let error = run_checked(
@@ -940,12 +971,15 @@ fn census_queries_read_only_through_their_joint_coverage_when_one_family_is_ahea
         // Factory faction totals with the faction rosters behind.
         let state =
             |hour: i32| faction_request("1", true, serde_json::json!({"reads": [{"hour": hour}]}));
-        let complete = independent::with_test_hourly(|| {
+        let (complete, at_behind) = independent::with_test_hourly(|| {
             let source = fixture.source("census-staggered-hourly");
             measured(&source);
-            let reply = query(&source, "series-state", state(reached));
+            let replies = (
+                query(&source, "series-state", state(reached)),
+                query(&source, "series-state", state(behind)),
+            );
             clear(source);
-            reply
+            replies
         });
         independent::with_test_only(&["factories", "groups", "identities"], || {
             let source = fixture.source("census-staggered");
@@ -956,13 +990,110 @@ fn census_queries_read_only_through_their_joint_coverage_when_one_family_is_ahea
                 complete,
                 "{label}: faction totals at {reached}"
             );
+            // Past the committed factories, the reached hour answers from its
+            // frames as the prepared pages will.
             let past = query(&source, "series-state", state(behind));
+            assert!(!past.is_null(), "{label}: faction totals at {behind}");
             assert_eq!(
-                past.is_null(),
+                faction_values(&past),
+                faction_values(&at_behind),
+                "{label}: faction totals at {behind} as hourly preparation"
+            );
+            // A summary past them still waits.
+            let summary = faction_request(
+                "1",
+                true,
+                serde_json::json!({"from": 140, "to": behind, "width": 30}),
+            );
+            assert_eq!(
+                query(&source, "series-summary", summary).is_null(),
                 behind > reached,
-                "{label}: faction totals past the committed factories wait"
+                "{label}: a faction summary past the committed factories waits"
             );
             clear(source);
         });
     }
+}
+
+/// The factory faction totals at every reached hour of the branch, answered
+/// from the hour's frames before anything is prepared, are those the
+/// prepared pages give there: the counted members, their sums and segment
+/// breaks at faction changes (C joins at 150), factory changes inside a
+/// block (110) and at a block's first hour, a rename (140), a country gone
+/// whose rows stay unresolved (180) and the hour after the gap. A request
+/// with member parts, or under end or ever membership, still waits.
+#[test]
+fn faction_factory_totals_at_a_reached_hour_answer_from_its_frames_as_prepared() {
+    let replay = scenario(LAST, false, false);
+    let mut fixture = Fixture::new(&replay);
+    let hours: Vec<i32> = replay
+        .index
+        .iter()
+        .filter(|block| block.branch == 1)
+        .flat_map(|block| [block.first_hour, block.first_hour + 1, block.last_hour])
+        .chain([110, 125, 140, 150, 180, LAST])
+        .collect();
+    let state = |hour: i32, extra: serde_json::Value| {
+        let mut request =
+            faction_request("1", true, serde_json::json!({"reads": [{"hour": hour}]}));
+        for (key, value) in extra.as_object().unwrap() {
+            request["family"]["selection"][key] = value.clone();
+        }
+        request
+    };
+    let expected: Vec<serde_json::Value> = independent::with_test_hourly(|| {
+        let source = fixture.source("factions-sampled-hourly");
+        plain(&source);
+        let replies = hours
+            .iter()
+            .map(|&hour| query(&source, "series-state", state(hour, serde_json::json!({}))))
+            .collect();
+        clear(source);
+        replies
+    });
+    independent::with_test_only(&["factories", "groups", "identities"], || {
+        let source = fixture.source("factions-sampled");
+        for (&hour, expected) in hours.iter().zip(&expected) {
+            assert!(!expected.is_null(), "hour {hour} is prepared");
+            let cold = query(&source, "series-state", state(hour, serde_json::json!({})));
+            let reads = dashboard_base::prepared::query::frames::reads(&source);
+            let observations = dashboard_base::prepared::query::observations::usage(
+                &source,
+                "faction-totals:state",
+            )
+            .2;
+            assert_eq!(
+                query(&source, "series-state", state(hour, serde_json::json!({}))),
+                cold
+            );
+            assert_eq!(
+                dashboard_base::prepared::query::frames::reads(&source),
+                reads
+            );
+            assert_eq!(
+                dashboard_base::prepared::query::observations::usage(
+                    &source,
+                    "faction-totals:state"
+                )
+                .2,
+                observations
+            );
+            assert_eq!(
+                faction_values(&cold),
+                faction_values(expected),
+                "hour {hour}"
+            );
+        }
+        for extra in [
+            serde_json::json!({"parts": true}),
+            serde_json::json!({"membership": "end"}),
+            serde_json::json!({"membership": "ever"}),
+        ] {
+            assert!(
+                query(&source, "series-state", state(LAST, extra.clone())).is_null(),
+                "{extra} waits"
+            );
+        }
+        clear(source);
+    });
 }

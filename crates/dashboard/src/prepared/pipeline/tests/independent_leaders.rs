@@ -194,8 +194,7 @@ fn hours(replay: &Replay) -> usize {
 fn leaders_prepared_on_their_own_publish_and_save_what_hourly_preparation_does() {
     let replay = scenario(LAST, true);
     let mut fixture = Fixture::new(&replay);
-    let hourly =
-        independent::with_test_hourly(|| prepared(&mut fixture, "leaders-parity", &plain));
+    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "leaders-parity", &plain));
     // Alone, and at once with the identity history.
     let registries: [Vec<&'static dyn Own>; 2] =
         [vec![leaders()], vec![leaders(), &independent::IDENTITIES]];
@@ -494,8 +493,7 @@ fn leaders_observe_only_the_hours_whose_inputs_changed() {
     let replay = scenario(LAST, true);
     let recorded = hours(&replay);
     let mut fixture = Fixture::new(&replay);
-    let hourly =
-        independent::with_test_hourly(|| prepared(&mut fixture, "leaders-frames", &plain));
+    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "leaders-frames", &plain));
     for whole in [true, false] {
         let label = format!("read whole {whole}");
         let before = (counted("leaders"), notes());
@@ -598,12 +596,90 @@ fn leaders_take_the_block_readers_changes_and_read_only_their_bound_tables() {
 fn leaders_prepared_on_their_own_match_hourly_preparation_at_5000_countries() {
     let replay = scenario_of(160, false, 5000);
     let mut fixture = Fixture::new(&replay);
-    let hourly =
-        independent::with_test_hourly(|| prepared(&mut fixture, "leaders-scale", &plain));
+    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "leaders-scale", &plain));
     let own = prepass::with_test_prepass(3, None, || {
         independent::with_test_families(&[leaders()], || {
             prepared(&mut fixture, "leaders-scale", &plain)
         })
     });
     assert_same(&own, &hourly, "5000 countries", false);
+}
+
+fn leader_values(reply: &serde_json::Value, hour: i64) -> serde_json::Value {
+    let mut rows = BTreeMap::new();
+    for leader in reply["leaders"].as_array().unwrap() {
+        let Some(run) = leader["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run[0].as_i64().unwrap() <= hour && run[1].as_i64().unwrap() >= hour)
+        else {
+            continue;
+        };
+        let mut person = reply["people"][run[2].as_u64().unwrap() as usize].clone();
+        person.as_object_mut().unwrap().remove("portraitHour");
+        rows.insert(leader["reference"].as_str().unwrap().to_owned(), serde_json::json!({
+            "person":person, "role":reply["roles"][run[3].as_u64().unwrap() as usize],
+            "skill":run[4], "components":run[5], "traits":run[6].as_array().map(|traits| traits.iter().map(|token| reply["traits"][token.as_u64().unwrap() as usize].clone()).collect::<Vec<_>>())
+        }));
+    }
+    serde_json::to_value(rows).unwrap()
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "cold, prefix and complete first-view preparation parity"
+)]
+fn leaders_at_a_cold_hour_show_prepared_values_with_battle_counts_pending() {
+    let replay = scenario(LAST, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("leader-first-view");
+        let params = serde_json::json!({"branchId":"1", "view":"leaderboard", "selection":{"kind":"all"}, "hour":LAST});
+        let cold = query(&source, "unit-leaders", params.clone());
+        assert_eq!(cold["preparing"], serde_json::json!(["battles", "history"]));
+        assert!(
+            cold["coverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+                && cold["coverage"]["complete"] == false
+        );
+        assert!(!cold["leaders"].as_array().unwrap().is_empty());
+        for row in cold["leaders"].as_array().unwrap() {
+            for field in ["foughtHours", "wonHours", "lostHours", "battleStarts"] {
+                assert!(row.get(field).is_none());
+            }
+        }
+        let reads = dashboard_base::prepared::query::frames::reads(&source);
+        assert_eq!(query(&source, "unit-leaders", params.clone()), cold);
+        assert_eq!(
+            dashboard_base::prepared::query::frames::reads(&source),
+            reads
+        );
+        run_measured(
+            &source,
+            None,
+            &AtomicBool::new(false),
+            true,
+            Duration::ZERO,
+            |_| {},
+        )
+        .unwrap();
+        let mut reached = params.clone();
+        reached["hour"] = serde_json::json!(105);
+        let prefix = query(&source, "unit-leaders", reached.clone());
+        assert!(prefix.get("preparing").is_none());
+        plain(&source);
+        let full = query(&source, "unit-leaders", params);
+        assert_eq!(
+            leader_values(&cold, i64::from(LAST)),
+            leader_values(&full, i64::from(LAST))
+        );
+        assert_eq!(
+            leader_values(&prefix, 105),
+            leader_values(&query(&source, "unit-leaders", reached), 105)
+        );
+        clear(source);
+    });
 }

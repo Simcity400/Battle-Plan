@@ -3,6 +3,8 @@ use dashboard_base::prepared::series::{self, MeasureKey, Navigation, Reader};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use super::first_view::query as progressive_query;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Requested {
@@ -85,15 +87,12 @@ pub fn query(
     scan.result.reads.sort_by_key(|read| read.first_hour);
     scan.result.reads.dedup();
     let mut order: Vec<_> = scan.building.iter().enumerate().collect();
-    let selected_keys: std::collections::HashSet<usize> = requested
-        .within
-        .values()
-        .flatten()
-        .map(|(key, _, _, _)| {
-            key.parse()
-                .map_err(|_| dashboard_core::invalid("Invalid tension series key"))
-        })
-        .collect::<io::Result<_>>()?;
+    let mut selected_keys = std::collections::HashSet::new();
+    for (key, _, _, _) in requested.within.values().flatten() {
+        if let Some(index) = country_index(&scan, key)? {
+            selected_keys.insert(index);
+        }
+    }
     order.sort_by_key(|(_, country)| (&country.tag, country.slot));
     scan.result.first_contributions = order
         .iter()
@@ -167,16 +166,19 @@ pub fn query(
         );
     }
     for (id, selected_spans) in &requested.within {
+        if selected_spans
+            .iter()
+            .any(|(key, _, _, _)| country_index(&scan, key).is_ok_and(|index| index.is_none()))
+        {
+            continue;
+        }
         let mut spans = Vec::new();
         let mut first = i64::from(bounds.0);
         for (tag, span_first, span_last, _) in selected_spans {
-            let index: usize = tag
-                .parse()
-                .map_err(|_| dashboard_core::invalid("Invalid tension series key"))?;
-            let country = scan
-                .building
-                .get(index)
-                .ok_or_else(|| dashboard_core::invalid("Unknown tension series key"))?;
+            let Some(index) = country_index(&scan, tag)? else {
+                continue;
+            };
+            let country = &scan.building[index];
             let lo = (*span_first).max(bounds.0);
             let hi = (*span_last).min(bounds.1);
             if lo <= hi {
@@ -277,6 +279,27 @@ fn read_at(reader: &mut Reader<'_>, hour: i32) -> io::Result<Option<TensionRead>
         starts_segment: run.break_before,
         tension_raw: (values[0] / i128::from(cworld_threat::SCALAR_DIVISOR)).to_string(),
         sum_raw: values[1].to_string(),
-        unnamed_raw: values[2].to_string(),
+        unnamed_raw: Some(values[2].to_string()),
+        preparing: Vec::new(),
     }))
+}
+
+/// Frame replies name a contributor by its recorded tag and slot until the
+/// prepared catalogue assigns its branch-local numeric key.
+fn country_index(scan: &Scan, key: &str) -> io::Result<Option<usize>> {
+    if key.starts_with('[') {
+        let (tag, slot): (String, u32) = serde_json::from_str(key)?;
+        Ok(scan
+            .building
+            .iter()
+            .position(|country| country.tag == tag && country.slot == slot))
+    } else {
+        let index = key
+            .parse::<usize>()
+            .map_err(|_| dashboard_core::invalid("Invalid tension series key"))?;
+        if index >= scan.building.len() {
+            return Err(dashboard_core::invalid("Unknown tension series key"));
+        }
+        Ok(Some(index))
+    }
 }

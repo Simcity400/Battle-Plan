@@ -6,7 +6,8 @@ One timeline lane per national spirit, showing observed holdings and whether the
 
 ## Products it reads
 
-[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), sharing [spiritsData.ts](../national-spirits/spiritsData.ts) with National spirits.
+[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), sharing [spiritsData.ts](../national-spirits/spiritsData.ts) with National spirits. Before preparation reaches the shown hours, the lanes combine its exact prefix with keyframe holdings beyond it. Those spans use the faded dashed approximate style and the **Approximate** key. Sample edges never claim acquisition or removal dates; tooltips name their dates still being prepared. Unsampled hours retain the **Still being prepared** band. Gate coverage replaces the sampled spans with exact hourly holdings. A holding reaching an unprepared boundary has no claimed ending.
+
 
 ## Settings
 

@@ -21,9 +21,11 @@ blocks and retain only reached hours. The stateless balance sampler also supplie
 the preparation observer; none of these direct reads are stored.
 
 Mounted requests publish their first reply immediately and replace it only when
-committed branch coverage changes. Decode counters and phase changes do not
-re-read the same prefix. An unchanged or regressing partial reply stops that
-request while retaining its published data; polling always yields through a real
+the committed coverage it waits for changes: that of each status entry its
+reply's `gate` names (a family prepared on its own, or the hourly walk), or the
+walk's branch coverage for a reply that names none. Decode counters and phase changes do not
+re-read the same prefix. An unchanged or regressing partial reply retains its published data while the
+request keeps following the latest gate; polling always yields through a real
 pause, even with an immediately resolving test wait. Effect keys use the viewport
 and normalized reached hours rather than reply-object identities.
 The timeline marks the committed exact

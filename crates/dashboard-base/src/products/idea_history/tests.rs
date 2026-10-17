@@ -96,7 +96,7 @@ fn artwork_problems_reach_the_reply_once_and_an_unidentified_holder_is_unknown()
 
 /// GER (link 9001) holding the given ideas. `GER_schacht_idea` is an appointed
 /// advisor: like the game, it is in the appointed-advisor list, not the active ideas.
-fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
+pub(super) fn idea_frame(hour: i32, ideas: &[&str]) -> DecodedFrame {
     let mut frame = ownership_frame(1, hour, 44);
     let advisor = |country, ordinal, character, idea: &str| replay::rows::HiredAdvisorRow {
         country,

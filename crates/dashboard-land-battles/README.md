@@ -25,3 +25,28 @@ are written at its next commit.
 
 `cargo test -p dashboard-land-battles` builds and runs only these products'
 tests.
+
+The division log answers its manifest and committed windows before preparation
+finishes. A requested window can also be proved from its block and predecessor,
+seeded with all earlier seen division handles from a parallel key-only change
+read. This preserves the distinction between a creation and a reappearance.
+The local scan needs an earlier complete census and dated presentation evidence;
+otherwise the window stays pending. Template choices combine the prefix's
+catalogue with proved newest rows; cumulative totals remain visibly preparing.
+The compressed proof and its per-block earlier keys use the shared observation
+cache and its live-block retention bound. A source revision owns them without
+append inheritance, and recording/content binding changes invalidate them.
+Moving preparation coverage reuses retained observations.
+
+A proven newest land battle window publishes its page and window position before
+its branch-wide variant naming diagnostics. Its look-back reads blocks ahead
+and observes them in order. The dashboard runs the proof and later diagnostics
+as work beside the forward families, each in its own group commit. Until the
+diagnostics commit, the reply carries `warningsComplete: false`; a naming
+refusal withholds only the diagnostics, leaving the exact proven rows available.
+
+Land battle manifests and log windows fall back to the committed prefix while
+the newest proof is unavailable. Before the first commit their ordinary replies
+have no accepted observations or rows. A committed page's geometry is marked
+approximate until complete, since later terminal reads can repair earlier rows.
+The log follows the newest covered window and refreshes as its gate moves.

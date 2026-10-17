@@ -519,3 +519,34 @@ fn intel_shared_driver_roster_one_row_ignores_ten_times_departed_handles() {
     assert_eq!(scaled[0].row_visits, 1);
     assert_eq!(scaled[0].emitted, 1);
 }
+
+#[test]
+fn first_view_selects_requested_holders_before_reply_budgeting() {
+    let mut other = row(2);
+    other.roster_country = 9;
+    other.owner_country = 9;
+    let frames = (0..=1)
+        .map(|hour| frame(hour, true, vec![row(1), other.clone()]))
+        .collect();
+    let memory = source(frames);
+    let (source, root) = test_fixtures::file_source(
+        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
+    );
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let params = params(Some(base()), Some(base() + 1));
+    let reply = first_view(&source, &params, &context, &flag).unwrap();
+    let countries = reply["countries"].as_array().unwrap();
+    assert_eq!(
+        countries.len(),
+        1,
+        "an unrequested roster must not reach the reply"
+    );
+    assert_eq!(countries[0]["tag"], "all!countries");
+    assert_eq!(countries[0]["operatives"].as_array().unwrap().len(), 1);
+    let mut absent = params;
+    absent.tags = vec!["unseen holder".into()];
+    let empty = first_view(&source, &absent, &context, &flag).unwrap();
+    assert!(empty["countries"].as_array().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}

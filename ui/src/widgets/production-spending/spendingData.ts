@@ -4,6 +4,7 @@ import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 
 export const LEVELS = ['domainLevel', 'typeLevel', 'variantLevel'] as const;
 /** The centre's unit. */
@@ -14,6 +15,9 @@ export interface PreparedProductionSpendingReply extends ProductionSpendingReply
   continuity?: Record<string, readonly [boolean, boolean]>;
   peaks?: Record<string, string>;
   exactHours?: readonly number[];
+  /** Before preparation completes: the prepared prefix the reply answers ([`preparedPrefix`]). */
+  coverage?: unknown;
+  pending?: unknown;
 }
 
 export const UNKNOWN_LABELS: Readonly<Record<ProductionSpendingUnknown, string>> = {
@@ -29,6 +33,7 @@ export const UNKNOWN_LABELS: Readonly<Record<ProductionSpendingUnknown, string>>
   rocketInputInexact: 'Rocket spending total unknown.',
   rocketOwnerUnreadable: 'Rocket producer unknown.',
   rocketDesignUnreadable: 'Rocket design unknown.',
+  preparing: 'Still being prepared.',
 };
 
 type UnknownReason = ProductionSpendingUnknown | 'outsideRead' | 'observationChanged';
@@ -70,6 +75,7 @@ export function validateProductionSpendingReply(data: unknown): ProductionSpendi
       && Object.values(reply.peaks).every(value => typeof value === 'string' && RAW.test(value)))
     && (reply.exactHours === undefined || hours(reply.exactHours));
   if (!ok) throw new Error('The production spending reply is malformed.');
+  preparedPrefix(reply);
   return reply;
 }
 
@@ -83,6 +89,19 @@ export function spendingAt(values: readonly ProductionSpendingRun[], hour: numbe
 }
 
 export interface SpendingWindow { from: number | null; hour: number; end: number }
+
+/** The dates a reply answers for `window`: the requested ones, or, before
+ * preparation reaches them, its prepared prefix's last hour. Applied IC is a
+ * cumulative endpoint, so the prefix's totals are those spent through that
+ * hour and the later hours are still being prepared. Null when the prefix
+ * has not reached a range's start. */
+export function preparedWindow(reply: ProductionSpendingReply, window: SpendingWindow): SpendingWindow | null {
+  const prefix = preparedPrefix(reply);
+  if (!prefix?.pending.length) return window;
+  const last = prefix.coverage.lastHour;
+  if (window.from != null && window.from > last) return null;
+  return { from: window.from, hour: Math.min(window.hour, last), end: Math.min(window.end, last) };
+}
 
 export const noProductionAt = (reply: ProductionSpendingReply, hour: number) => {
   const evidence = runAt(reply.production, Math.floor(hour));

@@ -682,11 +682,16 @@ pub fn query(
         .branch_id
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid casualty branch"))?;
-    let Some((tags, catalogue)) =
-        series::read_catalogue::<Catalogue>(store, source, "casualty", branch)?
-    else {
-        return Ok(Value::Null);
-    };
+    let (tags, catalogue) = series::read_catalogue::<Catalogue>(store, source, "casualty", branch)?
+        .unwrap_or_else(|| {
+            (
+                BTreeMap::new(),
+                Catalogue {
+                    unknown_label: "Unknown attacker".into(),
+                    ..Default::default()
+                },
+            )
+        });
     let mut observations = Reader::new(
         store,
         source,

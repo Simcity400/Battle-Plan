@@ -31,3 +31,9 @@ All/manual/group countries, campaign/follow/pin/range; content operation types, 
 | [EspionageLogWidget.tsx](EspionageLogWidget.tsx), [useEspionageLog.ts](useEspionageLog.ts) | Virtual log, window demand and visible-row facts. |
 | [espionageData.ts](espionageData.ts) | Validation, episodes, progress/outcomes and wording; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [espionageLog.css](espionageLog.css) | Options, registration and layout. |
+
+The manifest lists every recorded day while its type and availability facts grow
+with preparation. The newest day is proved from its day and supplying blocks
+when episode boundaries are witnessed locally. An inherited episode, or an
+unmatched late completion for an earlier handle, leaves it pending. The log labels its exact newest day and prepared prefix, and keeps
+polling both manifests and requested day windows as their gates advance.

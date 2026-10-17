@@ -11,11 +11,11 @@ import type { HourSpan } from "../../generated/dashboard";
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { validatePartyHistoryReply } from './partyData';
 import { useContentRevision } from '../../dashboard/contentRevision';
-import { isPreparedCoverage } from '../../shell/preparation/contract';
+import { isPreparationExtent } from '../../dashboard/preparedPrefix';
 import type { PreparedCoverage } from '../../shell/preparation/contract';
 
 export interface PartyPreparedReply {
-  coverage: PreparedCoverage | null;
+  coverage: PreparedCoverage;
   reply: PartyHistoryReply;
   segments?: HourSpan[];
   summaries: { token: string; summary: ChartSummary }[];
@@ -28,7 +28,7 @@ export function validatePreparedParty(value: unknown, requestedCursor?: string):
   validatePartyHistoryReply(data?.reply);
   if (!Array.isArray(data.summaries) || !Array.isArray(data.marks) || !/^\d+$/.test(data.total)
     || data.cursor !== null && !/^\d+$/.test(data.cursor)
-    || data.coverage !== null && !isPreparedCoverage(data.coverage)) throw new Error('The prepared party reply is malformed.');
+    || !isPreparationExtent(data.coverage)) throw new Error('The prepared party reply is malformed.');
   if (requestedCursor !== undefined && data.cursor !== null && BigInt(data.cursor) <= BigInt(requestedCursor)) throw new Error('The prepared party event cursor did not advance.');
   for (const line of data.summaries) if (typeof line.token !== 'string' || !isChartSummary(line.summary)) throw new Error('The prepared party summary is malformed.');
   for (const mark of data.marks) {

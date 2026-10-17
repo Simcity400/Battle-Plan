@@ -15,6 +15,9 @@ The choice defaults on. Disabling it stops automatic jobs and retains prepared
 files; explicit Prepare and Resume remain available. Widgets never start an idle
 job implicitly, so reading after Clear leaves its files cleared until Prepare.
 
-Preparation replies also carry committed coverage hours by branch. The playback
+Preparation replies also carry committed coverage hours by branch and each
+family prepared on its own's coverage by family and branch. Prepared replies
+name their coverage gates, so widgets refresh when their own families commit,
+including while background preparation is paused or resumes. The playback
 timeline shows this exact extent with recorded gaps excluded. Decode progress
 never extends that marker before the corresponding prepared pages are committed.

@@ -1456,7 +1456,9 @@ fn coverage_break(bucket: &mut Option<ChartBucket>, bounds: (i32, i32)) {
         bucket.has_break |= bucket.first_hour > bounds.0 || bucket.last_hour < bounds.1;
     }
 }
-fn merge_tail(
+/// Merge a non-overlapping unpublished continuation on the summary's existing
+/// grid. Callers retain the distinction between exact and sampled spans.
+pub fn merge_tail(
     summary: &mut ChartSummary,
     bounds: (i32, i32),
     tail: &[Run],

@@ -27,3 +27,8 @@ All/manual/group countries, campaign/follow/pin; Most countries shown ranks sent
 | [WhoSpiesOnWhomWidget.tsx](WhoSpiesOnWhomWidget.tsx) | Shared chord chart and dated country looks. |
 | [placementsData.ts](placementsData.ts) | Validation, holder filtering, folding and tooltips; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [placements.css](placements.css) | Options, registration and layout. |
+
+Day requests beyond preparation use local frames and the preceding supplying
+membership read. Complete placements and operative inventories are exact at the
+shown hour; failed reads and gaps end their hold. A range without prepared or
+supplying evidence says Still being prepared instead of showing an empty chord.

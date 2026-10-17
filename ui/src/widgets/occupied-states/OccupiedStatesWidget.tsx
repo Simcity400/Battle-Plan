@@ -1,3 +1,4 @@
+import { pendingReplyAt } from '../../dashboard/preparedPrefix';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
 import { useRef } from 'react';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -54,7 +55,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision]) : null;
   const { target, wanted } = occupiedWindows(manifest?.windows ?? [], hour, follow);
   const windows = useProductWindows<OccupiedStatesReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'occupied-states', params: { branchId: track!.branch.id, window: index } }), wanted, active && manifest !== undefined, validateOccupiedStatesReply, track?.source);
+    product: 'occupied-states', params: { branchId: track!.branch.id, window: index } }), wanted, active && manifest !== undefined, validateOccupiedStatesReply, track?.source, true);
   const current = windows.data.get(target);
   const display = useWindowDisplay(identity, current, hour, runtime.client);
   const shown = display?.hour ?? hour;
@@ -85,7 +86,9 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
     ? rows.flatMap(row => (['owner', 'occupier'] as const).flatMap(role => row.value[role] === null ? []
       : [{ hour: countryHour(row, role, shown), tag: row.value[role]! }])) : [], [rows, sort.column, shown]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const laws = useMemo(() => new Map(manifest?.laws.map(law => [law.token, law])), [manifest]);
+  // A window answered before preparation reached it carries the laws its states
+  // hold, which the manifest published so far may not list yet.
+  const laws = useMemo(() => new Map([...manifest?.laws ?? [], ...display?.data.laws ?? []].map(law => [law.token, law])), [manifest, display?.data]);
   const columns = useMemo<readonly TableColumn<OccupiedRow>[]>(() => {
     const country = (role: 'owner' | 'occupier', label: string): TableColumn<OccupiedRow> => ({ key: role, header: label, label, renderMissing: true, width: 'minmax(150px, 1fr)',
       value: row => { const tag = row.value[role]; return tag === null ? null : names.get(nameKey(countryHour(row, role, shown), tag)) ?? 'Country name unavailable'; },
@@ -120,6 +123,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   if (windows.errors.has(target)) return <WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} />;
   if (!manifest || (target >= 0 && !display) || (selection.kind !== 'all' && !groups)) return <WidgetState kind="loading" label="Loading occupied states…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
+  if (pendingReplyAt(display?.data, shown)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!view?.observation) return <WidgetState kind="unavailable" message="Occupied states weren’t recorded at this time." />;
   if (!rows.length && view.selectionUnknown) return <WidgetState kind="unavailable" message="Occupied states unavailable for these countries." />;
   if (!rows.length) return <WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} />;

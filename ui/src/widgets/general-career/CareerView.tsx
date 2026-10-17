@@ -2,6 +2,8 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
+import { PreparedKey } from '../../charts/PreparedKey';
+import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import Timeline from '../../charts/timeline/Timeline';
 import { playbackDomain } from '../../charts/view';
 import { useTableHour } from '../../charts/table/useTableHour';
@@ -31,9 +33,11 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const selection = useMemo(() => ({ kind: 'leader' as const, reference }), [reference]);
   const { data, error, retry } = useLeaders(runtime, widget.trackIds[0], selection, 'career', active);
+  const prefix = useMemo(() => preparedPrefix(data), [data]);
+  const preparing = pendingAt(prefix, hour);
   const leader = data?.leaders.find(l => l.reference === reference);
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
-  const row = useMemo(() => data && leader ? leaderAt(data, leader, hour) : null, [data, leader, hour]);
+  const row = useMemo(() => data && leader && !preparing ? leaderAt(data, leader, hour) : null, [data, leader, hour, preparing]);
   const portraitRows = useMemo(() => row ? [row] : [], [row]);
   const portraits = useLeaderPortraits(runtime, track, portraitRows, 118, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
@@ -50,6 +54,8 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
   useDiagnostics(onDiagnostics, diagnostics);
   const tooltip = useCallback<NonNullable<Parameters<typeof Timeline>[0]['tooltip']>>((lane, span, h) => {
     if (!data || !leader) return null;
+    if (pendingAt(prefix, h)) return { title: 'Leader career', subtitle: formatDateTime(h),
+      rows: [{ label: lane.label, value: 'Still being prepared' }] };
     const hovered = leaderAt(data, leader, h);
     const owner = hovered?.value.owner;
     const country = owner ? labelAt(h)(owner) : { name: 'Owner not recorded' };
@@ -61,7 +67,7 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
       note: lane.id === 'battles' && !leader.battleWon && !span ? 'Battle results are not in this recording'
         : lane.id === 'commands' && hovered?.value.kind === 2 ? data.navyCommandsMissing ? 'Fleet command history is incomplete.' : undefined : undefined };
     return fitTooltip([content], viewportHeight);
-  }, [data, leader, labelAt, viewportHeight]);
+  }, [data, leader, labelAt, viewportHeight, prefix]);
   const parityRoot = useRef<HTMLDivElement>(null);
   useParityRows(parityRoot, () => ({ kind: 'chart', label: 'General career values', complete: !!data,
     total: lanes.length, rows: [...lanes], hour, leader: leader ?? null, current: row ?? null }),
@@ -69,27 +75,30 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading leader career…" />;
+  if (!leader && preparing) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!leader) return <WidgetState kind="unavailable" message="Career unavailable for this leader." />;
   const country = row?.value.owner ? labelAt(hour)(row.value.owner) : { name: 'Owner not recorded' };
   return <div className="general-career" ref={parityRoot}>
     {row ? <div className="career-top"><LeaderIdentity art={portraits.at(row)} row={row} country={country} showCountry />
       <div className="career-stats">
-        <span><strong>{row.fought}</strong>fought</span>
+        <span><strong>{row.preparing ? 'Still being prepared' : row.fought}</strong>fought</span>
         {row.won == null ? null
           : <><span><strong>{row.won}</strong>won</span><span><strong>{row.lost}</strong>lost</span><span><strong>{row.winRate == null ? '—' : `${Math.round(row.winRate)}%`}</strong>win rate</span></>}
-        <span><strong>{row.unresolved}</strong>unresolved</span>
+        <span><strong>{row.preparing ? 'Still being prepared' : row.unresolved}</strong>unresolved</span>
         <span>{recordedSince(row.career, data.firstHour)}</span>
-      </div></div> : <p className="career-note">Leader details unavailable at this time.</p>}
+      </div></div> : <p className="career-note">{preparing ? 'Leader details are still being prepared at this time.' : 'Leader details unavailable at this time.'}</p>}
     <Timeline label="General career" extent={playbackDomain(grow ? 'draw-in' : 'cursor',
       [first, Math.max(first + 1, track.branch.lastHour + 1)], last + 1, 0, 1)} playhead={last + 1} labelHour={last}
       preserveZoomOnExtentChange={grow}
+      pending={prefix?.pending} unobserved={prefix?.pending}
       lanes={lanes} showIcons showNames emptyLabel="Not recorded" active={active} revision={[data, labelAt]} tooltip={tooltip}
       description={`${row ? leaderName(row) : 'Leader'}: skill, traits, commands and battles.`}
       hoursPerSecond={hoursPerSecond}
       dismissPointerTooltipOnEscape
       onHover={setHoveredHour}
       onContextMenu={(h, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, h), ...(onPick ? [{ label: 'Show this hour', run: () => onPick(h) }] : [])])} />
-    {row?.won == null && <p className="career-note">Result not recorded</p>}
+    <PreparedKey pending={prefix?.pending} />
+    {row && !row.preparing && row.won == null && <p className="career-note">Result not recorded</p>}
     {row?.foughtPartial && <p className="career-note">Battle counts are incomplete.</p>}
     {row?.value.kind === 2 && data.navyCommandsMissing && <p className="career-note">Fleet command history is incomplete.</p>}
     {menu.menu}

@@ -633,10 +633,11 @@ fn build_window<'a>(
     records: impl Iterator<Item = (&'a Key, &'a [PairRead])>,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
+    // The window answered: the requested one, or the prepared prefix's newest.
     let span = reply
         .windows
         .get(
-            params
+            reply
                 .window
                 .ok_or_else(|| dashboard_core::invalid("Missing casualty window"))?,
         )
@@ -991,26 +992,25 @@ pub fn prepared_query(
         return Err(dashboard_core::invalid("Unknown casualty branch"));
     }
     let (store, key) = dashboard_base::prepared::files(source, content)?;
-    let Some((_, catalogue)) =
+    let (_, catalogue) =
         series::read_catalogue::<prepared::Catalogue>(&store, &key, "casualty", branch)?
-    else {
-        return Ok(serde_json::Value::Null);
-    };
+            .unwrap_or_default();
     let windows = source.block_windows(branch).to_vec();
     let available = catalogue.pair_available;
-    if !available
-        && params.window.is_none()
-        && dashboard_base::prepared::coverage::product_coverage(
+    let prefix = |requested: Option<i32>| {
+        dashboard_base::prepared::prefix::read_or_empty(
             source,
             content,
-            branch,
             "casualty-pairs",
+            branch,
+            requested,
             cancelled,
-        )?
-        .is_none_or(|coverage| !coverage.complete)
-    {
-        return Ok(serde_json::Value::Null);
-    }
+        )
+    };
+    // While preparation runs, a reply its pages cannot answer yet answers
+    // from the prepared prefix, naming the hours after it pending.
+    let initial = prefix(None)?;
+    let mut marked = (!initial.coverage.complete && params.window.is_none()).then_some(initial);
     let mut reply = CasualtyPairsReply {
         branch_id: params.branch_id.clone(),
         available,
@@ -1025,14 +1025,32 @@ pub fn prepared_query(
         if ordinal >= reply.windows.len() {
             return Err(dashboard_core::invalid("Unknown casualty window"));
         }
-        let Some(window) = series::read_reply::<Window>(
-            &store,
-            &key,
-            &format!("casualty-pairs-{branch}"),
-            ordinal as u64,
-        )?
-        else {
-            return Ok(serde_json::Value::Null);
+        let section = format!("casualty-pairs-{branch}");
+        let window = match series::read_reply::<Window>(&store, &key, &section, ordinal as u64)? {
+            Some(window) => window,
+            None => {
+                // A window not yet published: each pair counter is a lifetime
+                // counter, so the prefix's newest window shows the flows at
+                // its last hour, exactly; the hours through the requested
+                // window's end are pending.
+                let prefix = prefix(Some(reply.windows[ordinal].last_hour))?;
+                let Some(newest) = reply.windows[..=ordinal]
+                    .iter()
+                    .rposition(|window| window.last_hour <= prefix.coverage.last_hour)
+                else {
+                    let mut value = serde_json::to_value(reply)?;
+                    prefix.mark(&mut value)?;
+                    return Ok(value);
+                };
+                let Some(window) =
+                    series::read_reply::<Window>(&store, &key, &section, newest as u64)?
+                else {
+                    return Ok(serde_json::Value::Null);
+                };
+                reply.window = Some(newest);
+                marked = Some(prefix);
+                window
+            }
         };
         reply.observed = window.observed;
         reply.has_gap = catalogue.incomplete;
@@ -1048,7 +1066,11 @@ pub fn prepared_query(
         )?;
     }
     check_reply_bytes(json_bytes(&reply)?)?;
-    serde_json::to_value(reply).map_err(io::Error::from)
+    let mut value = serde_json::to_value(reply)?;
+    if let Some(prefix) = marked {
+        prefix.mark(&mut value)?;
+    }
+    Ok(value)
 }
 
 #[cfg(test)]

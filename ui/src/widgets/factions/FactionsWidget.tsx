@@ -10,7 +10,10 @@ import { laneRequests } from '../../charts/timeline/laneRequests';
 import Timeline from '../../charts/timeline/Timeline';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { useViewportHeight } from '../../charts/useChartTokens';
+import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
+import { PreparedKey } from '../../charts/PreparedKey';
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
+import type { HourSpan } from '../../generated/dashboard';
 import type { ColourScope } from '../../dashboard/campaignSettings';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -38,6 +41,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const viewport = useViewportHeight();
+  const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const factionColours = useFactionColours(runtime.client, track?.source);
@@ -51,7 +55,12 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const data = groups.data;
   const { colours, names } = factionColours;
   // Keep member preparation independent of the playhead; names resolve locally by hour.
-  const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? '') : [], [data, names, colours]);
+  // Campaign colours follow the complete history; until then lanes are muted.
+  const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? tokens.muted) : [], [data, names, colours, tokens.muted]);
+  // Before preparation covers the branch, the prefix is exact, later blocks are
+  // their keyframes' (approximate), and unsampled hours are still being prepared.
+  const prefix = useMemo(() => preparedPrefix(data), [data]);
+  const approximate = (data as { approximate?: readonly HourSpan[] } | undefined)?.approximate;
   const dashboardTag = track ? defaultCountryTag(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour), [widget.countries, dashboardTag, data, at, lastHour]);
@@ -168,10 +177,11 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     {/* Shown for one faction too: its swatch is where its colour is changed. */}
     {options.legend === true && <Legend label="Factions" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
-      unobserved={unobserved} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
+      unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
       revision={`${revision}:${hover.revision}:${views.length}`} onLanesInView={onLanesInView}
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+    <PreparedKey approximate={approximate} pending={prefix?.pending} />
     {menu.menu}
   </div>;
 }

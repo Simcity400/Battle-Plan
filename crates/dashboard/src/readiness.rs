@@ -2,10 +2,12 @@
 //! issues on first render, and whether a reply answers them over the whole
 //! timeline. The acceptance probe polls these while background preparation runs.
 //!
-//! A reply is ready when nothing in its requested span waits for preparation:
-//! either exact, or answered beyond the accepted prefix by the product's own
-//! stateless sampling (its approximate spans are flagged in the reply). A null
-//! reply is pending coverage; an event list cut at the accepted prefix is partial.
+//! A reply is ready when it answers its requested span: exactly; beyond the
+//! accepted prefix by the product's own stateless sampling (its approximate
+//! spans are flagged in the reply); or from its gate's prepared prefix, naming
+//! the requested hours and values still being prepared (`pending`,
+//! `preparing`), as an event list cut at the accepted prefix does. A null
+//! reply is pending coverage.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -82,12 +84,43 @@ pub enum Route {
     Product,
 }
 
+/// How a default request's first view answers before preparation covers it.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+pub enum FirstView {
+    /// Exact, from a sampled frame at the query hour.
+    #[serde(rename = "a")]
+    AtHour,
+    /// Approximate, from keyframe sampling, marked approximate per span.
+    #[serde(rename = "b")]
+    Sampled,
+    /// Exact, from the newest window, whose look-back is proven.
+    #[serde(rename = "c")]
+    NewestWindow,
+    /// The prepared prefix exact; the hours after it still being prepared.
+    #[serde(rename = "d")]
+    Prefix,
+}
+
+impl FirstView {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AtHour => "a",
+            Self::Sampled => "b",
+            Self::NewestWindow => "c",
+            Self::Prefix => "d",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Template {
     pub product: String,
     pub route: Route,
     pub params: Value,
+    /// Its first view's class; None where the table names none yet.
+    #[serde(default)]
+    pub first_view: Option<FirstView>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -202,10 +235,71 @@ fn dependency(text: &str) -> Option<(usize, bool, bool)> {
     Some((index.parse().ok()?, at_last, last_hour))
 }
 
+fn experience_dependency(text: &str) -> Option<(usize, bool)> {
+    let (kind, index) = text.split_once(':')?;
+    Some((
+        index.parse().ok()?,
+        match kind {
+            "$experienceTags" => false,
+            "$experienceReads" => true,
+            _ => return None,
+        },
+    ))
+}
+
+/// The same native-holder keys the experience widget derives from country groups.
+fn experience_keys(reply: &Value, bindings: &Bindings, reads: bool) -> Value {
+    let histories = reply["countryIdentities"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let selected: std::collections::BTreeSet<_> = histories
+        .iter()
+        .filter(|history| history["tag"].as_str() == Some(bindings.tag.as_str()))
+        .flat_map(|history| history["identities"].as_array().into_iter().flatten())
+        .filter_map(|identity| Some((identity["slot"].as_u64()?, identity["countryId"].as_u64()?)))
+        .collect();
+    let mut keys = Vec::new();
+    for history in histories {
+        for identity in history["identities"].as_array().into_iter().flatten() {
+            let native = identity["slot"]
+                .as_u64()
+                .zip(identity["countryId"].as_u64());
+            if native.is_some_and(|native| selected.contains(&native)) {
+                let key = json_key(&history["tag"], &identity["slot"], &identity["countryId"]);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        keys.push(json_key(
+            &Value::from(bindings.tag.clone()),
+            &Value::Null,
+            &Value::Null,
+        ));
+    }
+    if reads {
+        Value::Array(
+            keys.into_iter()
+                .map(|key| serde_json::json!({"tag": key, "hour": bindings.last}))
+                .collect(),
+        )
+    } else {
+        Value::Array(keys)
+    }
+}
+
+fn json_key(tag: &Value, slot: &Value, country: &Value) -> Value {
+    Value::String(serde_json::to_string(&(tag, slot, country)).expect("native holder key"))
+}
+
 fn dependencies(value: &Value) -> Vec<usize> {
     match value {
         Value::String(text) => dependency(text)
             .map(|(index, ..)| index)
+            .or_else(|| experience_dependency(text).map(|(index, _)| index))
             .into_iter()
             .collect(),
         Value::Array(items) => items.iter().flat_map(dependencies).collect(),
@@ -257,7 +351,12 @@ pub fn instantiate(
     ) -> Result<Instantiated, String> {
         Ok(Instantiated::Ready(match value {
             Value::String(text) if text.starts_with('$') => {
-                if let Some((index, at_last, last_hour)) = dependency(text) {
+                if let Some((index, reads)) = experience_dependency(text) {
+                    let Some(reply) = replies.get(&index) else {
+                        return Ok(Instantiated::Waiting);
+                    };
+                    experience_keys(reply, bindings, reads)
+                } else if let Some((index, at_last, last_hour)) = dependency(text) {
                     let Some(reply) = replies.get(&index) else {
                         return Ok(Instantiated::Waiting);
                     };
@@ -309,8 +408,10 @@ pub fn instantiate(
 pub enum Outcome {
     /// Null: its coverage has not been accepted yet.
     Pending,
-    /// An event list cut at the accepted prefix; later events are still to come.
-    Partial,
+    /// Answered from its gate's prepared prefix: the reply names requested
+    /// hours (`pending`) or values (`preparing`) still being prepared, or is an
+    /// event list cut at the accepted prefix.
+    Prefix,
     /// Every requested hour comes from accepted pages or a complete reply.
     Exact,
     /// Accepted pages joined with the product's own transient tail; approximate
@@ -322,18 +423,23 @@ pub enum Outcome {
 
 impl Outcome {
     pub fn ready(self) -> bool {
-        matches!(self, Self::Exact | Self::Sampled { .. })
+        matches!(self, Self::Exact | Self::Sampled { .. } | Self::Prefix)
     }
 
-    /// No later preparation can change this reply.
+    /// A first view: no later preparation leaves this request without one.
     pub fn settled(self) -> bool {
         self.ready() || self == Self::Unavailable
+    }
+
+    /// No later preparation can change this reply: exact, or unavailable.
+    pub fn complete(self) -> bool {
+        matches!(self, Self::Exact | Self::Unavailable)
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::Partial => "partial",
+            Self::Prefix => "prefix",
             Self::Exact => "exact",
             Self::Sampled { approximate: false } => "sampled-exact",
             Self::Sampled { approximate: true } => "sampled-approximate",
@@ -342,18 +448,12 @@ impl Outcome {
     }
 }
 
-/// Prepared coverage as replies carry it: `{firstHour, lastHour, complete}` or null.
-fn prepared_coverage(value: &Value) -> Option<Option<(i64, bool)>> {
-    match value {
-        Value::Null => Some(None),
-        Value::Object(fields) => {
-            let complete = fields.get("complete")?.as_bool()?;
-            let last = fields.get("lastHour")?.as_i64()?;
-            fields.get("firstHour")?.as_i64()?;
-            Some(Some((last, complete)))
-        }
-        _ => None,
-    }
+/// Preparation's accepted or empty extent as replies carry it.
+fn prepared_coverage(value: &Value) -> Option<(i64, bool)> {
+    let complete = value.get("complete")?.as_bool()?;
+    let last = value.get("lastHour")?.as_i64()?;
+    let first = value.get("firstHour")?.as_i64()?;
+    (first <= last || !complete && last.checked_add(1) == Some(first)).then_some((last, complete))
 }
 
 fn flags_approximate(value: &Value) -> bool {
@@ -368,6 +468,25 @@ fn flags_approximate(value: &Value) -> bool {
                 || flags_approximate(value)
         }),
         Value::Array(items) => items.iter().any(flags_approximate),
+        _ => false,
+    }
+}
+
+/// Whether a reply names values still being prepared: a non-empty
+/// `preparing` list, or an unknown reason `preparing`.
+fn flags_preparing(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => fields.iter().any(|(key, value)| {
+            (key == "preparing"
+                && match value {
+                    Value::Bool(flag) => *flag,
+                    Value::Array(fields) => !fields.is_empty(),
+                    _ => false,
+                })
+                || ((key == "reason" || key == "unknown") && value == "preparing")
+                || flags_preparing(value)
+        }),
+        Value::Array(items) => items.iter().any(flags_preparing),
         _ => false,
     }
 }
@@ -409,7 +528,27 @@ pub fn classify(product: &str, params: &Value, data: &Value, finished: bool) -> 
         };
     }
     let approximate = flags_approximate(data);
-    let Some(coverage) = data.get("coverage").and_then(prepared_coverage) else {
+    let coverage = data
+        .get("preparedCoverage")
+        .or_else(|| data.get("coverage"))
+        .and_then(prepared_coverage);
+    if coverage.is_some_and(|(_, complete)| complete) {
+        return Outcome::Exact;
+    }
+    let pending = data
+        .get("pending")
+        .and_then(Value::as_array)
+        .is_some_and(|spans| !spans.is_empty());
+    if pending || flags_preparing(data) {
+        return Outcome::Prefix;
+    }
+    if params.get("window").is_some_and(|window| !window.is_null())
+        && data.get("exact").and_then(Value::as_i64).is_some()
+        && !approximate
+    {
+        return Outcome::Exact;
+    }
+    let Some(coverage) = coverage else {
         // No prepared extent: a complete reply, or a product gated on its own
         // completeness. It can still carry sampled spans of its own.
         return if approximate {
@@ -418,10 +557,7 @@ pub fn classify(product: &str, params: &Value, data: &Value, finished: bool) -> 
             Outcome::Exact
         };
     };
-    if coverage.is_some_and(|(_, complete)| complete) {
-        return Outcome::Exact;
-    }
-    let accepted = coverage.map(|(last, _)| last);
+    let accepted = Some(coverage.0);
     let within = terminal_hour(params)
         .zip(accepted)
         .is_some_and(|(terminal, accepted)| terminal <= accepted);
@@ -431,7 +567,7 @@ pub fn classify(product: &str, params: &Value, data: &Value, finished: bool) -> 
     if matches!(product, "events-page" | "events-clusters") && !within {
         // Event pages and clusters list only accepted events; the tail's
         // events are not sampled, so the list is still growing.
-        return Outcome::Partial;
+        return Outcome::Prefix;
     }
     Outcome::Sampled { approximate }
 }

@@ -1,10 +1,11 @@
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 import ArtFallback from '../../components/ArtFallback';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
-import LogList from '../../charts/log/LogList';
+import LogList, { PreparedLogCoverage } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logCountryRequests } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -71,6 +72,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading raids…" />;
+  if (data.available !== true && preparedPrefix(data)?.pending.length) return <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(data as { exact?: number }).exact} />;
   if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raids unavailable.'} />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -93,6 +95,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     </>;
   };
   return <div ref={root} className="log-widget">
+    <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(data as { exact?: number }).exact} />
     {log.chips && chips.length > 0 && <div className="log-chips"><ChipSet label="Raid types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
       chips={[{ value: '', label: 'All types' }, ...chips]} onToggle={value => {
         if (value === '') setOption?.('types', '');

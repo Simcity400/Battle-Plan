@@ -20,6 +20,9 @@ pub enum SpendingGap {
     ObservationRestart,
     FinalOutputMissing,
     OwnerUnknown,
+    /// The output needs earlier observations than the prepared prefix it was
+    /// answered from reaches; preparation supplies it later.
+    Preparing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

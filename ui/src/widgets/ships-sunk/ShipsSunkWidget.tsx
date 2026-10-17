@@ -3,6 +3,7 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
+import { PreparedLogCoverage } from '../../charts/log/LogList';
 import LogList from '../../charts/log/LogList';
 import type { LogListProps } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
@@ -53,18 +54,19 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const campaignKey = track?.source.metadata.campaignKey ?? '';
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision]) : null;
-  const playheadWindow = battleWindowIndex(manifest.data?.windows ?? [], hour ?? 0);
+  const coveredHour = manifest.data?.coverage && !manifest.data.coverage.complete ? Math.min(hour ?? manifest.data.coverage.lastHour, manifest.data.coverage.lastHour) : hour;
+  const playheadWindow = battleWindowIndex(manifest.data?.windows ?? [], coveredHour ?? 0);
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
-  const shownHour = !parity?.requested && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
+  const shownHour = !parity?.requested && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, coveredHour ?? browse.hour) : coveredHour;
   const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? 0);
   const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
   const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
   const parityWindows = import.meta.env.MODE === 'parity' ? parityWindowIndices(manifest.data?.windows, from ?? Number.MIN_SAFE_INTEGER, hour ?? 0) : [];
-  const wantedWindows = parity?.requested ? parityWindows : battleWindows(manifest.data, hour ?? 0, widget.time.mode === 'follow',
+  const wantedWindows = parity?.requested ? parityWindows : battleWindows(manifest.data, coveredHour ?? 0, widget.time.mode === 'follow',
     [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], from ?? Number.MIN_SAFE_INTEGER);
   const history = useProductWindows<ShipsSunkWindowReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'ships-sunk', params: { branchId: track!.branch.id, hour: manifest.data!.windows[index].lastHour } }), wantedWindows,
-  active && data?.available === true, validateSinkingWindow);
+  active && data?.available === true, validateSinkingWindow, track?.source, true);
   const country = useCallback((tag: string | null, namingHour: number) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, namingHour),
     [match, widget.countries.kind]);
   const rows = useMemo(() => shownHour != null && match.ready ? sinkingWindowRows(history.data, shownHour,
@@ -122,7 +124,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading ships sunk…" />;
-  if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
+  if (!data.available) return manifest.data?.pending?.length ? <PreparedLogCoverage coverage={manifest.data.coverage} /> : <WidgetState kind="unavailable" message="Not in this recording" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour)
     return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -155,14 +157,16 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
     </>;
   };
   return <div className="log-widget">
+    <PreparedLogCoverage coverage={manifest.data?.coverage} />
+    {manifest.data?.pending?.length ? <p className="chart-line-key">Class choices cover prepared history.</p> : null}
     {log.chips && chips.length > 1 && <div className="log-chips"><ChipSet label="Ship classes" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
       chips={[{ value: '', label: 'All classes' }, ...chips]} onToggle={value => {
         if (value === '') setOption?.('classes', '');
         else { const next = toggleContentSet(classes, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('classes', next); }
       }} /></div>}
-    {(earlier || shownHour !== hour) && <div className="log-navigation">
+    {(earlier || shownHour !== coveredHour) && <div className="log-navigation">
       {earlier && <button type="button" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier sinkings</button>}
-      {shownHour !== hour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest sinkings</button>}
+      {shownHour !== coveredHour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest sinkings</button>}
     </div>}
     <LogList rows={rows} label="Ships sunk" density={log.density} months={log.months} animate={log.animate && widget.time.mode === 'follow' && shownHour === hour}
       {...(import.meta.env.MODE === 'parity' ? { paritySemantic } : {})}

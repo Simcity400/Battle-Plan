@@ -7,6 +7,14 @@ const row: PreparedFocusHour = { schema: 6, slot: 7, countryId: 9001, hour: 100,
   completed: { first: '9007199254740993', count: '3', rows: '300' }, at: 101,
   progressRaw: '-9223372036854775808', dailyGainRaw: '18446744073709551615' };
 const source = { id: 'source', revision: 'v1' } as DashboardSource;
+
+test('focus first views accept a pending order date without inventing a completion date', () => {
+  const sampled = { ...row, orderFirstHour: null, preparing: ['orderFirstHour', 'completedByHour'], completed: { sampled: true, first: '0', count: '1', rows: '1' } };
+  assert.equal(validatePreparedHour(sampled, row.at), sampled);
+  assert.throws(() => validatePreparedHour({ ...sampled, preparing: [] }, row.at), /Invalid prepared focus hour/);
+  const entries = validatePreparedOrder([{ ordinal: 0, token: 'mod/focus', completedByHour: null }], sampled.completed, 0n);
+  assert.equal(entries[0].completedByHour, null);
+});
 const art = (token: string) => ({ artwork: { token, name: token, description: null, baseDurationDays: 70, icon: null }, reason: null });
 /** A client answering `focus-art` through `product`, each token's art from `named`. */
 const artClient = (requests: { product: string; params: any }[], named: (token: string, params: any) => object = token => art(token),

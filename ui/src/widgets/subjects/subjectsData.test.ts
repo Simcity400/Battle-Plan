@@ -104,6 +104,13 @@ test('a subjects reply is validated, down to steps covering their run and naming
   unlisted.runs[0].steps[0].level = 'autonomy_not_listed';
   assert.throws(() => validateSubjectReply(unlisted), /malformed/);
   assert.throws(() => validateSubjectReply({ ...reply, levels: undefined }), /malformed/);
+  // A prefix reply: its coverage, pending hours and the keyframe-sampled hours after it.
+  const prefix = { ...reply, coverage: { schema: 24, firstHour: 0, lastHour: 3, complete: false },
+    pending: [{ firstHour: 8, lastHour: 9 }], approximate: [{ firstHour: 4, lastHour: 7 }] };
+  assert.equal(validateSubjectReply(prefix).approximate?.length, 1);
+  assert.throws(() => validateSubjectReply({ ...prefix, approximate: [{ firstHour: 7, lastHour: 4 }] }), /malformed/);
+  assert.throws(() => validateSubjectReply({ ...prefix, approximate: [{ firstHour: 4, lastHour: 5 }, { firstHour: 5, lastHour: 7 }] }), /malformed/);
+  assert.throws(() => validateSubjectReply({ ...prefix, pending: 'later' }), /malformed/);
 });
 
 test('level colours follow the content order, never a level name, and fold past the palette', () => {

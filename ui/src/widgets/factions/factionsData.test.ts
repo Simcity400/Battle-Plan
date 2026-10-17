@@ -50,7 +50,7 @@ test('the faction legend names factions, retains colour editing and shows one co
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
+    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ muted: "#777777" });',
     '/charts/Legend.tsx': 'export default props => { globalThis.__factionLegend = props.items; return null; };',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__factionTimeline = props; return null; };',
   };

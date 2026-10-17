@@ -6,7 +6,7 @@ import { entryAt } from '../../dashboard/reads.ts';
 import { Lineage, joinTagChanges } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsReply } from '../../generated/dashboard';
+import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsAtHour, WarsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 
 export type WarsView = 'gantt' | 'countries';
@@ -73,7 +73,20 @@ export function isWarsReply(value: unknown): value is WarsReply {
 
 export function validateWarsReply(value: unknown): WarsReply {
   if (!isWarsReply(value)) throw new Error('The wars reply is malformed.');
+  const current = (value as { current?: unknown }).current;
+  // The groups a prefix reply lists at a read hour past it, each from that
+  // hour's frame alone, keep a reply's war contract.
+  if (current !== undefined && !list(current, entry => object(entry) && hour(entry.hour) && typeof entry.available === 'boolean'
+    && list(entry.warnings, text) && isWarsReply({ branchId: value.branchId, available: entry.available, viewpoints: [], countryNames: [],
+      unobserved: [], capitulationsUnobserved: [], warnings: entry.warnings, wars: entry.wars }))) throw new Error('The wars reply is malformed.');
   return value;
+}
+
+/** The groups a reply answered from the prepared prefix lists at `at`, past
+ * its last hour, from that hour's frame alone; null when it lists none. */
+export function currentWarsAt(reply: WarsReply | undefined, at: number): WarsAtHour | null {
+  const current = (reply as { current?: readonly WarsAtHour[] } | undefined)?.current;
+  return current?.find(entry => entry.hour === at) ?? null;
 }
 
 /** Covering observations only: an old name or roster never fills an unobserved hour. */

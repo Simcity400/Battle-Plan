@@ -528,9 +528,49 @@ fn world_tension_answers_from_its_own_coverage_while_the_hourly_walk_accepts_not
         let source = fixture.source("tension-stalled");
         let flag = AtomicBool::new(false);
         let (product, params) = requests("1", LAST).remove(0);
+        let cold = query(&source, product, params.clone());
         assert!(
-            query(&source, product, params).is_null(),
-            "nothing is prepared yet"
+            !cold.is_null(),
+            "the current frame answers before any preparation"
+        );
+        assert_eq!(
+            cold["reads"][0]["tensionRaw"],
+            expected[0][0]["reads"][0]["tensionRaw"]
+        );
+        assert!(!cold["preparing"].as_array().unwrap().is_empty());
+        let reads = dashboard_base::prepared::query::frames::reads(&source);
+        assert_eq!(query(&source, product, params), cold);
+        assert_eq!(
+            dashboard_base::prepared::query::frames::reads(&source),
+            reads
+        );
+        let summary_params = serde_json::json!({"branchId":"1", "family":{"kind":"world-tension"},
+            "from":source.block_windows(1)[0].first_hour, "to":LAST, "width":1});
+        let summary = query(&source, "series-summary", summary_params.clone());
+        assert_eq!(summary["available"], true);
+        assert!(
+            !summary["summaries"]["world"]["approximate"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let samples =
+            dashboard_base::prepared::query::observations::usage(&source, "world-tension:keyframe")
+                .2;
+        assert_eq!(
+            samples,
+            source
+                .replay_ref()
+                .index
+                .iter()
+                .filter(|block| block.branch == 1)
+                .count()
+        );
+        assert_eq!(query(&source, "series-summary", summary_params), summary);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(&source, "world-tension:keyframe")
+                .2,
+            samples
         );
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;

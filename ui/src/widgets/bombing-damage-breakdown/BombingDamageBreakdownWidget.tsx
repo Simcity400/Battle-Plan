@@ -7,7 +7,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useMilitaryAirLedger } from '../../dashboard/useMilitaryAirLedger';
-import { ledgerPinnedIdentity } from '../../dashboard/militaryAirLedger';
+import { ledgerPinnedIdentity, militaryAirPreparing } from '../../dashboard/militaryAirLedger';
 import { OPTIONS } from './definition';
 
 const NO_WARNINGS: string[] = [];
@@ -30,6 +30,7 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading bombing damage…" />;
+  if (militaryAirPreparing(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!data.available) return <WidgetState kind="unavailable" message="Bombing damage was not recorded." />;
   const identity = ledgerPinnedIdentity(widget.options?.holder, track.source.metadata.campaignKey, track.branch.id, tag);
   return <BombingBreakdown data={data} runtime={runtime} track={track} tag={tag} identity={identity} countrySlot={countrySlot}

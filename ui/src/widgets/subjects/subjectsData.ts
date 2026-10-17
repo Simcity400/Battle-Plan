@@ -1,7 +1,8 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
-import { isSpan } from '../../charts/series.ts';
+import { isOrderedSpans, isSpan } from '../../charts/series.ts';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import { bridgeGaps, coverCounts, runState, stretchesOf, withoutHours } from '../../charts/timeline/runState.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
@@ -21,7 +22,9 @@ const isText = (value: unknown) => typeof value === 'string';
 
 /** Checks a `subjects` reply's shape: every level, run and step, so a reply from
  * another version is refused rather than read wrongly. A run's steps must cover it
- * in order, and every level a step names must be listed. */
+ * in order, and every level a step names must be listed. A reply answered from a
+ * prepared prefix also carries its coverage and pending hours, and the hours
+ * sampled at keyframes after it (`approximate`), in order. */
 export function validateSubjectReply(data: unknown): SubjectReply {
   const reply = data as Record<string, unknown>;
   const levels = isObject(reply) && listOf(reply.levels, level => isObject(level) && isText(level.token)
@@ -33,7 +36,8 @@ export function validateSubjectReply(data: unknown): SubjectReply {
       && listOf(run.steps, step => isSpan(step) && isObject(step) && (step.level === null || (isText(step.level) && levels.has(step.level as string))))
       && (run.steps as HourRange[]).every((step, index, steps) => step.firstHour === (index ? steps[index - 1].lastHour + 1 : run.firstHour))
       && (run.steps as HourRange[]).at(-1)?.lastHour === run.lastHour);
-  if (!ok) throw new Error('The subjects reply is malformed.');
+  if (!ok || reply.approximate !== undefined && !isOrderedSpans(reply.approximate)) throw new Error('The subjects reply is malformed.');
+  preparedPrefix(reply);
   return data as SubjectReply;
 }
 

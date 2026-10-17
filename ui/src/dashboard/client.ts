@@ -27,6 +27,27 @@ export interface ProductReply<T> {
   revision: string;
   product: string;
   data: T;
+  /** A pending or partial prepared reply's gate: the preparation status entries it waits for,
+   * `walk` for the status's `coverage` or a family prepared on its own, listed in its `families`. */
+  gate?: string[];
+}
+
+/** The status entry of the hourly walk's coverage in a prepared reply's gate. */
+export const WALK_GATE = 'walk';
+
+/** Per-call options of a prepared query. `gate` receives the reply's gate (undefined when it waits for nothing). */
+export interface PreparedQueryOptions {
+  signal: AbortSignal;
+  gate?: (entries: readonly string[] | undefined) => void;
+}
+
+/** A validated prepared reply's data, after handing its gate to the caller. */
+export function preparedReplyData<T>(reply: ProductReply<T>, options: PreparedQueryOptions): T {
+  const gate: unknown = reply.gate;
+  if (gate !== undefined && !(Array.isArray(gate) && gate.every(entry => typeof entry === 'string' && entry.length > 0)))
+    throw new Error('The prepared reply gate is malformed.');
+  options.gate?.(gate);
+  return reply.data;
 }
 
 export function validateProductReply<T>(reply: ProductReply<T>, request: ProductRequest): ProductReply<T> {
@@ -87,7 +108,7 @@ export interface DashboardClient {
   cancelPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   clearPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>>;
-  preparedQuery?<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T>;
+  preparedQuery?<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
   /** Flips a setting of the target's stored choices on the service, under the lock its saves take: the opposite of
    * its value when the flip runs, every other choice untouched. */

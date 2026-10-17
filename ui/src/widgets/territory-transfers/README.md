@@ -6,9 +6,11 @@
 
 **Settings:** Whole world by default; the header's country chip narrows it to transfers involving the chosen countries or groups. Show: Countries (default), Transfers, or a pinned country's transfers. Scope: whole campaign or one conference. Breakdown inline or beside the widget; shared table density, cell bars and a saved sort for each table. Campaign, Follow, Pin and Range.
 
-Unprepared outcomes show the shared "This range is still being prepared." status.
-State-owner comparisons and dated finalizer joins require earlier observations;
-an unprepared span remains pending rather than an empty table or zero balance.
+State-owner comparisons and dated finalizer joins require earlier observations,
+so nothing is sampled past the prepared prefix. Before preparation covers the
+branch the tables hold the prefix's settlements, with the shared
+"Prepared A to B; the rest is still being prepared." note above them; with
+nothing prepared yet the widget shows "This range is still being prepared.".
 
 **Notable behaviour:**
 

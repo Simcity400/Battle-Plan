@@ -385,3 +385,13 @@ test('delayed outcomes and result-only participation become eligible at their fi
   malformed.leaders[0].battleResultReadHours = [first + 1, first + 4];
   assert.throws(() => validateUnitLeadersReply(malformed), /malformed/);
 });
+
+test('current leader facts never turn preparing battle counts into zero', () => {
+  const data = fixture(); data.preparing = ['battles', 'history'];
+  const leader = leadersAt(data, 105, null, 'all')[0];
+  assert.equal(leader.value.skill, 3);
+  assert.equal(leader.preparing, true);
+  for (const field of ['fought', 'won', 'lost', 'unresolved', 'winRate'] as const) assert.equal(leader[field], null);
+  const tooltip = leaderTooltip(leader, { name: 'Country' });
+  assert.equal(tooltip.rows?.find(row => row.label === 'Battles won / fought')?.value, 'Still being prepared');
+});

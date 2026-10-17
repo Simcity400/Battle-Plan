@@ -4,9 +4,12 @@ import type { TooltipContent } from '../charts/tooltip';
 import type { CountryLabel } from './countryFlagsAt';
 import { formatAmount } from '../charts/valueAxis.ts';
 import { int, object } from './validation.ts';
+import type { PreparedCoverage } from '../shell/preparation/contract';
+import { preparedPending } from './preparedPrefix.ts';
+import { isOrderedSpans } from '../charts/series.ts';
 import { runAt } from '../charts/series.ts';
 
-export type AirTimeline = Extract<WireAirReply, { view: 'timeline' }>;
+export type AirTimeline = Extract<WireAirReply, { view: 'timeline' }> & { coverage?: PreparedCoverage; approximate?: AirSpan[]; pending?: AirSpan[]; rowsApproximate?: boolean; sampleHours?: (number | null)[] };
 export type AirMoment = Omit<Extract<WireAirReply, { view: 'moment' }>, 'sides'> & { sides: AirSide[] };
 export type AirChoices = Extract<WireAirReply, { view: 'choices' }>;
 type AirReply = AirTimeline | AirMoment | AirChoices;
@@ -138,7 +141,7 @@ export function cellView(cell: AirCell, sides: readonly AirSide[], looks: AirLoo
 }
 
 export function airPeriods(reply: AirTimeline): HeatPeriod[] {
-  return reply.days.map((readHour, index) => ({ firstHour: reply.firstHour + index * reply.dayHours, lastHour: Math.min(reply.lastHour, reply.firstHour + (index + 1) * reply.dayHours - 1), readHour }));
+  return reply.days.map((readHour, index) => ({ firstHour: reply.firstHour + index * reply.dayHours, lastHour: Math.min(reply.lastHour, reply.firstHour + (index + 1) * reply.dayHours - 1), readHour: reply.sampleHours?.[index] ?? readHour }));
 }
 
 /** The sides whose dated reads shape a cell's parts. */
@@ -158,13 +161,13 @@ export function timelineViews(reply: AirTimeline, looks: AirLooks): AirTimelineV
     const cells: HeatRow['cells'][number][] = [], starts: { start: number; cell: AirCell; view: AirView }[] = [];
     for (const [repeat, cell] of row.cells) {
       const start = cells.length;
-      const view = cellView(cell, reply.sides, looks, order, reply.days[start] ?? 0);
+      const view = cellView(cell, reply.sides, looks, order, reply.sampleHours?.[start] ?? reply.days[start] ?? 0);
       starts.push({ start, cell, view });
       const geometry = { parts: view.parts, unknown: view.state === 'unknown', filtered: view.reason === 'outside-theatres' };
       const actors = partSides(cell, reply.sides);
       let before: { read: number; cell: HeatRow['cells'][number] } | null = null;
       for (let day = start; day < start + repeat; day++) {
-        const read = reply.days[day];
+        const read = reply.sampleHours?.[day] ?? reply.days[day];
         if (read == null || day === start) { cells.push(geometry); if (read != null) before = { read, cell: geometry }; continue; }
         let shown: HeatRow['cells'][number];
         const previous = before;
@@ -189,10 +192,11 @@ export function timelineViews(reply: AirTimeline, looks: AirLooks): AirTimelineV
     let low = 0, high = starts.length;
     while (low < high) { const middle = (low + high) >>> 1; if (starts[middle].start <= day) low = middle + 1; else high = middle; }
     const { cell, view } = starts[low - 1];
-    const read = reply.days[day];
+    const displayed = reply.days[day];
+    const read = reply.sampleHours?.[day] ?? displayed;
     const dated = read == null ? view : cellView(cell, reply.sides, looks, order, read);
-    const excluded = view.excluded + (read == null ? 0 : tupleAt(reply.excluded, read) ?? 0);
-    const theatreRead = read == null ? undefined : tupleAt(reply.theatreReads, read);
+    const excluded = view.excluded + (read == null ? 0 : tupleAt(reply.excluded, displayed ?? read) ?? 0);
+    const theatreRead = read == null ? undefined : tupleAt(reply.theatreReads, displayed ?? read);
     return excluded === dated.excluded && theatreRead === undefined ? dated : { ...dated, excluded, theatreRead };
   };
   return { rows, periods: airPeriods(reply), viewAt };
@@ -360,6 +364,11 @@ export function validateAirReply(value: unknown): AirReply {
       }
     }
   }
+  preparedPending(value);
+  if (value.approximate !== undefined && !isOrderedSpans(value.approximate)) return invalid();
+  if (value.rowsApproximate !== undefined && typeof value.rowsApproximate !== 'boolean') return invalid();
+  if (value.sampleHours !== undefined && (!Array.isArray(value.sampleHours) || !Array.isArray(value.days) || value.sampleHours.length !== value.days.length
+    || !value.sampleHours.every(hour => hour === null || int(hour)))) return invalid();
   const sides = value.sides;
   const replyView = value.view;
   const sideIndex = (item: unknown): item is number => natural(item) && item < sides.length;

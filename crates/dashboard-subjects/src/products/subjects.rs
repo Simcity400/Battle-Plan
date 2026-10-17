@@ -116,6 +116,15 @@ pub struct SubjectReply {
     /// or starts next to one of these is a gap, not an end or a start.
     pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
+    /// While preparation has not reached the branch's end, the hours after its
+    /// prefix whose relations and levels come from each block's keyframe
+    /// ([`Scan::sample_tail`]): exact at the keyframe, approximate over the
+    /// block, so a relation's end inside them is approximate (its start stays
+    /// the game's recorded start). None once the branch is prepared, and from
+    /// the recording product.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub approximate: Option<Vec<HourSpan>>,
 }
 
 impl Product for Subjects {
@@ -352,6 +361,13 @@ pub struct SubjectStart {
     pub hour: i32,
     pub read_hour: i32,
     pub exact: bool,
+}
+
+struct RelationSample {
+    overlord: String,
+    subject: String,
+    start_hour: i32,
+    level: Option<String>,
 }
 
 #[cfg(test)]
@@ -1036,7 +1052,148 @@ impl Scan {
             },
             unobserved: self.unobserved.clone(),
             warnings,
+            approximate: None,
         })
+    }
+
+    /// The relations of the hours after `after` (a prepared prefix's last
+    /// hour) sampled at each later block's keyframe, joined onto this scan's
+    /// runs: each relation active at a keyframe, with the subject's level
+    /// there, stands for the block's hours after the prefix. A relation
+    /// reaching the prefix's end, or the hour before a sampled block, goes on
+    /// when the keyframe still holds it with the same start; runs break at
+    /// recorded gaps. A keyframe whose relations this scan would not observe
+    /// (an incomplete Subjects, Countries or CountryLinks table, or a
+    /// relation naming an unresolved country) samples nothing, so its block
+    /// stays pending. Returns the sampled hours: the reply's approximate spans.
+    pub fn sample_tail(
+        &mut self,
+        source: &Source,
+        branch: u64,
+        after: i32,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Vec<HourSpan>> {
+        type Key = (String, String, i32);
+        let key = |run: &SubjectRun| (run.overlord.clone(), run.subject.clone(), run.start_hour);
+        // The run each relation continues, by the last hour it reaches.
+        let mut open: BTreeMap<Key, usize> = self
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.last_hour == after)
+            .map(|(index, run)| (key(run), index))
+            .collect();
+        let runs = &mut self.runs;
+        let approximate = dashboard_base::prepared::query::keyframes::after(
+            source,
+            "subjects:keyframe",
+            branch,
+            after,
+            None,
+            prepared::TABLES,
+            cancelled,
+            &Self::at_keyframe,
+            &|runs: &Vec<RelationSample>| {
+                std::mem::size_of::<Vec<RelationSample>>()
+                    + runs.capacity() * std::mem::size_of::<RelationSample>()
+                    + runs
+                        .iter()
+                        .map(|run| {
+                            run.overlord.capacity()
+                                + run.subject.capacity()
+                                + run.level.as_ref().map_or(0, String::capacity)
+                        })
+                        .sum::<usize>()
+            },
+            |spans, sampled| {
+                let mut next = BTreeMap::new();
+                for run in sampled {
+                    let relation = (run.overlord.clone(), run.subject.clone(), run.start_hour);
+                    let level = run.level.clone();
+                    let mut current = open.get(&relation).copied();
+                    for span in spans {
+                        let index = match current {
+                            Some(index)
+                                if runs[index].last_hour.checked_add(1)
+                                    == Some(span.first_hour) =>
+                            {
+                                index
+                            }
+                            _ => {
+                                runs.push(SubjectRun {
+                                    overlord: run.overlord.clone(),
+                                    subject: run.subject.clone(),
+                                    start_hour: run.start_hour,
+                                    first_hour: span.first_hour,
+                                    last_hour: span.first_hour,
+                                    steps: Vec::new(),
+                                });
+                                runs.len() - 1
+                            }
+                        };
+                        let joined = &mut runs[index];
+                        match joined.steps.last_mut() {
+                            Some(step)
+                                if step.level == level
+                                    && step.last_hour.checked_add(1) == Some(span.first_hour) =>
+                            {
+                                step.last_hour = span.last_hour;
+                            }
+                            _ => joined.steps.push(LevelStep {
+                                first_hour: span.first_hour,
+                                last_hour: span.last_hour,
+                                level: level.clone(),
+                            }),
+                        }
+                        joined.last_hour = span.last_hour;
+                        current = Some(index);
+                    }
+                    if let Some(index) = current {
+                        next.insert(relation, index);
+                    }
+                }
+                open = next;
+                Ok(())
+            },
+        )?;
+        self.runs.sort_by(|a, b| {
+            (a.first_hour, &a.overlord, &a.subject, a.start_hour).cmp(&(
+                b.first_hour,
+                &b.overlord,
+                &b.subject,
+                b.start_hour,
+            ))
+        });
+        Ok(approximate)
+    }
+
+    /// The relations a keyframe holds as this scan observes an hour alone:
+    /// each active relation's one-hour run, with the subject's level at the
+    /// hour. None when the scan would leave the hour unobserved.
+    fn at_keyframe(frame: &DecodedFrame) -> io::Result<Option<Vec<RelationSample>>> {
+        let mut alone = Scan {
+            previous_hour: frame.hour.checked_sub(1),
+            ..Scan::default()
+        };
+        alone.observe(frame)?;
+        let observed = !alone
+            .unobserved
+            .iter()
+            .any(|span| span.first_hour <= frame.hour && frame.hour <= span.last_hour);
+        Ok(observed.then(|| {
+            let mut samples: Vec<_> = alone
+                .runs
+                .into_iter()
+                .map(|run| RelationSample {
+                    overlord: run.overlord,
+                    subject: run.subject,
+                    start_hour: run.start_hour,
+                    level: run.steps.into_iter().next().and_then(|step| step.level),
+                })
+                .collect();
+            samples.shrink_to_fit();
+            samples
+        }))
     }
 }
 

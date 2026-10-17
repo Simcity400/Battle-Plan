@@ -1,3 +1,4 @@
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -54,7 +55,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const inBranch = target != null && track != null && target >= track.branch.firstHour && target <= track.branch.lastHour;
   // The hour shown is the target's once its window is held.
-  const { manifest, log, hour, error, retry, onDrawn } = useConstructionLog(runtime, track, active, inBranch ? target : null, live);
+  const { manifest, log, hour, error, retry, onDrawn, preparedCoverage, exactFrom, approximate } = useConstructionLog(runtime, track, active, inBranch ? target : null, live);
   // Tags stay an array end to end: a mod's tag may hold any character, spaces included.
   const tags = selectedTags(widget.countries, track);
   const tagsKey = JSON.stringify(tags);
@@ -102,6 +103,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!manifest || !match.ready) return <WidgetState kind="loading" label="Loading the construction log…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
+  if (!manifest.recorded && preparedPrefix(manifest)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!manifest.recorded) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (!log || hour == null) return <WidgetState kind="loading" label="Loading the construction log…" />;
@@ -154,7 +156,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
       {choices.length > 0 && <ContentSetPicker label="Building types" automatic={EVERY_TYPE} choices={choices} selected={chosen}
         onReset={() => { if (chosen.length) setOption?.('types', ''); }} onToggle={toggle} />}
     </div>}
-    <LogList rows={rows} label="Construction projects" density={settings.density} months={settings.months}
+    <LogList rows={rows} label="Construction projects" density={settings.density} months={settings.months} preparedCoverage={preparedCoverage} preparedExactFrom={exactFrom} preparedApproximate={approximate}
       {...import.meta.env.MODE === 'parity' ? { parityHistoryComplete: logComplete(log, from), paritySemantic } : {}}
       animate={settings.animate && live} renderRow={renderRow}
       describe={row => describeRow(log, row, country(row.item).name, hour, stateAt)}

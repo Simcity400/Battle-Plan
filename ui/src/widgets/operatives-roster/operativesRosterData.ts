@@ -1,3 +1,4 @@
+import { fieldPreparing } from '../../dashboard/preparedPrefix.ts';
 import { runAt, runIndexAt } from '../../charts/series.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
@@ -141,19 +142,20 @@ export function operativeLabelHour(row: OperativeRow, shownHour: number): number
   return row.departed ? row.run.lastHour : shownHour;
 }
 export function departureText(row: OperativeRow): string | null {
+  if (row.departed && fieldPreparing(row.entry, 'departedHour')) return 'Departure still being prepared';
   return row.departed && row.entry.departedHour !== null
     ? `${row.entry.departedReason === 'Left (reason not recorded)' ? 'Left' : row.entry.departedReason ?? 'Left'} by ${formatDateTime(row.entry.departedHour)}` : null;
 }
 export interface OperativeMoment { kind: 'joined' | 'captured' | 'departed'; hour: number; label: string }
 export function operativeMoments(row: OperativeRow): OperativeMoment[] {
-  const moments: OperativeMoment[] = [{ kind: 'joined', hour: row.entry.joinedHour, label: `Jump to first seen ${formatDateTime(row.entry.joinedHour)}` }];
+  const moments: OperativeMoment[] = fieldPreparing(row.entry, 'joinedHour') ? [] : [{ kind: 'joined', hour: row.entry.joinedHour, label: `Jump to first seen ${formatDateTime(row.entry.joinedHour)}` }];
   const captured = new Set<number>();
   for (const run of row.entry.runs) {
     if (run.firstHour > row.run.firstHour) break;
     if (run.value.captured === true && run.value.capturedHour !== null) captured.add(run.value.capturedHour);
   }
   for (const hour of [...captured].sort((a, b) => a - b)) moments.push({ kind: 'captured', hour, label: `Jump to capture ${formatDateTime(hour)}` });
-  if (row.departed && row.entry.departedHour !== null) moments.push({ kind: 'departed', hour: row.entry.departedHour, label: `Jump to departure by ${formatDateTime(row.entry.departedHour)}` });
+  if (!fieldPreparing(row.entry, 'departedHour') && row.departed && row.entry.departedHour !== null) moments.push({ kind: 'departed', hour: row.entry.departedHour, label: `Jump to departure by ${formatDateTime(row.entry.departedHour)}` });
   return moments;
 }
 
@@ -179,8 +181,8 @@ export function operativeTooltip(reply: OperativeRosterReply, row: OperativeRow,
       countryRow('Capturer', value.capturerTag),
       { label: 'Captured on', value: value.capturedHour === null ? 'Unknown' : formatDateTime(value.capturedHour) },
     ] : []),
-    { label: 'Present', value: `by ${formatDateTime(row.entry.joinedHour)}` },
-    ...(row.departed && row.entry.departedHour !== null ? [{ label: row.entry.departedReason === 'Left (reason not recorded)' ? 'Left' : row.entry.departedReason ?? 'Left', value: `by ${formatDateTime(row.entry.departedHour)}` }] : []),
+    { label: 'Present', value: fieldPreparing(row.entry, 'joinedHour') ? 'Still being prepared' : `by ${formatDateTime(row.entry.joinedHour)}` },
+    ...(row.departed && row.entry.departedHour !== null ? [{ label: row.entry.departedReason === 'Left (reason not recorded)' ? 'Left' : row.entry.departedReason ?? 'Left', value: fieldPreparing(row.entry, 'departedHour') ? 'Still being prepared' : `by ${formatDateTime(row.entry.departedHour)}` }] : []),
   ];
   return { title: operativeName(value), icon: value.portrait === null ? undefined : reply.artwork[value.portrait], rows };
 }

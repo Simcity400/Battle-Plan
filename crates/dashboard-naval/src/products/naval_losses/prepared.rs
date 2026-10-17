@@ -1095,7 +1095,7 @@ pub fn query(
     source: &Source,
     product: &str,
     params: &Value,
-    context: &LoadContext,
+    _context: &LoadContext,
     store: &store::Store,
     key: &store::SourceKey,
     flag: &AtomicBool,
@@ -1121,11 +1121,40 @@ pub fn query(
     else {
         return Ok(Value::Null);
     };
-    let Some(histories) =
-        country_history::prepared_branch_histories(source, branch, context.content.as_ref(), flag)?
-    else {
-        return Ok(Value::Null);
-    };
+    // The naval scan records these holders at every observed hour itself;
+    // its prefix need not wait for the whole branch's identity history.
+    let evidence = metadata
+        .scan
+        .country_identities
+        .iter()
+        .map(|(tag, spans)| {
+            (
+                (tag.clone(), String::new()),
+                spans
+                    .iter()
+                    .map(|span| {
+                        (
+                            span.first_hour,
+                            span.last_hour,
+                            span.identity.0,
+                            span.identity.1,
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let histories = dashboard_base::prepared::query::progressive::histories(
+        store,
+        key,
+        branch,
+        None,
+        &BTreeMap::new(),
+        &evidence,
+        source.replay_ref(),
+        &selection.tags,
+        flag,
+    )?;
     if product == "naval-losses" {
         let range = if let Some(window) = params["window"].as_u64() {
             let windows = source.block_windows(branch);
@@ -1162,6 +1191,47 @@ pub fn query(
             product, params, &selection, &actors, &metadata, &histories, store, key, flag,
         )
     }
+}
+
+/// No history is guessed for a request outside the naval prefix.
+pub fn empty(source: &Source, params: &Value) -> io::Result<Value> {
+    let mut selection = params.clone();
+    let fields = selection
+        .as_object_mut()
+        .ok_or_else(|| dashboard_core::invalid("Invalid naval loss selection"))?;
+    fields.remove("window");
+    fields.remove("hour");
+    let selection: NavalLossesParams = serde_json::from_value(selection)?;
+    NavalLosses::validate(&selection).map_err(dashboard_core::invalid)?;
+    let branch = selection.branch_id.parse().expect("validated branch");
+    let mut data = serde_json::to_value(NavalLossesReply {
+        branch_id: selection.branch_id,
+        available: false,
+        first_read: None,
+        ship_first_read: None,
+        convoy_first_read: None,
+        ship_last_read: None,
+        convoy_last_read: None,
+        ship_reads: vec![],
+        convoy_reads: vec![],
+        series: vec![],
+        warnings: vec![],
+    })?;
+    if params.get("window").is_none_or(Value::is_null)
+        && params.get("hour").is_none_or(Value::is_null)
+    {
+        data["windows"] = serde_json::to_value(
+            source
+                .block_windows(branch)
+                .iter()
+                .map(|window| HourSpan {
+                    first_hour: window.first_hour,
+                    last_hour: window.last_hour,
+                })
+                .collect::<Vec<_>>(),
+        )?;
+    }
+    Ok(data)
 }
 
 fn amount(run: &NavalLossRun, kind: NavalKind) -> Option<i64> {

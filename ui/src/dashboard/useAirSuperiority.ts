@@ -20,6 +20,7 @@ import type { AirColourLookup } from './useAirSuperiorityColours';
 import { FOLLOW_MS, useCountriesAt } from './useCountriesAt';
 import { useThrottled } from './useThrottled';
 import { useHoverLabels } from './useHoverLabels';
+import { pendingAt } from './preparedPrefix.ts';
 import { useContentRevision } from './contentRevision.ts';
 import { airCountryTags, airSegmentAt, airSideName, airSummaryTooltip, airTooltip, airTooltipTags, inSpans, lastRecordedAt, momentReadAt, momentReadHours, momentViews, momentWindows, sideAt, sideOrder, timelineViews, validateAirReply } from './airSuperiority';
 import { airChoiceKey, airChoiceToken, heldAirReply, timelineRequestLast } from './airOptions';
@@ -103,7 +104,7 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     return { sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority', params: {
       branchId: track!.branch.id, view: 'moment', firstHour: window.firstHour, lastHour: window.lastHour, ...params,
     } };
-  }, wanted, active, momentReply, track?.source);
+  }, wanted, active, momentReply, track?.source, true);
   const dayFirst = timelineData ? Math.max(firstHour, timelineRequestLast(lastHour, timelineData.dayHours)) : firstHour;
   const dayRequest = follow && track && timelineData && !beforeBranch && !needsViewpoint ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: {
@@ -127,7 +128,7 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const data = moment ? windows.data.get(wanted[0]) : timelineData;
   const timelineRead = useMemo(() => {
     if (data?.view !== 'timeline') return null;
-    for (let index = data.days.length - 1; index >= 0; index--) if (data.days[index] != null) return data.days[index];
+    for (let index = data.days.length - 1; index >= 0; index--) if (data.days[index] != null) return data.sampleHours?.[index] ?? data.days[index];
     return data.firstHour;
   }, [data]);
   const dataHour = data?.view === 'moment' ? hour : timelineRead ?? hour;
@@ -203,6 +204,8 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     if (data?.view === 'timeline' && projectedTimeline) {
       const index = at == null ? -1 : Math.floor((at - data.firstHour) / data.dayHours);
       region = timelineRegions.get(regionId);
+      if (region && at != null && pendingAt({ pending: data.pending ?? [] }, at))
+        return { title: region.name, rows: [{ label: 'State', value: 'Still being prepared' }] };
       const cell = projectedTimeline.viewAt(regionId, index);
       if (cell) view = { ...cell, hour: projectedTimeline.periods[index]?.readHour ?? null,
         ...(projectedTimeline.periods[index]?.readHour == null ? { state: 'gap' as const } : {}) };

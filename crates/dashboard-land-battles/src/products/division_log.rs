@@ -38,6 +38,7 @@ use ts_rs::TS;
 use {dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder};
 
 pub mod block;
+mod newest;
 pub mod prepared;
 
 pub struct DivisionLog;
@@ -151,9 +152,9 @@ pub struct DivisionLogTotalsParams {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogTotalsReply {
-    pub created: usize,
-    pub lost: usize,
-    pub transferred: usize,
+    pub created: Option<usize>,
+    pub lost: Option<usize>,
+    pub transferred: Option<usize>,
     pub warnings: Vec<String>,
 }
 impl dashboard_base::products::ReplyWarnings for DivisionLogTotalsReply {
@@ -913,7 +914,7 @@ impl<'a> Selection<'a> {
     }
 }
 fn totals_reply([created, lost, transferred]: [usize; 3]) -> io::Result<DivisionLogTotalsReply> {
-    bounded(DivisionLogTotalsReply { created, lost, transferred,
+    bounded(DivisionLogTotalsReply { created: Some(created), lost: Some(lost), transferred: Some(transferred),
         warnings: vec!["Totals count observed appearances and witnessed removals in the selected time; missed events are not zero.".into()] })
 }
 #[cfg(any(test, feature = "test-support"))]

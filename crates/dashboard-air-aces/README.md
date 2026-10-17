@@ -19,3 +19,14 @@ when it contains the ace table at the saved hour. Otherwise it seeks that hour's
 campaign and ace tables from the recording before continuing.
 
 `cargo test -p dashboard-air-aces` builds and runs only this crate's tests.
+
+Prepared `air-aces` also accepts `view: roster` with an `hour`. A reached hour
+uses the prepared manifest and window. Beyond coverage, the shared supplying-read
+lookup finds the latest complete roster within its daily cadence, without
+crossing a gap or missing table. The ordinary roster builder supplies current
+names, owner, wing, aircraft and alive/dead state. `firstSeen` is null and
+`preparing` names first-sighting and death dates until history reaches the hour.
+Lazy portraits use that same supplying read. The root carries coverage and
+pending hours so mounted rosters are replaced as preparation advances.
+
+The cold roster also resolves the latest variant-name read within its own daily cadence before the roster read, preserving the aircraft names carried by hourly preparation.

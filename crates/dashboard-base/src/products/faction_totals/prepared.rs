@@ -2,7 +2,7 @@
 use super::*;
 use crate::prepared::{
     group_sum,
-    series::{self, Reader},
+    series::{self, Reader, Run},
 };
 use crate::prepared_chart::{ChartBucket, ChartRun, ChartSummary, merge};
 use crate::products::country_history::RecordedHistories;
@@ -20,10 +20,42 @@ fn clipped(spans: &[HourSpan], window: &HourSpan) -> Vec<HourSpan> {
         .collect()
 }
 
+/// A member's value runs through a sum's read: the first hour of its run
+/// holding the read's first hour, and its runs through the read. None for a
+/// tag without values.
+type MemberValues<'a> =
+    dyn FnMut(&str, &HourSpan) -> io::Result<Option<(Option<i32>, Vec<Run>)>> + 'a;
+
 /// One predecessor hour preserves the oracle's segment flags at a clipped left edge.
 fn exact(
     values: &mut Reader<'_>,
     keys: &BTreeMap<String, u64>,
+    history: &History,
+    members: &NativeMembers,
+    window: &HourSpan,
+    cancelled: &AtomicBool,
+) -> io::Result<(Vec<CountryTrack>, Sums)> {
+    exact_with(
+        &mut |tag, read| {
+            let Some(&key) = keys.get(tag) else {
+                return Ok(None);
+            };
+            let origin = values.value_at(key, read.first_hour)?;
+            Ok(Some((
+                origin.map(|run| run.first_hour),
+                values.runs(key, read.first_hour, read.last_hour)?,
+            )))
+        },
+        history,
+        members,
+        window,
+        cancelled,
+    )
+}
+
+/// [`exact`] with each member's values from `values`.
+fn exact_with(
+    values: &mut MemberValues<'_>,
     history: &History,
     members: &NativeMembers,
     window: &HourSpan,
@@ -38,15 +70,14 @@ fn exact(
     for tag in members.tags() {
         check_cancel(cancelled)?;
         let mut runs = Vec::new();
-        if let Some(&key) = keys.get(&tag) {
-            let origin = values.value_at(key, read.first_hour)?;
-            for run in values.runs(key, read.first_hour, read.last_hour)? {
+        if let Some((origin, values)) = values(&tag, &read)? {
+            for run in values {
                 runs.push(MeasureRun {
                     first_hour: run.first_hour,
                     last_hour: run.last_hour,
                     starts_segment: run.break_before
                         && (run.first_hour != read.first_hour
-                            || origin.is_none_or(|origin| origin.first_hour == run.first_hour)),
+                            || origin.is_none_or(|origin| origin == run.first_hour)),
                     value: Some(i64::try_from(run.value).map_err(|_| {
                         crate::invalid("Prepared faction member exceeds its native integer range")
                     })?),
@@ -486,6 +517,187 @@ fn navigate(
     }
 }
 
+/// The factory faction totals at `hour` under hour membership, read from
+/// the hour's frame and the hour's before alone, for a reached hour the
+/// prepared pages do not hold yet. Members at an hour are that hour's
+/// rosters, which carry recorded faction ids, joined by native holder
+/// through that hour's identities; each member's factories are its country
+/// read at the hour. The hour before supplies what decides a segment break
+/// at the hour (the same holder with a value then, the same roster), as
+/// preparation's runs carry it. So the reply is the one the prepared pages
+/// give at the hour, warnings aside. Null at an hour outside the branch's
+/// blocks or in a recorded gap.
+#[allow(clippy::too_many_arguments)]
+fn sampled_state(
+    source: &Source,
+    context: &LoadContext,
+    params: &FactionTotalsParams,
+    branch: u64,
+    hour: i32,
+    top: &country_factories::FactoryTop,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::prepared::query::observations;
+    let Some(block) = source.replay_ref().index.iter().find(|block| {
+        block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
+    }) else {
+        return Ok(Value::Null);
+    };
+    let (_, binding) = crate::prepared::files(source, context.content.as_ref())?;
+    let cache = observations::scope(source, "faction-totals:state", Some(&binding));
+    let reply = cache.get(
+        block,
+        &(params, hour),
+        cancelled,
+        observations::json_bytes,
+        || sampled_state_from_frames(source, context, params, branch, hour, top, cancelled),
+    )?;
+    Ok(reply.as_ref().clone())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sampled_state_from_frames(
+    source: &Source,
+    context: &LoadContext,
+    params: &FactionTotalsParams,
+    branch: u64,
+    hour: i32,
+    top: &country_factories::FactoryTop,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::prepared::query::progressive;
+    use replay::rows::TableId;
+    let replay = source.replay_ref();
+    let in_gap = |hour: i32| {
+        replay
+            .gaps
+            .iter()
+            .any(|gap| gap.branch == branch && gap.first_hour <= hour && gap.last_hour >= hour)
+    };
+    let block_of = |hour: i32| {
+        replay.index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= hour && block.last_hour >= hour
+        })
+    };
+    let Some(_) = block_of(hour).filter(|_| !in_gap(hour)) else {
+        return Ok(Value::Null);
+    };
+    let before = hour
+        .checked_sub(1)
+        .filter(|&before| !in_gap(before) && block_of(before).is_some());
+    let mut tables: Vec<TableId> = country_groups::prepared::TABLES
+        .iter()
+        .chain(country_factories::prepared::TABLES)
+        .copied()
+        .collect();
+    tables.sort_unstable();
+    tables.dedup();
+    let mut groups = country_groups::Scan::new(replay, branch);
+    let mut identities = super::super::country_history::HistoryScan::new(false, &[]);
+    let mut samples: BTreeMap<i32, progressive::Samples> = BTreeMap::new();
+    let mut observe = |frame: &replay::frame::DecodedFrame| -> io::Result<()> {
+        groups.observe(frame)?;
+        identities.observe(frame);
+        samples.insert(
+            frame.hour,
+            country_factories::prepared::sample(frame, None)?,
+        );
+        Ok(())
+    };
+    if let Some(before) = before
+        && let Some(frame) = progressive::frame_at(source, branch, before, &tables, cancelled)?
+    {
+        observe(&frame)?;
+    }
+    if let Some(frame) = progressive::frame_at(source, branch, hour, &tables, cancelled)? {
+        observe(&frame)?;
+    }
+    if !samples.contains_key(&hour) {
+        return Ok(Value::Null);
+    }
+    let history = groups.faction_history(cancelled)?;
+    let identities = identities.finish();
+    let members = NativeMembers::new(&history, &identities, params.membership, cancelled)?;
+    // A tag's count at a sampled hour, with its native holder: known only
+    // when the frame read every part for one holder.
+    let count = |hour: i32, tag: &str| -> io::Result<Option<((u32, u32), i128)>> {
+        let Some(samples) = samples.get(&hour) else {
+            return Ok(None);
+        };
+        let mut holder = None;
+        let mut values = Vec::new();
+        for ordinal in 0..country_factories::fields().len() {
+            let Some(&(Some(identity), Some(value))) =
+                samples.get(&(tag.to_owned(), ordinal.to_string()))
+            else {
+                return Ok(None);
+            };
+            if holder.is_some_and(|holder| holder != identity) {
+                return Ok(None);
+            }
+            holder = Some(identity);
+            values.push(i32::try_from(value).map_err(io::Error::other)?);
+        }
+        Ok(holder.map(|holder| {
+            (
+                holder,
+                i128::from(country_factories::count_for(&values, top)),
+            )
+        }))
+    };
+    let window = HourSpan {
+        first_hour: hour,
+        last_hour: hour,
+    };
+    let (tracks, sums) = exact_with(
+        &mut |tag, read| {
+            let mut runs: Vec<Run> = Vec::new();
+            let earlier = match before.filter(|&before| before >= read.first_hour) {
+                Some(before) => count(before, tag)?.map(|counted| (before, counted)),
+                None => None,
+            };
+            if let Some((before, (_, value))) = earlier {
+                runs.push(Run::new(before, before, value, true));
+            }
+            if let Some((holder, value)) = count(hour, tag)? {
+                // Continued from the hour before by the same holder with a value.
+                let continued = earlier.is_some_and(|(_, (earlier, _))| earlier == holder);
+                match runs.last_mut() {
+                    Some(run) if continued && run.value == value => run.last_hour = hour,
+                    _ => runs.push(Run::new(hour, hour, value, !continued)),
+                }
+            }
+            let origin = runs
+                .first()
+                .filter(|run| run.first_hour <= read.first_hour)
+                .map(|run| run.first_hour);
+            Ok(Some((origin, runs)))
+        },
+        &history,
+        &members,
+        &window,
+        cancelled,
+    )?;
+    let measures = CountryMeasures {
+        tracks,
+        unit: Some("factories".into()),
+        unavailable_reason: None,
+        warnings: Vec::new(),
+    };
+    Ok(serde_json::to_value(build_reply(
+        source,
+        params,
+        context,
+        &history,
+        &identities,
+        &members,
+        &measures,
+        &sums,
+        Some(&window),
+        cancelled,
+    )?)?)
+}
+
 pub fn query(
     source: &Source,
     context: &LoadContext,
@@ -504,9 +716,52 @@ pub fn query(
         .branch_id
         .parse()
         .map_err(|_| crate::invalid("Invalid faction branch"))?;
+    // A reached hour of factory totals under hour membership, without member
+    // parts, is answered from its frames where the prepared pages do not
+    // reach it yet; any other request past them waits.
+    let sampled = match (&params.source, product) {
+        (FactionMeasure::Factories { mode, groups }, "series-state")
+            if params.membership == FactionMembership::Hour && params.parts != Some(true) =>
+        {
+            let hour = value["reads"][0]["hour"]
+                .as_i64()
+                .and_then(|hour| i32::try_from(hour).ok())
+                .ok_or_else(|| crate::invalid("Invalid faction reached hour"))?;
+            Some((
+                hour,
+                country_factories::FactoryTop {
+                    count: 1,
+                    mode: *mode,
+                    groups: groups.clone(),
+                },
+            ))
+        }
+        _ => None,
+    };
+    let unprepared = || -> io::Result<Value> {
+        match &sampled {
+            Some((hour, top)) => {
+                sampled_state(source, context, &params, branch, *hour, top, cancelled)
+            }
+            None => Ok(Value::Null),
+        }
+    };
+    if product == "series-state"
+        && let Some(hour) = value["reads"][0]["hour"].as_i64()
+        && !crate::prepared::coverage::product_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            gate(&value),
+            cancelled,
+        )?
+        .is_some_and(|coverage| coverage.complete || i64::from(coverage.last_hour) >= hour)
+    {
+        return unprepared();
+    }
     let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
     let Some(file) = store.read(&key, &format!("country-groups-{branch}"), 0)? else {
-        return Ok(Value::Null);
+        return unprepared();
     };
     let scan = country_groups::Scan::read(io::BufReader::new(file))?;
     let history = scan.faction_history(cancelled)?;
@@ -517,7 +772,7 @@ pub fn query(
         cancelled,
     )?
     else {
-        return Ok(Value::Null);
+        return unprepared();
     };
     let members = NativeMembers::new(&history, &identities, params.membership, cancelled)?;
     // Territory's catalogue: its measures' keys, presence and metadata for
@@ -612,7 +867,7 @@ pub fn query(
         if requested
             .is_some_and(|requested| reached.is_none_or(|reached| f64::from(reached) < requested))
         {
-            return Ok(Value::Null);
+            return unprepared();
         }
     }
     if product == "series-next-change" {

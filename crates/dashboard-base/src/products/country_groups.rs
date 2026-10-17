@@ -207,6 +207,11 @@ pub struct CountryGroupReply {
     pub war_starts: Vec<WarStart>,
     /// Every capitulation the recording saw, in hour order.
     pub capitulations: Vec<Capitulation>,
+    /// Native-dated war starts and capitulations can be learned later. These
+    /// hours' event inventories are provisional while preparation continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub events_approximate: Option<Vec<HourSpan>>,
     /// Every change of an id's tag between two consecutive recorded hours, in hour order.
     pub identity_changes: Vec<IdentityChange>,
     /// Every recorded tag's native identities, including all reused holders.
@@ -333,6 +338,7 @@ impl Scan {
             wars: self.wars.iter().cloned().collect(),
             war_starts: self.war_starts.iter().cloned().collect(),
             capitulations: self.capitulations.iter().cloned().collect(),
+            events_approximate: None,
             identity_changes: self.identity_changes.iter().cloned().collect(),
             country_identities: self
                 .identities
@@ -1504,7 +1510,7 @@ fn mark_all(unobserved: &mut UnobservedHours, first_hour: i32, last_hour: i32) {
 /// Adds unobserved hours, merging overlapping or adjacent spans.
 pub fn mark_unobserved(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     match spans.last_mut() {
-        Some(span) if span.last_hour.checked_add(1) >= Some(first_hour) => {
+        Some(span) if span.last_hour.saturating_add(1) >= first_hour => {
             span.last_hour = span.last_hour.max(last_hour);
         }
         _ => spans.push(HourSpan {
@@ -2759,6 +2765,89 @@ impl Scan {
         self.warnings = warnings;
         self.capitulation_unread_hours = self.continuation.capitulations_unread;
         self.history = Arc::default();
+    }
+}
+
+impl Scan {
+    /// A prepared prefix's scan, through `after`, carried on by the keyframe
+    /// of each later block of `branch` ([`keyframes::after`]): each keyframe
+    /// is observed as an hour, and its rosters, leaders, names, humans, war
+    /// pairs and identities stand for its block's hours, as quiet hours would,
+    /// up to the next keyframe or a recorded gap. Faction ids are recorded, so
+    /// lanes continue across samples; what changed inside a block shows at the
+    /// next keyframe, so those hours are approximate, and the spans returned
+    /// name them. Dated event lists (war starts, capitulations, identity
+    /// changes) need every hour: they stay the prefix's, the rest pending. A
+    /// block whose keyframe is not sampled stays pending; hours after the last
+    /// sample are not unobserved.
+    ///
+    /// [`keyframes::after`]: crate::prepared::query::keyframes::after
+    pub fn sample_tail(
+        &mut self,
+        source: &Source,
+        branch: u64,
+        after: i32,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Vec<HourSpan>> {
+        let (war_starts, capitulations, identity_changes) = (
+            self.war_starts.clone(),
+            self.capitulations.clone(),
+            self.identity_changes.clone(),
+        );
+        // The saved scan named the hours after its frontier unobserved
+        // through the branch's end; before completion they are pending.
+        self.unobserved = self.continuation.unobserved.clone();
+        // The last hour the latest sample stands for.
+        let mut carried: Option<i32> = None;
+        let approximate = crate::prepared::query::keyframes::after(
+            source,
+            "country-groups:keyframe",
+            branch,
+            after,
+            None,
+            prepared::TABLES,
+            cancelled,
+            &|frame| Ok(Some(frame.clone())),
+            &|frame: &replay::frame::DecodedFrame| {
+                std::mem::size_of::<replay::frame::DecodedFrame>()
+                    + frame
+                        .tables
+                        .iter()
+                        .map(|view| crate::prepared::query::frames::view_bytes(view))
+                        .sum::<usize>()
+            },
+            |spans, frame| {
+                self.carry(carried);
+                self.begin_block();
+                self.observe(frame)?;
+                carried = spans.last().map(|span| span.last_hour);
+                Ok(())
+            },
+        )?;
+        self.carry(carried);
+        self.war_starts = war_starts;
+        self.capitulations = capitulations;
+        self.identity_changes = identity_changes;
+        self.unobserved = self.continuation.unobserved.clone();
+        Ok(approximate)
+    }
+
+    /// Holds the last observation through `through` as unchanged hours, and
+    /// seals it there, so that the next observation continues it.
+    fn carry(&mut self, through: Option<i32>) {
+        let Some(through) = through else {
+            return;
+        };
+        let Some(first) = self
+            .continuation
+            .previous_hour
+            .and_then(|hour| hour.checked_add(1))
+            .filter(|first| *first <= through)
+        else {
+            return;
+        };
+        self.advance_quiet(first, through);
+        self.seal();
     }
 }
 

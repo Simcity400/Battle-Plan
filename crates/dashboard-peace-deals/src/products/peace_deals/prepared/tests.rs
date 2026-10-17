@@ -109,7 +109,7 @@ fn peace_deferred_country_evidence_matches_late_finalizers_after_commits_resume_
             tracker.invalidate();
         }
     }
-    let actual = reply(&fixture.store, &fixture.key, 1, 135, &flag)
+    let actual = reply(&fixture.store, &fixture.key, 1, 135, false, &flag)
         .unwrap()
         .unwrap();
     let captures: Vec<_> = actual
@@ -180,13 +180,24 @@ fn peace_snapshot_projections_share_unchanged_maps_and_expire_subjects_at_native
     );
 }
 
-fn compare(fixture: &Fixture, frames: &[DecodedFrame]) {
+/// What a complete reply says of a deal its last read leaves unsettled.
+const UNSETTLED: [&str; 2] = [
+    "No complete ownership and war read after settlement; outcomes are not recorded.",
+    "No end was observed; the conference outcome is not recorded.",
+];
+
+/// Compares the published pages with a scan of `frames`, as a complete reply
+/// and as a prepared prefix through their last hour; returns how many deals
+/// the prefix says are still being prepared.
+fn compare(fixture: &Fixture, frames: &[DecodedFrame]) -> usize {
     let reference = scan_branch(&replay(frames.to_vec()), 1, &AtomicBool::new(false)).unwrap();
+    let last = frames.last().unwrap().hour;
     let actual = reply(
         &fixture.store,
         &fixture.key,
         1,
-        frames.last().unwrap().hour,
+        last,
+        false,
         &AtomicBool::new(false),
     )
     .unwrap()
@@ -195,6 +206,30 @@ fn compare(fixture: &Fixture, frames: &[DecodedFrame]) {
         serde_json::to_value(&actual).unwrap(),
         serde_json::to_value(&reference).unwrap()
     );
+    // As a prefix, a deal a later read may still settle is preparing its
+    // outcome rather than claiming it was never recorded; all else is equal.
+    let prefix = reply(
+        &fixture.store,
+        &fixture.key,
+        1,
+        last,
+        true,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .unwrap();
+    let mut expected = serde_json::to_value(&reference).unwrap();
+    let mut preparing = 0;
+    for deal in expected["deals"].as_array_mut().unwrap() {
+        let limitations = deal["limitations"].as_array_mut().unwrap();
+        let before = limitations.len();
+        limitations.retain(|line| !UNSETTLED.contains(&line.as_str().unwrap()));
+        if limitations.len() != before {
+            deal["preparing"] = serde_json::json!(["outcome"]);
+            preparing += 1;
+        }
+    }
+    assert_eq!(serde_json::to_value(&prefix).unwrap(), expected);
     // Stored native names must survive serialization even though they are not
     // exposed as byte operands in the ordinary reply.
     for deal in &actual.deals {
@@ -211,6 +246,7 @@ fn compare(fixture: &Fixture, frames: &[DecodedFrame]) {
             }
         }
     }
+    preparing
 }
 
 #[test]
@@ -219,12 +255,13 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
     let flag = AtomicBool::new(false);
     let mut frames = vec![frame(100, 3, false, &[9]), frame(101, 3, true, &[])];
     let mut prepared = Prepared::new(&replay(frames.clone()), 1);
+    let mut preparing = 0;
     for frame in &frames {
         prepared.observe(frame).unwrap();
         let mut writer = fixture.writer();
         prepared.flush(&mut writer, 1, &flag).unwrap();
         writer.commit().unwrap();
-        compare(
+        preparing += compare(
             &fixture,
             &frames[..=frames
                 .iter()
@@ -233,6 +270,8 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
         );
         prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
     }
+    // The conference open at the first commit is preparing in that prefix.
+    assert!(preparing > 0);
     let mut row = settled_row();
     row.actions[0].cached_name = Some(b"literal cached native name".to_vec());
     frames.push(with_settlement(frame(103, 3, true, &[]), row));

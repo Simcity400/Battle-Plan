@@ -23,7 +23,14 @@ Land losses from Every destruction (default) or Game’s Combat Log; hierarchy l
 - NumericReply retains picks through content-only refresh; source or native-selection changes invalidate them.
 - Chart geometry uses viewport summaries and the existing stack painter. Hover and picks require separately requested exact dates. Keyboard navigation reads shared series change boundaries and native sinking dates. Pending playback stays at the previous reply's own hour.
 - Sparse ship events publish at observation time and retain the native sinking date, preserving backdated totals without rewriting committed preparation.
-- Unprepared ranges stay pending and show the shared "still being prepared" note. Totals require prior drains, retained closed log entries, convoy reset increments, ended exchanges and ship observations, so one-frame samples cannot supply them.
+- Totals require prior drains, retained closed log entries, convoy reset increments, ended exchanges and ship observations, so one-frame samples cannot supply them. Before preparation reaches the shown hour, the reply answers its prepared prefix: the totals lost through the prefix's last hour, with the note "Lost through <date>; the rest is still being prepared."; the history ends there and a range starting after it reads "This range is still being prepared." Until the first prefix the shared "still being prepared" note shows.
+
+Before preparation completes, the sunburst and history explicitly say Approximate:
+a later ship observation can add a sinking at an earlier hour, and a later token
+can change an equipment type. Every recorded prefix hour is provisional because
+neither source has a finite revision bound. The history fades those spans with a
+dashed key; completion restores exact presentation. Land coverage on the wire is
+`landCoverage`, independently of preparation progress.
 
 ## Files
 

@@ -62,6 +62,9 @@ pub struct SpecialProjectsParams {
     /// Original manual picks; a projected alias is never another selection root.
     #[serde(default)]
     pub selection_tags: Vec<String>,
+    /// Current cards at this hour, including before history preparation reaches it.
+    #[serde(default)]
+    pub hour: Option<i32>,
 }
 
 impl SpecialProjectsParams {
@@ -154,6 +157,11 @@ pub struct SpecialProjectsReply {
     /// Why the data/content is unavailable, distinct from an empty country set.
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
+    /// Running cards read at the requested hour. Episode starts and history
+    /// remain pending; their starts are only bounded by this observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub current: Option<Box<SpecialProjectsReply>>,
 }
 
 /// Completion follows the state predicate. The saved completed byte is
@@ -1521,6 +1529,7 @@ fn build_reply(
             iteration_texts: result.iteration_texts,
             unavailable,
             warnings,
+            current: None,
         },
         needs_scope,
     )

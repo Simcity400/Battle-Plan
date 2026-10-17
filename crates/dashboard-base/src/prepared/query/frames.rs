@@ -24,7 +24,7 @@
 use crate::{Source, metadata::check_cancel};
 use replay::{
     container::{BlockIndex, SeekResult},
-    frame::{DecodedFrame, Frame, SharedView, TABLE_COUNT, TableUpdate, TableView},
+    frame::{DecodedFrame, Frame, FrameDecoder, SharedView, TABLE_COUNT, TableUpdate, TableView},
     rows::{TableId, TableRows},
 };
 use std::{
@@ -172,6 +172,141 @@ pub struct BlockRead {
 struct HourFrame {
     tables: Vec<TableId>,
     frame: DecodedFrame,
+}
+
+/// A bounded chronological read, sharing hour slots and table joins with `seek`.
+/// Each selection's decoder advances once through the intersecting block.
+pub fn window(
+    source: &Source,
+    branch: u64,
+    first: i32,
+    last: i32,
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<DecodedFrame>> {
+    let mut result = Vec::new();
+    for block in source.replay_ref().index.iter().filter(|block| {
+        block.branch == branch && block.last_hour >= first && block.first_hour <= last
+    }) {
+        let mut decoders = BTreeMap::new();
+        for hour in block.first_hour.max(first)..=block.last_hour.min(last) {
+            check_cancel(cancelled)?;
+            if source
+                .replay_ref()
+                .gaps
+                .iter()
+                .any(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
+            {
+                continue;
+            }
+            let frame = seek_with(source, branch, hour, tables, cancelled, |tables| {
+                let tables = sorted(&[tables, &[TableId::Campaign]].concat());
+                if !decoders.contains_key(&tables) {
+                    let decoder = BlockDecoder::new(source, block, &tables, cancelled)?;
+                    decoders.insert(tables.clone(), decoder);
+                }
+                decoders
+                    .get_mut(&tables)
+                    .expect("selected decoder")
+                    .at(source, hour, cancelled)
+            })?;
+            if let SeekResult::Frame(frame) = frame {
+                result.push(*frame);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Request-local decoder state; reconstructed hours are retained only by the
+/// shared hour cache. Different windows never lock each other's block walk.
+struct BlockDecoder {
+    branch: u64,
+    reads: Vec<BlockRead>,
+    decoders: Vec<(FrameDecoder, Vec<TableId>)>,
+    position: usize,
+    frame: Option<DecodedFrame>,
+}
+
+impl BlockDecoder {
+    fn new(
+        source: &Source,
+        index: &BlockIndex,
+        tables: &[TableId],
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let reads = match block(source, index, tables, cancelled)? {
+            Some(reads) => reads,
+            None => vec![BlockRead {
+                tables: tables.to_vec(),
+                frames: Arc::new(source.replay_ref().read_block_selected(index, tables)?),
+            }],
+        };
+        let decoders = reads
+            .iter()
+            .map(|read| {
+                let selected: Vec<_> = read
+                    .tables
+                    .iter()
+                    .copied()
+                    .filter(|table| tables.binary_search(table).is_ok())
+                    .collect();
+                (FrameDecoder::for_tables(&selected), selected)
+            })
+            .collect();
+        Ok(Self {
+            branch: index.branch,
+            reads,
+            decoders,
+            position: 0,
+            frame: None,
+        })
+    }
+
+    fn at(&mut self, source: &Source, hour: i32, cancelled: &AtomicBool) -> io::Result<SeekResult> {
+        if self.frame.as_ref().is_some_and(|frame| frame.hour != hour) {
+            self.frame = None;
+        }
+        while self.position < self.reads[0].frames.len()
+            && self.reads[0].frames[self.position].hour <= hour
+        {
+            check_cancel(cancelled)?;
+            let mut frame: Option<DecodedFrame> = None;
+            for ((decoder, selected), read) in self.decoders.iter_mut().zip(&self.reads) {
+                let decoded = decoder.advance(&read.frames[self.position])?;
+                if let Err(error) = crate::metadata::validate_campaign(decoded, source.replay_ref())
+                {
+                    self.position = self.reads[0].frames.len();
+                    self.frame = None;
+                    return Ok(SeekResult::Gap {
+                        branch: self.branch,
+                        hour,
+                        reason: error.to_string(),
+                    });
+                }
+                if decoded.hour != hour {
+                    continue;
+                }
+                if let Some(frame) = &mut frame {
+                    for table in selected {
+                        frame.tables[table.index()] = decoded.tables[table.index()].clone();
+                    }
+                } else {
+                    frame = Some(decoded.clone());
+                }
+            }
+            self.frame = frame;
+            self.position += 1;
+        }
+        match &self.frame {
+            Some(frame) if frame.hour == hour => Ok(SeekResult::Frame(Box::new(frame.clone()))),
+            _ => Ok(SeekResult::Gap {
+                branch: self.branch,
+                hour,
+                reason: "Hour not recorded".into(),
+            }),
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -539,11 +674,24 @@ pub fn seek(
     tables: &[TableId],
     cancelled: &AtomicBool,
 ) -> io::Result<SeekResult> {
-    let replay = source.replay_ref();
-    let read = |tables: &[TableId]| {
+    seek_with(source, branch, hour, tables, cancelled, |tables| {
         count(source, 0, 1);
-        replay.seek_selected_with(branch, hour, Some(tables), || check_cancel(cancelled))
-    };
+        source
+            .replay_ref()
+            .seek_selected_with(branch, hour, Some(tables), || check_cancel(cancelled))
+    })
+}
+
+/// Coalesce one hour's reconstruction, join only missing tables and publish
+/// before releasing its slot. The supplied reader may advance a window decoder.
+fn seek_with(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+    mut read: impl FnMut(&[TableId]) -> io::Result<SeekResult>,
+) -> io::Result<SeekResult> {
     // A seek reconstructs the campaign with every selection.
     let wanted = sorted(&[tables, &[TableId::Campaign]].concat());
     let key = Key::Hour { branch, hour };

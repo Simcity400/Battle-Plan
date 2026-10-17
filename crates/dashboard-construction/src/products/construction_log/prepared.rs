@@ -4,7 +4,10 @@ use crate::products::construction_spending::{
     ConstructionSpending, ConstructionSpendingReply, LeafProject, SpendingLeaf, SpendingUnknown,
     SpentStep,
 };
-use dashboard_base::prepared::series::{self, Accumulator, Reader};
+use dashboard_base::prepared::{
+    prefix::Prefix,
+    series::{self, Accumulator, Reader},
+};
 use dashboard_base::products::country_groups::HourSpan;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -527,6 +530,7 @@ impl Prepared {
         let names = names.names(branch, &self.scan.log, cancelled, &mut warnings)?;
         scan_warnings(&self.scan.log, &mut warnings);
         let manifest = ConstructionLogManifestReply {
+            newest: None,
             cost_scale: COST_SCALE,
             windows: windows(replay, branch),
             recorded: !(self.scan.log.reads.is_empty() && self.scan.log.railway_reads.is_empty()),
@@ -835,24 +839,55 @@ pub fn query(
         .map_err(|_| dashboard_core::invalid("Invalid construction branch"))?;
     let (store, key) = dashboard_base::prepared::files(source, content)?;
     // Construction prepared on its own answers from its own coverage.
-    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
-        source, content, branch, product, cancelled,
+    let coverage = dashboard_base::prepared::prefix::read_or_empty(
+        source, content, product, branch, None, cancelled,
     )?
-    else {
-        return Ok(None);
-    };
-    if !coverage.complete {
-        return Ok(None);
-    }
-    let Some((_keys, (manifest, last))) = series::read_catalogue::<(
+    .coverage;
+    let (_, (mut manifest, last)) = series::read_catalogue::<(
         ConstructionLogManifestReply,
         Option<i32>,
     )>(&store, &key, "construction", branch)?
-    else {
-        return Ok(None);
-    };
+    .unwrap_or_else(|| {
+        (
+            BTreeMap::new(),
+            (
+                ConstructionLogManifestReply {
+                    cost_scale: COST_SCALE,
+                    windows: windows(source.replay_ref(), branch),
+                    newest: None,
+                    recorded: false,
+                    types: Vec::new(),
+                    repair_icon: None,
+                    warnings: Vec::new(),
+                },
+                None,
+            ),
+        )
+    });
+    // Before coverage completes, the log answers its prepared prefix: the
+    // manifest the prefix published (its building types and warnings so far)
+    // and each window the prefix has reached, whose projects' later history
+    // is still being prepared. A separately proven newest window can answer
+    // past that prefix; every other later window waits.
+    let mut prefix = Prefix::new(source, branch, coverage.clone(), None);
     if product == "construction-log-manifest" {
-        return Ok(Some(serde_json::to_value(manifest)?));
+        // The ordinary manifest answers immediately. A separate request can
+        // prove the newest window while the widget already shows its prefix.
+        if !coverage.complete
+            && params["newest"].as_bool() == Some(true)
+            && let Some((window, recorded)) =
+                super::newest::query(source, branch, &manifest.types, cancelled)?
+        {
+            manifest.recorded |= recorded;
+            prefix.answered(&[HourSpan {
+                first_hour: window.interval.first_hour,
+                last_hour: window.interval.last_hour,
+            }]);
+            manifest.newest = Some(window.interval);
+        }
+        let mut data = serde_json::to_value(manifest)?;
+        prefix.mark_revisable(source, branch, &mut data)?;
+        return Ok(Some(data));
     }
     if product == "construction-log" {
         let params: ConstructionLogParams = serde_json::from_value(params)?;
@@ -861,6 +896,34 @@ pub fn query(
             return Err(dashboard_core::invalid(
                 "Construction log window not in recording",
             ));
+        }
+        if !coverage.complete && manifest.windows[params.window].last_hour > coverage.last_hour {
+            if params.window + 1 == manifest.windows.len()
+                && let Some((window, _)) =
+                    super::newest::query(source, branch, &manifest.types, cancelled)?
+            {
+                prefix.answered(&[HourSpan {
+                    first_hour: window.interval.first_hour,
+                    last_hour: window.interval.last_hour,
+                }]);
+                dashboard_base::products::check_reply_budget(&window)?;
+                let mut data = serde_json::to_value(window)?;
+                prefix.mark(&mut data)?;
+                return Ok(Some(data));
+            }
+            let mut data = serde_json::to_value(ConstructionLogReply {
+                window: params.window,
+                interval: manifest.windows[params.window].clone(),
+                types: None,
+                exact_from: None,
+                output_reads: Vec::new(),
+                output_unavailable: Vec::new(),
+                projects: Vec::new(),
+                outputs: Vec::new(),
+                warnings: Vec::new(),
+            })?;
+            prefix.mark(&mut data)?;
+            return Ok(Some(data));
         }
         let mut members = Reader::new(
             &store,
@@ -903,7 +966,9 @@ pub fn query(
         }
         let reply = Cut::new(Arc::new(log), manifest.windows).reply(params.window);
         dashboard_base::products::check_reply_budget(&reply)?;
-        return Ok(Some(serde_json::to_value(reply)?));
+        let mut data = serde_json::to_value(reply)?;
+        prefix.mark_revisable(source, branch, &mut data)?;
+        return Ok(Some(data));
     }
     if product == "construction-spending" {
         let tag = params["tag"]
@@ -911,14 +976,47 @@ pub fn query(
             .ok_or_else(|| dashboard_core::invalid("Missing construction country"))?;
         dashboard_core::protocol::validate_tag(tag).map_err(dashboard_core::invalid)?;
         let hours: Vec<i32> = serde_json::from_value(params["hours"].clone())?;
-        let Some((keys, (mut template, mut replies))) =
+        // Spending is cumulative factory output per leaf: before coverage
+        // completes, an hour after the prepared prefix reads the total
+        // through the prefix's last hour, and every leaf's output after it is
+        // still being prepared.
+        let prefix = Prefix::new(
+            source,
+            branch,
+            coverage.clone(),
+            hours.iter().max().copied(),
+        );
+        let hours: BTreeSet<i32> = hours
+            .into_iter()
+            .map(|hour| prefix.through(Some(hour)).unwrap_or(hour))
+            .collect();
+        let (keys, (mut template, mut replies)) =
             series::read_catalogue::<(
                 ConstructionSpendingReply,
                 BTreeMap<String, ConstructionSpendingReply>,
             )>(&store, &key, "construction-spending", branch)?
-        else {
-            return Ok(None);
-        };
+            .unwrap_or_else(|| {
+                (
+                    BTreeMap::new(),
+                    (
+                        ConstructionSpendingReply {
+                            branch_id: branch.to_string(),
+                            tag: tag.to_owned(),
+                            cost_scale: COST_SCALE,
+                            reads: Vec::new(),
+                            railway_reads: Vec::new(),
+                            types: Vec::new(),
+                            repair_icon: None,
+                            states: Vec::new(),
+                            leaves: Vec::new(),
+                            before_first_read: 0,
+                            unattributed: Vec::new(),
+                            warnings: Vec::new(),
+                        },
+                        BTreeMap::new(),
+                    ),
+                )
+            });
         template.tag = tag.to_owned();
         let mut reply = replies.remove(tag).unwrap_or_else(|| {
             if manifest.recorded {
@@ -949,7 +1047,7 @@ pub fn query(
         for leaf in &mut reply.leaves {
             leaf.spent.clear();
             if let Some(&key) = keys.get(&leaf_key(tag, leaf)?) {
-                for hour in hours.iter().copied().collect::<BTreeSet<_>>() {
+                for &hour in &hours {
                     if let Some(run) = reader.value_at(key, hour)? {
                         leaf.spent.push(SpentStep {
                             known_at: hour,
@@ -958,8 +1056,20 @@ pub fn query(
                     }
                 }
             }
+            if let Some(pending) = prefix.pending.first() {
+                leaf.unknown.push(SpendingUnknown {
+                    known_at: pending.first_hour,
+                    reason: SpendingGap::Preparing,
+                    project: String::new(),
+                    until: None,
+                });
+            }
         }
-        return Ok(Some(serde_json::to_value(reply)?));
+        let mut data = serde_json::to_value(reply)?;
+        // Inferred work intervals and previously unresolved building names
+        // can be repaired by later reads; the prefix's presentation is provisional.
+        prefix.mark_revisable(source, branch, &mut data)?;
+        return Ok(Some(data));
     }
     Err(dashboard_core::invalid("Unknown construction query"))
 }
@@ -1306,6 +1416,208 @@ mod tests {
                 .unwrap()
             },
         );
+    }
+
+    /// Before construction's coverage completes, spending answers the
+    /// prepared prefix: each requested hour after it reads the total through
+    /// the prefix's last hour, and every leaf's later output is still being
+    /// prepared. Once complete, the same hours answer as before.
+    #[test]
+    fn construction_spending_answers_the_prepared_prefix_with_the_hours_still_pending() {
+        use dashboard_base::prepared::coverage::publish_coverage;
+        let flag = AtomicBool::new(false);
+        let frames = frames();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let (source, root) = dashboard_base::test_fixtures::file_source(replay);
+        let format = source.replay_ref().format;
+        let (store, key) = dashboard_base::prepared::files(&source, None).unwrap();
+        let expected = scan(source.replay_ref(), 1, &flag).unwrap();
+        let tags: Vec<String> = crate::products::construction_spending::all_leaves(&expected)
+            .into_keys()
+            .collect();
+        assert!(!tags.is_empty());
+        let mut prepared = Prepared::default();
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        let split = frames.iter().position(|frame| frame.hour == 126).unwrap();
+        let mut commit = |writer: &mut store::Writer, frames: &[DecodedFrame], complete| {
+            for frame in frames {
+                prepared
+                    .observe_changed(frame, format, &source, &tracker.observe(frame, format))
+                    .unwrap();
+            }
+            let last = frames.last().unwrap().hour;
+            prepared.end_block(1, last, &source).unwrap();
+            prepared
+                .flush(writer, &source, &LoadContext { content: None }, 1, &flag)
+                .unwrap();
+            publish_coverage(writer, 1, 100, last, complete).unwrap();
+        };
+        let spending = |tag: &str, hours: &[i32]| {
+            query(
+                &source,
+                "construction-spending",
+                serde_json::json!({"branchId": "1", "tag": tag, "hours": hours}),
+                None,
+                &flag,
+            )
+            .unwrap()
+        };
+        let mut writer = store.replace(key.clone()).unwrap();
+        commit(&mut writer, &frames[..split], false);
+        writer.commit().unwrap();
+        // The old reply waited for complete coverage and answered nothing.
+        let cold: Vec<_> = tags
+            .iter()
+            .map(|tag| spending(tag, &[151]).expect("a prefix reply before completion"))
+            .collect();
+        let mut writer = store.extend(&key).unwrap();
+        commit(&mut writer, &frames[split..], true);
+        writer.commit().unwrap();
+        for (tag, cold) in tags.iter().zip(&cold) {
+            assert_eq!(cold["coverage"]["complete"], false);
+            assert_eq!(cold["coverage"]["lastHour"], 125);
+            assert_eq!(
+                cold["approximate"],
+                serde_json::json!([{"firstHour": 100, "lastHour": 125}])
+            );
+            assert_eq!(
+                cold["pending"],
+                serde_json::json!([{"firstHour": 126, "lastHour": 151}])
+            );
+            let complete = spending(tag, &[125]).unwrap();
+            assert_eq!(complete["pending"], serde_json::json!([]));
+            assert_eq!(complete["approximate"], serde_json::json!([]));
+            let leaves = cold["leaves"].as_array().unwrap();
+            assert!(!leaves.is_empty());
+            for leaf in leaves {
+                // The total through the prefix's last hour, as the complete
+                // reply answers that hour.
+                let same = complete["leaves"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|other| {
+                        leaf_key(tag, &serde_json::from_value((*other).clone()).unwrap()).unwrap()
+                            == leaf_key(tag, &serde_json::from_value(leaf.clone()).unwrap())
+                                .unwrap()
+                    })
+                    .unwrap();
+                assert_eq!(leaf["spent"], same["spent"]);
+                assert_eq!(
+                    leaf["unknown"].as_array().unwrap().last().unwrap(),
+                    &serde_json::json!({"knownAt": 126, "reason": "preparing", "project": "", "until": null})
+                );
+            }
+            let whole = spending(tag, &[151]).unwrap();
+            assert!(whole["leaves"].as_array().unwrap().iter().all(|leaf| {
+                leaf["unknown"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|gap| gap["reason"] != "preparing")
+            }));
+        }
+        drop(source);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Before construction's coverage completes, the log answers its prepared
+    /// prefix: the manifest the prefix published, with the later hours
+    /// pending, and each window the prefix reached; a later window waits.
+    /// Once complete, the windows list the same projects from the same reads.
+    #[test]
+    fn construction_log_answers_the_windows_its_prepared_prefix_reached() {
+        use dashboard_base::prepared::coverage::publish_coverage;
+        use dashboard_core::test_fixtures::continuation_records;
+        let flag = AtomicBool::new(false);
+        let frames = frames();
+        let split = frames.iter().position(|frame| frame.hour == 126).unwrap();
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..split].to_vec())]).unwrap();
+        let replay = replay
+            .append(&[continuation_records(&replay, 1, frames[split..].to_vec())])
+            .unwrap();
+        let (source, root) = dashboard_base::test_fixtures::file_source(replay);
+        let format = source.replay_ref().format;
+        let (store, key) = dashboard_base::prepared::files(&source, None).unwrap();
+        let mut prepared = Prepared::default();
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        let mut commit = |writer: &mut store::Writer, frames: &[DecodedFrame], complete| {
+            for frame in frames {
+                prepared
+                    .observe_changed(frame, format, &source, &tracker.observe(frame, format))
+                    .unwrap();
+            }
+            let last = frames.last().unwrap().hour;
+            prepared.end_block(1, last, &source).unwrap();
+            prepared
+                .flush(writer, &source, &LoadContext { content: None }, 1, &flag)
+                .unwrap();
+            publish_coverage(writer, 1, 100, last, complete).unwrap();
+        };
+        let ask = |product: &str, params: serde_json::Value| {
+            query(&source, product, params, None, &flag).unwrap()
+        };
+        let window = |index: usize| serde_json::json!({"branchId": "1", "window": index});
+        let mut writer = store.replace(key.clone()).unwrap();
+        commit(&mut writer, &frames[..split], false);
+        writer.commit().unwrap();
+        // The old log waited for complete coverage and answered nothing.
+        let manifest = ask(
+            "construction-log-manifest",
+            serde_json::json!({"branchId": "1"}),
+        )
+        .expect("the prefix's manifest");
+        let first = ask("construction-log", window(0)).expect("a window the prefix reached");
+        let later = ask("construction-log", window(1))
+            .expect("the newest window proven from the branch start");
+        let mut writer = store.extend(&key).unwrap();
+        commit(&mut writer, &frames[split..], true);
+        writer.commit().unwrap();
+        assert_eq!(manifest["coverage"]["complete"], false);
+        assert_eq!(manifest["coverage"]["lastHour"], 125);
+        assert_eq!(
+            manifest["pending"],
+            serde_json::json!([{"firstHour": 126, "lastHour": 151}])
+        );
+        assert_eq!(manifest["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(first["coverage"]["lastHour"], 125);
+        assert_eq!(later["exactFrom"], 126);
+        assert_eq!(later["pending"], serde_json::json!([]));
+        let complete_newest = ask("construction-log", window(1)).unwrap();
+        assert_eq!(later["projects"], complete_newest["projects"]);
+        assert_eq!(later["outputs"], complete_newest["outputs"]);
+        let complete = ask("construction-log", window(0)).unwrap();
+        assert_eq!(complete["pending"], serde_json::json!([]));
+        let projects = |reply: &serde_json::Value| -> Vec<serde_json::Value> {
+            reply["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|project| {
+                    serde_json::json!([
+                        project["id"],
+                        project["firstRead"],
+                        project["createdHour"],
+                        project["building"]
+                    ])
+                })
+                .collect()
+        };
+        assert!(!projects(&first).is_empty());
+        assert_eq!(projects(&first), projects(&complete));
+        let whole = ask(
+            "construction-log-manifest",
+            serde_json::json!({"branchId": "1"}),
+        )
+        .unwrap();
+        let types = manifest["types"].as_array().unwrap();
+        assert_eq!(
+            &whole["types"].as_array().unwrap()[..types.len()],
+            types.as_slice()
+        );
+        drop(source);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

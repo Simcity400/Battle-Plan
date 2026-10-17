@@ -443,3 +443,34 @@ test('Generals masks obsolete client drills before effects even when source IDs 
     assert.equal(state.host!.open, false, 'even a callback retained from the first A has obsolete ownership');
   } finally { await view.close(); }
 });
+
+test('casualty pair and loss drills date prefix totals in pinned and inline Follow views', async () => {
+  const span = { firstHour: 100, lastHour: 160 }, observed = { firstHour: 100, lastHour: 119 };
+  const prefix = { coverage: { ...observed, complete: false }, pending: [{ firstHour: 120, lastHour: 160 }] };
+  const base = { branchId: '1', available: true, windows: [span], window: 0, observed: [observed], hasGap: false, warnings: [], ...prefix };
+  for (const pairs of [true, false]) {
+    const reply = pairs ? { ...base, pairs: [{ identity: '1:10|2:20', firstCountry: 'A', secondCountry: 'B',
+      runs: [{ ...observed, readHour: 100, hourly: true, firstTaken: '0', secondTaken: '12', incomplete: false }] }] }
+      : { ...base, tag: 'A', countries: [{ ...observed, identity: '1:10', incomplete: false }], series: [], wars: [] };
+    const state: State = { hour: 120, drill: CLOSED, slots: [], cursor: 0, subscriptions: [],
+      data: { ...reply, window: null }, windows: new Map([[0, reply]]) };
+    const view = await fixture(state, pairs ? '/widgets/casualties-between/CasualtyPairsWidget.tsx' : '/widgets/casualties-breakdown/CasualtiesBreakdownWidget.tsx');
+    try {
+      for (const pinned of [false, true]) {
+        state.slots = pairs ? pinned ? [] : [casualtyPairsAt(reply as CasualtyPairsReply, 119).flows.map(flow => flow.id)]
+          : pinned ? [] : [{ breakdown: 'details', follow: true, hour: null }];
+        state.drill = pinned ? CLOSED : { breakdown: 'pairs', follow: true, hour: null };
+        const widget: WidgetSpec = { ...createWidget(pairs ? 'casualties-between' : 'casualties-breakdown', 'main'),
+          countries: pairs ? { kind: 'all' as const } : { kind: 'tags' as const, tags: ['A'] },
+          time: { mode: 'follow' as const }, options: pinned ? { show: pairs ? 'pairs' : 'details' } : {} };
+        const html = view.render(widget);
+        assert.ok(html.includes(`${pairs ? 'Casualties' : 'Losses'} through ${formatDateTime(119)}; the rest is still being prepared.`), html);
+        assert.ok(state.table, 'the prefix totals remain available in the drill');
+        if (pairs) assert.equal((state.table.rows[0] as { value: bigint }).value, 12n);
+        state.windows = new Map([[0, { ...reply, coverage: { ...span, complete: true }, pending: [] }]]);
+        assert.doesNotMatch(view.render(widget), /the rest is still being prepared/);
+        state.windows = new Map([[0, reply]]);
+      }
+    } finally { await view.close(); }
+  }
+});

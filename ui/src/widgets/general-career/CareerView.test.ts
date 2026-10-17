@@ -86,6 +86,29 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     assert.equal(tip.rows[0].value, 'Unnamed fleet');
     assert.equal(tip.note, 'Fleet command history is incomplete.');
     assert.doesNotMatch(JSON.stringify(tip), /999999/);
+    const prefix = { coverage: { firstHour: 100, lastHour: 149, complete: false }, pending: [{ firstHour: 150, lastHour: 500 }] };
+    host.__careerData = Object.assign(structuredClone(data), prefix);
+    host.__careerData.leaders[0].runs[0].lastHour = 149;
+    host.__careerData.observed[0].lastHour = 149;
+    const pending = renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 300 }));
+    assert.match(pending, /Leader details are still being prepared at this time/);
+    assert.match(pending, /Still being prepared/);
+    assert.doesNotMatch(pending, /Leader details unavailable|Result not recorded/);
+    const tail = host.__careerTimelines.at(-1)!;
+    assert.deepEqual(tail.pending, prefix.pending);
+    assert.deepEqual(tail.unobserved, prefix.pending);
+    assert.equal(tail.tooltip!(tail.lanes[0], null, 300)!.rows[0].value, 'Still being prepared');
+    assert.notEqual(tail.tooltip!(tail.lanes[0], tail.lanes[0].spans[0], 140)!.rows[0].value, 'Still being prepared');
+    assert.ok(tail.lanes[0].spans.every(span => span.lastHour <= 149));
+    host.__careerData.leaders = [];
+    const cold = renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 300 }));
+    assert.match(cold, /This range is still being prepared/);
+    assert.doesNotMatch(cold, /Career unavailable/);
+    host.__careerData = structuredClone(data);
+    const exact = renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 300 }));
+    assert.doesNotMatch(exact, /still being prepared|Still being prepared/);
+    assert.equal(host.__careerTimelines.at(-1)!.pending, undefined);
+
   } finally {
     delete host.__careerTimelines; delete host.__careerData; delete host.__careerParity;
     await vite.close();

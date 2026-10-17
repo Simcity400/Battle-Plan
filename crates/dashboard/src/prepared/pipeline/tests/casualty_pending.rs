@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn war_casualties_unprepared_spans_are_pending_until_retained_totals_are_published() {
+fn war_casualties_answer_their_prepared_prefix_until_retained_totals_are_published() {
     // Only the branch coverage page is published here: the casualties are
     // gated by it as hourly preparation prepares them.
     independent::with_test_hourly(|| {
@@ -81,7 +81,30 @@ fn war_casualties_unprepared_spans_are_pending_until_retained_totals_are_publish
         let covered = query("series-state", state(11));
         assert!(!covered["series"].as_array().unwrap().is_empty());
         let ranges = store.range_count(&key, "casualty-values-1-0").unwrap();
-        assert_eq!(query("series-state", state(13)), Value::Null);
+        // A read past the prefix answers the totals at its last hour, exactly
+        // as a read there does, and names the hours after it pending.
+        assert_eq!(covered["pending"], json!([]));
+        let prefix = query("series-state", state(13));
+        assert_eq!(prefix["pending"], json!([{"firstHour":12,"lastHour":13}]));
+        assert_eq!(prefix["coverage"], covered["coverage"]);
+        let mut answered = prefix.clone();
+        answered["pending"] = json!([]);
+        assert_eq!(answered, covered);
+        // An unpublished pair window answers the prefix's newest window, as
+        // that window's own reply gives it, and names the rest pending.
+        let pairs =
+            |window: Value| json!({"branchId":"1","tags":[],"between":false,"window":window});
+        let newest = query("casualty-pairs", pairs(json!(0)));
+        assert!(newest.get("pending").is_none());
+        let ahead = query("casualty-pairs", pairs(json!(1)));
+        assert_eq!(ahead["window"], 0);
+        assert_eq!(ahead["pending"], json!([{"firstHour":12,"lastHour":13}]));
+        assert_eq!(ahead["coverage"], covered["coverage"]);
+        let mut answered = ahead.clone();
+        let fields = answered.as_object_mut().unwrap();
+        fields.remove("pending");
+        fields.remove("coverage");
+        assert_eq!(answered, newest);
         assert_eq!(
             query(
                 "series-summary",
@@ -117,6 +140,10 @@ fn war_casualties_unprepared_spans_are_pending_until_retained_totals_are_publish
         writer.commit().unwrap();
         let ready = query("series-state", state(13));
         assert!(!ready["series"].as_array().unwrap().is_empty());
+        assert_eq!(ready["pending"], json!([]));
+        let published = query("casualty-pairs", pairs(json!(1)));
+        assert_eq!(published["window"], 1);
+        assert!(published.get("pending").is_none());
         assert_eq!(
             ready["series"][0]["taken"][0],
             covered["series"][0]["taken"][0]

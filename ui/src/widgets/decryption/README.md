@@ -28,3 +28,13 @@ All/manual/group countries, campaign/follow/pin/range; order by progress/decrypt
 | [DecryptionWidget.tsx](DecryptionWidget.tsx) | Virtual rows, progress meters and dated labels. |
 | [decryptionData.ts](decryptionData.ts), [decryptionCountries.ts](decryptionCountries.ts) | Validation, attempts, exact runs and holder selection; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [decryption.css](decryption.css) | Options, registration and layout. |
+
+Day requests beyond preparation show exact captured amounts, progress and bonus
+countdowns from local frames. Attempt starts and break dates say Still being
+prepared, and offer no date jump until history supplies them. The capture
+coverage remains separate from preparation's `preparedCoverage` and pending
+hours. A cold unknown range says it is still being prepared.
+
+A sampled stopped pair does not prove whether an attempt is paused or already
+ended. Its observed amounts remain visible with Attempt history still being
+prepared until the history can decide whether it belongs in the attempts list.

@@ -69,7 +69,7 @@ test('parity list models complete without sweeping offscreen dated labels or shi
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 6000;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({categories: ['#112233', '#223344', '#334455', '#445566', '#556677', '#667788']});`,
-    '/charts/log/LogList.tsx': `import {createElement} from 'react'; export default props => {
+    '/charts/log/LogList.tsx': `import {createElement} from 'react'; export const PreparedLogCoverage = () => null; export default props => {
       globalThis.__cheapParityModels.log = props;
       const row = props.rows?.[0] ?? props.pages?.[0]?.rows?.[0];
       return row ? createElement('div', {}, props.renderRow(row)) : null; };`,

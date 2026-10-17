@@ -96,6 +96,7 @@ fn params(id: u32) -> SpecialProjectsParams {
         branch_id: "1".into(),
         tag: format!("opaque-{id}"),
         selection_tags: Vec::new(),
+        hour: None,
     }
 }
 fn decoded(source: &Source) -> usize {
@@ -793,6 +794,7 @@ fn projected_alias_requests_keep_all_literal_holders_but_not_unrelated_alias_reu
         branch_id: "1".into(),
         tag: tag.into(),
         selection_tags: roots.iter().map(|root| (*root).to_owned()).collect(),
+        hour: None,
     };
     let renamed =
         SpecialProjects::load(&source, &request("Y", &["X"]), &context, &cancelled).unwrap();

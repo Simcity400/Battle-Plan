@@ -1,5 +1,5 @@
 import { dayLabel } from '../../charts/draw.ts';
-import type { BattleWindow, ConstructionLogManifestReply, ConstructionLogReply, ConstructionOutputRun, ConstructionProject, EndKind, LevelsBuilt, ProjectRun, SpendingGap, UnknownEnd } from '../../generated/dashboard';
+import type { BattleWindow, BuildingInfo, ConstructionLogManifestReply, ConstructionLogReply, ConstructionOutputRun, ConstructionProject, EndKind, LevelsBuilt, ProjectRun, SpendingGap, UnknownEnd } from '../../generated/dashboard';
 import { isBuildingInfo, isSpendingGap, placeName, typeName } from '../../dashboard/construction.ts';
 import type { StateNameAt } from '../../dashboard/construction';
 import { readAt } from '../../dashboard/reads.ts';
@@ -10,8 +10,11 @@ import type { NameAt } from '../../dashboard/countryFacts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { battleWindowIndex } from '../battles/battleRows.ts';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 
 export { typeName };
+export type ConstructionManifest = ConstructionLogManifestReply & { newest?: BattleWindow };
+export type ConstructionWindow = ConstructionLogReply & { types?: BuildingInfo[]; exactFrom?: number };
 const RAW = /^-?\d{1,20}$/;
 const END_KINDS: readonly EndKind[] = ['finished', 'removed', 'unknown'];
 const UNKNOWN_ENDS: readonly UnknownEnd[] = ['completionNotRecorded', 'notRecorded', 'sharedTarget', 'nothingLeft'];
@@ -46,28 +49,33 @@ const isProject = (project: ConstructionProject, types: number) => typeof projec
     && (project.end.unknown == null || UNKNOWN_ENDS.includes(project.end.unknown))));
 
 /** Checks the manifest's shape: its windows in hour order and the types its projects name. */
-export function validateConstructionLogManifest(data: unknown): ConstructionLogManifestReply {
-  const reply = data as ConstructionLogManifestReply;
+export function validateConstructionLogManifest(data: unknown): ConstructionManifest {
+  const reply = data as ConstructionManifest;
   const ok = typeof reply === 'object' && reply != null && int(reply.costScale) && reply.costScale > 0
     && Array.isArray(reply.windows) && reply.windows.every((window, index) => isSpan(window) && (index === 0 || reply.windows[index - 1].firstHour < window.firstHour))
     && typeof reply.recorded === 'boolean' && Array.isArray(reply.types) && reply.types.every(isBuildingInfo)
-    && (reply.repairIcon == null || typeof reply.repairIcon === 'string') && strings(reply.warnings);
+    && (reply.repairIcon == null || typeof reply.repairIcon === 'string') && strings(reply.warnings)
+    && (reply.newest === undefined || isSpan(reply.newest) && reply.windows.some(window => window.firstHour === reply.newest!.firstHour && window.lastHour === reply.newest!.lastHour));
   if (!ok) throw new Error('The construction log manifest is malformed.');
+  preparedPrefix(reply);
   return reply;
 }
 
 /** Checks a window's shape: each project names one of the manifest's `types`, and its
  * runs and the output reads are in hour order. */
-export function validateConstructionLogWindow(data: unknown, types: number): ConstructionLogReply {
-  const reply = data as ConstructionLogReply;
+export function validateConstructionLogWindow(data: unknown, types: number): ConstructionWindow {
+  const reply = data as ConstructionWindow;
   const ok = typeof reply === 'object' && reply != null && int(reply.window) && reply.window >= 0 && isSpan(reply.interval)
     && hours(reply.outputReads) && Array.isArray(reply.outputUnavailable) && reply.outputUnavailable.every(read => Array.isArray(read)
       && read.length === 2 && reply.outputReads.includes(read[0]) && isSpendingGap(read[1]))
-    && Array.isArray(reply.projects) && reply.projects.every(project => isProject(project, types))
+    && (reply.types === undefined || Array.isArray(reply.types) && reply.types.every(isBuildingInfo))
+    && (reply.exactFrom === undefined || reply.exactFrom === reply.interval.firstHour && reply.types !== undefined)
+    && Array.isArray(reply.projects) && reply.projects.every(project => isProject(project, reply.types?.length ?? types))
     && Array.isArray(reply.outputs) && reply.outputs.every(output => typeof output === 'object' && output != null && typeof output.id === 'string'
       && Array.isArray(output.runs) && output.runs.length > 0 && output.runs.every((run, index) => isOutputRun(run) && (index === 0 || output.runs[index - 1].to < run.from)))
     && strings(reply.warnings);
   if (!ok) throw new Error('The construction log window is malformed.');
+  preparedPrefix(reply);
   return reply;
 }
 
@@ -99,18 +107,34 @@ const scanOrder = (a: ConstructionProject, b: ConstructionProject) => a.firstRea
 export function mergeWindows(manifest: ConstructionLogManifestReply, windows: ReadonlyMap<number, ConstructionLogReply>, current: number): ConstructionLog {
   let held = current;
   while (held > 0 && windows.has(held - 1)) held--;
-  const projects = new Map<string, ConstructionProject>();
-  const output = new Map<string, Map<number, ConstructionOutputRun>>();
-  for (const reply of windows.values()) {
-    for (const project of reply.projects) projects.set(project.id, project);
+  const projects = new Map<string, { project: ConstructionProject; through: number }>();
+  const output = new Map<string, Map<number, { run: ConstructionOutputRun; through: number }>>();
+  const types = [...manifest.types];
+  const byId = new Map(types.map((type, index) => [type.id, index]));
+  for (const original of windows.values()) {
+    const reply = original as ConstructionWindow;
+    const prefix = preparedPrefix(reply);
+    const through = reply.exactFrom != null || prefix?.coverage.complete !== false ? Infinity : prefix.coverage.lastHour;
+    const remap = reply.types?.map(type => {
+      let index = byId.get(type.id);
+      if (index === undefined) { index = types.length; byId.set(type.id, index); types.push(type); }
+      return index;
+    });
+    for (const project of reply.projects) {
+      if ((projects.get(project.id)?.through ?? -Infinity) <= through)
+        projects.set(project.id, { project: remap ? { ...project, building: remap[project.building] } : project, through });
+    }
     for (const { id, runs } of reply.outputs) {
-      const known = output.get(id) ?? new Map<number, ConstructionOutputRun>();
-      for (const run of runs) known.set(run.from, run);
+      const known = output.get(id) ?? new Map<number, { run: ConstructionOutputRun; through: number }>();
+      for (const run of runs) {
+        const before = known.get(run.from);
+        if (!before || through > before.through || through === before.through && run.to >= before.run.to) known.set(run.from, { run, through });
+      }
       output.set(id, known);
     }
   }
-  return { manifest, windows, current, held, projects: [...projects.values()].sort(scanOrder),
-    output: new Map([...output].map(([id, runs]) => [id, [...runs.values()].sort((a, b) => a.from - b.from)])) };
+  return { manifest: { ...manifest, types }, windows, current, held, projects: [...projects.values()].map(row => row.project).sort(scanOrder),
+    output: new Map([...output].map(([id, runs]) => [id, [...runs.values()].map(row => row.run).sort((a, b) => a.from - b.from)])) };
 }
 
 /** Whether the log holds every row: from the branch's start, or from a range's `from`. */

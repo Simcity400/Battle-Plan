@@ -5,6 +5,8 @@ import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
+import { PreparedKey } from '../../charts/PreparedKey';
+import { overlapsSpans } from '../../charts/prepared';
 import { bandMaxOf, runState, stretchAt } from '../../charts/timeline/runState';
 import { laneRequests } from '../../charts/timeline/laneRequests';
 import { Lineage } from '../../dashboard/identity';
@@ -22,6 +24,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { pendingAt, preparedPrefix, unobservedOrPending } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -61,7 +64,13 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const identityChanges = groups.data?.identityChanges;
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
-  const views = useMemo(() => data && identities ? overlordViews(data, new Lineage(identityChanges ?? []), identities) : [], [data, identityChanges, identities]);
+  // Before preparation covers the branch, the prefix's relations, then each later
+  // block's keyframe (approximate); hours still being prepared have no known
+  // relations, so a relation reaching them is not an ending.
+  const prefix = useMemo(() => preparedPrefix(data), [data]);
+  const approximate = data?.approximate;
+  const known = useMemo(() => data && prefix ? { ...data, unobserved: unobservedOrPending(data.unobserved, prefix) } : data, [data, prefix]);
+  const views = useMemo(() => known && identities ? overlordViews(known, new Lineage(identityChanges ?? []), identities) : [], [known, identityChanges, identities]);
   const levels = useMemo(() => new Map<string, SubjectLevel>((data?.levels ?? []).map(level => [level.token, level])), [data]);
   // The categorical palette in the content's level order; levels past it share one colour.
   const other = mix(tokens.surface, tokens.text, 0.35);
@@ -78,7 +87,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames, segmentAt);
   // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const hover = useHoverLabels(runtime.client, track, active, country);
-  const unobserved = views[0]?.unknown ?? data?.unobserved;
+  const unobserved = views[0]?.unknown ?? known?.unobserved;
   // An overlord's band is neutral: its subjects carry the colours.
   const bandColor = mix(tokens.text, tokens.surface, 0.45);
   const { lanes, info } = useMemo(() => subjectLanes(views, levels, colours, at, {
@@ -109,6 +118,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !identities) return <WidgetState kind="loading" label="Loading subjects…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
+  if (!data.runs.length && prefix?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!data.runs.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Subject relations are unavailable.' : 'No subjects recorded.'} />;
   if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <WidgetState kind="unavailable" message="Countries in these relations could not be identified." />;
   if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.'} />;
@@ -126,6 +136,9 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     if (!about) return null;
     const named = hover.labelAt(hour);
     const unknown = (unobserved ?? []).some(span => span.firstHour <= hour && hour <= span.lastHour);
+    const preparing = pendingAt(prefix, hour);
+    // Sampled at its block's keyframe: exact there, approximate over the block.
+    const sampled = overlapsSpans(approximate, hour, hour) ? ' · approximate' : '';
     if (!about.subject) {
       const overlord = about.overlord;
       const overlordTag = overlordTagAt(overlord, hour);
@@ -136,11 +149,11 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
       });
       hover.ask(hour, [...(overlordTag === null ? [] : [overlordTag]), ...held.map(item => item.tag)]);
       held.sort((a, b) => named(a.tag).name.localeCompare(named(b.tag).name));
-      const rows: TooltipRow[] = [{ label: 'Subjects', value: unknown ? 'Not recorded' : String(held.length) },
+      const rows: TooltipRow[] = [{ label: 'Subjects', value: preparing ? 'Still being prepared' : unknown ? 'Not recorded' : String(held.length) },
         ...held.map((item, index) => ({ label: named(item.tag).name, countryFlag: named(item.tag), value: levelName(levels, item.level),
           swatch: item.level != null ? colours.get(item.level) : undefined, indent: true, short: true, divider: index === 0 }))];
       const label = overlordTag === null ? { name: 'Unknown country', flagReason: 'Unknown country at this hour.' } : named(overlordTag);
-      const content: TooltipContent = { title: label.name, countryFlag: label, subtitle: `Overlord · ${day(hour)}`, rows };
+      const content: TooltipContent = { title: label.name, countryFlag: label, subtitle: `Overlord · ${day(hour)}${sampled}`, rows };
       return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'subject' : 'subjects'}` });
     }
     const view = about.subject;
@@ -159,13 +172,15 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     const rows: TooltipRow[] = [
       { label: 'Overlord', value: overlordLabel.name, countryFlag: overlordLabel },
       // An unrecorded hour is unknown, not an hour it was no subject.
-      { label: 'Level', value: holding ? levelName(levels, level) : unknown ? 'Not recorded' : 'Not a subject then',
+      { label: 'Level', value: holding ? levelName(levels, level) : preparing ? 'Still being prepared' : unknown ? 'Not recorded' : 'Not a subject then',
         swatch: level != null ? colours.get(level) : undefined, tone: holding && level != null ? undefined : 'muted' },
       { label: 'Subject since', value: day(run.startHour) },
-      { label: 'Ended', value: state.kind === 'ended' ? (state.lastSeen == null ? day(state.at) : `by ${day(state.at)}`)
-        : state.kind === 'unknown' ? `not recorded after ${day(state.lastSeen)}` : 'Still a subject' },
+      // An end inside sampled hours is known only to the block it was sampled in.
+      { label: 'Ended', value: state.kind === 'ended' ? (overlapsSpans(approximate, stretch.lastHour, stretch.lastHour + 1) ? `around ${day(state.at)} (approximate)`
+          : state.lastSeen == null ? day(state.at) : `by ${day(state.at)}`)
+        : state.kind === 'unknown' ? (pendingAt(prefix, stretch.lastHour + 1) ? 'Still being prepared' : `not recorded after ${day(state.lastSeen)}`) : 'Still a subject' },
     ];
-    return { title: subjectLabel.name, countryFlag: subjectLabel, subtitle: `Subject · ${day(hour)}`, rows };
+    return { title: subjectLabel.name, countryFlag: subjectLabel, subtitle: `Subject · ${day(hour)}${sampled}`, rows };
   };
   // What the timeline shows at the moment shown, for keyboard and screen-reader users:
   // each overlord and the subjects listed after it, in one pass.
@@ -180,10 +195,11 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     {/* Shown for one level too: its colour is what the bars mean. */}
     {options.legend === true && <Legend label="Subject levels" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Overlords and subjects" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={options.names === true}
-      description={description} unobserved={unobserved} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+      description={description} unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
       active={active} revision={`${revision}:${hover.revision}:${colours.size}`} onLanesInView={onLanesInView}
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+    <PreparedKey approximate={approximate} pending={prefix?.pending} />
     {menu.menu}
   </div>;
   })()}</div>;

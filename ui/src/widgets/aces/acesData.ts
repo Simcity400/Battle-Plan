@@ -4,7 +4,19 @@ import { formatDate, formatDateTime, gameDate, isEngineHour } from '../../dashbo
 import { variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import type { AirAceEntry, AirAceRun, AirAcesManifestReply, AirAcesWindowReply, AirAcePortraitReply } from '../../generated/dashboard';
+import type { AirAceEntry as WireAceEntry, AirAceRun, AirAcesManifestReply, AirAcesWindowReply as WireAceWindow, AirAcePortraitReply } from '../../generated/dashboard';
+
+export type AirAceEntry = Omit<WireAceEntry, 'firstSeen'> & { firstSeen: number | null };
+export type AirAcesWindowReply = Omit<WireAceWindow, 'aces'> & { aces: AirAceEntry[] };
+export interface AceRosterData { manifest: AirAcesManifestReply; roster: AirAcesWindowReply; readHour: number | null; preparing: string[] }
+export function validateAceRoster(value: unknown): AceRosterData {
+  if (!object(value) || !nullableHour(value.readHour) || !Array.isArray(value.preparing) || !value.preparing.every(field => typeof field === 'string')) return invalid();
+  const manifest = validateAces(value.manifest), roster = validateAcesWindow(value.roster);
+  const preparing = value.preparing.includes('firstSeen');
+  if (roster.aces.some(ace => (ace.firstSeen === null) !== preparing)
+    || value.readHour !== null && !manifest.readHours.includes(value.readHour as number)) return invalid();
+  return value as unknown as AceRosterData;
+}
 
 const text = (v: unknown) => v === null || typeof v === 'string';
 const handle = (v: unknown): v is string => typeof v === 'string' && /^\d+$/.test(v) && BigInt(v) <= 0xffff_ffff_ffff_ffffn;
@@ -44,9 +56,9 @@ export function validateAcesWindow(v: unknown): AirAcesWindowReply {
     || !Array.isArray(v.texts) || !v.texts.every(t => typeof t === 'string') || !warnings(v.warnings) || !Array.isArray(v.aces)) return invalid();
   const ids = new Set<string>();
   for (const a of v.aces) {
-    if (!object(a) || !handle(a.id) || ids.has(a.id) || !hour(a.firstSeen) || !Array.isArray(a.runs) || !a.runs.length || !isOrderedSpans(a.runs)
+    if (!object(a) || !handle(a.id) || ids.has(a.id) || !nullableHour(a.firstSeen) || !Array.isArray(a.runs) || !a.runs.length || !isOrderedSpans(a.runs)
       || !a.runs.every(r => validRun(r, v.texts as string[]))
-      || a.runs.some(r => r.firstHour > (v.lastHour as number) || r.lastHour < (v.firstHour as number) || r.lastHour > (v.lastHour as number) || r.firstHour < (a.firstSeen as number))) return invalid();
+      || a.runs.some(r => r.firstHour > (v.lastHour as number) || r.lastHour < (v.firstHour as number) || r.lastHour > (v.lastHour as number) || a.firstSeen !== null && r.firstHour < (a.firstSeen as number))) return invalid();
     ids.add(a.id);
   }
   return v as unknown as AirAcesWindowReply;
@@ -55,7 +67,7 @@ export function validatePortraits(v: unknown): AirAcePortraitReply {
   if (!object(v) || !Array.isArray(v.portraits) || !v.portraits.every(p => object(p) && handle(p.id) && text(p.image) && text(p.missing)) || !warnings(v.warnings)) return invalid();
   return v as unknown as AirAcePortraitReply;
 }
-export interface AceRow { key: string; ace: AirAceEntry; run: AirAceRun; hour: number; data: AirAcesManifestReply; window: AirAcesWindowReply; roster: ReadonlyMap<string, AirAceEntry> }
+export interface AceRow { key: string; ace: AirAceEntry; run: AirAceRun; hour: number; data: AirAcesManifestReply; window: AirAcesWindowReply; roster: ReadonlyMap<string, AirAceEntry>; preparing?: boolean }
 const rosters = new WeakMap<AirAcesWindowReply, ReadonlyMap<string, AirAceEntry>>();
 export function aceRows(data: AirAcesManifestReply, window: AirAcesWindowReply, hour: number, matches: (tag: string | null, read: number) => boolean = () => true): AceRow[] {
   if (hour < window.firstHour || hour > window.lastHour || !runAt(data.observed, hour)) return [];
@@ -77,8 +89,8 @@ export const aceNameValue = (row: AceRow) => runText(row.window, row.run.name);
 export const aceName = (row: AceRow) => aceNameValue(row) || 'Unknown ace';
 export const wingName = (row: AceRow) => row.run.wing === null ? 'No wing' : runText(row.window, row.run.wingName) ?? 'Wing name not recorded';
 export const aircraftName = (row: AceRow) => row.run.wing === null ? '' : row.run.aircraft === null ? 'Aircraft not recorded' : row.run.aircraft.length ? row.run.aircraft.map(id => variantNameAt(row.data.variants[id] ?? [], row.hour, 'Unknown aircraft')).join(' · ') : 'No aircraft recorded';
-export const aceStatus = (row: AceRow) => row.run.alive ? `Ace by ${date(row.ace.firstSeen)}` : row.run.death?.byHour != null ? `Killed by ${date(row.run.death.byHour)}` : 'Killed, date not recorded';
-export const aceJump = (row: AceRow) => row.run.death?.byHour ?? row.ace.firstSeen;
+export const aceStatus = (row: AceRow) => row.preparing || row.ace.firstSeen === null ? (row.run.alive ? 'Alive; dates still being prepared' : 'Killed; dates still being prepared') : row.run.alive ? `Ace by ${date(row.ace.firstSeen!)}` : row.run.death?.byHour != null ? `Killed by ${date(row.run.death.byHour)}` : 'Killed, date not recorded';
+export const aceJump = (row: AceRow) => row.run.death?.byHour ?? row.ace.firstSeen ?? row.hour;
 
 /** Exact row operands and their referenced text/design inputs. Whole replies
  * and process-wide content diagnostics are not operands of one ace row. */
@@ -100,7 +112,7 @@ export function aceTooltip(row: AceRow, name: (tag: string) => string): TooltipC
     { label: row.run.tag === null ? 'Country not recorded' : name(row.run.tag) },
     { label: 'Air wing', value: wingName(row) },
     ...(row.run.wing === null ? [] : [{ label: 'Aircraft', value: aircraftName(row) }]),
-    { label: 'Became an ace', value: `by ${date(row.ace.firstSeen)}`, divider: true },
+    { label: 'Became an ace', value: row.preparing || row.ace.firstSeen === null ? 'Still being prepared' : `by ${date(row.ace.firstSeen!)}`, divider: true },
     { label: 'Status', value: row.run.alive ? 'Alive' : aceStatus(row) },
   ];
   const d = row.run.death;

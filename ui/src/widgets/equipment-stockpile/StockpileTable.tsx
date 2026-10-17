@@ -18,6 +18,7 @@ import type { StockpileMode } from './stockpileDrill';
 import { stockRows } from './stockpileView';
 import type { StockCount, StockRow } from './stockpileView';
 import { useStockpileArtwork } from './useStockpileArtwork';
+import { approximateAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 
 /** Two lines a row: the type, and its models. */
 const ROW_HEIGHT = 40;
@@ -72,6 +73,7 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
   ], [art, player, count, data.decimals]);
   const date = dayLabel(hour);
   return <div className="stockpile-table">
+    {approximateAt(preparedPrefix(data), hour) && <p className="chart-line-key">Approximate equipment types while preparation continues.</p>}
     <div className="stockpile-caption-line">
       <span>On {date} · {player ? 'surplus or shortage from the game’s Logistics screen' : mode === 'ai' ? AI_NOTE : 'in stock'}</span>
       {setCount && <Segmented value={count} options={COUNTS} label="Count" onChange={setCount} />}

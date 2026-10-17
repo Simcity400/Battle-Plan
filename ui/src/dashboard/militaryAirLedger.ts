@@ -11,6 +11,7 @@ import { formatDateTime } from './calendar.ts';
 import { formatRatio } from '../charts/butterfly/layout.ts';
 import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
+import { pendingReplyAt, preparedPending } from './preparedPrefix.ts';
 
 const signed128 = (value: bigint) => value >= -(1n << 127n) && value < (1n << 127n);
 // Below 39 characters a decimal is under 10^38 < 2^127, so only longer text is parsed.
@@ -75,8 +76,11 @@ function isMilitaryAirReply(value: unknown): value is MilitaryAirReply {
 
 export function validateMilitaryAirReply(value: unknown): MilitaryAirReply {
   if (!isMilitaryAirReply(value)) throw new Error('Invalid military air ledger reply');
+  preparedPending(value);
   return value;
 }
+
+export const militaryAirPreparing = pendingReplyAt;
 
 export interface LedgerFilters { regions: ReadonlySet<number>; causes: ReadonlySet<number> }
 export interface LedgerTotal { readHour: number; nativeHour: number | null; dealt: bigint; taken: bigint }

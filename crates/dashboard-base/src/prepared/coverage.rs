@@ -11,6 +11,8 @@
 use crate::{Source, metadata::check_cancel, products::ContentOptions};
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
+    collections::BTreeSet,
     io,
     sync::{OnceLock, atomic::AtomicBool},
 };
@@ -60,6 +62,45 @@ pub fn product_coverage(
     }
 }
 
+/// The status entry of the hourly walk's coverage in a reply's gate: the
+/// preparation status lists it as `coverage`, and each family prepared on its
+/// own under its name in `families`.
+pub const WALK: &str = "walk";
+
+thread_local! {
+    /// The status entries whose coverage this thread's prepared query found
+    /// short ([`waiting`]); None while no query collects them.
+    static SHORT: RefCell<Option<BTreeSet<&'static str>>> = const { RefCell::new(None) };
+}
+
+/// Note that the query this thread runs waits for `entry`'s coverage: it
+/// found none on a branch, or none complete.
+pub fn note_short(entry: &'static str) {
+    SHORT.with(|short| {
+        if let Some(short) = short.borrow_mut().as_mut() {
+            short.insert(entry);
+        }
+    });
+}
+
+/// Run `query`, with the status entries whose coverage it found short on the
+/// branches it read ([`note_short`]): the hourly walk's ([`WALK`]) or a
+/// family's prepared on its own. A reply that is pending or partial waits for
+/// them, and its client re-asks when one of them moves.
+pub fn waiting<T>(query: impl FnOnce() -> T) -> (T, BTreeSet<&'static str>) {
+    // The collection this one runs inside, restored however `query` ends.
+    struct Restore(Option<BTreeSet<&'static str>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SHORT.with(|short| *short.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(SHORT.with(|short| short.borrow_mut().replace(BTreeSet::new())));
+    let result = query();
+    let short = SHORT.with(|short| short.borrow_mut().replace(BTreeSet::new()));
+    (result, short.unwrap_or_default())
+}
+
 /// `query`'s refusal on `branch` ([`Gates`]).
 pub fn refusal(
     source: &Source,
@@ -77,10 +118,10 @@ pub fn refusal(
 /// The prepared files' version, raised when their layout or the values
 /// preparation publishes change: a checkpoint of another version is
 /// prepared again, and coverage of another version is refused.
-pub const SCHEMA: u32 = 25;
+pub const SCHEMA: u32 = 28;
 
 /// Accepted extent, distinct from a complete source's timeline and recorded gaps.
-#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparedCoverage")]
 pub struct Coverage {
@@ -133,6 +174,7 @@ pub fn coverage(
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
     let Some(file) = store.read(&key, &coverage_section(branch), 0)? else {
+        note_short(WALK);
         return Ok(None);
     };
     let range = serde_json::from_reader::<_, PublishedCoverage>(io::BufReader::new(file))?.coverage;
@@ -141,6 +183,9 @@ pub fn coverage(
             io::ErrorKind::InvalidData,
             "Unsupported prepared coverage schema",
         ));
+    }
+    if !range.complete {
+        note_short(WALK);
     }
     Ok(Some(range))
 }

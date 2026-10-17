@@ -1,8 +1,9 @@
-import type { DashboardClient, DashboardSource } from './client';
-import { validatePreparationReply } from '../shell/preparation/contract.ts';
+import { WALK_GATE, type DashboardClient, type DashboardSource } from './client.ts';
+import { validatePreparationReply, type PreparationReply, type PreparedCoverage } from '../shell/preparation/contract.ts';
 import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContentRevision } from './contentRevision.ts';
+import { finalPreparedReply, preparationCoverage } from './preparedPrefix.ts';
 
 export type PreparedSeriesKind = 'series-state' | 'series-summary' | 'series-next-change' | 'events-page' | 'events-clusters';
 
@@ -22,33 +23,67 @@ const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
 
 /** A null query means pending coverage, never an empty balance or event page.
  * Status polling retries reads only when accepted progress changes, and stops
- * when an unchanged status follows a wait that took no real time. */
-export async function preparedSeriesQuery(client: DashboardClient, source: DashboardSource, product: PreparedSeriesKind | 'army-size' | 'supply-health' | 'country-groups' | 'idea-history' | 'subjects' | 'wars' | 'casualty-pairs' | 'equipment-losses' | 'politics-ledger' | 'occupied-states' | 'occupied-states-manifest' | 'land-owners' | PreparedProduct | 'party-history' | 'scoreboard' | 'military-air-ledger' | 'air-aces' | 'air-ace-portraits' | 'raids' | 'air-superiority' | 'unit-leaders' | 'espionage-log' | 'operative-placements' | 'operatives-roster' | 'agency-comparison' | 'decryption' | 'construction-log' | 'construction-log-manifest' | 'construction-spending' | 'resource-balance' | 'trade-flows' | 'production-spending' | 'casualty-breakdown' | 'equipment-stockpile', params: unknown,
+ * when an unchanged status follows a wait that took no real time. The progress
+ * followed is the coverage of what the latest reply waits for (its gate): each
+ * family prepared on its own it names, from the status's `families`, and the
+ * hourly walk's `coverage` for `walk` or for a reply that names none. */
+export async function preparedSeriesQuery(client: DashboardClient, source: DashboardSource, product: PreparedSeriesKind | 'focus-hour' | 'army-size' | 'supply-health' | 'country-groups' | 'idea-history' | 'subjects' | 'wars' | 'casualty-pairs' | 'equipment-losses' | 'politics-ledger' | 'occupied-states' | 'occupied-states-manifest' | 'land-owners' | PreparedProduct | 'party-history' | 'scoreboard' | 'military-air-ledger' | 'air-aces' | 'air-ace-portraits' | 'raids' | 'air-superiority' | 'unit-leaders' | 'espionage-log' | 'operative-placements' | 'operatives-roster' | 'agency-comparison' | 'decryption' | 'construction-log' | 'construction-log-manifest' | 'construction-spending' | 'resource-balance' | 'trade-flows' | 'production-spending' | 'casualty-breakdown' | 'equipment-stockpile', params: unknown,
   signal: AbortSignal, restart = false, pending: () => void = () => {},
   wait: (signal: AbortSignal) => Promise<void> = pause, publish?: (value: unknown) => void): Promise<unknown> {
   if (!client.preparedQuery) throw new Error('Prepared series queries are unavailable.');
-  let value = await client.preparedQuery(source, product, params, { signal });
+  const preparedQuery = client.preparedQuery.bind(client);
+  // The status entries the latest reply waits for; undefined for a reply that names none.
+  let gate: readonly string[] | undefined;
+  const ask = () => preparedQuery<unknown>(source, product, params, { signal, gate: entries => { gate = entries?.length ? entries : undefined; } });
+  let value = await ask();
   if (signal.aborted) throw new DOMException('Campaign preparation cancelled', 'AbortError');
   const accept = (reply: unknown) => {
     if (reply === null) return false;
     publish?.(reply);
+    // Focus has answered this point once its dated fields are prepared. Its
+    // gate can keep preparing the rest of the branch without reloading the page.
+    if (product === 'focus-hour' && reply && typeof reply === 'object') {
+      const point = reply as { coverage?: unknown; preparedCoverage?: unknown; pending?: unknown[]; preparing?: unknown[]; approximate?: unknown[] };
+      if (point.coverage !== null && point.preparedCoverage !== null && point.pending?.length === 0 && !point.preparing?.length && !point.approximate?.length) return true;
+    }
     // One-shot consumers (navigation/picks) return immediately. Mounted views
     // continue replacing partial replies when committed coverage changes.
-    return !publish || !reply || typeof reply !== 'object' || !('coverage' in reply)
-      || (reply as { coverage?: { complete: boolean } | null }).coverage?.complete === true;
+    return !publish || finalPreparedReply(reply);
   };
   if (accept(value)) return value;
   pending();
   if (!client.preparationStatus) throw new Error('Campaign preparation status is unavailable.');
-  const branch = params && typeof params === 'object' && 'branchId' in params && typeof params.branchId === 'string' ? params.branchId : undefined;
+  const selection = params && typeof params === 'object' && 'selection' in params ? params.selection : params;
+  const branch = selection && typeof selection === 'object' && 'branchId' in selection && typeof selection.branchId === 'string' ? selection.branchId : undefined;
   const coverage = (reply: unknown): { firstHour: number; lastHour: number; complete: boolean } | null => {
-    if (!reply || typeof reply !== 'object' || !('coverage' in reply) || !reply.coverage) return null;
-    return reply.coverage as { firstHour: number; lastHour: number; complete: boolean };
+    return preparationCoverage(reply) ?? null;
   };
   const coverageKey = (value: ReturnType<typeof coverage>) => value ? [value.firstHour, value.lastHour, value.complete] : null;
+  const presentationKey = (reply: unknown) => {
+    const fields = reply as { exact?: unknown; pending?: unknown; approximate?: unknown; preparing?: unknown };
+    return JSON.stringify([fields.exact, fields.pending ?? [], fields.approximate ?? [], fields.preparing ?? []]);
+  };
+  const branchesKey = (map: Record<string, PreparedCoverage>) => branch ? coverageKey(map[branch] ?? null)
+    : Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([id, value]) => [id, coverageKey(value)]);
+  // The accepted progress the latest reply follows: its gate's coverage, the
+  // walk's for a reply that names none, or section progress from a status
+  // that lists no coverage for it.
+  const progressKey = (status: PreparationReply) => {
+    const maps = (gate ?? [WALK_GATE]).map(entry => entry === WALK_GATE ? status.coverage
+      : status.families && (status.families[entry] ?? {}));
+    if (maps.some(map => map === undefined))
+      return JSON.stringify([status.state === 'ready', status.sections.map(section => [section.id, section.done, section.total])]);
+    const keys = maps.map(map => branchesKey(map!));
+    return JSON.stringify(gate ? gate.map((entry, index) => [entry, keys[index]]) : keys[0]);
+  };
   // A partial reply already witnesses this branch's accepted coverage. Decoded
   // block counters and phase changes cannot justify reading that same prefix.
-  let progress = branch && value !== null ? JSON.stringify(coverageKey(coverage(value))) : undefined, started = false;
+  // A reply waiting on several entries witnesses only their joint coverage.
+  const witnessed = (reply: unknown) => {
+    const covered = coverageKey(coverage(reply));
+    return !gate ? JSON.stringify(covered) : gate.length === 1 ? JSON.stringify([[gate[0], covered]]) : undefined;
+  };
+  let progress = branch && value !== null ? witnessed(value) : undefined, started = false;
   while (!signal.aborted) {
     let changed = false;
     const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
@@ -62,22 +97,24 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
     } else if (status.state === 'failed' || status.state === 'cancelled' || status.state === 'idle' || status.state === 'paused') {
       throw new Error(status.error ?? (status.state === 'paused' ? 'Campaign preparation is paused and resumes automatically. Prepare this recording to continue now.' : status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
     } else {
-      const next = status.coverage !== undefined
-        ? JSON.stringify(branch ? coverageKey(status.coverage[branch] ?? null)
-          : Object.entries(status.coverage).sort(([a], [b]) => a.localeCompare(b)).map(([id, value]) => [id, coverageKey(value)]))
-        : JSON.stringify([status.state === 'ready', status.sections.map(section => [section.id, section.done, section.total])]);
+      const next = progressKey(status);
       if (next !== progress) {
-        progress = next;
         changed = true;
-        const nextValue = await client.preparedQuery(source, product, params, { signal });
+        const nextValue = await ask();
         if (signal.aborted) break;
-        if (value !== null && publish) {
-          const before = coverage(value), after = coverage(nextValue);
-          if (nextValue === null || !after || before && after.firstHour >= before.firstHour && after.lastHour <= before.lastHour && (!after.complete || before.complete))
-            return value; // Retain the published partial reply; no repeated publication or retry cycle.
+        // Followed under the gate the new reply names.
+        progress = progressKey(status);
+        const before = coverage(value), after = coverage(nextValue);
+        const unmoved = value !== null && publish && !finalPreparedReply(nextValue) && (nextValue === null
+          || presentationKey(value) === presentationKey(nextValue) && (!after || before && after.firstHour >= before.firstHour
+            && after.lastHour <= before.lastHour && (!after.complete || before.complete)));
+        // Keep the prefix only while its extent and presentation stay unchanged.
+        // Exact windows can grow before forward coverage moves. The next status
+        // follows the new reply's gate, even if it shrank.
+        if (!unmoved) {
+          value = nextValue;
+          if (accept(value)) return value;
         }
-        value = nextValue;
-        if (accept(value)) return value;
       }
       if (status.state === 'ready') throw new Error('Prepared series coverage is unavailable.');
     }
@@ -99,19 +136,27 @@ const membership = (series: readonly PreparedBinding[]) => Object.fromEntries(se
 /** Reply-budget refusals split I/O, never the set of requested actors. */
 export async function preparedWindowQuery<T>(client: DashboardClient,source: DashboardSource,family: 'autonomy'|'world-tension'|'naval-losses',params: object,
   view: { from: number; to: number; width: number; series: PreparedBinding[] },signal: AbortSignal,
-  validate: (value: unknown) => T,merge: (a:T,b:T) => T,restart = false): Promise<T> {
-  const read = async (series: PreparedBinding[]): Promise<T> => {
+  validate: (value: unknown) => T,merge: (a:T,b:T) => T,restart = false, publish?: (value: T) => void): Promise<T> {
+  const read = async (series: PreparedBinding[], publish?: (value: T) => void): Promise<T> => {
     try { return validate(await preparedSeriesQuery(client,source,'series-summary',{
       ...params,family:{...(params as { family?: object }).family,kind:family},from:view.from,to:view.to,width:view.width,within:membership(series),
-    },signal,restart)); }
+    },signal,restart,undefined,undefined,publish && (value => publish(validate(value))))); }
     catch (error) {
       if (signal.aborted || series.length < 2 || !/exceeds.*transport.*budget/i.test(String(error))) throw error;
       const middle = Math.ceil(series.length/2);
-      const first = await read(series.slice(0,middle));
-      return merge(first,await read(series.slice(middle)));
+      if (!publish) {
+        const first = await read(series.slice(0,middle));
+        return merge(first,await read(series.slice(middle)));
+      }
+      const parts: { value?: T }[] = [{}, {}];
+      const values = await Promise.all([series.slice(0,middle), series.slice(middle)].map((part, index) => read(part, value => {
+        parts[index].value = value;
+        publish(parts.every(part => part.value !== undefined) ? merge(parts[0].value!, parts[1].value!) : value);
+      })));
+      return merge(values[0], values[1]);
     }
   };
-  return read(view.series);
+  return read(view.series, publish);
 }
 
 export function mergeReachedRows<R extends { firstHour: number; lastHour: number },T extends { runs:R[] }>(a: readonly T[],b: readonly T[],key: (row:T) => string): T[] {
@@ -145,17 +190,20 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   useEffect(() => {
     if (!source || !active) return;
     const controller = new AbortController();
-    void preparedWindowQuery(client,source,family,params,viewport,controller.signal,validate,merge,attempt > 0).then(data => {
+    const publish = (data: T) => {
       if (!controller.signal.aborted && current.current === owner) setSummaries({ owner, geometryKey, data });
-    }).catch(error => { if (!controller.signal.aborted && current.current === owner) setSummaries({ owner, geometryKey, error: String(error) }); });
+    };
+    void preparedWindowQuery(client,source,family,params,viewport,controller.signal,validate,merge,attempt > 0,publish).then(publish)
+      .catch(error => { if (!controller.signal.aborted && current.current === owner) setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey, error: String(error) })); });
     return () => controller.abort();
   }, [owner, geometryKey, active, attempt]);
   useEffect(() => {
     if (!source || !active) return;
     const controller = new AbortController();
-    void preparedSeriesQuery(client,source,'series-state',{...params,family:{kind:family},reads:readHours.map(hour=>({hour}))},controller.signal,attempt>0)
-      .then(value=> {if(!controller.signal.aborted && current.current===owner)setStates({owner,data:validate(value)});})
-      .catch(error=> {if(!controller.signal.aborted && current.current===owner)setStates({owner,error:String(error)});});
+    const publish = (value: unknown) => { if (!controller.signal.aborted && current.current === owner) setStates({ owner, data: validate(value) }); };
+    void preparedSeriesQuery(client,source,'series-state',{...params,family:{kind:family},reads:readHours.map(hour=>({hour}))},controller.signal,attempt>0,
+      undefined,undefined,publish).then(publish)
+      .catch(error=> {if(!controller.signal.aborted && current.current===owner)setStates(previous => ({...(previous?.owner === owner ? previous : {}),owner,error:String(error)}));});
     return ()=>controller.abort();
   }, [owner, readKey, active, attempt]);
   const onSummaryView = useCallback((next: { from: number; to: number; width: number }, series: PreparedBinding[] = []) => setView(previous => previous?.owner === owner

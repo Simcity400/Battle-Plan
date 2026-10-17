@@ -1916,6 +1916,9 @@ pub struct SelectionPage {
     pub value_min: String,
     pub value_max: String,
     pub countries: Vec<SelectedCountry>,
+    /// Totals by type before paging, for the automatic units choice. Only a
+    /// total-by-type units selection supplies them; unknown amounts add nothing.
+    pub type_totals: Option<Vec<(String, String)>>,
     pub warnings: Vec<String>,
 }
 
@@ -2259,6 +2262,35 @@ fn select_ordered(
         }
     }
     let total_countries = rows.len();
+    let type_totals = if params.count == ProducedCount::Units
+        && params.measure == ProducedMeasure::Total
+        && params.grouping == ProducedGrouping::Type
+        && params.included.is_empty()
+    {
+        let mut sums: BTreeMap<String, i128> = BTreeMap::new();
+        for (_, row) in &rows {
+            let (_, country, _) = evaluate(
+                country(Some(current), &row.tag).expect("selected endpoint"),
+                true,
+            )?;
+            for value in country.values {
+                if let Some(amount) = value.amount {
+                    let total = sums.entry(value.key).or_default();
+                    *total = total.checked_add(parse(&amount)?).ok_or_else(|| {
+                        io::Error::other("Produced type total exceeds its exact integer range")
+                    })?;
+                }
+            }
+        }
+        Some(
+            groups
+                .values()
+                .filter_map(|(key, _, _)| sums.get(key).map(|sum| (key.clone(), sum.to_string())))
+                .collect(),
+        )
+    } else {
+        None
+    };
     let value_min = rows
         .iter()
         .filter_map(|(value, _)| *value)
@@ -2284,6 +2316,7 @@ fn select_ordered(
         })
         .collect::<io::Result<_>>()?;
     Ok(SelectionPage {
+        type_totals,
         schema: 1,
         branch_id: params.branch_id.clone(),
         first_hour: current.first_hour,
@@ -3070,6 +3103,38 @@ fn bind_equipment_rockets(
         row.rocket = country(reads[&hour].as_ref(), &row.tag).and_then(|row| row.rocket.clone());
     }
     Ok(())
+}
+
+/// An unobserved endpoint supplies no country amounts, ranks or classifications.
+pub fn empty_selection(
+    hour: i32,
+    params: &ProducedParams,
+    offset: usize,
+    limit: usize,
+    ranked: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<SelectionPage> {
+    let current = EndpointPage {
+        schema: 1,
+        branch_id: params.branch_id.clone(),
+        first_hour: hour,
+        last_hour: hour,
+        equipment_read: None,
+        rocket_read: None,
+        equipment_origin: None,
+        equipment_restart: None,
+        rocket_origin: None,
+        rocket_restart: None,
+        countries: Vec::new(),
+        classifications: BTreeMap::new(),
+        warnings: Vec::new(),
+        unnamed_before: 0,
+        unnamed_per_hour: 0,
+        unnamed_warning_index: 0,
+    };
+    select_ordered(
+        &current, None, None, params, offset, limit, ranked, cancelled,
+    )
 }
 
 pub fn select_ranked_at(

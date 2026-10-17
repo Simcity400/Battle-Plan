@@ -485,10 +485,10 @@ fn politics_ledger_answers_from_its_own_coverage_while_the_hourly_walk_accepts_n
             .unwrap();
             assert!(!ledger.is_null(), "branch {branch}: the ledger answers");
             assert!(
-                query(&source, "subjects", serde_json::json!({ "branchId": id }))
+                !query(&source, "subjects", serde_json::json!({ "branchId": id }))
                     .unwrap()
                     .is_null(),
-                "branch {branch}: a family of the hourly walk still waits"
+                "branch {branch}: a family of the hourly walk answers its pending prefix"
             );
         }
     });

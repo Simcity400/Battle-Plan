@@ -573,7 +573,7 @@ pub fn query(
         .transpose()?;
     let requested: Requested = serde_json::from_value(value.clone())?;
     let hours = requested.reads.iter().map(|read| read.hour).collect();
-    Ok(serde_json::to_value(projection(
+    let reply = projection(
         store,
         key,
         source,
@@ -582,7 +582,84 @@ pub fn query(
         &hours,
         cat.as_ref(),
         cancelled,
-    )?)?)
+    )?
+    .unwrap_or_else(|| WarsReply {
+        branch_id: params.branch_id.clone(),
+        available: false,
+        viewpoints: Vec::new(),
+        country_names: Vec::new(),
+        wars: Vec::new(),
+        unobserved: Vec::new(),
+        capitulations_unobserved: Vec::new(),
+        warnings: Vec::new(),
+    });
+    Ok(serde_json::to_value(reply)?)
+}
+
+/// The groups at each requested read hour after `through`, the wars'
+/// prepared prefix's last hour, each from its hour's frame alone
+/// ([`super::at_hour`]); an hour outside the branch or in a recorded gap is
+/// unavailable.
+pub fn current(
+    source: &Source,
+    value: &Value,
+    through: i32,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<WarsAtHour>> {
+    let params: WarsParams = serde_json::from_value(
+        serde_json::json!({"branchId":value["branchId"],"viewpointTag":value["viewpointTag"]}),
+    )?;
+    Wars::validate(&params).map_err(invalid)?;
+    let branch = params.branch_id.parse().expect("validated branch");
+    let start = source
+        .replay_ref()
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .ok_or_else(|| invalid("Wars branch is not in this recording"))?;
+    let (first, last) = branch_bounds(source.replay_ref(), start);
+    let requested: Requested = serde_json::from_value(value.clone())?;
+    let hours: BTreeSet<i32> = requested
+        .reads
+        .iter()
+        .map(|read| read.hour)
+        .filter(|&hour| hour > through)
+        .collect();
+    if hours.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cat = context
+        .content
+        .as_ref()
+        .map(|options| catalogue::catalogue(source, options))
+        .transpose()?;
+    let mut current = Vec::with_capacity(hours.len());
+    for hour in hours {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let frame = if (first..=last).contains(&hour) {
+            dashboard_base::prepared::query::progressive::frame_at(
+                source, branch, hour, TABLES, cancelled,
+            )?
+        } else {
+            None
+        };
+        current.push(match frame {
+            Some(frame) => super::at_hour(
+                branch,
+                &frame,
+                params.viewpoint_tag.as_deref(),
+                cat.as_deref(),
+            )?,
+            None => WarsAtHour {
+                hour,
+                available: false,
+                wars: Vec::new(),
+                warnings: Vec::new(),
+            },
+        });
+    }
+    Ok(current)
 }
 
 /// Whole-branch native projection, including membership and naming history before

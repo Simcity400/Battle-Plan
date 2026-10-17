@@ -97,7 +97,7 @@ test('shares scale every contribution so they add up to world tension, which the
   const model = tensionModel(REPLY);
   const capped = REPLY.reads[1];
   const shares = ['GER', 'ITA', 'D01 mod', 'CZE'].map(tag => BigInt(shareRaw(model, capped, contributionAt(model, key(tag), 130)!)))
-    .concat(BigInt(shareRaw(model, capped, capped.unnamedRaw)));
+    .concat(BigInt(shareRaw(model, capped, capped.unnamedRaw!)));
   const total = shares.reduce((sum, value) => sum + value, 0n);
   // 100% in contribution units, less rounding toward zero.
   assert.ok(total <= 10_000_000n && total > 10_000_000n - 5n, String(total));

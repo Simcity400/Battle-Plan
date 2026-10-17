@@ -6,12 +6,15 @@ import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarTi
 import { labelObservationAt, sideLabel } from './warsData.ts';
 
 type Country = CountryLabel;
+const STILL_PREPARING = 'Still being prepared';
 type Day = (hour: number) => string;
 const singularSide = (label: string) => label === 'Attackers' ? 'Attacker' : label === 'Defenders' ? 'Defender' : label;
 
-/** A last observation is a bound, never an invented peace or departure date. */
+/** A last observation is a bound, never an invented peace or departure date.
+ * A run reaching a prepared prefix's last hour (`through`) has no end yet. */
 function endLabel(run: { firstHour: number; lastHour: number }, by: boolean, until: number, branchLast: number,
-  gaps: readonly HourSpan[], day: Day, participant = false): string {
+  gaps: readonly HourSpan[], day: Day, participant = false, through: number | null = null): string {
+  if (through != null && run.lastHour >= through && until > through) return STILL_PREPARING;
   const ongoing = run.lastHour >= branchLast && until >= branchLast ? "Ongoing at the recording’s end"
     : participant ? 'Still fighting' : 'Ongoing';
   return describeRun([run], Math.min(until, branchLast), {
@@ -49,6 +52,8 @@ export interface WarTooltipInput {
   country: Country;
   day: Day;
   participant?: { tag: string; run: WarParticipantRun | null; capitulations?: readonly number[] };
+  /** The prepared prefix's last hour while the hours after it are still being prepared. */
+  preparedThrough?: number | null;
 }
 
 export function warTooltip(input: WarTooltipInput): TooltipContent {
@@ -56,13 +61,15 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
   const coversHour = (gap: HourSpan) => gap.firstHour <= hour && hour <= gap.lastHour;
   const inGap = unobserved.some(coversHour) || input.branchGaps?.some(coversHour)
     || (!observation && war.firstHour <= hour && hour <= war.lastHour);
-  const absent = inGap ? 'Not recorded' : hour < war.firstHour ? 'Not started' : hour > war.lastHour ? 'Ended' : null;
+  const through = input.preparedThrough ?? null;
+  const absent = through != null && hour > through ? STILL_PREPARING
+    : inGap ? 'Not recorded' : hour < war.firstHour ? 'Not started' : hour > war.lastHour ? 'Ended' : null;
   const labelled = inGap ? null : hour > war.lastHour ? labelObservationAt(war, hour) : observation;
   const sides: [string, string] = [sideLabel('viewpoint', labelled, country), sideLabel('opponent', labelled, country)];
   const title = absent === 'Not started' ? absent : labelled?.name.known ? labelled.name.text : 'Not recorded';
   const rows: TooltipRow[] = [
     { label: 'Started', value: `${war.startedBy ? 'by ' : ''}${day(war.firstHour)}` },
-    { label: 'Ended', value: endLabel(war, war.endedBy, until, branchLast, unobserved, day) },
+    { label: 'Ended', value: endLabel(war, war.endedBy, until, branchLast, unobserved, day, false, through) },
   ];
   const missingCaps = capitulationsUnobserved.some(gap => gap.firstHour <= Math.min(war.lastHour, until) && gap.lastHour >= war.firstHour);
   if (participant) {
@@ -71,7 +78,7 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
     const side = !run ? outside : singularSide(sideLabel(run.side, labelled, country));
     rows.unshift({ label: 'Side', value: side });
     rows.push({ label: 'Joined', value: run ? `${run.joinedBy ? 'by ' : ''}${day(run.firstHour)}` : outside },
-      { label: 'Left', value: run ? endLabel(run, run.leftBy, until, branchLast, unobserved, day, true) : outside });
+      { label: 'Left', value: run ? endLabel(run, run.leftBy, until, branchLast, unobserved, day, true, through) : outside });
     const events = participant.capitulations ?? war.capitulations.filter(cap => cap.tag === participant.tag).map(cap => cap.hour);
     const caps = run ? events.filter(at => at <= until && run.firstHour <= at && at <= run.lastHour) : [];
     for (const cap of caps) rows.push({ label: 'Capitulated', value: day(cap) });

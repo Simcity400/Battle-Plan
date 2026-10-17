@@ -7,6 +7,7 @@ import { jumpItem } from '../../charts/jump';
 import { hideTooltip, showTooltip, tooltipStore } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useIdeaHistory } from '../../dashboard/ideaHistory';
+import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { ideaTooltip, tooltipText } from '../../dashboard/ideaTooltip';
 import { useIdeaTooltips } from '../../dashboard/useIdeaTooltips';
 import { resolveWindow } from '../../dashboard/model';
@@ -31,13 +32,18 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
+  const held = data?.held?.hour === Math.floor(hour ?? NaN) ? data.held : undefined;
   // Each recorded holder starts a new segment, even when it reuses the same tag.
   const identityStart = data?.identityStarts.reduce<number | null>((latest, start) => hour != null && start <= hour ? start : latest, null) ?? null;
-  const context = JSON.stringify([track?.source.id, track?.source.revision, track?.source.metadata.campaignKey, track?.branch.id, tag, identityStart]);
+  const context = JSON.stringify([track?.source.id, track?.source.revision, track?.source.metadata.campaignKey, track?.branch.id, tag, held ? [held.slot, held.countryId] : identityStart]);
   const owner = `${widgetOwner}:${context}`;
   const menu = useContextMenu('National spirit actions');
-  const list = useMemo(() => data ? spirits(data) : [], [data]);
-  const shown = useMemo(() => hour == null ? [] : activeAt(list, hour), [list, hour]);
+  const list = useMemo(() => data ? spirits(held ? { ...data, spans: held.spans } : data) : [], [data, held]);
+  const shown = useMemo(() => {
+    if (hour == null) return [];
+    const items = activeAt(list, hour);
+    return held ? items.sort((a, b) => held.spans.findIndex(span => span.token === a.token) - held.spans.findIndex(span => span.token === b.token)) : items;
+  }, [list, hour, held]);
   // The game's tooltip for each spirit: its effects formatted as the game does, then its description.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
   // The spirit whose tooltip is open, so it is shown again when names arrive.
@@ -89,6 +95,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
   if (widget.time.mode === 'pin' && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!held && pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   // Unrecorded is not the same as holding no spirits.
   if (inSpans(data.unobserved, hour)) return <WidgetState kind="unavailable" message="National spirits were not recorded at this moment." />;
   // Held ideas content cannot classify might be spirits: then the set is unknown, not empty.
@@ -100,13 +107,14 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
 
   const since = (spirit: Spirit) => { const state = spiritState(spirit, hour); return state.kind === 'held' ? state.since : null; };
   const describe = (spirit: Spirit) => {
+    if (held) return 'Acquisition date still being prepared';
     const start = since(spirit);
     if (start == null) return undefined;
     // Held when recording began (or after an unrecorded stretch): gained at an unknown time.
     return startUnseen(start, track.branch.firstHour, data.unobserved) ? `held before ${dayLabel(start)}` : `since ${dayLabel(start)}`;
   };
   // The hour the spirit held now was taken on: its targets are named as they were then.
-  const takenOn = (spirit: Spirit) => spirit.spans.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour;
+  const takenOn = (spirit: Spirit) => held ? undefined : spirit.spans.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour;
   const content = (spirit: Spirit, maxRows?: number) => {
     const held = describe(spirit);
     return tooltips ? ideaTooltip({ title: spirit.name, icon: spirit.icon, subtitle: held ?? undefined },
@@ -145,5 +153,5 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
       <span className="spirit-name">{spirit.name}</span>
       {!out && <span id={`${widgetOwner}-${spirit.token}`} className="sr-only">{spoken(spirit)}</span>}
     </li>)}
-  </ul>{menu.menu}</>;
+  </ul>{held && <p className="chart-line-key" role="status">Acquisition order and context are still being prepared; showing content order.</p>}{menu.menu}</>;
 }

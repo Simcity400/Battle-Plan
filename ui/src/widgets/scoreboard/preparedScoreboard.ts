@@ -1,3 +1,4 @@
+import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import { useEffect, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
@@ -18,7 +19,9 @@ export function validatePreparedScoreboard(value: unknown): ScoreboardPreparedRe
     || data.series.some(series => [...series.segments, ...series.identities,
       ...(series.membership ?? []), ...series.columns.flatMap(column => [...column.runs, ...column.readRuns])]
       .some(span => span.firstHour !== value.hour || span.lastHour !== value.hour))) throw new Error('Invalid prepared scoreboard moment.');
-  return { hour: value.hour, data, maxima: value.maxima as ScoreboardPreparedReply['maxima'] };
+  preparedPrefix(value);
+  if (value.preparing !== undefined && (!Array.isArray(value.preparing) || !value.preparing.every(key => data.columns.some(column => column.key === key)))) throw new Error('Invalid preparing scoreboard columns.');
+  return { ...value, hour: value.hour, data, maxima: value.maxima as ScoreboardPreparedReply['maxima'] };
 }
 
 /** Index values own sorting; a page supplies only this moment's mounted cells. */
@@ -38,18 +41,23 @@ export function preparedScoreboardRows(index: ScoreboardPreparedReply, page: Sco
 export function scoreboardCellPage(request: ScoreboardPreparedParams, tags: readonly string[]): ScoreboardPreparedParams {
   return { ...request, index: false, bars: false, selection: { ...request.selection, top: null, tags: [...new Set(tags)] } };
 }
-export async function queryScoreboard(client: DashboardClient, source: DashboardSource, request: ScoreboardPreparedParams, signal: AbortSignal, restart = false) {
+export async function queryScoreboard(client: DashboardClient, source: DashboardSource, request: ScoreboardPreparedParams, signal: AbortSignal, restart = false, publish?: (value: ScoreboardPreparedReply) => void) {
   if (signal.aborted) throw new DOMException('Campaign preparation cancelled', 'AbortError');
-  const result = validatePreparedScoreboard(await preparedSeriesQuery(client, source, 'scoreboard', request, signal, restart));
-  if (result.hour !== request.hour || result.data.branchId !== request.selection.branchId) throw new Error('Prepared scoreboard belongs to another moment.');
-  if (!request.index) {
-    const supplied = new Set(result.data.series.map(row => row.tag));
-    if (request.selection.tags.some(tag => !supplied.has(tag))) throw new Error('Prepared scoreboard did not supply the requested cells.');
-  }
+  const validate = (value: unknown) => {
+    const result = validatePreparedScoreboard(value);
+    if (result.hour !== request.hour || result.data.branchId !== request.selection.branchId) throw new Error('Prepared scoreboard belongs to another moment.');
+    if (!request.index && !preparedPrefix(result)?.pending.length) {
+      const supplied = new Set(result.data.series.map(row => row.tag));
+      if (request.selection.tags.some(tag => !supplied.has(tag))) throw new Error('Prepared scoreboard did not supply the requested cells.');
+    }
+    return result;
+  };
+  const result = validate(await preparedSeriesQuery(client, source, 'scoreboard', request, signal, restart, undefined, undefined,
+    publish ? value => publish(validate(value)) : undefined));
   return result;
 }
 
-/** Carry complete presented cells at their supplying moment while the next hour prepares. */
+/** Publish each supplied index/cell prefix and retain the previous supplying moment while a new hour loads. */
 export function usePreparedScoreboard(client: DashboardClient, source: DashboardSource | undefined,
   request: ScoreboardPreparedParams | null, visible: readonly ScoreboardRow[], active: boolean) {
   const content = useContentRevision(client);
@@ -58,42 +66,47 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
   const [attempt, setAttempt] = useState(0);
   const [all, setAll] = useState(false);
   const [state, setState] = useState<{ client: DashboardClient; owner: string; index?: ScoreboardPreparedReply; page?: ScoreboardPreparedReply; pending: boolean; error?: string }>();
+  const [cellFailure, setCellFailure] = useState<{ client: DashboardClient; owner: string; key: string; attempt: number; error: string }>();
   const owned = state?.client === client && state.owner === owner ? state : undefined;
   useEffect(() => {
     if (!active || !source || !request) return;
     const controller = new AbortController();
     setState(previous => ({ client, owner, index: previous?.client === client && previous.owner === owner ? previous.index : undefined,
       page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: true }));
-    void (async () => {
-      const index = await queryScoreboard(client, source, request, controller.signal, attempt > 0);
-      const candidates = preparedScoreboardRows(index, undefined, request.sort, request.descending);
-      // Keep supplying cells for mounted holders and the same number of new
-      // leading ranks. The native table then reports its actual mounted rows.
-      const previousKeys = new Set(visible.map(row => row.key));
-      const tags = all ? candidates.map(row => row.tag) : [...new Set([
-        ...candidates.filter(row => previousKeys.has(row.key)).map(row => row.tag),
-        ...candidates.slice(0, Math.max(visible.length, 1)).map(row => row.tag),
-      ])];
-      const page = await queryScoreboard(client, source, scoreboardCellPage(request, tags), controller.signal, attempt > 0);
-      if (!controller.signal.aborted) setState({ client, owner, index, page, pending: false });
-    })().catch(error => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: String(error) })); });
+    void queryScoreboard(client, source, request, controller.signal, attempt > 0, index => {
+      if (!controller.signal.aborted) setState(previous => ({ client, owner, index,
+        page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: false }));
+    }).catch(error => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: String(error) })); });
     return () => controller.abort();
   }, [client, source?.id, source?.revision, owner, moment, active, attempt]);
   const shown = owned?.index;
-  const wanted = shown && (all ? shown.data.series.map(row => row.tag) : visible.filter(row => row.hour === shown.hour).map(row => row.tag));
-  const wantedKey = JSON.stringify(wanted ?? []);
-  const loaded = new Set(owned?.page?.data.series.map(row => row.tag));
-  const covered = wanted?.every(tag => loaded.has(tag)) ?? true;
+  const candidates = shown && request ? preparedScoreboardRows(shown, undefined, request.sort, request.descending) : [];
+  const mounted = new Set(visible.filter(row => row.hour === shown?.hour).map(row => row.key));
+  const previousKeys = new Set(visible.map(row => row.key));
+  const wanted = shown ? all ? candidates.map(row => row.tag)
+    : mounted.size ? candidates.filter(row => mounted.has(row.key)).map(row => row.tag) : [...new Set([
+    ...candidates.filter(row => previousKeys.has(row.key)).map(row => row.tag),
+    ...candidates.slice(0, Math.max(visible.length, 1)).map(row => row.tag),
+  ])] : [];
+  const wantedKey = JSON.stringify([...wanted].sort());
+  const cellKey = JSON.stringify([moment, shown?.hour, wantedKey]);
+  const cellError = cellFailure?.client === client && cellFailure.owner === owner && cellFailure.key === cellKey
+    && cellFailure.attempt === attempt ? cellFailure.error : undefined;
+  const supplied = owned?.page?.hour === shown?.hour ? owned?.page : undefined;
+  const loaded = new Set(supplied?.data.series.map(row => row.tag));
+  const covered = wanted.every(tag => loaded.has(tag)) && !preparedPrefix(supplied)?.pending.length
+    && !request?.selection.columns.some(column => fieldPreparing(supplied, column));
   useEffect(() => {
-    if (!active || !source || !request || !shown || owned?.pending || covered || !wanted?.length) return;
+    if (!cellError) setCellFailure(undefined);
+    if (!active || !source || !request || !shown || shown.hour !== request.hour || owned?.pending || owned?.error || cellError || covered || !wanted?.length) return;
     const controller = new AbortController();
     const page = scoreboardCellPage({ ...request, hour: shown.hour }, wanted);
-    void queryScoreboard(client, source, page, controller.signal, attempt > 0).then(page => {
+    void queryScoreboard(client, source, page, controller.signal, attempt > 0, page => {
       if (!controller.signal.aborted) setState(previous => previous?.client === client && previous.owner === owner && previous.index === shown ? { ...previous, page } : previous);
-    }).catch(error => { if (!controller.signal.aborted) setState(previous => previous?.owner === owner ? { ...previous, error: String(error) } : previous); });
+    }).catch(error => { if (!controller.signal.aborted) setCellFailure({ client, owner, key: cellKey, attempt, error: String(error) }); });
     return () => controller.abort();
-  }, [client, owner, shown, wantedKey, active, covered, owned?.pending, attempt]);
-  return { index: shown, page: owned?.page, pending: owned?.pending ?? (active && !!request), error: owned?.error,
-    retry: () => setAttempt(value => value + 1), complete: !!shown && shown.data.series.every(row => loaded.has(row.tag)),
+  }, [client, owner, shown, cellKey, active, covered, owned?.pending, owned?.error, cellError, attempt]);
+  return { index: shown, page: supplied, pending: owned?.pending ?? (active && !!request), error: owned?.error ?? cellError,
+    retry: () => setAttempt(value => value + 1), complete: !!shown && covered && shown.data.series.every(row => loaded.has(row.tag)),
     prepare: () => setAll(true) };
 }

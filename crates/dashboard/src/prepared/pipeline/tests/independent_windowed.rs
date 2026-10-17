@@ -368,7 +368,11 @@ fn assert_same(
             .remove(family.field)
             .unwrap();
         assert!(
-            found.as_object_mut().unwrap().remove(family.field).is_none(),
+            found
+                .as_object_mut()
+                .unwrap()
+                .remove(family.field)
+                .is_none(),
             "{label}: {name} leaves out the {} scan",
             family.name
         );
@@ -433,7 +437,10 @@ fn parity(family: Windowed) {
         prepass::with_test_prepass(workers, None, || {
             lanes::with_test_lanes(parallelism, None, || family.own(|| plain(&source)))
         });
-        let label = format!("{}: {workers} workers, {parallelism} processors", family.name);
+        let label = format!(
+            "{}: {workers} workers, {parallelism} processors",
+            family.name
+        );
         assert_same(family, &payloads(&source, None), &hourly, &label, true);
         assert_eq!(
             prepass::noted(family_sequential(family)),
@@ -497,7 +504,13 @@ fn commits(family: Windowed) {
         };
         let hourly = independent::with_test_hourly(|| both(&mut fixture));
         let own = family.own(|| prepass::with_test_prepass(2, None, || both(&mut fixture)));
-        assert_same(family, &own, &hourly, &format!("{}: {mode}", family.name), true);
+        assert_same(
+            family,
+            &own,
+            &hourly,
+            &format!("{}: {mode}", family.name),
+            true,
+        );
     }
 }
 
@@ -541,10 +554,9 @@ fn refusals(family: Windowed) {
             assert_same(family, &own, &hourly, &label, false);
             // The refusal is the family's own, at the hourly hour and text.
             let expected = &hourly_refused[&1].0[family.name];
-            let page: CoveragePage = serde_json::from_slice(
-                &own[&(independent::coverage_section(family.name, 1), 0)],
-            )
-            .unwrap();
+            let page: CoveragePage =
+                serde_json::from_slice(&own[&(independent::coverage_section(family.name, 1), 0)])
+                    .unwrap();
             assert_eq!(page.refused.0[family.name].hour, hour, "{label}");
             assert_eq!(page.refused.0[family.name].hour, expected.hour, "{label}");
             assert_eq!(page.refused.0[family.name].error, expected.error, "{label}");
@@ -636,12 +648,18 @@ fn windowed_logs_answer_from_their_own_coverage_while_the_hourly_walk_accepts_no
             let id = branch.to_string();
             let last = if branch == 1 { 4 } else { 0 };
             for (product, params) in [
-                ("division-log-manifest", serde_json::json!({ "branchId": id })),
+                (
+                    "division-log-manifest",
+                    serde_json::json!({ "branchId": id }),
+                ),
                 (
                     "division-log",
                     serde_json::json!({ "branchId": id, "window": last }),
                 ),
-                ("naval-battles-manifest", serde_json::json!({ "branchId": id })),
+                (
+                    "naval-battles-manifest",
+                    serde_json::json!({ "branchId": id }),
+                ),
                 (
                     "naval-battles",
                     serde_json::json!({ "branchId": id, "window": last }),
@@ -653,8 +671,8 @@ fn windowed_logs_answer_from_their_own_coverage_while_the_hourly_walk_accepts_no
                 );
             }
             assert!(
-                query(&source, "subjects", serde_json::json!({ "branchId": id }))?.is_null(),
-                "branch {branch}: a family of the hourly walk still waits"
+                !query(&source, "subjects", serde_json::json!({ "branchId": id }))?.is_null(),
+                "branch {branch}: a family of the hourly walk answers its pending prefix"
             );
         }
         Ok(())
@@ -684,7 +702,13 @@ fn division_log_prepared_on_its_own_observes_only_each_blocks_first_hour() {
     );
     assert_eq!(prepass::noted("divisions.fallback"), fallback);
     assert!(hours(&replay) > replay.index.len());
-    assert_same(DIVISIONS, &payloads(&source, None), &hourly, "first hours", true);
+    assert_same(
+        DIVISIONS,
+        &payloads(&source, None),
+        &hourly,
+        "first hours",
+        true,
+    );
     clear(source);
 }
 
@@ -727,7 +751,13 @@ fn naval_family_commits_where_the_hourly_walk_does() {
         saves.len() < replay.index.len(),
         "fewer commits than blocks: {saves:?}"
     );
-    assert_same(NAVAL, &payloads(&source, None), &hourly, "two-block batches", true);
+    assert_same(
+        NAVAL,
+        &payloads(&source, None),
+        &hourly,
+        "two-block batches",
+        true,
+    );
     clear(source);
 }
 
@@ -913,4 +943,106 @@ fn naval_family_reads_its_tables_after_the_kit_as_one_read() {
         true,
     );
     clear(source);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "cold, prefix and complete first-view preparation parity"
+)]
+fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
+    let replay = scenario(5, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("naval-prefix-first-views");
+        let manifest = serde_json::json!({"branchId":"1"});
+        let losses = serde_json::json!({"branchId":"1", "tags":[], "top":10, "kind":"both", "attribution":"lost", "period":"running"});
+        for (product, params) in [
+            ("ships-sunk-manifest", manifest.clone()),
+            ("naval-losses", losses.clone()),
+        ] {
+            let cold = query(&source, product, params).unwrap();
+            assert!(
+                cold["coverage"]["firstHour"].as_i64().is_some_and(|first| {
+                    cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1)
+                }) && cold["coverage"]["complete"] == false
+            );
+            assert!(!cold["pending"].as_array().unwrap().is_empty());
+        }
+        run_measured(
+            &source,
+            None,
+            &AtomicBool::new(false),
+            true,
+            Duration::ZERO,
+            |_| {},
+        )
+        .unwrap();
+        let prefix = query(&source, "ships-sunk-manifest", manifest.clone()).unwrap();
+        assert_eq!(prefix["coverage"]["lastHour"], BASE + 5);
+        assert!(!prefix["pending"].as_array().unwrap().is_empty());
+        let window = serde_json::json!({"branchId":"1", "hour":BASE + 5});
+        let page = query(&source, "ships-sunk", window.clone()).unwrap();
+        assert_eq!(page["window"], 0);
+        let unreached = query(
+            &source,
+            "ships-sunk",
+            serde_json::json!({"branchId":"1", "hour":BASE + 11}),
+        )
+        .unwrap();
+        assert_eq!(unreached["window"], 1);
+        assert_eq!(unreached["indices"], serde_json::json!([]));
+        assert!(!unreached["pending"].as_array().unwrap().is_empty());
+        let mut reached = losses.clone();
+        reached["window"] = serde_json::json!(0);
+        let values = query(&source, "naval-losses", reached.clone()).unwrap();
+        assert!(!values.is_null());
+        assert_eq!(values["coverage"]["complete"], false);
+        // The prefix uses the same saved rows and numerical values as direct
+        // reads, without waiting for the branch's full identity history.
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let flag = AtomicBool::new(false);
+        let context = crate::products::LoadContext { content: None };
+        let mut bare = page;
+        for field in ["coverage", "pending"] {
+            bare.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(
+            bare,
+            crate::products::ships_sunk::prepared::query(
+                &source,
+                "ships-sunk",
+                window,
+                &store,
+                &key,
+                &flag
+            )
+            .unwrap()
+        );
+        let mut bare = values;
+        for field in ["coverage", "pending"] {
+            bare.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(
+            bare,
+            crate::products::naval_losses::prepared::query(
+                &source,
+                "naval-losses",
+                &reached,
+                &context,
+                &store,
+                &key,
+                &flag
+            )
+            .unwrap()
+        );
+        drop(store);
+        run(&source, None, &flag, |_| {}).unwrap();
+        for (product, params) in [("ships-sunk-manifest", manifest), ("naval-losses", losses)] {
+            let full = query(&source, product, params).unwrap();
+            assert_eq!(full["coverage"]["complete"], true);
+            assert_eq!(full["pending"], serde_json::json!([]));
+        }
+        clear(source);
+    });
 }

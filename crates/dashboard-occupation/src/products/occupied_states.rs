@@ -176,6 +176,13 @@ pub struct OccupiedStatesReply {
     /// starting at the window's first hour can hold an earlier read.
     pub observed: Vec<OccupiedObservation>,
     pub warnings: Vec<String>,
+    /// The laws the window's states hold, when it is answered before its
+    /// branch's preparation reaches it ([`prepared::look_back_window`]): the
+    /// manifest published so far may not list them yet. None otherwise, when
+    /// the manifest lists every law of the windows it covers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub laws: Option<Vec<OccupationLawInfo>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -655,6 +662,7 @@ fn window_reply<'a>(
         states,
         observed,
         warnings: Vec::new(),
+        laws: None,
     }
 }
 

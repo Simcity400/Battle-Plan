@@ -55,9 +55,12 @@ The [dashboard architecture](../docs/dashboard.md) and [Rust dashboard guide](..
 - Dated fact queues retain their exact pending chunks between successful replies. Demand, admission, ordering and retry changes rebuild the plan; completion starts the next chunk without scanning the full history again. Two requests run at once, and completed missing values, failures, cancellation and exact hour/tag ownership remain distinct.
 
 Mounted prepared products publish their initial covered or approximate reply immediately
-and replace it only when accepted coverage advances. Partial replies belong to
+and replace it when accepted coverage or the presented exact, pending, approximate
+or preparing fields change. Partial replies belong to
 the mount and never become shared cached results. Completed replies, and replies
-without coverage, use the bounded product cache. One-shot reads return the first
+without preparation metadata, use the bounded product cache. Null preparation
+coverage and pending or approximate spans keep a reply out of that cache and
+keep mounted requests polling the latest gate, even when its family list shrinks. One-shot reads return the first
 available reply. Source release, content changes and unmount cancel departed
 requests; a preparation failure retains already published data with its error.
 
@@ -100,3 +103,20 @@ Themes, fonts, chart motion, country-colour adjustment and backdrops belong in [
 ## Battle Plan Recorder panel
 
 [src/recorder/](src/recorder/) is the [recorder-app](../crates/recorder-app/README.md) tray panel, built from [recorder.html](recorder.html) into the same `dist`. [status.ts](src/recorder/status.ts) maps the recorder's snapshot to each state of the panel's design (waiting, not recording, recording, the Stop prompt, problems, saving, saved, session discarded, and the one line naming loads a session left out), with dates from the game calendar, whole-megabyte sizes, display names from the shared recorder settings and the viewed country's flag drawn by the shared flag canvas; [RecorderPanel.tsx](src/recorder/RecorderPanel.tsx) draws them, Settings and its What to record view with the shared controls. The page applies the saved appearance as the app does (its window shares the replay app's WebView storage), invokes the tray app's commands, follows its `recorder-status` event and reports its height so the window fits it. Status text truncates rather than run under a button.
+
+Intelligence first views carry preparation's extent as `preparedCoverage`,
+separate from their captured read evidence. A cold first view has an empty
+preparation extent ending immediately before its first recorded hour, with
+`complete: false` and real pending spans. The shared query loop and product
+cache follow either preparation extent, and progressive log windows retain and
+replace these replies as the gate advances. Field-level preparing dates stay
+out of jump menus while exact captured values remain visible.
+
+`preparedPrefix` validates both preparation field names, approximate spans and
+empty prepared extents. Every first-view consumer uses the same parser; null
+preparation coverage is malformed.
+
+Default cold prepared replies use the same prefix metadata as published replies.
+An empty accepted extent is not a recording gap or an empty census. A widget
+without accepted observations renders Still being prepared and continues its
+ordinary prepared request until coverage advances.

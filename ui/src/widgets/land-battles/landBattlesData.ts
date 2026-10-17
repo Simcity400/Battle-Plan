@@ -132,7 +132,7 @@ export function validateLandBattlesReply(v: unknown): LandBattlesWindow {
     || !Array.isArray(v.warnings) || !v.warnings.every(w => Array.isArray(w) && w.length === 3 && hour(w[0])
       && int(w[1]) && w[1] >= 0 && w[1] < reasons.length && int(w[2]) && w[2] > 0)
     || !texts(v.contentWarnings)) throw new Error('The land battles reply is malformed.');
-  return { window: v.window, interval: v.interval as BattleWindow, rows, observed: v.observed,
+  return { ...v, window: v.window, interval: v.interval as BattleWindow, rows, observed: v.observed,
     warnings: v.warnings.map(([at, reason, count]) => ({ hour: at, reason: reasons[reason], count })), contentWarnings: v.contentWarnings };
 }
 export function validateLandBattlesRanking(v: unknown): LandBattlesRanking {

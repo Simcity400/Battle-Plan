@@ -420,7 +420,22 @@ pub struct UnitLeadersReply {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub selection_tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub preparing: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+/// The prepared leaderboard can ask for one hour beyond its history prefix.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnitLeadersAtHourParams {
+    pub branch_id: String,
+    pub selection: LeaderSelection,
+    pub view: LeaderView,
+    #[serde(default)]
+    pub leaders: LeaderKinds,
+    pub hour: i32,
 }
 
 /// Per-response diagnostics can change without copying the cached history.
@@ -447,7 +462,8 @@ impl Serialize for UnitLeadersResponse {
         let history = &self.history;
         let mut reply = serializer.serialize_struct(
             "UnitLeadersReply",
-            10 + usize::from(history.selection_tags.is_some()),
+            10 + usize::from(history.selection_tags.is_some())
+                + usize::from(!history.preparing.is_empty()),
         )?;
         reply.serialize_field("branchId", &history.branch_id)?;
         reply.serialize_field("firstHour", &history.first_hour)?;
@@ -460,6 +476,9 @@ impl Serialize for UnitLeadersResponse {
         reply.serialize_field("navyCommandsMissing", &history.navy_commands_missing)?;
         if let Some(tags) = &history.selection_tags {
             reply.serialize_field("selectionTags", tags)?;
+        }
+        if !history.preparing.is_empty() {
+            reply.serialize_field("preparing", &history.preparing)?;
         }
         reply.serialize_field("warnings", &self.warnings)?;
         reply.end()
@@ -1373,7 +1392,6 @@ const COMMAND_TABLES: &[TableId] = &[
     TableId::Fleets,
 ];
 
-#[cfg(any(test, feature = "test-support"))]
 fn scan_tables(career: bool, choices: bool) -> Vec<TableId> {
     let mut selected = LEADER_TABLES.to_vec();
     selected.extend([
@@ -1845,6 +1863,7 @@ impl Scan {
             traits: Vec::new(),
             observed: Vec::new(),
             selection_tags: None,
+            preparing: Vec::new(),
             results_missing: RESULTS_MISSING.into(),
             navy_commands_missing: if replay.format.field_gaps(TableId::Fleets).next().is_none() {
                 String::new()
@@ -3957,6 +3976,7 @@ fn project(
             LeaderSelection::Countries { .. } => Some(requested.into_iter().collect()),
             _ => None,
         },
+        preparing: scanned.preparing.clone(),
         results_missing: scanned.results_missing.clone(),
         navy_commands_missing: scanned.navy_commands_missing.clone(),
         warnings: scanned.warnings.clone(),
@@ -4070,6 +4090,7 @@ impl Product for UnitLeaders {
             LeaderView::decl(),
             LeaderKinds::decl(),
             UnitLeadersParams::decl(),
+            UnitLeadersAtHourParams::decl(),
             LeaderPerson::decl(),
             LeaderRole::decl(),
             LeaderValues::decl(),

@@ -639,6 +639,53 @@ fn project(
     Ok(())
 }
 
+/// The live hour a continuation's first page was answered through, which
+/// every later page of it keeps; None for a cursor this feed did not write.
+pub(crate) fn cursor_live(cursor: &str) -> Option<i32> {
+    serde_json::from_str::<Cursor>(cursor)
+        .ok()
+        .map(|cursor| cursor.live)
+}
+
+/// A cold page has no events or cursor; its requested extent is still pending.
+pub(crate) fn empty(source: &Source, params: &Params) -> io::Result<Page> {
+    let branch: u64 = params
+        .branch_id
+        .parse()
+        .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
+    let start = source
+        .replay_ref()
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .ok_or_else(|| crate::invalid("Unknown prepared feed branch"))?;
+    let (first, last) = branch_bounds(source.replay_ref(), start);
+    let first = params.first_hour.unwrap_or(first).max(first);
+    let last = params.last_hour.min(last);
+    if first > last
+        || params.page_size == 0
+        || params.page_size == u32::MAX
+        || params.cursor.is_some()
+    {
+        return Err(crate::invalid("Invalid prepared feed page"));
+    }
+    Ok(Page {
+        reply: EventFeedReply {
+            branch_id: params.branch_id.clone(),
+            first_hour: first,
+            last_hour: last,
+            windows: Vec::new(),
+            rows: Vec::new(),
+            items: Vec::new(),
+            modifiers: Vec::new(),
+            texts: Vec::new(),
+            unavailable: Vec::new(),
+            warnings: Vec::new(),
+        },
+        next_cursor: None,
+    })
+}
+
 pub(crate) fn query(
     source: &Source,
     mut params: Params,

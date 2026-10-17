@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { closedLane, completedWhenFirstRecorded, currentProjects, earlierBound, historyCard, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, currentProjectReply, completedWhenFirstRecorded, currentProjects, earlierBound, historyCard, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -322,4 +322,18 @@ test('History lanes run in start order, split at each progress step and fold pro
   assert.deepEqual([ranged.completed, ranged.cancelled, ranged.by], [2, 1, 160]);
   assert.equal(closedLane('closed', ranged)?.label, `2 completed, 1 cancelled by ${dayLabel(160)}`);
   assert.equal(closedLane('closed', projectHistory(fixture(), 199)), null);
+});
+
+test('cold current cards validate separately from an empty prepared history and mark the start pending', () => {
+  const frame = fixture();
+  frame.identities = [{ firstHour: 147, lastHour: 147, slot: 5, countryId: 10 }];
+  frame.available = [{ firstHour: 147, lastHour: 147 }]; frame.readHours = [147];
+  frame.projects = [{ id: '@147:episode', start: { hour: 147, exact: false }, runs: [{ ...frame.projects[0].runs[0], firstHour: 147, lastHour: 147 }] }];
+  const reply = validateSpecialProjectsReply({ ...fixture(), identities: [], available: [], readHours: [], projects: [],
+    coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 300 }], current: frame });
+  const current = currentProjectReply(reply)!;
+  assert.equal(currentProjects(current, 147).running[0].run.progress, 17);
+  const card = currentProjects(current, 147).running[0];
+  assert.equal(projectTooltip(current, card, true).rows?.find(row => row.label === 'Started')?.value, 'Still being prepared');
+  assert.throws(() => validateSpecialProjectsReply({ ...reply, current: { ...frame, current: frame } }));
 });

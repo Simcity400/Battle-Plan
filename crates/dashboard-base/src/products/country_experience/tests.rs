@@ -9,6 +9,205 @@ use std::sync::atomic::AtomicBool;
 use super::test_fixtures::{experience_frame, renamed_frame, slot_base};
 
 #[test]
+fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_folds() {
+    use super::{SAMPLE_TABLES, SAMPLED_MEASURES, Sampler};
+    use crate::prepared::{
+        coverage::{Coverage, SCHEMA},
+        query::{observations, progressive},
+    };
+    use crate::test_fixtures::{continuation_records, file_source, replay};
+    let mut recording = replay(vec![
+        experience_frame(0, true, 9001),
+        experience_frame(1, true, 9001),
+    ]);
+    for block in 1..16 {
+        recording = recording
+            .append(&[continuation_records(
+                &recording,
+                1,
+                vec![
+                    experience_frame(block * 2, true, 9001),
+                    experience_frame(block * 2 + 1, true, 9001),
+                ],
+            )])
+            .unwrap();
+    }
+    let (source, root) = file_source(recording);
+    let flag = AtomicBool::new(false);
+    let key = serde_json::to_string(&("opaque!tag", 7_u32, 9001_u32)).unwrap();
+    let mut cold = None;
+    for last in [None, Some(1), Some(3)] {
+        let coverage = last.map(|last| Coverage {
+            schema: SCHEMA,
+            first_hour: slot_base(),
+            last_hour: slot_base() + last,
+            complete: false,
+        });
+        for measure in SAMPLED_MEASURES {
+            let requested = vec![
+                (key.clone(), measure.to_owned()),
+                (
+                    key.clone(),
+                    crate::prepared_measure::query::READ_HOUR.to_owned(),
+                ),
+            ];
+            let sampler = Sampler::new(source.replay_ref().format);
+            let reply = progressive::tail_first_read(
+                &source,
+                "country-experience:exact",
+                1,
+                coverage.as_ref(),
+                SAMPLE_TABLES,
+                replay::cadence::STAGGER_PERIOD,
+                &requested,
+                &Sampler::cache_keys(&requested),
+                (slot_base(), slot_base() + 31),
+                &|frame, _, requested| sampler.sample(frame, requested),
+                &|block| Sampler::first_block(&source, block, &requested, &flag),
+                &flag,
+            )
+            .unwrap();
+            assert!(!reply.1.is_empty());
+            for run in &reply.0[&(key.clone(), measure.to_owned())] {
+                let sampled = (run.first_hour - slot_base()) / 2 * 2;
+                let expected = match measure {
+                    "army-banked" => i128::from(sampled) * 32_768,
+                    "navy-banked" => -i128::from(sampled),
+                    _ => 0,
+                };
+                assert_eq!(run.value, expected);
+            }
+            if measure == "army-banked" && last.is_none() {
+                cold = Some(reply);
+            }
+        }
+    }
+    assert!(cold.is_some());
+    let (bytes, bound, reads) = observations::usage(&source, "country-experience:first-read");
+    assert_eq!(
+        reads, 16,
+        "all three measures and the shrinking tails use one pass"
+    );
+    assert!(bytes <= bound);
+    let reached = slot_base() + 31;
+    for measure in SAMPLED_MEASURES {
+        let requested = vec![
+            (key.clone(), measure.to_owned()),
+            (
+                key.clone(),
+                crate::prepared_measure::query::READ_HOUR.into(),
+            ),
+        ];
+        let mut previous = None;
+        for _ in 0..5 {
+            let sampler = Sampler::new(source.replay_ref().format);
+            let reply = progressive::state_tail_recorded(
+                &source,
+                "country-experience:exact",
+                1,
+                None,
+                SAMPLE_TABLES,
+                replay::cadence::STAGGER_PERIOD,
+                &requested,
+                &Sampler::cache_keys(&requested),
+                &[reached],
+                &|frame, _, requested| sampler.sample(frame, requested),
+                &flag,
+            )
+            .unwrap();
+            let expected = match measure {
+                "army-banked" => 31 * 32_768,
+                "navy-banked" => -31,
+                _ => 0,
+            };
+            assert_eq!(
+                reply.0[&(key.clone(), measure.to_owned())][0].value,
+                expected
+            );
+            if let Some(previous) = &previous {
+                assert_eq!(&reply, previous);
+            }
+            previous = Some(reply);
+        }
+    }
+    assert_eq!(
+        observations::usage(&source, "country-experience:exact").2,
+        1
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(feature = "slow-tests")]
+#[test]
+fn first_read_observations_scale_to_five_thousand_native_holders() {
+    use super::{SAMPLED_MEASURES, Sampler};
+    use replay::rows::CountryExperienceRow;
+    let mut frame = experience_frame(0, true, 9001);
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (0..5000)
+            .map(|i| CountryRow {
+                id: 10000 + i,
+                canonical_slot: i + 1,
+                tag: format!("holder {i}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (0..5000)
+            .map(|i| CountryLinkRow {
+                id: 10000 + i,
+                canonical_slot: i + 1,
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryExperience.index()] =
+        TableView::Complete(TableRows::CountryExperience(
+            (0..5000)
+                .map(|i| CountryExperienceRow {
+                    country: 10000 + i,
+                    army_raw: i64::from(i),
+                    navy_raw: -i64::from(i),
+                    air_raw: 2 * i64::from(i),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let (source, root) =
+        crate::test_fixtures::file_source(crate::test_fixtures::replay(vec![frame]));
+    let flag = AtomicBool::new(false);
+    for measure in SAMPLED_MEASURES {
+        let requested: Vec<_> = (0..5000)
+            .map(|i| {
+                (
+                    serde_json::to_string(&(format!("holder {i}"), i + 1, 10000 + i)).unwrap(),
+                    measure.to_owned(),
+                )
+            })
+            .collect();
+        let sample =
+            Sampler::first_block(&source, &source.replay_ref().index[0], &requested, &flag)
+                .unwrap();
+        for (i, key) in requested.iter().enumerate() {
+            let expected = match measure {
+                "army-banked" => i as i128,
+                "navy-banked" => -(i as i128),
+                _ => 2 * i as i128,
+            };
+            assert_eq!(
+                sample[key],
+                (Some((i as u32 + 1, 10000 + i as u32)), Some(expected))
+            );
+        }
+    }
+    assert_eq!(
+        crate::prepared::query::observations::usage(&source, "country-experience:first-read").2,
+        1
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn experience_reads_hold_and_change_requires_a_read_exactly_one_day_earlier() {
     use crate::products::country_experience::scan;
     let read_hours = [-3, 0, 7, 21, 24, 31, 48, 52];
@@ -550,6 +749,64 @@ fn manual_alias_projection_keeps_selected_holders_and_excludes_unrelated_alias_r
             .iter()
             .any(|identity| identity.country_id == 9003)
     );
+}
+
+#[test]
+fn exact_banked_reads_find_a_supplier_several_short_blocks_back_and_reuse_it() {
+    use super::{SAMPLE_TABLES, Sampler};
+    use crate::prepared::query::{observations, progressive};
+    use crate::test_fixtures::{continuation_records, file_source, replay};
+    let frames = |first| {
+        (first..first + 6)
+            .map(|hour| {
+                // Shift the daily slot to offset 17, several six-hour blocks before the target.
+                let mut frame = experience_frame(hour, hour == 17, 9001);
+                frame.hour = slot_base() + 7 + hour;
+                frame
+            })
+            .collect()
+    };
+    let mut recording = replay(frames(0));
+    for first in [6, 12, 18, 24, 30] {
+        recording = recording
+            .append(&[continuation_records(&recording, 1, frames(first))])
+            .unwrap();
+    }
+    let (source, root) = file_source(recording);
+    let flag = AtomicBool::new(false);
+    let key = serde_json::to_string(&("opaque!tag", 7_u32, 9001_u32)).unwrap();
+    let requested = vec![(key.clone(), "army-banked".into())];
+    let ask = |hour| {
+        let sampler = Sampler::new(source.replay_ref().format);
+        progressive::state_tail_recorded(
+            &source,
+            "country-experience:exact",
+            1,
+            None,
+            SAMPLE_TABLES,
+            replay::cadence::STAGGER_PERIOD,
+            &requested,
+            &Sampler::cache_keys(&requested),
+            &[hour],
+            &|frame, _, requested| sampler.sample(frame, requested),
+            &flag,
+        )
+        .unwrap()
+    };
+    let cold = ask(slot_base() + 37);
+    assert_eq!(
+        cold.0[&(key.clone(), "army-banked".into())][0].value,
+        17 * 32_768
+    );
+    assert_eq!(
+        ask(slot_base() + 38).0[&(key, "army-banked".into())][0].value,
+        17 * 32_768
+    );
+    assert_eq!(
+        observations::usage(&source, "country-experience:exact").2,
+        1
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

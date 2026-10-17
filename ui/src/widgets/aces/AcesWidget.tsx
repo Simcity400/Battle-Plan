@@ -9,7 +9,7 @@ import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { jumpItem } from '../../charts/jump';
-import { runAt, runIndexAt } from '../../charts/series';
+import { runAt } from '../../charts/series';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import { nameKey, useCountryFactsAt } from '../../dashboard/countryNamesAt';
@@ -19,18 +19,17 @@ import { drawableIcon } from '../../dashboard/artwork';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
-import { readAt } from '../../dashboard/reads';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useParityRows } from '../../dashboard/parityRows';
-import { useProductWindows, useWindowDisplay } from '../../dashboard/productWindows';
+import { useWindowDisplay } from '../../dashboard/productWindows';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { AirAcePortrait, AirAcesManifestReply, AirAcesWindowReply } from '../../generated/dashboard';
+import type { AirAcePortrait } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS, SORT_CHOICES } from './definition';
-import { aceJump, aceName, aceNameValue, aceCallsign, aceRowModel, aceRows, aceStatus, aceTooltip, aircraftName, validateAces, validateAcesWindow, validatePortraits, wingName } from './acesData';
-import type { AceRow } from './acesData';
+import { aceJump, aceName, aceNameValue, aceCallsign, aceRowModel, aceRows, aceStatus, aceTooltip, aircraftName, validateAceRoster, validatePortraits, wingName } from './acesData';
+import type { AceRow, AceRosterData } from './acesData';
 import './aces.css';
 
 const EMPTY: readonly AceRow[] = [];
@@ -56,28 +55,21 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const window = track && resolveWindow(widget, track, runtime.tracks, hourAt);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const options = resolveOptions(OPTIONS, widget.options);
-  const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
-  const loaded = useProduct<AirAcesManifestReply>(runtime.client, track ? {
-    sourceId: track.source.id, revision: track.source.revision, product: 'air-aces', params: { branchId: track.branch.id, view: 'manifest' },
-  } : null, active, validateAces, track?.source);
-  const data = loaded.data;
+  const loaded = useProduct<AceRosterData>(runtime.client, track ? {
+    sourceId: track.source.id, revision: track.source.revision, product: 'air-aces', params: { branchId: track.branch.id, view: 'roster', hour },
+  } : null, active, validateAceRoster, track?.source);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const target = data ? runIndexAt(data.windows, hour) : -1;
-  const wanted = useMemo(() => data && target >= 0 ? target + 1 < data.windows.length ? [target, target + 1] : [target] : [], [data, target]);
-  const windows = useProductWindows<AirAcesWindowReply>(runtime.client, identity, index => ({
-    sourceId: track!.source.id, revision: track!.source.revision, product: 'air-aces',
-    params: { branchId: track!.branch.id, view: 'window', window: index },
-  }), wanted, active && data !== undefined, validateAcesWindow, track?.source);
-  const current = windows.data.get(target);
-  const display = useWindowDisplay(identity, current, hour, runtime.client);
-  const pending = current === undefined;
-  const recorded = data !== undefined && runAt(data.observed, hour) !== null;
-  const read = data && display ? readAt(data.readHours, display.hour) : null;
-  const detail = display?.data;
-  // Same read and window reuse rows while the clock carries those facts.
+  const display = useWindowDisplay(identity, loaded.data, hour, runtime.client);
+  const data = display?.data.manifest, detail = display?.data.roster;
+  const read = display?.data.readHour ?? null;
+  const preparing = !!display?.data.preparing.length;
+  const selectedSort = tableSortOf(options.tableSort, DEFAULT_SORT);
+  const sort = preparing && selectedSort.column === 'date' ? { column: 'name', direction: 'ascending' as const } : selectedSort;
+  const pending = loaded.data === undefined;
+  const recorded = data !== undefined && runAt(data.observed, display?.hour ?? hour) !== null;
   const rows = useMemo(() => data && detail && recorded && read !== null && match.ready ? aceRows(data, detail, Math.max(detail.firstHour, read),
-    (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read)) : EMPTY,
-  [data, detail, recorded, read, match, widget.countries.kind]);
+    (tag, read) => tag === null ? widget.countries.kind === 'all' : match.matches(tag, read)).map(row => ({ ...row, preparing })) : EMPTY,
+  [data, detail, recorded, read, match, widget.countries.kind, preparing]);
   const [visible, setVisible] = useState<readonly AceRow[]>(EMPTY);
   useEffect(() => setVisible(EMPTY), [identity]);
   const onVisible = useCallback((rows: readonly AceRow[]) => setVisible(rows), []);
@@ -97,7 +89,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
       </small></div>; } },
     { key: 'wing', header: 'Wing · aircraft', label: 'Wing and aircraft', sortable: false, width: 'minmax(var(--table-name-min), 1fr)', value: () => null, renderMissing: true,
       render: row => <div className="aces-wing"><span title={wingName(row)}>{wingName(row)}</span><small title={aircraftName(row)}>{aircraftName(row)}</small></div> },
-    { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', value: row => row.ace.firstSeen,
+    { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', value: row => row.ace.firstSeen, renderMissing: true,
       render: row => <small className="aces-status">{aceStatus(row)}</small> },
   ], [portraits, labelAt]);
   const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name)], viewport), [labelAt, viewport]);
@@ -110,16 +102,16 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   }));
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (loaded.error) return <WidgetState kind="error" detail={loaded.error} onRetry={loaded.retry} />;
+  if (loaded.error && !display) return <WidgetState kind="error" detail={loaded.error} onRetry={loaded.retry} />;
   if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading aces…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!data.available) return <WidgetState kind="unavailable" message="Aces: Not in this recording." />;
+  if (!data.available) return <WidgetState kind="unavailable" message={preparing ? "Aces were not recorded at this time." : "Aces: Not in this recording."} />;
   if (!recorded) return <WidgetState kind="unavailable" message="Aces were not recorded at this time." />;
-  if (!display) return windows.errors.has(target) ? <WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} /> : <WidgetState kind="loading" label="Loading aces..." />;
+  if (!display) return <WidgetState kind="loading" label="Loading aces..." />;
   if (!rows.length) return <WidgetState kind="empty" icon="star" message="No aces match these settings." />;
-  return <div ref={root} className="aces-widget">{pending && <div className="aces-loading" role="status">{windows.errors.has(target) ? 'Couldn’t load aces.' : 'Updating…'}{windows.errors.has(target) && <button onClick={windows.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
+  return <div ref={root} className="aces-widget">{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status">{loaded.error ? 'Couldn’t load aces.' : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
     rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable"
-    muted={row => !row.run.alive} menu={row => [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed}
+    muted={row => !row.run.alive} menu={row => row.preparing ? [] : [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed}
     {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: aceRowModel } } : {})} /></div>;
 }

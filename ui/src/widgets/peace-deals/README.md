@@ -6,9 +6,13 @@
 
 **Settings:** Whole world with no country picker; content-defined action filter and shared log density/animation/month/chip controls; Campaign, Follow, Pin and Range.
 
-Unprepared outcomes show the shared "This range is still being prepared." status.
 Conference closure, derived transfers and delayed finalizers require earlier
-observations; an unprepared span remains pending rather than an empty conference list.
+observations, so nothing is sampled past the prepared prefix. Before preparation
+covers the branch the log lists the prefix's conferences under the shared
+"Prepared A to B; the rest is still being prepared." status, and a conference
+open or unsettled at the prefix's last hour says "Outcome still being prepared."
+rather than that its outcome was not recorded. With nothing prepared yet the
+widget shows "This range is still being prepared.".
 
 **Notable behaviour:**
 

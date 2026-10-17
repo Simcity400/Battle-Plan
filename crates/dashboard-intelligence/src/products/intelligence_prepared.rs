@@ -39,6 +39,9 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
+pub(crate) mod first_views;
+pub use first_views::query;
+
 /// Fixed content is bound in pipeline configuration, including refusals. Recorded
 /// inputs and their dated projections remain in the native observers.
 pub struct Content {

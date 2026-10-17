@@ -35,6 +35,7 @@ Shared Canvas charts and windowed HTML logs/tables. Widgets supply exact values,
 | [hover.ts](hover.ts), [pick.ts](pick.ts), [linePick.ts](linePick.ts), [jump.ts](jump.ts) | Input ownership, drawn picks, line candidates and shared-clock seeks. |
 | [tooltip.ts](tooltip.ts), [TooltipLayer](TooltipLayer.tsx), [TooltipRows](TooltipRows.tsx) | Structured owner-scoped tooltips, fitted/scrollable rows and full spoken text. |
 | [images.ts](images.ts), [countryFlag.ts](countryFlag.ts), [hatch.ts](hatch.ts) | Shared image decoding, dated flag states and unknown-value hatching. |
+| [prepared.ts](prepared.ts), [PreparedKey.tsx](PreparedKey.tsx) | Approximate and still-being-prepared marking: span clipping, the faded dashed edge, the pending band, its time-chart layer, the one key line and the prepared-range status wording. |
 
 Hourly summaries carry original supplying runs, so drawing, extents and picks use
 the same legacy curves or held steps, including gaps and fractional view edges.
@@ -81,6 +82,8 @@ Log row windows use the scroller's outer layout height, keeping overscan members
 ## Adding or changing a chart
 
 Country race lines accept prepared width summaries with separate exact pick reads.
+Their optional `pending` spans use the shared light time band and the same key as
+approximate geometry.
 Stacked shares accept synchronized count summaries for dense geometry, retaining
 ordinary drawing when exact runs fit the view and preserving breaks in coarse
 buckets. Summary samples never supply exact hover counts.
@@ -91,5 +94,19 @@ buckets. Summary samples never supply exact hover counts.
 
 Prepared line summaries carry approximate spans separately from their display
 values. The shared renderer clips these spans and draws faded dashed strokes;
-one Approximate key names them. Exact spans retain the ordinary line geometry. Logs can show one prepared-range
-status above their rows, including an empty list, until coverage is complete.
+one Approximate key names them. Exact spans retain the ordinary line geometry.
+Timeline bars and heat cells inside approximate spans take the same fade and
+dashed edge ([prepared.ts](prepared.ts)). A reply answered from its gate's
+prepared prefix names the requested hours after it `pending`: a time axis draws
+them as a light band with no geometry (`pendingLayer`), and [PreparedKey](PreparedKey.tsx)
+names it "Still being prepared" beside Approximate in the same key line. Logs and
+lists show one prepared-range status above or beside their rows, including an
+empty list, until coverage is complete: "Prepared A to B; the rest is still
+being prepared.", led by "Newest days exact from C." when a proven newest window
+answers exactly (`PreparedLogCoverage`'s `exact`).
+
+Prepared log rows can independently name a proven newest interval with
+`preparedExactFrom`, and provisional prefix rows with `preparedApproximate`.
+Event badges whose inventory can still change use `approximate`: the badge fades,
+its edge is dashed, and its tooltip says Approximate. These marks are independent
+of whether a numeric operand was read exactly.

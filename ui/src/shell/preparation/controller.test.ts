@@ -116,3 +116,12 @@ test('background preference is explicit in preferences and progress replies', ()
   delete incomplete.backgroundEnabled;
   assert.throws(() => validatePreparationReply(incomplete, request), /Invalid preparation/);
 });
+
+test('paused preparation retains family coverage and validates both fields', () => {
+  const request = { sourceId: 's', revision: 'r', requestId: 'q' };
+  const paused = { ...reply(request, 'paused'), pauseReason: 'game' as const,
+    families: { wars: { '1': { firstHour: 10, lastHour: 11, complete: false } } } };
+  assert.equal(validatePreparationReply(paused, request), paused);
+  assert.throws(() => validatePreparationReply({ ...paused, pauseReason: 'unknown' } as any, request), /Invalid/);
+  assert.throws(() => validatePreparationReply({ ...paused, families: { wars: { '1': { firstHour: 11, lastHour: 10, complete: false } } } }, request), /Invalid/);
+});

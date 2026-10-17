@@ -27,6 +27,7 @@ import { drawCross, drawDisclosure, acceptsLaneClick, acceptsLaneMenu } from './
 import { catalogueWidth } from './labelCatalogue';
 import type { TimelineLabel } from './labelCatalogue';
 import { barContent, barNameFits, END_MARK_ROOM } from './barLabel';
+import { fillPendingBand, markApproximate, spanRanges } from '../prepared';
 import '../charts.css';
 
 export type { BandStep, LaneGeometry, TimelineLane, TimelineSpan } from './layout';
@@ -51,6 +52,12 @@ export interface TimelineProps {
   emptyLabel?: string;
   /** Hours the data was not recorded: a lane there has an unknown holder, not an empty slot. */
   unobserved?: readonly { firstHour: number; lastHour: number }[];
+  /** Hours whose bars come from sampled keyframes: drawn faded with the
+   * dashed approximate edge. The widget names them with `PreparedKey`. */
+  approximate?: readonly { firstHour: number; lastHour: number }[];
+  /** Hours still being prepared: a light band, with no bars there yet. The
+   * widget names them with `PreparedKey`. */
+  pending?: readonly { firstHour: number; lastHour: number }[];
   /** Taller lanes for a painted plot; every layout and interaction uses this height. */
   rowHeight?: number;
   /** Keep the dates in view while lanes scroll; false lets them scroll with the lanes. */
@@ -362,6 +369,8 @@ export default function Timeline(props: TimelineProps) {
         }
       };
       grid(axisTop + AXIS_HEIGHT - 4, bottom);
+      for (const [from, to] of spanRanges(p.pending, x[0], x[1], p.playhead))
+        fillPendingBand(context, tokens, Math.max(left, toX(from)), Math.min(right, toX(to)), AXIS_HEIGHT, bottom - AXIS_HEIGHT);
 
       let animating = false;
       // Each lane's bands, placed together so gaps between its spans stay visible too.
@@ -535,6 +544,10 @@ export default function Timeline(props: TimelineProps) {
           const radius = Math.min(5, barHeight / 2, (to - from) / 2);
           const open = barOpenEnd(span, p.playhead) && toX(hours[1]) <= right;
           context.beginPath(); context.roundRect(from, centre - barHeight / 2, to - from, barHeight, open ? [radius, 0, 0, radius] : radius); context.fill();
+          for (const [first, last] of spanRanges(p.approximate, hours[0], hours[1])) {
+            const start = Math.max(from, toX(first)), end = Math.min(to, toX(last));
+            markApproximate(context, tokens, start, centre - barHeight / 2, end - start, barHeight);
+          }
           if (open) { context.globalAlpha = 0.5; context.fillStyle = tokens.surface; context.fillRect(to - 1, centre - barHeight / 2, 1, barHeight); context.globalAlpha = 1; }
           if (positioned) glyphs();
           const endMark = !!span.endLabel && to - from >= 16 && hours[1] >= span.lastHour + 1;

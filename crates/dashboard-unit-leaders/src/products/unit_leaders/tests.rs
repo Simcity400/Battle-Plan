@@ -1520,6 +1520,7 @@ fn empty_reply() -> UnitLeadersReply {
         traits: vec![],
         observed: vec![],
         selection_tags: None,
+        preparing: Vec::new(),
         results_missing: RESULTS_MISSING.into(),
         navy_commands_missing: NAVY_COMMANDS_MISSING.into(),
         warnings: vec![],

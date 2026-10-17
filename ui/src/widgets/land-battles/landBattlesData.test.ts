@@ -1,3 +1,4 @@
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LandBattlesManifestReply, CountryGroupReply } from '../../generated/dashboard';
@@ -401,3 +402,10 @@ test('loss read validation refuses malformed sides, ambiguous labels, orphan cha
   ]) assert.throws(() => validateLandBattlesReply(losses(...reads)), /malformed/);
 });
 
+
+test('cold land windows preserve the ordinary empty-prefix metadata', () => {
+  const prefix = { coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 120 }] };
+  const value = { ...prefix, window: 0, interval: { firstHour: 100, lastHour: 120 }, rows: [], observed: [], reasons: [], warnings: [], contentWarnings: [] };
+  assert.deepEqual(preparedPrefix(validateLandBattlesReply(value)), prefix);
+  assert.doesNotThrow(() => validateLandBattlesManifest({ ...prefix, windows: [value.interval], available: false, unavailable: null, contentWarnings: [] }));
+});

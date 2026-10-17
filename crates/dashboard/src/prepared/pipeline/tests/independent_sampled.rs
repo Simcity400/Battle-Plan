@@ -1154,7 +1154,10 @@ fn navy_size_ends_a_country_where_it_leaves_and_starts_it_again_where_it_returns
     };
     let first = Replay::from_records(
         CAMPAIGN.into(),
-        &[records(1, (100..=102).map(returning_country_frame).collect())],
+        &[records(
+            1,
+            (100..=102).map(returning_country_frame).collect(),
+        )],
     )
     .unwrap();
     let replay = first

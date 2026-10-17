@@ -8,7 +8,10 @@ export interface PreparedCoverage { firstHour: number; lastHour: number; complet
 export const isPreparedCoverage = (value: unknown): value is PreparedCoverage => !!value && typeof value === 'object'
   && Number.isSafeInteger((value as PreparedCoverage).firstHour) && Number.isSafeInteger((value as PreparedCoverage).lastHour)
   && (value as PreparedCoverage).firstHour <= (value as PreparedCoverage).lastHour && typeof (value as PreparedCoverage).complete === 'boolean';
-export interface PreparationReply extends PreparationRequest { backgroundEnabled: boolean; state: PreparationPhase; sections: PreparationSection[]; coverage?: Record<string, PreparedCoverage>; bytes: string; error: string | null; pauseReason?: PreparationPauseReason | null }
+/** `coverage` is the hourly walk's by branch; `families` each family prepared on its own's, by family then branch. */
+export interface PreparationReply extends PreparationRequest { backgroundEnabled: boolean; state: PreparationPhase; sections: PreparationSection[]; coverage?: Record<string, PreparedCoverage>;
+  families?: Record<string, Record<string, PreparedCoverage>>; bytes: string; error: string | null; pauseReason?: PreparationPauseReason | null }
+const coverageMap = (value: unknown) => !!value && typeof value === 'object' && Object.values(value).every(isPreparedCoverage);
 const phases = new Set(['idle', 'queued', 'preparing', 'paused', 'ready', 'cancelled', 'failed']);
 const pauseReasons = new Set(['requested', 'newerRecording', 'diskSpace', 'game']);
 const count = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
@@ -17,7 +20,8 @@ export function validatePreparationReply(reply: PreparationReply, request: Prepa
     throw new Error('Preparation reply does not match this recording and request.');
   if (typeof reply.backgroundEnabled !== 'boolean' || !phases.has(reply.state) || !count(reply.bytes) || !(reply.error === null || typeof reply.error === 'string') || !Array.isArray(reply.sections)
     || !(reply.pauseReason === undefined || reply.pauseReason === null || pauseReasons.has(reply.pauseReason))
-    || (reply.coverage !== undefined && (!reply.coverage || typeof reply.coverage !== 'object' || Object.values(reply.coverage).some(value => !isPreparedCoverage(value))))
+    || (reply.coverage !== undefined && !coverageMap(reply.coverage))
+    || (reply.families !== undefined && (!reply.families || typeof reply.families !== 'object' || !Object.values(reply.families).every(coverageMap)))
     || reply.sections.some(section => !section || typeof section.id !== 'string' || typeof section.label !== 'string' || !phases.has(section.state)
       || !count(section.done) || !(section.total === null || count(section.total)) || !(section.error === null || typeof section.error === 'string')))
     throw new Error('Invalid preparation progress.');

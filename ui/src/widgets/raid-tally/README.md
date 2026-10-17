@@ -28,3 +28,8 @@ Top 10 by default, manual/groups; campaign/follow/pin/range, race/lines, launche
 | [definition.ts](definition.ts), [index.ts](index.ts) | Availability, options and registration. |
 
 The widget reads the prepared raid adapter and exposes the "Raid tally values" parity model.
+
+Totals read only through the raid and identity histories' joint prepared prefix.
+A requested race hour after it says This range is still being prepared; no
+unprepared counts become zeroes. Preparation coverage advances the mounted
+request through the normal shared polling path.

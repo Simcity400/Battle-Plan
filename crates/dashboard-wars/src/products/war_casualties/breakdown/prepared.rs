@@ -10,6 +10,49 @@ pub fn query(
     key: &store::SourceKey,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<CasualtyBreakdownReply>> {
+    query_through(source, params, context, store, key, None, cancelled)
+}
+
+/// No casualty observation has been accepted for this request yet.
+pub fn empty(
+    source: &Source,
+    params: &CasualtyBreakdownParams,
+) -> io::Result<CasualtyBreakdownReply> {
+    CasualtyBreakdown::validate(params).map_err(dashboard_core::invalid)?;
+    let branch = params.branch_id.parse().expect("validated casualty branch");
+    let windows = source.block_windows(branch).to_vec();
+    if params.window.is_some_and(|window| window >= windows.len()) {
+        return Err(dashboard_core::invalid("Unknown casualty window"));
+    }
+    Ok(CasualtyBreakdownReply {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+        available: false,
+        windows,
+        window: params.window,
+        observed: Vec::new(),
+        countries: Vec::new(),
+        series: Vec::new(),
+        wars: Vec::new(),
+        has_gap: false,
+        warnings: Vec::new(),
+    })
+}
+
+/// [`query`] while the casualties' and the wars' joint prepared prefix ends
+/// at `through` (None once both are complete). Their pages hold every hour
+/// through it: a window ending after it answers from the prefix's newest
+/// window instead (the reply's `window`), whose lifetime counters are the
+/// losses at the prefix's last hour, and observation stops there.
+pub fn query_through(
+    source: &Source,
+    params: &CasualtyBreakdownParams,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    through: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<CasualtyBreakdownReply>> {
     CasualtyBreakdown::validate(params).map_err(dashboard_core::invalid)?;
     check_cancel(cancelled)?;
     let branch = params.branch_id.parse().expect("validated branch");
@@ -24,6 +67,19 @@ pub fn query(
     if params.window.is_some_and(|window| window >= windows.len()) {
         return Err(dashboard_core::invalid("Unknown casualty window"));
     }
+    let mut params = params.clone();
+    if let (Some(through), Some(ordinal)) = (through, params.window)
+        && windows[ordinal].last_hour > through
+    {
+        let Some(newest) = windows[..=ordinal]
+            .iter()
+            .rposition(|window| window.last_hour <= through)
+        else {
+            return Ok(None);
+        };
+        params.window = Some(newest);
+    }
+    let params = &params;
     let Some((_, catalogue)) = series::read_catalogue::<super::super::prepared::Catalogue>(
         store, key, "casualty", branch,
     )?
@@ -32,7 +88,8 @@ pub fn query(
     };
     // The casualties' coverage gates the breakdown, which also reads the
     // wars' change inputs: those are prepared on their own too and can
-    // trail, so on the store preparation publishes it waits for them.
+    // trail, so on the store preparation publishes it waits for them to
+    // reach the hours it answers.
     if dashboard_base::prepared::files(source, context.content.as_ref())
         .is_ok_and(|(_, prepared)| prepared == *key)
         && !dashboard_base::prepared::coverage::product_coverage(
@@ -42,7 +99,9 @@ pub fn query(
             "wars",
             cancelled,
         )?
-        .is_some_and(|coverage| coverage.complete)
+        .is_some_and(|coverage| {
+            coverage.complete || through.is_some_and(|through| coverage.last_hour >= through)
+        })
     {
         return Ok(None);
     }
@@ -73,7 +132,13 @@ pub fn query(
         return Ok(None);
     };
     let mut coverage = Reader::new(store, key, format!("casualty-coverage-{branch}"), cancelled)?;
-    let observed = observed(&mut coverage, bounds)?;
+    let mut observed = observed(&mut coverage, bounds)?;
+    if let Some(through) = through {
+        observed.retain(|span| span.first_hour <= through);
+        for span in &mut observed {
+            span.last_hour = span.last_hour.min(through);
+        }
+    }
     let projection = if let Some(ordinal) = params.window {
         let countries = countries(&catalogue.holder_coverage, &selected, cancelled)?;
         let Some(window) = series::read_reply::<pairs::Window>(

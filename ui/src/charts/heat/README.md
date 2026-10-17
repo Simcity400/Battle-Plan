@@ -4,7 +4,7 @@
 
 ## Data and appearance
 
-Rows have opaque IDs, labels and one cell per ascending period. A period has inclusive first/last hours and the supplying `readHour`; null means a recording gap. Cells contain any number of `{id, label, color, share}` parts. Empty parts are blank inactivity, `unknown` is hatched, and `filtered` is outlined. Gaps use the separate recording shade. Future reads do not draw.
+Rows have opaque IDs, labels and one cell per ascending period. A period has inclusive first/last hours and the supplying `readHour`; null means a recording gap. Cells contain any number of `{id, label, color, share}` parts. Empty parts are blank inactivity, `unknown` is hatched, and `filtered` is outlined. Gaps use the separate recording shade, excluding any hours still being prepared. Future reads do not draw. `approximate` hours fade their cells and give them the dashed approximate edge (the hatch stays for unknown cells); `pending` hours draw a light band and no cells. The kit names both in one [PreparedKey](../PreparedKey.tsx) line under its legend.
 
 Keep rows/parts immutable. Identical part arrays can coalesce adjacent drawing runs while tooltips retain each period's read. Drawing clips exact periods without rounding across gaps.
 

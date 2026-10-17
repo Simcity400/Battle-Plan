@@ -177,6 +177,22 @@ pub struct WarsReply {
     pub capitulations_unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
+/// The native war groups one viewpoint sees at a single requested hour past
+/// the wars' prepared prefix, read from that hour's frame alone. Sides, names
+/// and casualty counters are the hour's operands; app continuity, start,
+/// join and capitulation history need earlier hours, so ids are transient
+/// (`@<hour>:<index>`), every bound is a "by" bound and no capitulation is
+/// listed.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WarsAtHour {
+    pub hour: i32,
+    /// At least one overview operand table was recorded at the hour; false
+    /// at an unrecorded hour.
+    pub available: bool,
+    pub wars: Vec<WarTimeline>,
+    pub warnings: Vec<String>,
+}
 /// Replies kept for the most recently requested viewpoints.
 #[cfg(any(test, feature = "test-support"))]
 const CACHED_REPLIES: usize = 4;
@@ -204,6 +220,7 @@ impl Product for Wars {
             WarCasualtyRun::decl(),
             WarTimeline::decl(),
             WarsReply::decl(),
+            WarsAtHour::decl(),
         ]
     }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
@@ -965,6 +982,36 @@ fn scan_selected(
         },
     )?;
     walk.finish(last, cat)
+}
+
+/// The groups `view` sees at `frame`'s hour, from that frame alone
+/// ([`WarsAtHour`]): the branch walk's observation of one hour.
+pub(crate) fn at_hour(
+    branch: u64,
+    frame: &DecodedFrame,
+    view: Option<&str>,
+    cat: Option<&Catalogue>,
+) -> io::Result<WarsAtHour> {
+    let hour = frame.hour;
+    // A capitulation is a dated event that the hour alone cannot place.
+    let mut frame = frame.clone();
+    frame.tables[TableId::Capitulation.index()] = TableView::Unavailable {
+        reason: "Capitulations need earlier hours".into(),
+    }
+    .into();
+    let mut walk = Walk::new(branch, hour);
+    walk.labels = false;
+    walk.observe(&frame, view, None, cat);
+    let mut reply = walk.finish(hour, cat)?;
+    for (index, war) in reply.wars.iter_mut().enumerate() {
+        war.id = format!("@{hour}:{index}");
+    }
+    Ok(WarsAtHour {
+        hour,
+        available: reply.available,
+        wars: reply.wars,
+        warnings: reply.warnings,
+    })
 }
 
 #[derive(Clone)]

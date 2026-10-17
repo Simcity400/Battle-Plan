@@ -597,8 +597,8 @@ fn event_feed_answers_from_its_families_while_the_hourly_walk_accepts_nothing() 
                 "branch {branch}: the stockpiles' coverage is the walk's"
             );
             assert!(
-                query(&source, page(branch, last)).is_null(),
-                "branch {branch}: the feed waits for the stockpiles"
+                !query(&source, page(branch, last)).is_null(),
+                "branch {branch}: the feed answers an empty pending prefix while the stockpiles are pending"
             );
         }
         clear(source);

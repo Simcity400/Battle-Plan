@@ -28,3 +28,9 @@ Countries/groups and campaign/follow/pin; include departed in campaign mode, ran
 | [OperativesRosterWidget.tsx](OperativesRosterWidget.tsx) | Shared table, meters and visible-row facts. |
 | [operativesRosterData.ts](operativesRosterData.ts) | Validation, continuity, exact values and dated actions; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [operativesRoster.css](operativesRoster.css) | Options, registration and layout. |
+
+The opening view uses the exact prepared prefix. Later day views can read current
+operative values from the supplying block and its predecessor. First presence
+and departure are marked Still being prepared and their jump actions are
+withheld; a recorded native capture date still supplies its jump. The prepared
+reply replaces these provisional episode dates when history reaches the day.

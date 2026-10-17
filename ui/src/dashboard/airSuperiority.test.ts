@@ -489,3 +489,17 @@ test('timeline days alike in looks and sides take the day before’s geometry wi
   assert.notEqual(cells[299].parts, cells[150].parts, 'each differing day keeps its own stripe');
   assert.equal(projected.viewAt(7000, 299)?.parts[0].color, '#993366');
 });
+
+test('sampled daily cells retain their real supplying hour and approximation markers', () => {
+  const reply = timeline();
+  reply.sampleHours = [10, null, null, 60];
+  reply.approximate = [span(0, 23), span(72, 73)];
+  reply.pending = [span(24, 71)];
+  reply.coverage = { firstHour: 0, lastHour: -1, complete: false };
+  reply.rowsApproximate = true;
+  const valid = validateAirReply(reply) as AirTimeline;
+  assert.deepEqual(valid.approximate, reply.approximate);
+  assert.equal(airPeriods(valid)[0].readHour, 10);
+  assert.equal(timelineViews(valid, looks).viewAt(7000, 0)?.hour, 10);
+  assert.throws(() => validateAirReply({ ...reply, approximate: [span(9, 8)] }), /Invalid air|malformed/);
+});

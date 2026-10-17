@@ -34,7 +34,7 @@ test('parity espionage prepares every real history window behind an empty newest
       globalThis.__parityEspionage.wantedCountries = wanted; return {labelAt: () => tag => ({name: tag})}; };`,
     '/dashboard/operationDescription.ts': 'export const loadOperationDescription = () => { throw new Error("Offscreen description demand"); };',
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
-    '/charts/log/LogList.tsx': 'export default props => { globalThis.__parityEspionage.log = props; return null; };',
+    '/charts/log/LogList.tsx': 'export const PreparedLogCoverage = () => null; export default props => { globalThis.__parityEspionage.log = props; return null; };',
   };
   const vite = await createServer({ configFile: false, mode: 'parity', optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'parity-espionage', enforce: 'pre',

@@ -63,6 +63,9 @@ pub struct DecryptionRun {
     pub broken: Option<bool>,
     /// Start observation of the attempt current during this run, never a prior episode.
     pub started: Option<CipherObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub preparing: Vec<String>,
 }
 
 impl DecryptionRun {
@@ -575,6 +578,7 @@ fn run(hour: i32, row: &CryptologyRow, threshold: Result<i64, &str>) -> Decrypti
         state_flags: u16::from(row.decrypting) | (u16::from(row.bonus_active) << 8),
         broken: cryptology::fully_decrypted(row.amount_raw, row.bonus_active, required),
         started: None,
+        preparing: Vec::new(),
     }
 }
 

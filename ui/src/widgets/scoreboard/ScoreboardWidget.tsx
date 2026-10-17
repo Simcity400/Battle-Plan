@@ -1,3 +1,5 @@
+import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix';
+import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -75,10 +77,15 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
       hint: scoreboardColumnNote(column), value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
       render: (row: ScoreboardRow) => {
         const cell = row.cells.get(column.key);
+        if (fieldPreparing(result.page, column.key)) return <span style={{ color: 'var(--text-secondary)' }}>Still being prepared</span>;
         return cell && (cell.amount === null || cell.readHour !== null) ? formatCell(column, cell.amount, cell.atLeast) : '\u2026';
       } })),
-  ], [shown, names, labelAt, resolved.top, result.index]);
-  const tooltip = useCallback((row: ScoreboardRow) => fitTooltip([scoreboardTooltip(row, shown, labelAt(row.hour)(row.tag).name)], viewport), [shown, labelAt, viewport]);
+  ], [shown, names, labelAt, resolved.top, result.index, result.page]);
+  const tooltip = useCallback((row: ScoreboardRow) => {
+    const content = scoreboardTooltip(row, shown, labelAt(row.hour)(row.tag).name);
+    const preparing = new Set(shown.filter(column => fieldPreparing(result.page, column.key)).map(column => column.label));
+    return fitTooltip([{ ...content, rows: content.rows.map(part => preparing.has(part.label) ? { ...part, value: 'Still being prepared' } : part) }], viewport);
+  }, [shown, labelAt, viewport, result.page]);
   const setTableOption = useCallback<NonNullable<WidgetProps['setOption']>>((key, value) => {
     if (key === 'tableSort') {
       const next = tableSortOf(value, DEFAULT_SORT);
@@ -104,8 +111,10 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   if (registryResult.data && !shown.length) return <WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." />;
   if (!registryResult.data || !data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading scoreboard…" />;
+  if (!rows.length && preparedPrefix(result.index)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!rows.length) return <WidgetState kind="unavailable" message="No countries available for this selection." />;
   return <div className="scoreboard">
+    <PreparedLogCoverage coverage={preparedPrefix(result.page ?? result.index)?.pending.length ? preparedPrefix(result.page ?? result.index)?.coverage : undefined} />
     <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
       rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption ? setTableOption : undefined} sortOptionValue={tableSortToken}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}

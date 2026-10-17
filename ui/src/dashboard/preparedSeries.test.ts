@@ -1,9 +1,47 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { DashboardClient, DashboardSource } from './client.ts';
+import { preparedReplyData, type DashboardClient, type DashboardSource, type PreparedQueryOptions } from './client.ts';
+import { validatePreparationReply } from '../shell/preparation/contract.ts';
 import { mergeReachedRows, preparedSeriesQuery, preparedWindowQuery } from './preparedSeries.ts';
 
 const source = { id: 'source', revision: 'revision' } as DashboardSource;
+
+test('focus publishes its first view then stops once that point has prepared dates', async () => {
+  const first = { orderFirstHour: null, preparing: ['completedByHour'], coverage: { firstHour: 0, lastHour: 9, complete: false }, pending: [{ firstHour: 10, lastHour: 20 }] };
+  const exact = { orderFirstHour: 10, coverage: { firstHour: 0, lastHour: 20, complete: false }, pending: [] };
+  let queries = 0, statuses = 0;
+  const client = {
+    preparedQuery: async () => ++queries === 1 ? first : exact,
+    preparationStatus: async (request: object) => {
+      assert.equal(++statuses, 1);
+      return { ...request, state: 'preparing', coverage: { '1': exact.coverage }, families: {}, sections: [], backgroundEnabled: true, bytes: '0', error: null };
+    },
+  } as unknown as DashboardClient;
+  const published: unknown[] = [];
+  const result = await preparedSeriesQuery(client, source, 'focus-hour', { branchId: '1', tag: 'MOD', hour: 20 }, new AbortController().signal,
+    false, undefined, async () => { throw new Error('The exact point must not wait for the campaign'); }, value => published.push(value));
+  assert.equal(result, exact);
+  assert.deepEqual(published, [first, exact]);
+  assert.equal(queries, 2);
+});
+
+test('a useful frame reply keeps following its identity gate before the first coverage page exists', async () => {
+  const cold = { coverage: { firstHour: 0, lastHour: -1, complete: false }, preparing: ['identities'], series: ['current values'] };
+  const exact = { coverage: { firstHour: 0, lastHour: 29, complete: true }, series: ['exact history'] };
+  let queries = 0, statuses = 0;
+  const published: unknown[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      options.gate?.(['identities']); return ++queries < 3 ? cold : exact;
+    },
+    preparationStatus: async (request: object) => familyStatus(request,
+      ++statuses < 2 ? { identities: {} } : { identities: { '1': exact.coverage } }),
+  } as unknown as DashboardClient;
+  assert.equal(await preparedSeriesQuery(client, source, 'series-state', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => {}, value => published.push(value)), exact);
+  assert.deepEqual(published, [cold, exact]);
+  assert.deepEqual({ queries, statuses }, { queries: 3, statuses: 2 });
+});
 test('pending terminal coverage retries advancing accepted progress', async () => {
   let queries = 0, statuses = 0, pauses = 0, pending = 0;
   const bounded = { series: [{ tag: 'opaque', summary: { buckets: [null] } }] };
@@ -108,6 +146,26 @@ test('idle after Clear and disabled background never silently start balance work
   }
 });
 
+test('mounted campaign windows publish the cold summary and replace it at accepted coverage', async () => {
+  type Page = { coverage: { firstHour: number; lastHour: number; complete: boolean }; value: string };
+  const cold: Page = { coverage: { firstHour: 0, lastHour: -1, complete: false }, value: 'sampled' };
+  const exact: Page = { coverage: { firstHour: 0, lastHour: 20, complete: true }, value: 'prepared' };
+  let reads = 0;
+  const published: Page[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      options.gate?.(['world-tension']); return ++reads === 1 ? cold : exact;
+    },
+    preparationStatus: async (request: object) => familyStatus(request, { 'world-tension': { '1': exact.coverage! } }),
+  } as unknown as DashboardClient;
+  const result = await preparedWindowQuery(client, source, 'world-tension', { branchId: '1' },
+    { from: 0, to: 20, width: 10, series: [] }, new AbortController().signal,
+    value => value as Page, (_first, second) => second, false, value => published.push(value));
+  assert.deepEqual(published, [cold, exact]);
+  assert.equal(result, exact);
+  assert.equal(reads, 2);
+});
+
 test('reply-budget paging reaches all 5000 requested series without a country cap', async () => {
   const series = Array.from({length:5000},(_,index) => ({id:String(index),spans:[{tag:`opaque ${index}`,firstHour:0,lastHour:5000,startsSegment:true}]}));
   type Page = { summaries: Record<string,number>; rows:string[] };
@@ -198,7 +256,7 @@ test('partial replies publish immediately and replace only on changed accepted b
 });
 
 test('a partial reply stays published when preparation fails and cancelled polling publishes no late data', async () => {
-  const partial = { coverage: null, series: ['rough'] };
+  const partial = { coverage: { firstHour: 0, lastHour: -1, complete: false }, series: ['rough'] };
   const published: unknown[] = [];
   const client = { preparedQuery: async () => partial,
     preparationStatus: async (request: object) => ({ ...request, state: 'failed', sections: [], bytes: '0', error: 'Synthetic failure', backgroundEnabled: true }),
@@ -214,23 +272,23 @@ test('a partial reply stays published when preparation fails and cancelled polli
 });
 
 
-test('a changed accepted status with the same partial reply stops after one re-read and one publication', { timeout: 2000 }, async () => {
-  const partial = { coverage: { firstHour: 0, lastHour: 9, complete: false }, series: ['rough'] };
-  let queries = 0, statuses = 0, publications = 0;
+test('an unchanged partial reply stays mounted and follows the next accepted extent', async () => {
+  const partial = { coverage: { firstHour: 0, lastHour: 9, complete: false }, series: ['prefix'] };
+  const exact = { coverage: { firstHour: 0, lastHour: 29, complete: true }, series: ['exact'] };
+  let queries = 0, statuses = 0;
+  const published: unknown[] = [];
   const client = {
-    preparedQuery: async () => { assert.ok(++queries <= 2, 'unchanged partial replies must stop the request loop'); return { ...partial }; },
+    preparedQuery: async () => { assert.ok(++queries <= 3); return queries < 3 ? { ...partial } : exact; },
     preparationStatus: async (request: object) => {
-      assert.ok(++statuses <= 1, 'no further status requests after a no-progress reply');
+      assert.ok(++statuses <= 2);
       return { ...request, state: 'preparing', sections: [], backgroundEnabled: true, bytes: '0', error: null,
-        coverage: { '1': { firstHour: 0, lastHour: 19, complete: false } } };
+        coverage: { '1': { firstHour: 0, lastHour: statuses === 1 ? 19 : 29, complete: statuses > 1 } } };
     },
   } as unknown as DashboardClient;
-  const result = await preparedSeriesQuery(client, source, 'series-summary', { branchId: '1' }, new AbortController().signal,
-    false, undefined, async () => {}, () => { publications++; });
-  assert.deepEqual(result, partial);
-  assert.equal(queries, 2);
-  assert.equal(statuses, 1);
-  assert.equal(publications, 1, 'identical partial replies never update React state again');
+  assert.equal(await preparedSeriesQuery(client, source, 'series-summary', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => {}, value => published.push(value)), exact);
+  assert.deepEqual(published, [partial, exact]);
+  assert.deepEqual({ queries, statuses }, { queries: 3, statuses: 2 });
 });
 
 test('an immediate wait cannot spin Status or re-read unchanged accepted coverage as decoded counts grow', { timeout: 2000 }, async () => {
@@ -272,4 +330,209 @@ test('5000-country pending coverage stops after two unchanged status replies wit
     /made no progress/);
   assert.equal(statuses, 2);
   assert.equal(queries, 2);
+});
+
+// A family prepared on its own moves while the hourly walk accepts nothing:
+// the walk's coverage stays the same in every status.
+const stalledWalk = { '1': { firstHour: 0, lastHour: 3, complete: false } };
+const familyStatus = (request: object, families: Record<string, Record<string, { firstHour: number; lastHour: number; complete: boolean }>>) =>
+  ({ ...request, state: 'preparing', sections: [], backgroundEnabled: true, bytes: '0', error: null, coverage: stalledWalk, families });
+
+test('mounted replies publish improved presentation without waiting for a longer forward prefix', async () => {
+  const at = (lastHour: number, complete = false) => ({ firstHour: 0, lastHour, complete });
+  const cases = [
+    ...(['land', 'naval'] as const).map(kind => ({ product: `${kind}-battles-manifest` as const, gate: ['walk', `newest.${kind}`],
+      before: { exact: null, pending: [{ firstHour: 10, lastHour: 99 }] },
+      after: { exact: 90, pending: [{ firstHour: 10, lastHour: 89 }] } })),
+    { product: 'series-state' as const, gate: ['balances'], before: { exact: null }, after: { exact: 90 } },
+    { product: 'series-state' as const, gate: ['balances'], before: { pending: [{ firstHour: 10, lastHour: 99 }] },
+      after: { pending: [{ firstHour: 10, lastHour: 39 }, { firstHour: 50, lastHour: 99 }] } },
+    { product: 'series-summary' as const, gate: ['balances'], before: { approximate: [{ firstHour: 0, lastHour: 99 }] },
+      after: { approximate: [{ firstHour: 0, lastHour: 39 }, { firstHour: 50, lastHour: 99 }] } },
+    { product: 'series-state' as const, gate: ['balances'], before: { approximate: true }, after: { approximate: false } },
+    { product: 'scoreboard' as const, gate: ['balances'], before: { preparing: ['first', 'second'] }, after: { preparing: ['second'] } },
+  ];
+  for (const { product, gate, before, after } of cases) {
+    const values = [{ coverage: at(9), ...before }, { coverage: at(9), ...after },
+      { coverage: at(9), ...after }, { coverage: at(99, true) }];
+    const published: unknown[] = [];
+    let reads = 0, statuses = 0;
+    const client = {
+      preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+        options.gate?.(gate);
+        assert.ok(reads < values.length);
+        return values[reads++];
+      },
+      preparationStatus: async (request: object) => {
+        assert.ok(++statuses <= 3);
+        return { ...familyStatus(request, Object.fromEntries(gate.map(name => [name,
+          { '1': at(gate.includes('walk') ? 99 : statuses * 30, statuses === 3 || name.startsWith('newest.')) }]))),
+          coverage: { '1': at(statuses === 3 ? 99 : statuses === 2 ? 19 : 9, statuses === 3) } };
+      },
+    } as unknown as DashboardClient;
+    await preparedSeriesQuery(client, source, product, { branchId: '1' }, new AbortController().signal, false, undefined,
+      async () => assert.deepEqual(published, [values[0], values[1]], `${product} must publish the newly answered hours immediately`),
+      value => published.push(value));
+    assert.deepEqual(published, [values[0], values[1], values[3]], `${product} must suppress equivalent presentation`);
+  }
+});
+
+test('a pending reply waiting on a family prepared on its own is asked again when that family moves', { timeout: 2000 }, async () => {
+  const exact = { coverage: { firstHour: 0, lastHour: 29, complete: true }, series: ['exact'] };
+  let queries = 0, statuses = 0;
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      options.gate?.(['groups']);
+      return ++queries < 3 ? null : exact;
+    },
+    preparationStatus: async (request: object) => {
+      assert.ok(++statuses <= 2, 'the second status already moved the groups');
+      return familyStatus(request, { groups: { '1': { firstHour: 0, lastHour: statuses === 1 ? 9 : 29, complete: statuses > 1 } } });
+    },
+  } as unknown as DashboardClient;
+  // An instant wait: only a moved gate may ask again.
+  assert.equal(await preparedSeriesQuery(client, source, 'country-groups', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => {}), exact);
+  assert.deepEqual({ queries, statuses }, { queries: 3, statuses: 2 });
+});
+
+test('a partial reply waiting on a family is replaced as that family commits, not when the walk or another family moves', { timeout: 5000 }, async () => {
+  const values = [
+    { coverage: { firstHour: 0, lastHour: 9, complete: false }, series: ['prefix'] },
+    { coverage: { firstHour: 0, lastHour: 19, complete: false }, series: ['longer prefix'] },
+    { coverage: { firstHour: 0, lastHour: 29, complete: true }, series: ['exact'] },
+  ];
+  // The groups commit, stay (while the walk and the focus move), then complete.
+  const groups = [values[1].coverage, values[1].coverage, values[2].coverage];
+  let reads = 0, statuses = 0;
+  const published: unknown[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      assert.ok(reads < 3, 'one read per commit of the groups');
+      if (reads === 2) assert.equal(statuses, 3, 'the exact reply is asked for once the groups complete');
+      const value = values[reads++];
+      options.gate?.(value.coverage.complete ? undefined : ['groups']);
+      return value;
+    },
+    preparationStatus: async (request: object) => {
+      const coverage = groups[statuses++];
+      return { ...familyStatus(request, { groups: { '1': coverage }, focus: { '1': { firstHour: 0, lastHour: statuses, complete: false } } }),
+        coverage: statuses === 2 ? { '1': { firstHour: 0, lastHour: 5, complete: false } } : stalledWalk };
+    },
+  } as unknown as DashboardClient;
+  const result = await preparedSeriesQuery(client, source, 'series-summary', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => { await new Promise(resolve => setTimeout(resolve, 520)); }, value => published.push(value));
+  assert.equal(result, values[2]);
+  assert.deepEqual(published, values);
+  assert.equal(reads, 3, 'unchanged groups coverage does not trigger another read');
+  assert.equal(statuses, 3);
+});
+
+test('a reply waiting on several families is asked again when any of them moves', { timeout: 2000 }, async () => {
+  const exact = { coverage: { firstHour: 0, lastHour: 29, complete: true }, series: ['exact'] };
+  let queries = 0, statuses = 0;
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      options.gate?.(['groups', 'walk']);
+      return ++queries < 4 ? null : exact;
+    },
+    preparationStatus: async (request: object) => {
+      statuses++;
+      // First the groups move, then only the walk.
+      return { ...familyStatus(request, { groups: { '1': { firstHour: 0, lastHour: statuses === 1 ? 9 : 19, complete: false } } }),
+        coverage: { '1': { firstHour: 0, lastHour: statuses < 3 ? 3 : 7, complete: false } } };
+    },
+  } as unknown as DashboardClient;
+  assert.equal(await preparedSeriesQuery(client, source, 'event-feed', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => {}), exact);
+  assert.deepEqual({ queries, statuses }, { queries: 4, statuses: 3 });
+});
+
+test('a prepared reply hands over its gate, and malformed gates and family coverage are refused', () => {
+  const reply = { sourceId: 'source', revision: 'revision', product: 'country-groups', data: null };
+  const seen: (readonly string[] | undefined)[] = [];
+  const options = { signal: new AbortController().signal, gate: (entries: readonly string[] | undefined) => { seen.push(entries); } };
+  assert.equal(preparedReplyData({ ...reply, gate: ['groups', 'walk'] }, options), null);
+  assert.equal(preparedReplyData(reply, options), null);
+  assert.deepEqual(seen, [['groups', 'walk'], undefined]);
+  assert.throws(() => preparedReplyData({ ...reply, gate: [3] as unknown as string[] }, options), /gate is malformed/);
+  const request = { sourceId: 'source', revision: 'revision', requestId: 'status' };
+  const status = { ...request, state: 'preparing', sections: [], backgroundEnabled: true, bytes: '0', error: null, coverage: {} };
+  const families = { groups: { '1': { firstHour: 0, lastHour: 9, complete: false } } };
+  assert.deepEqual(validatePreparationReply({ ...status, families } as never, request).families, families);
+  assert.throws(() => validatePreparationReply({ ...status, families: { groups: { '1': { firstHour: 9, lastHour: 0, complete: false } } } } as never, request),
+    /Invalid preparation progress/);
+});
+
+test('a partial reply following several families keeps polling while one moves and their joint coverage does not', { timeout: 5000 }, async () => {
+  const at = (lastHour: number, complete = false) => ({ firstHour: 0, lastHour, complete });
+  const values = [{ coverage: at(9), losses: ['prefix'] }, { coverage: at(9), losses: ['prefix'] },
+    { coverage: at(19), losses: ['longer prefix'] }, { coverage: at(29, true), losses: ['exact'] }];
+  // The casualties move first; the joint coverage waits for the wars.
+  const families = [{ casualties: at(9), wars: at(9) }, { casualties: at(19), wars: at(9) },
+    { casualties: at(19), wars: at(19) }, { casualties: at(29, true), wars: at(29, true) }];
+  let reads = 0, statuses = 0;
+  const published: unknown[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      const value = values[reads++];
+      options.gate?.(value.coverage.complete ? undefined : ['casualties', 'wars']);
+      return value;
+    },
+    preparationStatus: async (request: object) => {
+      const moved = families[Math.min(statuses++, families.length - 1)];
+      return familyStatus(request, Object.fromEntries(Object.entries(moved).map(([name, coverage]) => [name, { '1': coverage }])));
+    },
+  } as unknown as DashboardClient;
+  const result = await preparedSeriesQuery(client, source, 'casualty-breakdown', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => { await new Promise(resolve => setTimeout(resolve, 520)); }, value => published.push(value));
+  assert.equal(result, values[3]);
+  assert.deepEqual(published, [values[0], values[2], values[3]]);
+  assert.equal(reads, 4);
+});
+
+
+test('cold capture coverage stays separate and a joint gate keeps polling before its first accepted hour', { timeout: 3000 }, async () => {
+  const empty = { coverage: [], preparedCoverage: { firstHour: 0, lastHour: -1, complete: false }, pending: [{ firstHour: 0, lastHour: 29 }] };
+  const complete = { coverage: [], preparedCoverage: { firstHour: 0, lastHour: 29, complete: true }, pending: [] };
+  let reads = 0, statuses = 0;
+  const published: unknown[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      options.gate?.(['intelligence', 'identities']);
+      return ++reads < 3 ? empty : complete;
+    },
+    preparationStatus: async (request: object) => {
+      const at = { firstHour: 0, lastHour: ++statuses === 1 ? 9 : 29, complete: statuses > 1 };
+      return familyStatus(request, { intelligence: { '1': at }, identities: statuses === 1 ? {} : { '1': at } });
+    },
+  } as unknown as DashboardClient;
+  assert.equal(await preparedSeriesQuery(client, source, 'agency-comparison', { selection: { branchId: '1' } }, new AbortController().signal,
+    false, undefined, async () => {}, value => published.push(value)), complete);
+  assert.equal(reads, 3);
+  assert.deepEqual(published, [empty, complete]);
+});
+
+test('a joint gate that shrinks to wars retains polling until wars complete', async () => {
+  const at = (lastHour: number, complete = false) => ({ firstHour: 0, lastHour, complete });
+  const values = [{ coverage: at(9), rows: ['prefix'] }, { coverage: at(9), rows: ['prefix'] },
+    { coverage: at(19), rows: ['longer'] }, { coverage: at(29, true), rows: ['exact'] }];
+  let reads = 0, statuses = 0;
+  const published: unknown[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      assert.ok(reads < values.length);
+      options.gate?.(reads === 0 ? ['casualties', 'wars'] : ['wars']);
+      return values[reads++];
+    },
+    preparationStatus: async (request: object) => {
+      assert.ok(++statuses <= 3);
+      return familyStatus(request, { casualties: { '1': at(29, true) },
+        wars: { '1': at(statuses === 1 ? 9 : statuses === 2 ? 19 : 29, statuses === 3) } });
+    },
+  } as unknown as DashboardClient;
+  assert.equal(await preparedSeriesQuery(client, source, 'casualty-breakdown', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => {}, value => published.push(value)), values[3]);
+  assert.deepEqual(published, [values[0], values[2], values[3]]);
+  assert.deepEqual({ reads, statuses }, { reads: 4, statuses: 3 });
 });

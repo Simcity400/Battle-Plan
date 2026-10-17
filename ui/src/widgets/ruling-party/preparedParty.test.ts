@@ -27,7 +27,10 @@ test('prepared party replies use the legacy overlap refusal and preserve marker 
     for (const cursor of ['0', '127']) assert.throws(() => validatePreparedParty({...data,cursor}, '127'), /did not advance/);
     assert.equal(validatePreparedParty({...data,cursor:'128'}, '127').cursor, '128', 'an empty membership-filtered page may advance its raw cursor');
     assert.equal(validatePreparedParty(data, '127'), data, 'a terminal page has no continuation');
-    assert.throws(() => validatePreparedParty({...data,coverage:{firstHour:2,lastHour:1,complete:false}}), /malformed/);
+    const cold = {...data,coverage:{firstHour:2,lastHour:1,complete:false}};
+    assert.equal(validatePreparedParty(cold), cold);
+    for (const coverage of [null, {...cold.coverage,lastHour:0}, {...cold.coverage,complete:true}])
+      assert.throws(() => validatePreparedParty({...data,coverage}), /malformed/);
     const malformed=reply();malformed.parties[0].runs.push({...malformed.parties[0].runs[0]});
     assert.throws(()=>validatePreparedParty({...data,reply:malformed}),/party history reply is malformed/);
     const marks=['ruling','election','leader'].map((field,index)=>({field,exact:false,summary:{from:0,to:100,width:100,clusters:[{firstHour:index,lastHour:index,firstOrdinal:'0',count:'1'}]}}));

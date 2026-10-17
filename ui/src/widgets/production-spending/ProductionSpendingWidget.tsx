@@ -7,6 +7,8 @@ import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOpt
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
+import { dayLabel } from '../../charts/draw';
+import { approximateAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -15,7 +17,7 @@ import type { ProductionSpendingReply } from '../../generated/dashboard';
 import { useParityRows } from '../../dashboard/parityRows';
 import { NumericReply } from '../../dashboard/numericReply';
 import { OPTIONS } from './definition';
-import { LEVELS, UNIT, formatAppliedIc, noProductionAt, productionSpendingItems, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData';
+import { LEVELS, UNIT, formatAppliedIc, noProductionAt, preparedWindow, productionSpendingItems, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All production' };
@@ -38,8 +40,11 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const numbers = retained.update(JSON.stringify(request), product.data, data => ({ ...data, warnings: [], rocketName: null,
     leaves: data.leaves.map(leaf => ({ ...leaf, name: null, names: [] })) }));
   const data = product.data ?? numbers, { error, retry } = product;
-  const finals = useMemo(() => data && end != null ? spendingFinals(data, from, end) : [], [data, from, end]);
-  const items = useMemo(() => data && hour != null && end != null ? productionSpendingItems(data, { from, hour, end }, finals) : [], [data, from, hour, end, finals]);
+  // Before preparation reaches the dates shown, the reply answers its prepared
+  // prefix: the amounts spent through the prefix's last hour.
+  const shown = useMemo(() => data && hour != null && end != null ? preparedWindow(data, { from, hour, end }) : null, [data, from, hour, end]);
+  const finals = useMemo(() => data && shown ? spendingFinals(data, shown.from, shown.end) : [], [data, shown]);
+  const items = useMemo(() => data && shown ? productionSpendingItems(data, shown, finals) : [], [data, shown, finals]);
   const root = useRef<HTMLDivElement>(null);
   useParityRows(root, () => ({ kind: 'chart', label: 'Production spending values', complete: !!product.data,
     total: items.length, rows: items.map(item => ({ path: item.path.map(part => part.id), exact: item.exact?.toString() ?? null,
@@ -48,7 +53,9 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const decimals = data?.decimals ?? 5;
   const digits = icDecimals(options, decimals);
-  const emptyLabel = data && hour != null ? spendingEmptyLabel(data, hour, from) : 'Loading production spending…';
+  const emptyLabel = data && shown ? spendingEmptyLabel(data, shown.hour, shown.from) : 'Loading production spending…';
+  const footnote = [shown && hour != null && shown.hour < hour ? `Spent through ${dayLabel(shown.hour)}; the rest is still being prepared.` : null,
+    shown && approximateAt(preparedPrefix(data), shown.hour) ? 'Approximate equipment types while preparation continues.' : null].filter(Boolean).join(' ') || undefined;
   const text = useMemo<SunburstText>(() => ({
     format: (value, exact) => formatAppliedIc(value, exact, decimals, digits), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs',
     emptyLabel,
@@ -62,11 +69,13 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   if (!track || !tag) body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
   else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading production spending…" />;
+  else if (!data.reads.length && preparedPrefix(data)?.pending.length) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (!data.reads.length) body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
   else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  else if (noProductionAt(data, hour) && spendingTotal(data, { from, hour, end }).exact === 0n) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
+  else if (!shown) body = <WidgetState kind="loading" label="This range is still being prepared." />;
+  else if (noProductionAt(data, shown.hour) && spendingTotal(data, shown).exact === 0n) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." detail={footnote} />;
   else body = <Sunburst label="Production spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    authoritativeTotal={spendingTotal(data, { from, hour, end })} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
-    active={active} />;
+    authoritativeTotal={spendingTotal(data, shown)} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+    active={active} footnote={footnote} />;
   return <div ref={root} style={{ display: 'contents' }}>{body}</div>;
 }

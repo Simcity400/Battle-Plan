@@ -30,3 +30,9 @@ All countries by default, manual/groups, campaign/follow/pin/range; observed con
 | [definition.ts](definition.ts), [index.ts](index.ts) | Availability, options and registration. |
 
 The widget reads the prepared raid adapter and exposes the "Raid log rows" parity model.
+
+The log shows its prepared prefix with the remaining hours marked Still being
+prepared. A newest block proven from a two-block observation is labelled exact;
+earlier occurrences of its native keys prevent that proof because launch and
+ended-victim history persists by key. The type list grows with the prefix and
+proved newest rows. Coverage re-asks reuse the newest proof.

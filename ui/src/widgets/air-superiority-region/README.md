@@ -21,3 +21,8 @@
 Shared framework conventions: [widgets](../README.md).
 
 The widget reads prepared air-superiority windows and exposes the "Air superiority region values" parity model.
+
+Moment windows also answer from accepted preparation while the family runs.
+Unprepared hours remain blank and render Still being prepared; accepted moment
+rows retain the shared Approximate key while later side history can revise their
+classification. Mounted window requests keep refreshing as coverage grows.

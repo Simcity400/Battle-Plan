@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub(super) struct DayCache {
+    /// Display hours of sampled daily cells; snapshots retain their supplying hour.
+    pub sampled_days: BTreeMap<i32, i32>,
     pub segments: Vec<Arc<DaySegment>>,
     pub regions: BTreeSet<u32>,
     pub countries: BTreeSet<String>,
@@ -255,7 +257,6 @@ pub(super) fn snapshot(
 
 type SideCatalogue<'a> = (&'a mut Vec<AirSide>, &'a mut HashMap<String, u32>);
 
-#[cfg(test)]
 pub(super) fn snapshot_kind(
     frame: &DecodedFrame,
     groups: &Scan,
@@ -278,7 +279,6 @@ pub(super) fn snapshot_kind(
     Ok(sample)
 }
 
-#[cfg(test)]
 fn snapshot_scores(
     frame: &DecodedFrame,
     groups: &Scan,
@@ -291,7 +291,7 @@ fn snapshot_scores(
     snapshot_score_read(
         frame,
         ScoreView {
-            rows: recorded_rows::<tables::RaidAirScores>(frame)?,
+            rows: dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(frame)?,
             complete: frame.complete::<tables::RaidAirScores>().is_ok(),
             owners: None,
             active: None,
@@ -434,7 +434,6 @@ pub(super) fn score_countries(
     Ok((operands, owners))
 }
 
-#[cfg(test)]
 pub(super) fn country_scores(
     frame: &DecodedFrame,
     scores: ScoreView<'_>,
@@ -504,7 +503,6 @@ pub(super) fn score_values(
         .collect();
     projection
 }
-#[cfg(test)]
 fn snapshot_score_read(
     frame: &DecodedFrame,
     scores: ScoreView<'_>,
@@ -850,7 +848,7 @@ pub(super) fn day_decoder(tables: &[TableId]) -> FrameDecoder {
     FrameDecoder::for_tables(&tables)
 }
 
-fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
+pub(super) fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
     let mut result = Auxiliary::default();
     let Ok(wings) = frame.complete::<tables::AirWings>() else {
         return result;

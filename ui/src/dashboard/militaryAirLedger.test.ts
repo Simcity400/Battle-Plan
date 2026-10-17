@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
-import { airLossParts, leafAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerPinnedIdentity, ledgerRuns, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { militaryAirPreparing, airLossParts, leafAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerPinnedIdentity, ledgerRuns, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 const leaf = (extra: Partial<MilitaryAirLeaf> = {}): MilitaryAirLeaf => ({ tag: 'mod country', identity: '3:9', dealt: false,
@@ -142,4 +142,12 @@ test('line hover uses exact wide signed values, native/read dates, dated labels 
     assert.equal(dated.rows[0].countryFlag, native, 'the native heading forwards the complete hovered-read payload');
     assert.equal(dated.rows[0].icon, undefined, 'missing artwork does not erase native flag status');
   }
+});
+
+test('prefix totals beyond coverage stay preparing instead of becoming known zero', () => {
+  const data = { ...reply(), coverage: { schema: 24, firstHour: 10, lastHour: 11, complete: false }, pending: [span(12, 14)] };
+  assert.equal(validateMilitaryAirReply(data), data);
+  assert.equal(militaryAirPreparing(data, 14), true);
+  assert.equal(militaryAirPreparing(data, 11), false);
+  assert.throws(() => validateMilitaryAirReply({ ...data, pending: [span(14, 12)] }), /malformed/);
 });

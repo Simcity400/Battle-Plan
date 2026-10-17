@@ -1578,7 +1578,9 @@ pub fn query(
                 .collect::<Vec<_>>()
         );
     }
-    reply["coverage"] = serde_json::json!(accepted);
+    reply["coverage"] = serde_json::json!(dashboard_base::prepared::prefix::extent(
+        source, branch, accepted
+    )?);
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
 }

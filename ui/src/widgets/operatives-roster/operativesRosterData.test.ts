@@ -486,3 +486,14 @@ test('settings persist all silent look choices and Live starts on', () => {
   assert.deepEqual(DEFAULT_SORT, { column: 'name', direction: 'ascending' });
   assert.equal(resolveOptions(OPTIONS, { departed: false }).departed, false);
 });
+
+
+test('sampled roster values keep real capture jumps while first presence is preparing', () => {
+  const data = fixture();
+  Object.assign(data.countries[0].operatives[0], { preparing: ['joinedHour', 'departedHour'] });
+  const row = rosterAt(validateOperativesRosterReply(data), 150, false).rows[0];
+  assert.equal(row.run.value.skill, 3);
+  assert.equal(operativeMoments(row).some(moment => moment.kind === 'joined'), false);
+  assert.equal(operativeMoments(row).some(moment => moment.kind === 'captured' && moment.hour === 119), true);
+  assert.equal(operativeTooltip(data, row, 150, tag => tag).rows.find(row => row.label === 'Present')?.value, 'Still being prepared');
+});

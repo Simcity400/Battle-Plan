@@ -13,6 +13,7 @@
 - Commands use recorded formation references and stored names; overlapping commands get separate subrows. Missing name reads do not end a command. Older captures expose their explicit fleet-name/idle-command limits.
 - Fought means observed battles since the leader's first recorded hour. Known wins/losses use native links; undecided battles stay unresolved and zero decided battles have no win rate. Native participation/result dates become visible only after their own supplying reads.
 - A career reads that leader's prepared facts and joins combat outcomes, including results supplied after a commander transfer. Repeated matching outcomes keep their first read; conflicting outcomes remain unresolved. The country-filtered inventory reads admission rosters without loading careers.
+- Hours beyond the prepared prefix say **Still being prepared** in the current details and timeline tooltips. The timeline bands the pending tail and names it in the shared key; an empty prefix remains pending.
 - Gaps remain unknown. The shared timeline preserves zoom during growth and keeps label hours separate from drawing cutoffs. A picked drill day holds; Follow uses playback; Pin keeps the leader and held date or Follow.
 - Parity builds expose the timeline lanes, current values and complete career operands under **General career values**.
 

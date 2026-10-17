@@ -11,7 +11,15 @@ Parity builds retain every ordered leader row and exact numeric cell operand. Th
 **Notable behaviour:**
 
 - Full references include type. Country selection admits leaders held by selected native countries and preserves their careers across transfers; group filtering keeps its counted dates. Native visibility hides captured/hidden/undecidable leaders with named refusals.
-- Leader replies wait for accepted branch coverage. Choice requests read current facts and historical admission rosters; leaderboard and career requests page the selected leaders' prepared facts. Pending requests preserve their current presentation and share cancellation with the product cache.
+- Leaderboards request their shown hour. A later hour supplies exact current rows
+  through the ordinary visibility/content observer; their battle counts and
+  holding dates are still being prepared. Count cells stay null, battle sorts
+  show the pending state and history actions are disabled. Prepared history
+  replaces the current view as coverage reaches the hour. Earlier departed
+  leaders and careers are available through the prepared prefix. Requests share
+  cancellation and re-asking with the product cache.
+- Country-filtered requests wait for complete native identity history before
+  admitting holders and their aliases across transfers or reused tags.
 - Content defines rank, skill ceiling, attributes, traits and art. Trait experience is learning progress, never a holding. Defined empty names stay empty; only missing names fall back. Missing owners and attributes remain explicit. Missing portraits use a helmet icon; missing trait icons show name chips.
 - Fought counts each observed combat once per leader, since the first recorded leader hour. Known wins/losses use exact native result links; disappearance implies no result. Win rate uses decided battles only. Fact dates and first supplying reads stay separate, preventing backfill. The leaderboard receives only the hours each participation, win and loss becomes visible; careers keep each battle's dates and reads, and both count the same at every hour.
 - Gaps and missed battle coverage retain counts with an incomplete-count status. Career holdings after unknown reads keep bounded dates. Portraits load only for mounted rows, separately from histories.

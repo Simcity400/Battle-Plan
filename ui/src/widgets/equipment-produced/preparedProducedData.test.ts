@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { exactProductionAmount, productionBandAmount, productionBands, productionKeyLabel, productionRaceEntries, validateProductionSelection } from './preparedProducedData.ts';
+import { answeredHour, exactProductionAmount, mostDeliveredPrefix, productionBandAmount, productionBands, productionKeyLabel, productionRaceEntries, validateProductionSelection } from './preparedProducedData.ts';
 import type { ProductionCountry, ProductionSelection, ProductionSelectionRequest } from './preparedProducedData';
 import { queryProductionSelection } from './usePreparedProduction.ts';
 import type { DashboardSource } from '../../dashboard/client';
@@ -14,6 +14,17 @@ const page = (): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 
   keys: [key('one', ''), key('two', 'Two')], types: [], totalCountries: 2,
   offset: '0', valueMin: '0', valueMax: '9007199254740993',
   countries: [country('B', '9007199254740993'), country('A', '9007199254740992')], warnings: [] });
+
+test('the provisional automatic type uses all prepared totals before paging and key-order ties', () => {
+  const data = { ...page(), countries: [], typeTotals: [['one', '9'], ['two', '12']] as [string, string][] };
+  assert.equal(mostDeliveredPrefix(validateProductionSelection(data, { ...request, limit: 0 })), 'two');
+  data.typeTotals[0][1] = '12';
+  assert.equal(mostDeliveredPrefix(data), 'one');
+  data.typeTotals = [['one', '-1'], ['two', '0']];
+  assert.equal(mostDeliveredPrefix(data), null);
+  data.typeTotals = [['missing key', '12']];
+  assert.throws(() => validateProductionSelection(data, request), /malformed/);
+});
 
 test('prepared pages keep exact host ordering and decimal values above safe53', () => {
   const data = validateProductionSelection(page(), request);
@@ -86,4 +97,18 @@ test('pending preparation null bypasses the production DTO validator', async () 
   const client = { preparedQuery: async <T>() => null as T };
   assert.equal(await queryProductionSelection(client, { id: 'source', revision: 'revision' } as DashboardSource,
     request, new AbortController().signal), null);
+});
+
+test('a page answered from a prepared prefix covers the prefix’s last hour, not the hour asked', () => {
+  const coverage = { schema: 24, firstHour: 0, lastHour: 30, complete: false };
+  const later = { ...request, hour: 40 };
+  const prefix = { ...page(), firstHour: 24, lastHour: 30, coverage, pending: [{ firstHour: 31, lastHour: 47 }] };
+  assert.equal(answeredHour(prefix, later), 30);
+  assert.equal(validateProductionSelection(prefix, later), prefix);
+  // An hour inside the prefix is answered as asked.
+  assert.equal(answeredHour(prefix, { ...later, hour: 26 }), 26);
+  // A complete page, or one without a prefix, answers the hour asked.
+  assert.equal(answeredHour({ ...prefix, coverage: { ...coverage, lastHour: 47, complete: true }, pending: [] }, later), 40);
+  assert.throws(() => validateProductionSelection({ ...prefix, pending: [] }, later), /malformed/, 'a complete page must cover the hour asked');
+  assert.throws(() => validateProductionSelection({ ...prefix, countries: [{ ...country('A', '1'), readHour: 31 }] }, later), /malformed/);
 });

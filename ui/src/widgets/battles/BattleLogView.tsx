@@ -1,3 +1,5 @@
+import { preparedPrefix, pendingReplyAt } from '../../dashboard/preparedPrefix';
+import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -101,16 +103,18 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const parityId = import.meta.env.MODE === 'parity' ? useId() : undefined;
   const parityEmptyRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
-  const shownHour = !parity?.requested && view === 'log' && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
+  const reachedHour = hour !== null && pendingReplyAt(manifest.data, hour)
+    ? Math.min(hour, preparedPrefix(manifest.data)!.coverage.lastHour) : hour;
+  const shownHour = !parity?.requested && view === 'log' && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : reachedHour;
   const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? first);
   const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
   const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
   const fullWindows = import.meta.env.MODE === 'parity' ? parityWindowIndices(manifest.data?.windows, first, hour ?? first) : [];
   const wantedWindows = inBranch && view === 'log' ? parity?.requested ? fullWindows
-    : battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.hour !== null && browse.identity === identity ? [browseIndex] : [])], first) : [];
+    : battleWindows(manifest.data, reachedHour ?? first, live, [...visibleIndices, ...(browse.hour !== null && browse.identity === identity ? [browseIndex] : [])], first) : [];
   const history = useProductWindows<Window>(runtime.client, identity, index => ({ sourceId: track!.source.id,
     revision: track!.source.revision, product: adapter.product, params: { branchId: track!.branch.id, window: index } }),
-  wantedWindows, active && inBranch && manifest.data?.available === true, adapter.validateWindow);
+  wantedWindows, active && inBranch && manifest.data?.available === true, adapter.validateWindow, track?.source, true);
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const rankingRequest = track && hour !== null && inBranch ? { sourceId: track.source.id, revision: track.source.revision,
@@ -189,12 +193,16 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!manifest.data || !match.ready) return <WidgetState kind="loading" label={`Loading ${adapter.definition.title.toLowerCase()}…`} />;
+  const prefix = preparedPrefix(manifest.data);
+  const coverageNote = <PreparedLogCoverage coverage={prefix?.coverage} exact={(manifest.data as { exact?: number }).exact}
+    approximate={!!prefix?.approximate?.length} />;
+  if (!manifest.data.available && prefix?.pending.length) return <><WidgetState kind="loading" label="This range is still being prepared." />{coverageNote}</>;
   if (!manifest.data.available) return <WidgetState kind="unavailable" message="Battles were not recorded." />;
   const required = view === 'log' && browseIndex >= 0 ? [browseIndex] : [];
   const failed = view === 'biggest' ? ranking.error : required.map(index => history.errors.get(index)).find(Boolean);
   if (failed) return <WidgetState kind="error" detail={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} />;
   const pending = view === 'biggest' ? !ranking.data : required.some(index => !history.data.has(index));
-  if (pending) return <WidgetState kind="loading" label="Loading battles…" />;
+  if (pending) return <>{coverageNote}<WidgetState kind="loading" label={prefix?.pending.length ? 'This range is still being prepared.' : 'Loading battles...'} /></>;
   const censusHour = view === 'biggest' ? ranking.data?.censusHour ?? null : shownBattleCensusHour(history.data, shownHour!);
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? preceding.reduce((oldest, index) => Math.min(oldest, index)) : 0;
@@ -204,12 +212,14 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
     {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest battles</button>}
   </div>;
   // An adapter's own view draws its empty list, keeping its header controls.
-  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
+  if (!shown.length && !(adapter.view && censusHour !== null) && prefix?.pending.length && censusHour === null) return <>{coverageNote}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{coverageNote}{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
     message={censusHour === null ? 'Not in this recording' : `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`} /></div>;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const summary = adapter.summary?.(shown, ranking.data, measure, view);
   const rankedMeasure = ranking.data?.effectiveMeasure ?? measure;
   return <div className="battle-widget">
+    {coverageNote}
     {summary && <p className="battle-note">{summary}</p>}
     {/* A range cuts battles short; their peak and duration are still the whole battle's. */}
     {widget.time.mode === 'range' && <p className="battle-note">Peak and duration cover the whole battle.</p>}

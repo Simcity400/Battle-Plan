@@ -44,7 +44,7 @@ test('actual Raid and windowed Espionage logs refuse aligned Follow and Pin hour
     };`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/charts/log/LogList.tsx': 'export default props => { globalThis.__pinLogCalls.push(props.rows.map(row => row.hour)); return null; };',
+    '/charts/log/LogList.tsx': 'export const PreparedLogCoverage = () => null; export default props => { globalThis.__pinLogCalls.push(props.rows.map(row => row.hour)); return null; };',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'windowed-log-pin-boundaries', enforce: 'pre',

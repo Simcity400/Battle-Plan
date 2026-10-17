@@ -207,3 +207,12 @@ test('exact casualty reads show loading while known war geometry stays available
   const gap=warTooltip({...base,unobserved:[{firstHour:5,lastHour:5}]});
   assert.ok(gap.rows.filter(row=>row.label?.endsWith('casualties')).every(row=>row.value==='Not recorded'));
 });
+
+test('a war reaching the prepared prefix has no end yet, and hours after the prefix are still being prepared', () => {
+  const open = warTooltip({ ...input, hour: 15, preparedThrough: 20 });
+  assert.equal(open.rows.find(row => row.label === 'Ended')?.value, 'Still being prepared');
+  const after = warTooltip({ ...input, hour: 25, preparedThrough: 20 });
+  assert.equal(after.rows.find(row => row.label === 'Participants')?.value, 'Still being prepared');
+  // Without a prefix the last observation is the end bound, as before.
+  assert.equal(warTooltip({ ...input, hour: 25 }).rows.find(row => row.label === 'Participants')?.value, 'Ended');
+});

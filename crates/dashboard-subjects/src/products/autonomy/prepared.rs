@@ -588,7 +588,9 @@ pub fn progressive_query(
             .map(|(tag, country)| serde_json::json!({"tag":tag,"identities":country.identities}))
             .collect::<Vec<_>>(),
     )?;
-    result["coverage"] = serde_json::to_value(accepted)?;
+    result["coverage"] = serde_json::to_value(dashboard_base::prepared::prefix::extent(
+        source, branch, accepted,
+    )?)?;
     Ok(result)
 }
 

@@ -226,8 +226,17 @@ impl FamilyScan {
     /// The first read with events after an unread interval starts a new
     /// identity epoch when its identities restart and every event in it is
     /// dated within or after that interval: those events were never read
-    /// before. Any other backwards identity still refuses.
-    fn begin_read(&mut self, first: Option<u64>, earliest: Option<i32>) {
+    /// before. The collector restarts identities only across an interval it
+    /// did not deliver, and delivers only events applied after it, so a
+    /// restart holding an event dated before the interval is earlier events
+    /// recorded again, and refuses by that name. Any other backwards identity
+    /// refuses as [`Self::event`] does.
+    fn begin_read(
+        &mut self,
+        events: &str,
+        first: Option<u64>,
+        earliest: Option<i32>,
+    ) -> io::Result<()> {
         if let Some(entry) = self.entry.as_mut()
             && entry.used.is_none()
             && let (Some(first), Some(earliest)) = (first, earliest)
@@ -236,12 +245,20 @@ impl FamilyScan {
         }
         let (Some(first), Some(earliest), Some(since)) = (first, earliest, self.unread_since)
         else {
-            return;
+            return Ok(());
         };
         self.unread_since = None;
-        if self.last_event.is_some_and(|last| first <= last) && earliest >= since {
+        if self.last_event.is_some_and(|last| first <= last) {
+            if earliest < since {
+                return Err(dashboard_core::invalid(format!(
+                    "{events} events restart their ordinals after the unread interval from \
+                     hour {since} but are dated from hour {earliest}, before it: earlier \
+                     events recorded again, not new ones"
+                )));
+            }
             self.last_event = None;
         }
+        Ok(())
     }
 
     fn event(&mut self, id: u64) -> io::Result<()> {
@@ -499,9 +516,10 @@ fn air_events(
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::AirLossEvents>()?;
     scan.begin_read(
+        "air loss",
         rows.first().map(|row| row.id),
         rows.iter().map(|row| row.game_hour).min(),
-    );
+    )?;
     for row in rows {
         #[cfg(test)]
         {
@@ -565,9 +583,10 @@ fn bombing_events(
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::BuildingBombingDamage>()?;
     scan.begin_read(
+        "bombing",
         rows.first().map(|row| row.id),
         rows.iter().map(|row| row.game_hour).min(),
-    );
+    )?;
     if rows
         .iter()
         .any(|row| row.cause == BuildingBombingDamageCause::Unknown)

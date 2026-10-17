@@ -53,7 +53,7 @@ export function placeName(place: { state: number | null; toState?: number | null
 /** Every reason a stretch of a project's progress is not counted. */
 const SPENDING_GAPS: Readonly<Record<SpendingGap, true>> = {
   notRecorded: true, readFailed: true, linkedOutput: true, inexactOutput: true,
-  observationRestart: true, finalOutputMissing: true, ownerUnknown: true,
+  observationRestart: true, finalOutputMissing: true, ownerUnknown: true, preparing: true,
 };
 
 /** A reason a reply may give for an uncounted stretch. */

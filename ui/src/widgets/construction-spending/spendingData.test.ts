@@ -102,6 +102,23 @@ test('linked output keeps what was counted and makes the whole partial, includin
   assert.deepEqual(later.unknown, { linkedOutput: 1 });
 });
 
+test('a prepared prefix keeps its totals through its last hour, partial with the output still being prepared', () => {
+  // As the server answers a request for hour 148 from a prefix through 130.
+  const data = { ...reply([leaf({ spent: [{ knownAt: 130, totalRaw: '70' }],
+    unknown: [{ knownAt: 131, reason: 'preparing', project: '', until: null }] })]),
+  coverage: { schema: 24, firstHour: 100, lastHour: 130, complete: false }, pending: [{ firstHour: 131, lastHour: 148 }] };
+  validateSpendingReply(data);
+  const items = spendingItems(data, { from: null, hour: 148, end: 148 });
+  assert.equal(items[0].exact, 70n);
+  assert.deepEqual(items[0].unknown, { preparing: 1 });
+  assert.equal(items[0].finalUnknown, true);
+  assert.equal(spendingItems(data, { from: null, hour: 130, end: 130 })[0].finalUnknown, false, 'the prefix itself is exact');
+  assert.equal(footnote(data, items), 'Partial amounts leave out output still being prepared.');
+  const dated = 'Spent through 1 Jan; the rest is still being prepared.';
+  assert.equal(footnote(data, items, dated), dated, 'the dated note replaces the partial amounts’ preparing note');
+  assert.equal(footnote({ ...data, beforeFirstRead: 2 }, [], dated), `Earlier spending on 2 projects isn’t counted. ${dated}`);
+});
+
 test('ownerless output makes only the whole partial, in ranges that include it', () => {
   const data = reply([leaf({ spent: [{ knownAt: 148, totalRaw: '70' }] })]);
   data.unattributed = [{ knownAt: 124, reason: 'ownerUnknown', project: '99', until: 125 }];

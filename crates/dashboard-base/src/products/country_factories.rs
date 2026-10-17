@@ -868,7 +868,7 @@ pub fn top_membership(
     )
 }
 
-fn count_for(values: &[i32], top: &FactoryTop) -> i64 {
+pub(crate) fn count_for(values: &[i32], top: &FactoryTop) -> i64 {
     let groups: &[FactoryGroupKey] = if top.groups.is_empty() {
         &FactoryGroupKey::ALL
     } else {

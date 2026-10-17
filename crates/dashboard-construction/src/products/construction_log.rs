@@ -141,6 +141,7 @@ use dashboard_base::products::{BranchParams, Product, battles::BattleWindow};
 use dashboard_core::config::LoadContext;
 #[cfg(test)]
 use dashboard_text::metadata::slot_read;
+mod newest;
 mod output;
 pub mod prepared;
 use dashboard_base::{catalogue, source::Source};
@@ -439,6 +440,10 @@ pub struct ConstructionLogManifestReply {
     pub cost_scale: u32,
     /// The branch's blocks: the log's windows, in hour order.
     pub windows: Vec<BattleWindow>,
+    /// A proven newest window, independent of the forward prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub newest: Option<BattleWindow>,
     /// Either construction queue was read in the branch.
     pub recorded: bool,
     pub types: Vec<BuildingInfo>,
@@ -452,6 +457,13 @@ pub struct ConstructionLogManifestReply {
 pub struct ConstructionLogReply {
     pub window: usize,
     pub interval: BattleWindow,
+    /// A look-back numbers types locally; its projects index this dictionary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub types: Option<Vec<BuildingInfo>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub exact_from: Option<i32>,
     /// Hours the output table was read from the last read before the window to
     /// the next window, ascending.
     pub output_reads: Vec<i32>,
@@ -2663,6 +2675,8 @@ impl Cut {
         ConstructionLogReply {
             window,
             interval,
+            types: None,
+            exact_from: None,
             output_reads: reads.iter().map(|(hour, _)| *hour).collect(),
             output_unavailable: reads
                 .iter()
@@ -2733,6 +2747,7 @@ impl Product for ConstructionLogManifest {
         let names = content_names(source, context, branch, &log, cancelled, &mut warnings)?;
         scan_warnings(&log, &mut warnings);
         let reply = ConstructionLogManifestReply {
+            newest: None,
             cost_scale: COST_SCALE,
             windows: windows(source.replay_ref(), branch),
             recorded: !(log.reads.is_empty() && log.railway_reads.is_empty()),

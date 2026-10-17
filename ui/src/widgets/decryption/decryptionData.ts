@@ -1,3 +1,4 @@
+import { fieldPreparing } from '../../dashboard/preparedPrefix.ts';
 import type { CipherObservation, DecryptionCoverage, DecryptionPair, DecryptionReply, DecryptionRun, DecryptionTagRun } from '../../generated/dashboard';
 import { runAt } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
@@ -27,6 +28,7 @@ export interface DecryptionValue {
   decrypting: number;
   broken: boolean | null;
   started: CipherObservation | null;
+  preparing?: readonly string[];
 }
 
 /** Preserve the fixed5 invalid sentinel, wrapping i64 arithmetic and signed
@@ -60,7 +62,7 @@ export function valueAt(run: DecryptionRun, at: number): DecryptionValue | null 
   const amount = amountAt(run, at), bonusActive = run.stateFlags >>> 8;
   return { amountRaw: amount.toString(), thresholdRaw: run.thresholdRaw, thresholdUnknown: run.thresholdUnknown,
     progressPercent: run.thresholdRaw === null ? null : progressPercent(amount, bonusActive, BigInt(run.thresholdRaw)),
-    bonusDays: Number(bonusAt(run, at)), bonusActive, decrypting: run.stateFlags & 0xff, broken: run.broken, started: run.started };
+    bonusDays: Number(bonusAt(run, at)), bonusActive, decrypting: run.stateFlags & 0xff, broken: run.broken, started: run.started, ...(fieldPreparing(run, 'started') ? { preparing: ['started', 'breaks'] } : {}) };
 }
 
 /** Checks every value before local playback; neither malformed missing fields nor
@@ -152,7 +154,7 @@ export function raceRows(reply: DecryptionReply, hour: number, order: RaceOrder,
     const run = encoded ? valueAt(encoded, hour) : null;
     const tags = runAt(pair.tagRuns, hour);
     const broken = breakAt(pair.breaks, hour);
-    if (!run || !tags || !(run.started || run.broken === true)) continue;
+    if (!run || !tags || !(run.started || run.broken === true || run.preparing?.includes('started'))) continue;
     const endpoint = side === 'decryptor' ? tags.ownerTag : tags.targetTag;
     if (countries && (endpoint == null || !countries.has(endpoint))) continue;
     if (matches && (endpoint == null || !matches(endpoint, hour))) continue;
@@ -189,10 +191,11 @@ export const CIPHER_BROKEN = 'Cipher broken';
 export const progressLabel = (run: DecryptionValue) => run.progressPercent == null ? 'Progress unknown' : `${run.progressPercent}%`;
 export const progressText = (run: DecryptionValue) => run.progressPercent == null ? `${progressLabel(run)} · ${amountText(run)}` : progressLabel(run);
 export const workingStatus = (run: DecryptionValue, capitalized = false) => {
+  if (run.decrypting === 0 && fieldPreparing(run, 'started')) return 'Attempt history still being prepared';
   const status = run.decrypting !== 0 ? 'decrypting' : 'paused';
   return capitalized ? status[0].toUpperCase() + status.slice(1) : status;
 };
-export const cipherStatus = (row: RaceRow) => row.run.broken === true ? `${CIPHER_BROKEN} ${observationDate(row.broken, row.hour)}`
+export const cipherStatus = (row: RaceRow) => row.run.broken === true ? `${CIPHER_BROKEN} ${fieldPreparing(row.run, 'breaks') ? '? break date still being prepared' : observationDate(row.broken, row.hour)}`
   : row.run.broken === null ? `${workingStatus(row.run, true)}; cipher status unknown` : workingStatus(row.run, true);
 
 export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>, target: ReturnType<CountryLabel>, height: number): TooltipContent {
@@ -205,7 +208,7 @@ export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>,
       flag: target.flag, flagReason: target.flagReason, flagPending: target.flagPending,
     } },
     { label: 'Progress', value: progressText(row.run) },
-    { label: 'Started', value: observationDate(row.run.started, row.hour) },
+    { label: 'Started', value: fieldPreparing(row.run, 'started') ? 'Still being prepared' : observationDate(row.run.started, row.hour) },
     ...(bonus == null ? [] : [{ label: 'Bonus days', value: String(bonus) }]),
     { label: 'Status', value: cipherStatus(row), divider: true },
   ] };

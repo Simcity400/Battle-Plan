@@ -149,10 +149,7 @@ impl Prepared {
                     available.map(|_| 1),
                     available.is_some_and(|span| span.first_hour == hour),
                 );
-                let state = slot
-                    .states
-                    .last()
-                    .filter(|state| state.last_hour == hour);
+                let state = slot.states.last().filter(|state| state.last_hour == hour);
                 self.values.observe(
                     keys.state,
                     hour,
@@ -442,22 +439,249 @@ pub fn query(
         return values_query(product, params, store, source_key, cancelled);
     }
     // Research's complete selected-country rows retain their established UI
-    // sorting and time-breakdown contract. Only preparation reads replay frames.
+    // sorting and time-breakdown contract. History queries read prepared pages.
     let params: super::CountryParams = serde_json::from_value(
         serde_json::json!({ "branchId": params.get("branchId"), "tag": params.get("tag") }),
     )?;
     super::Research::validate(&params).map_err(crate::invalid)?;
-    let Some((history, unjoined)) =
-        history(store, source_key, params.branch(), &params.tag, cancelled)?
-    else {
-        return Ok(serde_json::Value::Null);
-    };
+    let (history, unjoined) =
+        history(store, source_key, params.branch(), &params.tag, cancelled)?.unwrap_or_default();
     let state = source.state::<super::State>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     serde_json::to_value(super::present(
         source, context, &mut state, history, unjoined, cancelled,
     )?)
     .map_err(Into::into)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchStateSlot {
+    pub index: u32,
+    pub available: bool,
+    pub state: Option<ResearchSlotState>,
+    pub progress: Option<ResearchProgress>,
+    pub read_hour: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchState {
+    pub tag: String,
+    pub hour: i32,
+    pub slots: Vec<ResearchStateSlot>,
+    pub data: super::ResearchReply,
+    pub preparing: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchStateReply {
+    pub branch_id: String,
+    pub states: Vec<ResearchState>,
+}
+
+/// Slot state at the requested hours. A cold read observes only two read
+/// periods: the supplying read, its preceding daily progress, and the carry
+/// proof through the target. Assignment attribution remains with the pages.
+pub fn state_query(
+    source: &crate::Source,
+    context: &super::LoadContext,
+    params: &serde_json::Value,
+    store: &store::Store,
+    key: &store::SourceKey,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    use crate::prepared::{frame_changes::FrameChangeTracker, prefix, query::progressive};
+    let branch_id = params
+        .get("branchId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| crate::invalid("Invalid research branch"))?;
+    let branch = branch_id
+        .parse()
+        .map_err(|_| crate::invalid("Invalid research branch"))?;
+    let reads: Vec<crate::prepared_measure::query::MeasureRead> = serde_json::from_value(
+        params
+            .get("reads")
+            .cloned()
+            .ok_or_else(|| crate::invalid("Research reads are missing"))?,
+    )?;
+    let mut states = Vec::new();
+    let prefix = prefix::read_or_empty(
+        source,
+        context.content.as_ref(),
+        "research",
+        branch,
+        reads.iter().map(|read| read.hour).max(),
+        cancelled,
+    )?;
+    for read in reads {
+        super::super::validate_tag(&read.tag).map_err(crate::invalid)?;
+        crate::metadata::check_cancel(cancelled)?;
+        let prepared = prefix.coverage.complete || read.hour <= prefix.coverage.last_hour;
+        let mut unavailable = ResearchHistory::default();
+        let mut slots: Vec<ResearchStateSlot> = if prepared {
+            let reply = values_query(
+                "series-state",
+                serde_json::json!({ "branchId": branch_id, "reads": [{ "tag": read.tag, "hour": read.hour }] }),
+                store,
+                key,
+                cancelled,
+            )?;
+            serde_json::from_value(
+                reply["states"][0]["slots"]
+                    .as_array()
+                    .cloned()
+                    .map(serde_json::Value::Array)
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )?
+        } else {
+            let mut scan = Scan::default();
+            let mut changes = FrameChangeTracker::new();
+            let frames = progressive::read_window(
+                source,
+                branch,
+                read.hour
+                    .saturating_sub(2 * replay::cadence::STAGGER_PERIOD - 1),
+                read.hour,
+                block::TABLES,
+                cancelled,
+            )?;
+            let observed = frames.last().is_some_and(|frame| frame.hour == read.hour);
+            for frame in &frames {
+                let changed = changes.observe(frame, source.replay_ref().format);
+                scan.observe_selected_changed(frame, Some(&read.tag), &changed, false)?;
+            }
+            let mut slots = Vec::new();
+            if observed && let Some(country) = scan.countries.get_mut(&read.tag) {
+                country.materialize(read.hour);
+                if !country
+                    .history
+                    .coverage
+                    .last()
+                    .is_some_and(|span| span.last_hour == read.hour)
+                {
+                    unavailable = country.history.clone();
+                    for slot in &mut unavailable.slots {
+                        slot.entries.clear();
+                        slot.states.clear();
+                        slot.progress.clear();
+                    }
+                }
+                for slot in &country.history.slots {
+                    let available = slot
+                        .availability
+                        .last()
+                        .is_some_and(|span| span.last_hour == read.hour);
+                    let state = slot
+                        .states
+                        .last()
+                        .filter(|state| state.last_hour == read.hour)
+                        .cloned();
+                    let progress = slot
+                        .progress
+                        .last()
+                        .filter(|progress| Some(progress.last_hour) == country.last_read)
+                        .cloned();
+                    slots.push(ResearchStateSlot {
+                        index: slot.index,
+                        available,
+                        state,
+                        progress,
+                        read_hour: country.last_read,
+                    });
+                }
+            }
+            slots
+        };
+        let mut preparing: Vec<String> = if prepared {
+            Vec::new()
+        } else {
+            vec![
+                "assignment".into(),
+                "breakdown".into(),
+                "stateHistory".into(),
+            ]
+        };
+        let mut history = unavailable;
+        for slot in slots.iter_mut().filter(|slot| slot.available) {
+            let mut state = slot.state.clone();
+            let mut progress = slot.progress.clone().filter(|progress| {
+                state.as_ref().is_some_and(|state| {
+                    state.token.is_some()
+                        && state.entry_first_observed_hour == progress.entry_first_observed_hour
+                })
+            });
+            let supplying = slot.read_hour.unwrap_or(read.hour);
+            let from = state
+                .as_ref()
+                .map_or(supplying, |state| state.first_hour.min(supplying));
+            if let Some(state) = &mut state {
+                state.last_hour = read.hour;
+                state.entry_first_observed_hour = None;
+                // A countdown's compressed segment keeps its original phase.
+                // A bounded scan proves its estimate at a supplying read, but
+                // cannot recover an older segment's phase through a carry.
+                if !prepared && supplying != read.hour && state.token.is_some() {
+                    if let Some(details) = &mut state.details {
+                        details.remaining_days = None;
+                    }
+                    if let Some(details) =
+                        slot.state.as_mut().and_then(|state| state.details.as_mut())
+                    {
+                        details.remaining_days = None;
+                    }
+                    if !preparing.iter().any(|field| field == "remainingDays") {
+                        preparing.push("remainingDays".into());
+                    }
+                }
+            }
+            if let Some(progress) = &mut progress {
+                progress.first_hour = supplying;
+                progress.last_hour = supplying;
+                progress.entry_first_observed_hour = None;
+            }
+            history.slots.push(ResearchSlotHistory {
+                index: slot.index,
+                availability: vec![ResearchCoverage {
+                    first_hour: from,
+                    last_hour: read.hour,
+                }],
+                entries: Vec::new(),
+                states: state.into_iter().collect(),
+                progress: progress.into_iter().collect(),
+            });
+        }
+        if history.coverage.is_empty()
+            && let Some(first) = history
+                .slots
+                .iter()
+                .flat_map(|slot| slot.availability.iter())
+                .map(|span| span.first_hour)
+                .min()
+        {
+            history.coverage.push(ResearchCoverage {
+                first_hour: first,
+                last_hour: read.hour,
+            });
+        }
+        let state = source.state::<super::State>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let data = super::present(source, context, &mut state, history, 0, cancelled)?;
+        states.push(ResearchState {
+            tag: read.tag,
+            hour: read.hour,
+            slots,
+            data,
+            preparing,
+        });
+    }
+    let mut data = serde_json::to_value(ResearchStateReply {
+        branch_id: branch_id.into(),
+        states,
+    })?;
+    prefix.mark(&mut data)?;
+    Ok(data)
 }
 
 fn values_query(

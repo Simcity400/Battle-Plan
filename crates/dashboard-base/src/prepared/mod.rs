@@ -1,17 +1,18 @@
 //! The prepared store's shared pages: published coverage, binary series and
 //! event batches, frame changes, group sums, the hours a family prepared on
-//! its own keeps from a block, and progressive queries. The
-//! dashboard's pipeline writes them; products read them. Products preparing
-//! a newest block window first report what it did ([`newest::Report`]).
+//! its own keeps from a block, progressive queries and replies answered from
+//! a prepared prefix. The dashboard's pipeline writes them; products read them.
+//! Products preparing a newest block window first report what it did ([`newest::Report`]).
 
 pub mod coverage;
 pub mod frame_changes;
 pub mod group_sum;
 pub mod kept;
 pub mod newest;
-pub mod pages;
 #[cfg(any(test, feature = "test-support"))]
 pub mod observer_tests;
+pub mod pages;
+pub mod prefix;
 pub mod prepass;
 pub use job_priority as priority;
 pub mod series;
@@ -23,6 +24,9 @@ pub use store::{files, recording_store};
 /// Query helpers shared by products whose reads join prepared pages with a
 /// recorded tail.
 pub mod query {
+    pub mod earlier;
     pub mod frames;
+    pub mod keyframes;
+    pub mod observations;
     pub mod progressive;
 }

@@ -1,3 +1,4 @@
+import { pendingAt, preparedPrefix, fieldPreparing } from '../../dashboard/preparedPrefix';
 import ArtFallback from '../../components/ArtFallback';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -149,6 +150,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (membershipUnknown) body = <WidgetState kind="unavailable" message="This group's members were not recorded at this moment." />;
   else if (!data || !view) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
+  else if (pendingAt(preparedPrefix(data), hour)) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (!rows.length && runAt(data.agencyAbsent, hour)) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
   else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." />;
   else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
@@ -160,6 +162,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
       tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
   return <div ref={root} className="operatives-roster">
     {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unavailable.</p>}
+    {data?.countries.some(country => country.operatives.some(entry => fieldPreparing(entry, 'joinedHour'))) && <p className="chart-line-key">First presence, departure and earlier departed operatives are still being prepared.</p>}
     {body}
   </div>;
 }

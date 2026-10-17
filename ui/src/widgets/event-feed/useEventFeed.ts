@@ -19,13 +19,17 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   hour: number | null, filter: FeedFilter, filterKey: string, prepareAll = false) {
   const content = useContentRevision(runtime.client);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const boundsKey = JSON.stringify([identity, filterKey, hour]);
-  const owner = useMemo(() => ({ client: runtime.client, boundsKey, filter }), [runtime.client, boundsKey, filter]);
-  const current = useRef(owner); current.current = owner;
   const request = (cursor: string | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed',
     params: { branchId: track!.branch.id, firstHour: filter.firstHour, lastHour: hour,
       categories: [...filter.categories], cursor, pageSize: PAGE_SIZE } });
   const first = useProduct<PreparedFeedPage>(runtime.client, track && hour !== null ? request(null) : null, active, validateEventFeedPage, track?.source);
+  // A first page answered from the prepared prefix reads back from the prefix's
+  // last hour, and its continuations keep that hour: a grown prefix starts the
+  // chain again.
+  const live = first.data?.prefix?.pending.length ? first.data.prefix.coverage.lastHour : null;
+  const boundsKey = JSON.stringify([identity, filterKey, hour, live]);
+  const owner = useMemo(() => ({ client: runtime.client, boundsKey, filter }), [runtime.client, boundsKey, filter]);
+  const current = useRef(owner); current.current = owner;
   const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string }>({ owner, pages: [] });
   const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: hour ?? 0, count: PAGE_SIZE };
   const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
@@ -80,6 +84,6 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
     setWanted(previous => previous.owner === owner && previous.pages.join(',') === pages.join(',') ? previous : { owner, pages });
   }, [owner]);
   const retry = useCallback(() => { first.retry(); chunks.retry(); }, [first.retry, chunks.retry]);
-  return { data: first.data?.reply, error: first.error ?? (chain.owner === owner ? chain.error : undefined), retry, identity, pages,
+  return { data: first.data?.reply, prefix: first.data?.prefix ?? null, error: first.error ?? (chain.owner === owner ? chain.error : undefined), retry, identity, pages,
     warnings: first.data?.reply.warnings ?? NO_WARNINGS, onWantedPages, errors: chunks.errors, retryPages: chunks.retry };
 }

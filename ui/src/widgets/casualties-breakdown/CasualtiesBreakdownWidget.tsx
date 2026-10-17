@@ -25,6 +25,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
+import { preparedPrefix, preparedThrough } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CasualtyBreakdownReply } from '../../generated/dashboard';
@@ -77,13 +78,18 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const wanted = [...new Set([...currentWindows, ...detailWindows, ...chartWindows, ...(finalIndex >= 0 ? [finalIndex] : [])])].sort((a, b) => a - b);
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, content]) : null;
   const histories = useProductWindows<CasualtyBreakdownReply>(runtime.client, identity, index => ({ ...request!,
-    params: { branchId: track!.branch.id, tag: tag!, window: index } }), wanted, active && manifest.data?.available === true, validateBreakdown, track?.source);
+    params: { branchId: track!.branch.id, tag: tag!, window: index } }), wanted, active && manifest.data?.available === true, validateBreakdown, track?.source, true);
   const current = currentWindows[0] === undefined ? undefined : histories.data.get(currentWindows[0]);
   const detail = detailWindows[0] === undefined ? undefined : histories.data.get(detailWindows[0]);
   const final = histories.data.get(finalIndex);
-  const snapshot = useMemo(() => current ? lossesAt(current, hour) : null, [current, hour]);
-  const details = useMemo(() => detail ? lossesAt(detail, detailHour) : null, [detail, detailHour]);
-  const end = useMemo(() => final && track ? lossesAt(final, track.branch.lastHour) : null, [final, track]);
+  // A window preparation has not reached answers from the prepared prefix's
+  // newest window: the losses at the prefix's last hour.
+  const through = current ? preparedThrough([current], hour) : hour;
+  const detailThrough = detail ? preparedThrough([detail], detailHour) : detailHour;
+  const snapshot = useMemo(() => current ? lossesAt(current, through) : null, [current, through]);
+  const details = useMemo(() => detail ? lossesAt(detail, detailThrough) : null, [detail, detailThrough]);
+  // Fill needs the final values, which a prefix reply does not hold yet.
+  const end = useMemo(() => final && track && !preparedPrefix(final)?.pending.length ? lossesAt(final, track.branch.lastHour) : null, [final, track]);
   useParityRows(anchor, () => ({ kind: 'windowed', label: 'Casualty breakdown exact values',
     complete: !!manifest.data && !!current && !!final,
     total: snapshot?.rows.length ?? 0, hour,
@@ -129,18 +135,22 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
   if (!manifest.data) return <WidgetState kind="loading" label="Loading casualty breakdown…" />;
-  if (!manifest.data.available) return <WidgetState kind="unavailable" message="Losses by war were not recorded." />;
+  // Nothing observed yet while preparation runs: later blocks may hold losses.
+  if (!manifest.data.available) return preparedPrefix(manifest.data)?.pending.length
+    ? <WidgetState kind="loading" label="This range is still being prepared." />
+    : <WidgetState kind="unavailable" message="Losses by war were not recorded." />;
   const currentError = currentWindows[0] === undefined ? undefined : histories.errors.get(currentWindows[0]);
   const error = detailWindows[0] === undefined ? undefined : histories.errors.get(detailWindows[0]);
   const summary = (value: typeof snapshot) => value
     ? <p className="casualty-breakdown-total">{value.incomplete ? 'Recorded subtotal' : 'Losses taken'}: <b>{exactLosses(value.total)}</b></p> : null;
   const detailBody = <div className="casualty-breakdown-details">
+    {detailThrough < detailHour && <p className="chart-line-key" role="status">Losses through {dayLabel(detailThrough)}; the rest is still being prepared.</p>}
     {pinned && <p className="casualty-breakdown-total">{dayLabel(detailHour)} {!effectiveDrill.follow
       && <button type="button" className="button small" onClick={follow}>Follow playback</button>}</p>}
     {detailOutside ? <WidgetState kind="unavailable" message="This time is outside the recording." />
       : error ? <WidgetState kind="error" detail={error} onRetry={histories.retry} />
       : !detail ? <WidgetState kind="loading" label="Loading this moment…" />
-        : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailHour && detailHour <= span.lastHour)
+        : !details ? <p className="drill-empty">{detail.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
           ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {dayLabel(detailHour)}.</p>
           : <>{summary(details)}<div className="casualty-breakdown-table"><Table label="Recorded casualty lifetimes" rows={details.rows}
             columns={columns} rowKey={rowKey} sort={SORT}
@@ -175,10 +185,11 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
       event.preventDefault(); const box = anchor.current?.getBoundingClientRect(); if (box) menu.open(box.left, box.top, [jumpItem(runtime, track.id, hour)]);
     } }}>
     {summary(snapshot)}
-    {!snapshot ? <WidgetState kind={current.observed.some(span => span.firstHour <= hour && hour <= span.lastHour) ? 'empty' : 'unavailable'} icon="sunburst"
-      message={current.observed.some(span => span.firstHour <= hour && hour <= span.lastHour)
+    {through < hour && <p className="chart-line-key" role="status">Losses through {dayLabel(through)}; the rest is still being prepared.</p>}
+    {!snapshot ? <WidgetState kind={current.observed.some(span => span.firstHour <= through && through <= span.lastHour) ? 'empty' : 'unavailable'} icon="sunburst"
+      message={current.observed.some(span => span.firstHour <= through && through <= span.lastHour)
         ? 'No casualty relations were recorded for this country at this moment.' : 'Casualty counters were not recorded at this moment.'} />
-      : <Sunburst key={JSON.stringify([identity, snapshot.identity, manifest.data.observed.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour,
+      : <Sunburst key={JSON.stringify([identity, snapshot.identity, manifest.data.observed.find(span => span.firstHour <= through && through <= span.lastHour)?.firstHour,
         widget.time.mode === 'follow' ? runtime.clock.getSnapshot().seekSequence : 0])}
         label="Positive casualties by war and enemy" root={ROOT} items={items} levels={levels} text={TEXT}
         settings={sunburstSettings(options)} hoursPerSecond={speed} active={active && (!open || options.drill === 'popout')} />}

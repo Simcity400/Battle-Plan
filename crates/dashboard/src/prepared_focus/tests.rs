@@ -341,7 +341,11 @@ fn chain_dates_order_segments_and_gain_match_focus_history() {
             );
             assert_eq!(
                 (actual.hour, actual.last_hour, actual.order_first_hour),
-                (segment.first_hour, segment.last_hour, segment.first_hour),
+                (
+                    segment.first_hour,
+                    segment.last_hour,
+                    Some(segment.first_hour)
+                ),
                 "{tag} at {hour}"
             );
             assert_eq!(
@@ -404,6 +408,86 @@ fn chain_dates_order_segments_and_gain_match_focus_history() {
             .hour(&a, hour)
             .is_some_and(|row| row.daily_gain_raw.is_some())
     }));
+}
+
+#[test]
+fn sampled_focus_has_the_prepared_order_and_values_without_invented_dates() {
+    let prepared = prepared(scenario());
+    let flag = AtomicBool::new(false);
+    for hour in [100, 119, 130, 138, 149, 159, 176, 190] {
+        for index in 0..5 {
+            let tag = String::from_utf8(scale_tag(index)).unwrap();
+            let exact = prepared.hour(&tag, hour);
+            let sampled = sampled_hour(&prepared.source, 1, &tag, hour, &flag).unwrap();
+            assert_eq!(sampled.is_some(), exact.is_some(), "{tag} at {hour}");
+            let (Some(sampled), Some(exact)) = (sampled, exact) else {
+                continue;
+            };
+            assert_eq!(
+                (
+                    &sampled.current,
+                    &sampled.continuous,
+                    sampled.paused,
+                    &sampled.progress_raw
+                ),
+                (
+                    &exact.current,
+                    &exact.continuous,
+                    exact.paused,
+                    &exact.progress_raw
+                )
+            );
+            if sampled.daily_gain_raw.is_some() {
+                assert_eq!(sampled.daily_gain_raw, exact.daily_gain_raw);
+            }
+            assert!(sampled.order_first_hour.is_none());
+            assert!(
+                sampled
+                    .preparing
+                    .iter()
+                    .any(|field| field == "completedByHour")
+            );
+            let mut entries = Vec::new();
+            for page in 0..sampled.completed.count {
+                let data = sampled_page(
+                    &prepared.source,
+                    1,
+                    &tag,
+                    hour,
+                    &sampled.completed,
+                    page,
+                    &flag,
+                )
+                .unwrap();
+                entries.extend(serde_json::from_value::<Vec<FocusEntry>>(data).unwrap());
+            }
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| entry.completed_by_hour.is_none())
+            );
+            let expected = prepared.order(&tag, &exact);
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|entry| (entry.ordinal, &entry.token))
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|entry| (entry.ordinal, &entry.token))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    let tag = String::from_utf8(scale_tag(0)).unwrap();
+    sampled_hour(&prepared.source, 1, &tag, 190, &flag).unwrap();
+    let reads = dashboard_base::prepared::query::frames::reads(&prepared.source);
+    sampled_hour(&prepared.source, 1, &tag, 190, &flag).unwrap();
+    assert_eq!(
+        dashboard_base::prepared::query::frames::reads(&prepared.source),
+        reads,
+        "a re-ask shares decoded hours"
+    );
 }
 
 /// Completions are the order's newly dated entries at hours whose country
@@ -562,18 +646,21 @@ fn distinct_recorded_bytes_with_one_rendering_change_the_order() {
     assert_eq!(hour(101).current, hour(102).current);
     assert_eq!(
         (hour(101).order_first_hour, hour(101).last_hour),
-        (101, 101)
+        (Some(101), 101)
     );
-    assert_eq!(hour(102).order_first_hour, 102);
+    assert_eq!(hour(102).order_first_hour, Some(102));
     let dated = prepared.order(&tag, &hour(102));
     assert_eq!(dated[1].completed_by_hour, Some(101));
     // The completed focus's bytes changed: a new, undated list.
     let reset = prepared.order(&tag, &hour(103));
     assert_eq!(reset[1].token, dated[1].token, "one rendering");
     assert!(reset.iter().all(|entry| entry.completed_by_hour.is_none()));
-    assert_eq!(hour(103).order_first_hour, 103);
+    assert_eq!(hour(103).order_first_hour, Some(103));
     // Equal recorded bytes hold the run.
-    assert_eq!((hour(104).order_first_hour, hour(104).hour), (103, 103));
+    assert_eq!(
+        (hour(104).order_first_hour, hour(104).hour),
+        (Some(103), 103)
+    );
 }
 
 /// Completed-focus tokens a block's facts retain: each list part once,

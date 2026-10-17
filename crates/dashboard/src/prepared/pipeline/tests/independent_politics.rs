@@ -832,10 +832,11 @@ fn quiet_politics_answer_from_their_own_coverage_while_the_hourly_walk_accepts_n
         let source = fixture.source("politics-stalled");
         let flag = AtomicBool::new(false);
         let ideas = serde_json::json!({ "branchId": "1", "tag": "000" });
-        assert!(
+        assert_eq!(
             query(&source, "idea-history", ideas.clone())
-                .unwrap()
-                .is_null()
+                .unwrap_err()
+                .to_string(),
+            "Choose the game and user folders in Settings first"
         );
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;
@@ -880,13 +881,19 @@ fn quiet_politics_answer_from_their_own_coverage_while_the_hourly_walk_accepts_n
                 &flag,
             )
             .unwrap();
+            let mut answered = query(
+                &source,
+                "subjects",
+                serde_json::json!({ "branchId": branch }),
+            )
+            .unwrap();
+            assert_eq!(answered["coverage"]["complete"], true);
+            assert_eq!(answered["pending"], serde_json::json!([]));
+            for field in ["coverage", "pending"] {
+                answered.as_object_mut().unwrap().remove(field);
+            }
             assert_eq!(
-                query(
-                    &source,
-                    "subjects",
-                    serde_json::json!({ "branchId": branch })
-                )
-                .unwrap(),
+                answered,
                 serde_json::to_value(oracle).unwrap(),
                 "branch {branch}: the subjects answer from their own coverage"
             );
@@ -967,4 +974,220 @@ fn quiet_politics_quiet_hours_build_no_frame() {
             );
         }
     }
+}
+
+/// Before peace preparation covers the branch, its event page answers the
+/// prepared prefix instead of null: the deals as the pages through the
+/// prefix's last hour give them, the conference still open there preparing
+/// its outcome rather than claiming none was recorded, the hours after it
+/// pending rather than unobserved. Once complete, it is hourly preparation's
+/// reply with nothing pending.
+#[test]
+fn quiet_politics_event_pages_answer_their_prepared_prefix_with_the_hours_still_pending() {
+    let replay = scenario(LAST, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("politics-prefix");
+        let flag = AtomicBool::new(false);
+        let page = serde_json::json!({ "branchId": "1", "family": { "kind": "peace-deals" } });
+        assert!(
+            !query(&source, "events-page", page.clone())
+                .unwrap()
+                .is_null()
+        );
+        // The hourly walk accepts a block per run: stop while conference 9
+        // (listed from 141, finalized at 189) is open.
+        while coverage(&source, None, 1, &flag)
+            .unwrap()
+            .is_none_or(|coverage| coverage.last_hour < 150)
+        {
+            run_measured(&source, None, &flag, true, Duration::ZERO, |_| {}).unwrap();
+        }
+        let accepted = coverage(&source, None, 1, &flag).unwrap().unwrap();
+        assert!(!accepted.complete && (141..189).contains(&accepted.last_hour));
+        let prefix = query(&source, "events-page", page.clone()).unwrap();
+        assert_eq!(prefix["coverage"], serde_json::to_value(&accepted).unwrap());
+        let pending = crate::prepared::prefix::pending(&source, 1, accepted.last_hour, None);
+        assert_eq!(
+            pending.first().map(|span| span.first_hour),
+            Some(accepted.last_hour + 1)
+        );
+        assert_eq!(pending.last().map(|span| span.last_hour), Some(LAST));
+        assert_eq!(prefix["pending"], serde_json::to_value(&pending).unwrap());
+        let unsettled = [
+            "No complete ownership and war read after settlement; outcomes are not recorded.",
+            "No end was observed; the conference outcome is not recorded.",
+        ];
+        let deals = prefix["deals"].as_array().unwrap();
+        assert!(
+            deals
+                .iter()
+                .any(|deal| deal["preparing"] == serde_json::json!(["outcome"])),
+            "{prefix}"
+        );
+        for deal in deals {
+            for line in deal["limitations"].as_array().unwrap() {
+                assert!(!unsettled.contains(&line.as_str().unwrap()), "{prefix}");
+            }
+        }
+        for spans in prefix["unobserved"].as_object().unwrap().values() {
+            for span in spans.as_array().unwrap() {
+                assert!(span["lastHour"].as_i64().unwrap() <= i64::from(accepted.last_hour));
+            }
+        }
+        plain(&source);
+        let complete = query(&source, "events-page", page).unwrap();
+        assert_eq!(complete["coverage"]["complete"], true);
+        assert_eq!(complete["pending"], serde_json::json!([]));
+        let mut hourly = peace_reply(&source, "1");
+        hourly["coverage"] = complete["coverage"].clone();
+        hourly["pending"] = serde_json::json!([]);
+        assert_eq!(complete, hourly);
+        assert!(
+            complete["deals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|deal| deal["preparing"] == serde_json::json!([]))
+        );
+        clear(source);
+    });
+}
+
+/// Each relation a subjects reply holds at `hour`, with the subject's level
+/// there: (overlord, subject, start hour, level).
+fn subjects_at(
+    reply: &serde_json::Value,
+    hour: i64,
+) -> std::collections::BTreeSet<(String, String, i64, String)> {
+    let mut held = std::collections::BTreeSet::new();
+    for run in reply["runs"].as_array().unwrap() {
+        if run["firstHour"].as_i64().unwrap() > hour || run["lastHour"].as_i64().unwrap() < hour {
+            continue;
+        }
+        let level = run["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| {
+                step["firstHour"].as_i64().unwrap() <= hour
+                    && step["lastHour"].as_i64().unwrap() >= hour
+            })
+            .expect("steps cover the run")["level"]
+            .to_string();
+        held.insert((
+            run["overlord"].as_str().unwrap().to_owned(),
+            run["subject"].as_str().unwrap().to_owned(),
+            run["startHour"].as_i64().unwrap(),
+            level,
+        ));
+    }
+    held
+}
+
+/// Before subject preparation covers the branch, the subjects reply answers
+/// its prepared prefix exactly and each later block from its keyframe, marked
+/// approximate, instead of null: every hour of the prefix and every sampled
+/// keyframe holds the relations and levels of the complete reply, the
+/// relation open at the prefix's end goes on into the first sampled block,
+/// the recorded gap after the prefix stays unobserved and nothing that was
+/// sampled is pending. Once complete, it is hourly preparation's reply with
+/// nothing pending or approximate.
+#[test]
+fn subjects_answer_their_prepared_prefix_and_sample_each_later_keyframe() {
+    use crate::products::{
+        LoadContext, Product,
+        subjects::{SubjectParams, Subjects},
+    };
+    let replay = scenario(LAST, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("subjects-prefix");
+        let flag = AtomicBool::new(false);
+        let params = serde_json::json!({ "branchId": "1" });
+        assert!(
+            !query(&source, "subjects", params.clone())
+                .unwrap()
+                .is_null()
+        );
+        let oracle = serde_json::to_value(
+            Subjects::load(
+                &source,
+                &SubjectParams {
+                    branch_id: "1".into(),
+                },
+                &LoadContext { content: None },
+                &flag,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // The first commit ends after the branch's first block (100 to 111).
+        run_measured(&source, None, &flag, true, Duration::ZERO, |_| {}).unwrap();
+        let accepted = coverage(&source, None, 1, &flag).unwrap().unwrap();
+        assert_eq!((accepted.last_hour, accepted.complete), (111, false));
+        let reply = query(&source, "subjects", params.clone()).unwrap();
+        assert_eq!(reply["coverage"], serde_json::to_value(&accepted).unwrap());
+        for hour in 100..=111 {
+            assert_eq!(
+                subjects_at(&reply, hour),
+                subjects_at(&oracle, hour),
+                "hour {hour}"
+            );
+        }
+        // Every later block is sampled at its keyframe, so nothing is pending.
+        let keyframes: Vec<i64> = replay
+            .index
+            .iter()
+            .filter(|block| block.branch == 1 && block.first_hour > 111)
+            .map(|block| i64::from(block.first_hour))
+            .collect();
+        assert!(keyframes.len() > 3);
+        for &hour in &keyframes {
+            assert_eq!(
+                subjects_at(&reply, hour),
+                subjects_at(&oracle, hour),
+                "keyframe {hour}"
+            );
+        }
+        assert_eq!(
+            reply["approximate"],
+            serde_json::json!([
+                {"firstHour": 112, "lastHour": 135},
+                {"firstHour": 138, "lastHour": LAST}
+            ])
+        );
+        assert_eq!(reply["pending"], serde_json::json!([]));
+        assert!(
+            reply["unobserved"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!({"firstHour": 136, "lastHour": 137}))
+        );
+        // A holds B from 90 throughout: one run from the branch's start into
+        // the sampled hours, broken only at the gap.
+        let held: Vec<_> = reply["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|run| run["startHour"] == 90)
+            .map(|run| {
+                (
+                    run["firstHour"].as_i64().unwrap(),
+                    run["lastHour"].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(held, [(100, 135), (138, i64::from(LAST))]);
+        plain(&source);
+        let mut complete = query(&source, "subjects", params).unwrap();
+        assert_eq!(complete["coverage"]["complete"], true);
+        assert_eq!(complete["pending"], serde_json::json!([]));
+        assert!(complete.get("approximate").is_none());
+        for field in ["coverage", "pending"] {
+            complete.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(complete, oracle);
+        clear(source);
+    });
 }

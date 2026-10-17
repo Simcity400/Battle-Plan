@@ -106,7 +106,7 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   return <div className="log-widget event-feed-widget">
     {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
       selected={[...categories]} max={CATEGORIES.length} onToggle={key => setOption?.(key, !categories.has(key))} /></div>}
-    <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months}
+    <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}
       {...(import.meta.env.MODE === 'parity' ? { paritySemantic, parityHistoryComplete } : {})}
       animate={log.animate && widget.time.mode === 'follow'} playhead={widget.time.mode === 'follow' ? hour : null}
       columns={artwork ? COLUMNS : 'minmax(0, 1fr) auto'} onVisible={setVisible} onWantedPages={feed.onWantedPages}

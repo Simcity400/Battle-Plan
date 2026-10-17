@@ -104,7 +104,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
       if (!active || state || chooserRef.current !== chooserOwner || !tag || !mixCandidates.includes(tag) || occupationSegmentAt(model, tag, moment) === null) return;
       setChoice({ scope: mixScope, tag, hour: moment });
     }} /> : null;
-  return <div ref={parityRoot}><CountryRaceView lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
+  return <div ref={parityRoot}><CountryRaceView pending={data?.pending} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
     onReachHour={prepared.onReachHour} navigation={prepared.navigation} runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
     presentation={{ exact: false, held: false }}
@@ -112,7 +112,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     lineEmpty={{ icon: 'globe', message: 'No occupied-state data for these countries.' }}
     mixEmpty={{ icon: 'globe', message: 'Choose an occupier.', unavailable: () => 'No occupied-state data at this time.' }}
     countryTags={view === 'mix' ? [...new Set(mix?.lines.map(line => line.tag) ?? [])] : undefined}
-    beforeChart={<>{mixChooser}{view === 'mix' && mix && !mix.available ? <p className="chart-line-key">Country unavailable at this time.</p> : null}
+    beforeChart={<>{data?.preparing?.length ? <p className="chart-line-key">Country identity history is still being prepared.</p> : null}{mixChooser}{view === 'mix' && mix && !mix.available ? <p className="chart-line-key">Country unavailable at this time.</p> : null}
       {shown === 'both' && view !== 'race' ? <p className="chart-line-key"><i aria-hidden="true" />Solid: resistance · <i className="is-dashed" aria-hidden="true" />dashed: compliance</p> : null}</>}
     formatAxis={formatAxisPercent} formatValue={String}
     tooltip={(tag, hour, _name, _colours, labelAt) => {

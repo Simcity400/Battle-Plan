@@ -7,7 +7,9 @@
 //! ([`land_battles::newest`]) and naval battles ([`naval_battles::newest`])
 //! publish theirs here, each family on a thread of its own beside the
 //! families ([`independent::Beside`]), each branch's page in a commit of its
-//! own as soon as it is proven, in the families' group commits.
+//! own as soon as it is proven, in the families' group commits. The land
+//! window's diagnostics are read and committed afterward on the same Beside
+//! job; until then the proven page answers with `warningsComplete: false`.
 //!
 //! What each branch's preparation did ([`Report`]: the earlier blocks read
 //! by their changes, every look-back tried with its first block, its blocks,
@@ -31,6 +33,30 @@ use std::{
     sync::{Mutex, PoisonError},
     time::Instant,
 };
+
+/// Status entries advanced by the proven newest-window commits.
+pub(crate) fn gate(product: &str) -> Option<&'static str> {
+    match product {
+        "land-battles" | "land-battles-manifest" => Some("newest.land"),
+        "naval-battles" | "naval-battles-manifest" => Some("newest.naval"),
+        _ => None,
+    }
+}
+
+fn extent(phase: &independent::Phase<'_>, branch: u64) -> super::Coverage {
+    let window = phase
+        .source
+        .block_windows(branch)
+        .last()
+        .cloned()
+        .expect("branch window");
+    super::Coverage {
+        schema: super::SCHEMA,
+        first_hour: window.first_hour,
+        last_hour: window.last_hour,
+        complete: true,
+    }
+}
 
 /// The land battle family's name in the checkpoint's refusals.
 const LAND: &str = "land";
@@ -238,16 +264,20 @@ impl Reports {
 }
 
 /// One family's newest windows: the branches it tries, how it prepares and
-/// writes a branch's window, and its names.
-struct Family<'a, T> {
+/// publishes a branch's window and reports its work, with its names.
+struct Family<'a> {
     names: &'static Names,
     branches: Vec<u64>,
     #[allow(clippy::type_complexity)]
-    prepare: Box<dyn Fn(u64) -> io::Result<(Option<T>, Report)> + Send + Sync + 'a>,
-    write: fn(&T, &mut store::Writer) -> io::Result<()>,
+    run: Box<
+        dyn Fn(u64, &mut independent::Publish<'_>, &mut independent::Timings) -> io::Result<Report>
+            + Send
+            + Sync
+            + 'a,
+    >,
 }
 
-impl<T> Family<'_, T> {
+impl Family<'_> {
     /// Each branch's window in branch order, each published in a commit of
     /// its own as soon as it is proven; counts the family's time as its own,
     /// and reports what each branch's preparation did.
@@ -273,7 +303,7 @@ impl<T> Family<'_, T> {
             }
             #[cfg(not(test))]
             let Stall = stall;
-            let (newest, report) = (self.prepare)(branch)?;
+            let report = (self.run)(branch, publish, timings)?;
             count(timings, names.earlier, report.earlier_took, report.earlier);
             count(
                 timings,
@@ -291,9 +321,6 @@ impl<T> Family<'_, T> {
             reports.update(names, |family| {
                 family.branches.insert(branch, report);
             });
-            if let Some(newest) = newest {
-                publish.commit(&mut |writer: &mut store::Writer| (self.write)(&newest, writer))?;
-            }
         }
         reports.update(names, |family| family.finished = true);
         count(timings, names.timing, started.elapsed(), 1);
@@ -314,28 +341,62 @@ pub(super) fn jobs<'a>(
     reports: &'a Reports,
 ) -> io::Result<Vec<independent::Beside<'a>>> {
     let bound = saved.as_ref() == Some(phase.key);
+    let stall = stall();
+    let diagnosing = stall.clone();
     let land = Family {
         names: &LAND_NAMES,
         branches: wanted(phase, state, LAND, bound, land_battles::newest::published)?,
-        prepare: Box::new(move |branch| {
-            land_battles::newest::prepare_reported(
+        run: Box::new(move |branch, publish, timings| {
+            let (proven, mut report) = land_battles::newest::prove_reported(
                 phase.source,
                 branch,
                 phase.context,
                 phase.cancelled,
-            )
+            )?;
+            let Some(proven) = proven else {
+                return Ok(report);
+            };
+            publish.window(
+                "newest.land",
+                branch,
+                extent(phase, branch),
+                &mut |writer| proven.write(writer),
+            )?;
+            // The proof is visible before the branch-wide naming reads;
+            // a naming refusal withholds only the diagnostics.
+            before(&diagnosing, "newest.land.diagnostics", branch);
+            let started = Instant::now();
+            let workers = (land_battles::newest::workers() / 4).max(1);
+            let diagnosed =
+                proven.diagnose_reported(phase.replay, workers, phase.cancelled, &mut report)?;
+            if let Some(timings) = timings.as_mut() {
+                let family = timings.entry("newest.land.diagnostics").or_default();
+                family.observe += started.elapsed();
+                family.calls += 1;
+            }
+            if let Some(diagnosed) = diagnosed {
+                publish.commit(&mut |writer| diagnosed.write(writer))?;
+            }
+            Ok(report)
         }),
-        write: land_battles::newest::Newest::write,
     };
     let naval = Family {
         names: &NAVAL_NAMES,
         branches: wanted(phase, state, NAVAL, bound, naval_battles::newest::published)?,
-        prepare: Box::new(move |branch| {
-            naval_battles::newest::prepare_reported(phase.source, branch, phase.cancelled)
+        run: Box::new(move |branch, publish, _| {
+            let (newest, report) =
+                naval_battles::newest::prepare_reported(phase.source, branch, phase.cancelled)?;
+            if let Some(newest) = newest {
+                publish.window(
+                    "newest.naval",
+                    branch,
+                    extent(phase, branch),
+                    &mut |writer| newest.write(writer),
+                )?;
+            }
+            Ok(report)
         }),
-        write: naval_battles::newest::Newest::write,
     };
-    let stall = stall();
     let cancelled = phase.cancelled;
     let mut jobs = Vec::new();
     if land.branches.is_empty() && naval.branches.is_empty() {
@@ -390,8 +451,8 @@ fn together() -> bool {
     true
 }
 
-/// What tests run before each branch's window is prepared, with the family's
-/// timing name and the branch, on the family's thread.
+/// What tests run before each branch's window or diagnostics are prepared,
+/// with the timing name and the branch, on the family's thread.
 #[cfg(test)]
 type Stall = Option<std::sync::Arc<dyn Fn(&str, u64) + Send + Sync>>;
 
@@ -399,6 +460,16 @@ type Stall = Option<std::sync::Arc<dyn Fn(&str, u64) + Send + Sync>>;
 #[cfg(not(test))]
 #[derive(Clone)]
 struct Stall;
+
+/// Runs the test hook before a window or its diagnostics are prepared.
+fn before(stall: &Stall, family: &str, branch: u64) {
+    #[cfg(test)]
+    if let Some(stall) = stall {
+        stall(family, branch);
+    }
+    #[cfg(not(test))]
+    let _ = (stall, family, branch);
+}
 
 /// This thread's stall, for the families' threads.
 fn stall() -> Stall {
@@ -432,9 +503,9 @@ pub(super) fn with_test_in_turn<T>(run: impl FnOnce() -> T) -> T {
     run()
 }
 
-/// Run `run` with `stall` called before each branch's newest window is
-/// prepared, on the family's thread, with the family's timing name
-/// (`newest.land`, `newest.naval`) and the branch.
+/// Run `run` with `stall` called before each branch's newest window or
+/// diagnostics are prepared, on the family's thread, with the timing name
+/// (`newest.land`, `newest.land.diagnostics`, `newest.naval`) and the branch.
 #[cfg(test)]
 pub(super) fn with_test_stall<T>(
     stall: impl Fn(&str, u64) + Send + Sync + 'static,

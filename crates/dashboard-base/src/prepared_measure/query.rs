@@ -315,9 +315,10 @@ pub fn query(
                         .iter()
                         .any(|span| span.first_hour <= read.hour && span.last_hour >= read.hour)
                 });
-                // Stability samples date their values by the same frame's supplying read.
+                // Stability and experience samples date their values by the
+                // same frame's supplying read.
                 let sampled_read = progressive
-                    .filter(|_| stability)
+                    .filter(|_| stability || experience)
                     .and_then(|(_, values, _, _, _)| {
                         values
                             .get(&(read.tag.clone(), READ_HOUR.to_owned()))?
@@ -326,7 +327,7 @@ pub fn query(
                     })
                     .map(|run| {
                         i32::try_from(run.value)
-                            .map_err(|_| crate::invalid("Invalid sampled stability read hour"))
+                            .map_err(|_| crate::invalid("Invalid sampled read hour"))
                     })
                     .transpose()?;
                 if let Some((_, values, _, identities, _)) = progressive {
@@ -380,7 +381,10 @@ pub fn query(
                     None
                 };
                 let read_hour = if experience {
-                    supplying.as_ref().map(|read| read.read_hour)
+                    supplying
+                        .as_ref()
+                        .map(|read| read.read_hour)
+                        .or(sampled_read)
                 } else if sampled_read.is_some() {
                     sampled_read
                 } else if !balance {
@@ -408,7 +412,7 @@ pub fn query(
                     // A transient tail proves a recorded country but never its absence.
                     recorded: match progressive {
                         Some((_, _, _, identities, _))
-                            if stability && actor(&read.tag).is_none() =>
+                            if (stability || experience) && actor(&read.tag).is_none() =>
                         {
                             identities
                                 .contains_key(&(read.tag.clone(), READ_HOUR.to_owned()))

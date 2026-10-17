@@ -5,15 +5,18 @@ import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
 import type { ResearchReply } from '../../generated/dashboard';
 import { validateResearchReply } from './researchData.ts';
 
+/** The country's research history. Before preparation covers the branch,
+ * `publish` receives each reply answered from its prepared prefix as it grows. */
 export async function loadPreparedResearch(client: DashboardClient, source: DashboardSource, branchId: string, tag: string,
-  signal: AbortSignal, restart = false, pending: () => void = () => {}): Promise<ResearchReply> {
+  signal: AbortSignal, restart = false, pending: () => void = () => {}, publish?: (reply: ResearchReply) => void): Promise<ResearchReply> {
   return validateResearchReply(await preparedSeriesQuery(client, source, 'events-page', {
     branchId, tag, family: { kind: 'research' },
-  }, signal, restart, pending));
+  }, signal, restart, pending, undefined, publish && (value => publish(validateResearchReply(value)))));
 }
 
 /** Complete selected-country rows keep the established list and column models.
- * Pending coverage, cancellation and source ownership use the shared query path. */
+ * Pending coverage, cancellation and source ownership use the shared query path;
+ * before coverage is complete the rows are its prepared prefix's. */
 export function usePreparedResearch(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
   tag: string | undefined, active: boolean) {
   const content = useContentRevision(client);
@@ -25,7 +28,8 @@ export function usePreparedResearch(client: DashboardClient, source: DashboardSo
     if (!active || !source || !branchId || !tag) return;
     const controller = new AbortController();
     void loadPreparedResearch(client, source, branchId, tag, controller.signal, attempt > 0,
-      () => { if (!controller.signal.aborted) setState({ owner, preparing: true }); }).then(
+      () => { if (!controller.signal.aborted) setState(previous => previous?.owner === owner && previous.data ? previous : { owner, preparing: true }); },
+      data => { if (!controller.signal.aborted) setState({ owner, data }); }).then(
       data => { if (!controller.signal.aborted) setState({ owner, data }); },
       error => { if (!controller.signal.aborted) setState({ owner, error: String(error) }); },
     );

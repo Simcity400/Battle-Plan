@@ -12,7 +12,7 @@ A caption line says what is counted, over which window and to which date. A coun
 ## Products it reads
 
 - [`equipment-produced`](../../../../crates/dashboard-base/src/products/equipment_produced.rs) counts each model's units delivered by production ticks, including deleted lines' final publications. With `count: ic` it counts the exact factory IC applied to the lines instead: the input Production spending shows, excluding instant progress. It also ranks the top N.
-- Prepared race views read exact endpoint pages through `production-select`; only the visible country range is requested. Type choices use the prepared branch catalogue. Lines, opened and pinned breakdowns use the whole-history product. The default units type retains the all-types total query so it stays the type delivered most; running-total captions keep the catalogue's global observation. An unknown empty endpoint uses the history view to preserve absent history and unread-current-value states.
+- Prepared race views read exact endpoint pages through `production-select`; only the visible country range is requested. Type choices use the prepared branch catalogue. Lines, opened and pinned breakdowns use the whole-history product. The default units type retains the all-types total query so it stays the type delivered most; running-total captions keep the catalogue's global observation. An unknown empty endpoint uses the history view to preserve absent history and unread-current-value states. Before preparation reaches the moment shown, a page answers its prepared prefix's last hour: the race shows that day, the caption adds "later days are still being prepared", and the page is asked again once production's coverage moves.
 - [Equipment helpers](../../dashboard/equipment.ts) supply content naming rules.
 - The breakdown's pictures come from `stockpile-artwork`, through [useStockpileArtwork](../equipment-stockpile/useStockpileArtwork.ts): the drilled country's best design for each type.
 
@@ -59,6 +59,15 @@ A caption line says what is counted, over which window and to which date. A coun
 - The chart's key with exact values follows the table.
 - A picked day holds; Follow resumes playback. Pin binds the clicked native holder and date through aliases, excluding replacement holders.
 - Parity builds prepare every ranked endpoint through the real reader after visible captures. Exact total and keyed amounts, including equipment-line subtotals where the combined amount is unknown, match the history view's canonical model. Ordinary builds request only visible endpoint rows and expose no model.
+
+Before the whole-history automatic choice arrives, the units race chooses the
+positive type total delivered most in the prepared prefix, with ties in type order.
+The selection reply supplies these known totals before country paging; unknown
+values contribute no invented amount. The caption calls this choice approximate.
+The whole-history choice replaces it when available. Incomplete selections also
+mark their earlier hours approximate because later type tokens and repairs to an
+open equipment/Rocket supplying interval can change them. Pinned reads continue
+refreshing until that coverage completes, even with no pending tail.
 
 ## Files
 

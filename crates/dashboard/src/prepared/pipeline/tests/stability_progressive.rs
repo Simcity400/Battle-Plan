@@ -211,7 +211,12 @@ fn stability_measures_answer_unprepared_spans_from_the_shared_sampler_as_prepara
     // Nothing prepared: the gated family used to answer pending (null).
     let cold = observe();
     let first = query("series-summary", summary("stability", &["GER"], 0, 13));
-    assert!(first["coverage"].is_null());
+    assert!(
+        first["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(|hour| first["coverage"]["lastHour"].as_i64() == hour.checked_sub(1))
+            && first["coverage"]["complete"] == false
+    );
     let line = &first["series"][0]["summary"];
     assert_eq!(line["approximate"], serde_json::json!([]));
     assert_eq!(

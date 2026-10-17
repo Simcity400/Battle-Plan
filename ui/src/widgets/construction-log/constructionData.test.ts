@@ -48,6 +48,27 @@ const logOf = (projects: ConstructionProject[], outputs: ProjectOutput[] = [], o
 const LOG = logOf(PROJECTS);
 const RUN: ConstructionOutputRun = { from: 100, to: 100, constructionRaw: '1', repairRaw: '0', reason: null, beforeObservation: false, absent: false };
 
+test('a proven newest window carries and remaps its own building types', () => {
+  const own = [MANIFEST.types[1], { id: 60000, token: 'mod_new_type', name: 'Mod new type', icon: null }];
+  const newest = validateConstructionLogWindow({ ...windowOf([project({ building: 0 }), project({ id: 'new', building: 1 })], [], [], 2),
+    types: own, exactFrom: 160 }, MANIFEST.types.length);
+  const log = mergeWindows(MANIFEST, new Map([[2, newest]]), 2);
+  assert.equal(log.manifest.types[log.projects[0].building].id, own[0].id);
+  assert.equal(log.manifest.types[log.projects[1].building].id, own[1].id);
+  assert.throws(() => validateConstructionLogWindow({ ...newest, exactFrom: 159 }, 4), /malformed/);
+  assert.throws(() => validateConstructionLogWindow({ ...newest, types: [] }, 4), /malformed/);
+});
+
+test('an older prefix window arriving later cannot replace the proven newest project or output', () => {
+  const newest = { ...windowOf([project({ end: { kind: 'removed', hour: null, knownAt: 180, unknown: null } })],
+    [{ id: '1', runs: [{ ...RUN, to: 180 }] }], [], 2), types: MANIFEST.types, exactFrom: 160 };
+  const prefix = { ...windowOf([project({})], [{ id: '1', runs: [{ ...RUN, to: 119 }] }]),
+    coverage: { firstHour: 0, lastHour: 119, complete: false }, pending: [{ firstHour: 120, lastHour: 300 }] };
+  const log = mergeWindows(MANIFEST, new Map<number, ConstructionLogReply>([[2, newest], [0, prefix]]), 2);
+  assert.equal(log.projects[0].end?.knownAt, 180);
+  assert.equal(log.output.get('1')![0].to, 180);
+});
+
 const every: LogFilter = { types: [], projects: 'all', country: () => true, from: null };
 const fixtureNames: StateNameAt = (_hour, state) => ({ state, name: STATES.find(name => name.id === state)?.name ?? null, missing: null });
 const placeLabel = (_log: ConstructionLog, item: ConstructionProject) => datedPlaceLabel(item, 148, fixtureNames);

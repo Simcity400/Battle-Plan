@@ -64,7 +64,16 @@ pub fn query(
     let Some((keys, catalogue)) =
         series::read_catalogue::<Catalogue>(store, source, "politics-ledger", branch)?
     else {
-        return Ok(Value::Null);
+        return if params.view == LedgerView::Spending {
+            Ok(serde_json::to_value(PoliticsLedgerReply {
+                branch_id: params.branch_id,
+                tag: params.tag,
+                decimals: 5,
+                ..Default::default()
+            })?)
+        } else {
+            Ok(Value::Null)
+        };
     };
     let mut primary = Reader::new(
         store,

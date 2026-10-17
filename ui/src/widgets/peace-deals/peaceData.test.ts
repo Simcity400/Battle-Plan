@@ -28,7 +28,7 @@ function deal(id = 'conference', hour = 20): PeaceDeal {
   return { id, derived: true, observation: 'recordedConference', conferenceId: id, warName: null, firstObservedHour: hour - 5,
     lastObservedHour: hour - 1, currentTurn: 2, finalized: null, firstFinalizedHour: null, endHour: hour, endIsBy: true,
     firstAbsentHour: hour, participantsDerived: true, winners: ['winner/opaque'], losers: ['loser:opaque'], items: [item(1, hour)],
-    captured: null, captureUnavailable: null, transfers: { nodes: [], links: [] }, limitations: [] };
+    captured: null, captureUnavailable: null, transfers: { nodes: [], links: [] }, limitations: [], preparing: [] };
 }
 function reply(deals = [deal()]): PeaceDealsReply {
   return { branchId: '1', derived: true, deals, transfers: { nodes: [], links: [] }, warnings: [],

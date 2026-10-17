@@ -21,3 +21,20 @@ content, and prepares and queries them in its pipeline. The crate implements
 `cargo test -p dashboard-intelligence` builds and runs only these products'
 tests. The `test-support` feature compiles their test content for the
 dashboard's content-check and pipeline tests.
+
+First views read committed history immediately, including an empty prefix before
+any accepted hour. Day requests beyond it read the supplying block and its
+predecessor through the shared frame cache: agency screen values, cipher amounts
+and countdowns, and complete operative placements are exact at the requested
+hours. Cipher attempt starts and breaks, and roster first presence and departure,
+remain preparing. Manual agency selections needing identity history use the
+joint prepared prefix. The espionage log proves its newest day from the day and
+supplying blocks when their episode boundaries are witnessed locally. Inherited
+episodes and unmatched late completions for earlier handles remain pending.
+Day replies, per-block earlier keys and compressed newest proofs use the shared
+source-revision observation cache. Recording/content binding changes invalidate
+them; moving preparation coverage only clips their use. Each product shares the
+cache's live-block retention bound across its request variants, without a separate
+screen budget. Coverage re-asks reuse observations while retained.
+
+The cold operative roster selects requested native holders from the witnessed identities before reply construction and budget checks.

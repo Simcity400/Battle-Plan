@@ -608,3 +608,26 @@ mod supply {
         );
     }
 }
+
+#[test]
+fn cold_force_replies_have_empty_coverage_and_pending_hours() {
+    use crate::products::parts_race_prepared::test_fixtures::tag;
+    use serde_json::json;
+    let fixture = Fixture::new();
+    for (product, params) in [
+        (
+            "army-size",
+            json!({"branchId":"1", "tags":[tag(0)], "measure":"battalions", "countFor":"owner", "byType":true, "window":0}),
+        ),
+        (
+            "supply-health",
+            json!({"branchId":"1", "tags":[tag(0)], "from":0, "to":1, "width":2}),
+        ),
+    ] {
+        let cold = fixture.query(product, params);
+        assert_eq!(cold["coverage"]["firstHour"], 0, "{product}: {cold}");
+        assert_eq!(cold["coverage"]["lastHour"], -1, "{product}");
+        assert_eq!(cold["coverage"]["complete"], false, "{product}");
+        assert!(!cold["pending"].as_array().unwrap().is_empty(), "{product}");
+    }
+}

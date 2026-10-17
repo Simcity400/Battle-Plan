@@ -332,7 +332,11 @@ fn scenario(case: &Case, blocks: usize, second: bool) -> Replay {
             .append(&[records(2, frames(2, start, &spans[0]))])
             .unwrap();
         replay = replay
-            .append(&[continuation_records(&replay, 2, frames(2, start, &spans[1]))])
+            .append(&[continuation_records(
+                &replay,
+                2,
+                frames(2, start, &spans[1]),
+            )])
             .unwrap();
     }
     replay
@@ -542,8 +546,16 @@ fn evaluated_families_prepared_on_their_own_commit_resume_reload_and_append_as_h
                 payloads
             };
             let hourly = independent::with_test_hourly(|| both(&mut fixture));
-            let own = own(case, || prepass::with_test_prepass(2, None, || both(&mut fixture)));
-            assert_same(case, &own, &hourly, &format!("{}: {mode}", case.family), false);
+            let own = own(case, || {
+                prepass::with_test_prepass(2, None, || both(&mut fixture))
+            });
+            assert_same(
+                case,
+                &own,
+                &hourly,
+                &format!("{}: {mode}", case.family),
+                false,
+            );
         }
     }
 }
@@ -697,7 +709,9 @@ fn evaluated_families_prepared_on_their_own_observe_every_recorded_hour_once() {
         let observed = prepass::noted(case.observed);
         let before = sequential(case);
         // One family alone prepares on this thread, where it counts.
-        own(case, || prepass::with_test_prepass(2, None, || plain(&source)));
+        own(case, || {
+            prepass::with_test_prepass(2, None, || plain(&source))
+        });
         assert_eq!(
             prepass::noted(case.observed) - observed,
             total,
@@ -789,7 +803,10 @@ fn the_hourly_walk_observes_none_of_the_evaluated_families() {
 #[test]
 fn special_projects_prepared_on_their_own_bind_their_content_as_hourly_preparation() {
     let offsets: Vec<i32> = (0..8).collect();
-    let first: Vec<_> = offsets.iter().map(|&at| projects_at(1, BASE + at)).collect();
+    let first: Vec<_> = offsets
+        .iter()
+        .map(|&at| projects_at(1, BASE + at))
+        .collect();
     let mut fixture = Fixture::new(&scenario(&PROJECTS, 1, false));
     let game = fixture.root.join("content-projects-own");
     std::fs::create_dir_all(game.join("common/defines")).unwrap();
@@ -856,7 +873,13 @@ fn research_folds_hours_from_kept_index_changes_and_rows() {
         fallbacks > 0 || shipped == total - replay.index.len(),
         "{shipped} of {total} hours shipped with no fallback"
     );
-    assert_same(&RESEARCH, &payloads(&source, None), &hourly, "shipped", false);
+    assert_same(
+        &RESEARCH,
+        &payloads(&source, None),
+        &hourly,
+        "shipped",
+        false,
+    );
     clear(source);
 }
 
@@ -883,7 +906,13 @@ fn research_falls_back_to_the_rest_of_the_block_as_hourly_preparation() {
         4,
         "every forced hour fell back"
     );
-    assert_same(&RESEARCH, &payloads(&source, None), &hourly, "fallback", false);
+    assert_same(
+        &RESEARCH,
+        &payloads(&source, None),
+        &hourly,
+        "fallback",
+        false,
+    );
     clear(source);
 }
 
@@ -1122,7 +1151,13 @@ fn special_projects_fold_quiet_hours_and_an_equal_dictionary_read_again_as_hourl
             let own = own(&PROJECTS, || {
                 prepass::with_test_prepass(workers, None, || prepare(&mut fixture))
             });
-            assert_same(&PROJECTS, &own, &hourly, &format!("{label}, {workers} workers"), false);
+            assert_same(
+                &PROJECTS,
+                &own,
+                &hourly,
+                &format!("{label}, {workers} workers"),
+                false,
+            );
             assert_eq!(
                 prepass::noted(evaluated::PROJECTS_OBSERVED) - observed,
                 total,
@@ -1132,9 +1167,378 @@ fn special_projects_fold_quiet_hours_and_an_equal_dictionary_read_again_as_hourl
                 prepass::noted(crate::products::special_projects::prepared::block::QUIET) > quiet,
                 "{label}: quiet hours observed on the last kept frame"
             );
-            assert_eq!(sequential(&PROJECTS), before, "{label}: no block read whole");
+            assert_eq!(
+                sequential(&PROJECTS),
+                before,
+                "{label}: no block read whole"
+            );
         }
     }
+}
+
+/// Before occupation preparation reaches a window, the window answers from
+/// its block and a proven look-back exactly as preparation writes it: every
+/// window of the branch, the first (nothing to look back to), one after the
+/// recorded gap (anchored by the drop there) and those whose occupation began
+/// in an earlier block (anchored by the read in the block before), equal the
+/// prepared window byte for byte, with the laws its states hold beside it.
+/// The manifest answers the branch's windows before any is published, with
+/// no coverage yet, instead of null.
+#[test]
+fn occupied_states_windows_answer_from_a_proven_look_back_before_preparation_reaches_them() {
+    let case = &OCCUPATION;
+    let replay = full(case);
+    let mut fixture = Fixture::new(&replay);
+    let windows = |source: &Source| -> Vec<serde_json::Value> {
+        (0..replay
+            .index
+            .iter()
+            .filter(|block| block.branch == 1)
+            .count())
+            .map(|window| {
+                query(
+                    source,
+                    "occupied-states",
+                    serde_json::json!({ "branchId": "1", "window": window }),
+                )
+                .unwrap()
+            })
+            .collect()
+    };
+    let prepared = own(case, || {
+        let source = fixture.source("occupied-prepared");
+        plain(&source);
+        let replies = windows(&source);
+        clear(source);
+        replies
+    });
+    assert_eq!(prepared.len(), 8);
+    assert!(
+        prepared
+            .iter()
+            .all(|reply| !reply.is_null() && reply.get("laws").is_none())
+    );
+    // The occupation (+5 to +40) spans windows 0 to 4, across the gap.
+    assert!(
+        prepared[..5]
+            .iter()
+            .all(|reply| !reply["states"].as_array().unwrap().is_empty())
+    );
+    own(case, || {
+        let source = fixture.source("occupied-cold");
+        let flag = AtomicBool::new(false);
+        assert!(
+            product_coverage(&source, None, 1, case.query, &flag)
+                .unwrap()
+                .is_none()
+        );
+        let manifest = query(
+            &source,
+            "occupied-states-manifest",
+            serde_json::json!({ "branchId": "1" }),
+        )
+        .unwrap();
+        assert!(
+            manifest["coverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(
+                    |first| manifest["coverage"]["lastHour"].as_i64() == first.checked_sub(1)
+                )
+                && manifest["coverage"]["complete"] == false,
+            "{manifest}"
+        );
+        assert_eq!(
+            manifest["windows"],
+            serde_json::to_value(source.block_windows(1)).unwrap()
+        );
+        for (window, prepared) in prepared.iter().enumerate() {
+            let before = prepass::noted("occupation.look-back");
+            let mut cold = query(
+                &source,
+                "occupied-states",
+                serde_json::json!({"branchId":"1", "window":window}),
+            )
+            .unwrap();
+            let blocks = prepass::noted("occupation.look-back") - before;
+            assert!(
+                blocks <= 2,
+                "window {window} reads only itself and its supplying-read predecessor: {blocks}"
+            );
+            let computations =
+                dashboard_base::prepared::query::observations::usage(&source, "occupation:window")
+                    .2;
+            let again = query(
+                &source,
+                "occupied-states",
+                serde_json::json!({"branchId":"1", "window":window}),
+            )
+            .unwrap();
+            assert_eq!(again, cold);
+            assert_eq!(
+                dashboard_base::prepared::query::observations::usage(&source, "occupation:window")
+                    .2,
+                computations
+            );
+            assert_eq!(cold["laws"], serde_json::json!([]), "window {window}");
+            cold.as_object_mut().unwrap().remove("laws");
+            assert_eq!(&cold, prepared, "window {window}");
+        }
+        let before = prepass::noted("occupation.look-back");
+        for window in (0..prepared.len()).rev() {
+            query(
+                &source,
+                "occupied-states",
+                serde_json::json!({"branchId":"1", "window":window}),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            prepass::noted("occupation.look-back"),
+            before,
+            "neighbour and reached windows share the source cache"
+        );
+        clear(source);
+    });
+}
+
+/// Each project run of a special-projects reply through `last`, as (episode,
+/// first and last hour clipped to `last`, progress, state, project name).
+fn project_runs(
+    reply: &serde_json::Value,
+    last: i64,
+) -> Vec<(String, i64, i64, i64, String, String)> {
+    let mut runs = Vec::new();
+    for project in reply["projects"].as_array().unwrap() {
+        for run in project["runs"].as_array().unwrap() {
+            let first = run["firstHour"].as_i64().unwrap();
+            if first > last {
+                continue;
+            }
+            let presentation = run["presentation"].as_u64().unwrap() as usize;
+            runs.push((
+                project["id"].as_str().unwrap().to_owned(),
+                first,
+                run["lastHour"].as_i64().unwrap().min(last),
+                run["progress"].as_i64().unwrap(),
+                run["state"].to_string(),
+                reply["presentations"][presentation]["name"].to_string(),
+            ));
+        }
+    }
+    runs.sort();
+    runs
+}
+
+/// Before project preparation covers the branch, the special-projects reply
+/// answers its prepared prefix instead of null: its projects and runs
+/// through the prefix's last hour are those of the complete reply, the
+/// project running there (completed only later, at +30) claims no completion,
+/// and the hours after are pending. Once complete it is hourly preparation's
+/// reply with nothing pending.
+#[test]
+fn special_projects_answer_their_prepared_prefix_with_the_hours_still_pending() {
+    let case = &PROJECTS;
+    let replay = full(case);
+    let mut fixture = Fixture::new(&replay);
+    let request = serde_json::json!({ "branchId": "1", "tag": "GER" });
+    independent::with_test_hourly(|| {
+        let source = fixture.source("projects-prefix");
+        let flag = AtomicBool::new(false);
+        let cold = query(
+            &source,
+            "special-projects",
+            serde_json::json!({"branchId":"1", "tag":"GER", "hour": BASE + 15}),
+        )
+        .unwrap();
+        assert!(!cold.is_null());
+        assert!(!cold["pending"].as_array().unwrap().is_empty());
+        assert_eq!(cold["current"]["projects"].as_array().unwrap().len(), 2);
+        assert!(
+            cold["current"]["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|project| project["runs"][0]["state"] == "running"
+                    && project["runs"][0]["completion"].is_null())
+        );
+        // The first commit ends after the branch's first block (+0 to +7).
+        run_measured(&source, None, &flag, true, Duration::ZERO, |_| {}).unwrap();
+        let accepted = coverage(&source, None, 1, &flag).unwrap().unwrap();
+        assert_eq!((accepted.last_hour, accepted.complete), (BASE + 7, false));
+        let prefix = query(&source, "special-projects", request.clone()).unwrap();
+        assert!(!prefix.is_null());
+        assert_eq!(prefix["coverage"], serde_json::to_value(&accepted).unwrap());
+        assert_eq!(
+            prefix["pending"],
+            serde_json::to_value(crate::prepared::prefix::pending(&source, 1, BASE + 7, None))
+                .unwrap()
+        );
+        let last = i64::from(BASE + 7);
+        for project in prefix["projects"].as_array().unwrap() {
+            for run in project["runs"].as_array().unwrap() {
+                assert!(run["lastHour"].as_i64().unwrap() <= last, "{prefix}");
+                assert!(run["completion"].is_null(), "{prefix}");
+            }
+        }
+        plain(&source);
+        let complete = query(&source, "special-projects", request).unwrap();
+        assert_eq!(complete["coverage"]["complete"], true);
+        assert_eq!(complete["pending"], serde_json::json!([]));
+        let at = BASE + 15;
+        let fields = |reply: &serde_json::Value| {
+            let mut rows = Vec::new();
+            for project in reply["projects"].as_array().unwrap() {
+                if let Some(run) = project["runs"].as_array().unwrap().iter().find(|run| {
+                    run["firstHour"].as_i64().unwrap() <= i64::from(at)
+                        && i64::from(at) <= run["lastHour"].as_i64().unwrap()
+                }) {
+                    let info =
+                        &reply["presentations"][run["presentation"].as_u64().unwrap() as usize];
+                    rows.push((
+                        info["name"].to_string(),
+                        run["progress"].clone(),
+                        run["state"].clone(),
+                        run["iterations"].clone(),
+                        info["scientistAsOf"].clone(),
+                        reply["people"][info["scientist"].as_u64().unwrap() as usize].clone(),
+                    ));
+                }
+            }
+            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            rows
+        };
+        assert_eq!(
+            fields(&cold["current"]),
+            fields(&complete),
+            "current card values use preparation's builders"
+        );
+        let held = project_runs(&prefix, last);
+        assert!(!held.is_empty());
+        assert_eq!(held, project_runs(&complete, last));
+        clear(source);
+    });
+}
+
+#[test]
+fn occupation_states_and_first_daily_samples_match_preparation_while_identity_history_is_pending() {
+    let replay = full(&OCCUPATION);
+    let mut fixture = Fixture::new(&replay);
+    let family = serde_json::json!({"kind":"occupation-trend", "measure":"resistance", "rankMeasure":"resistance", "top":null, "collaboration":true});
+    let state = |hour| serde_json::json!({"branchId":"1", "family":family, "tags":[], "reads":[{"hour":hour}]});
+    let hours: Vec<_> = replay
+        .index
+        .iter()
+        .filter(|block| block.branch == 1)
+        .flat_map(|block| [block.first_hour, block.first_hour + 1, block.last_hour])
+        .collect();
+    let values = |reply: &serde_json::Value| {
+        let mut rows = Vec::new();
+        for series in reply["series"].as_array().unwrap() {
+            for run in series["runs"].as_array().unwrap() {
+                rows.push(serde_json::json!([
+                    series["tag"],
+                    run["readHour"],
+                    run["resistanceRaw"],
+                    run["complianceRaw"],
+                    run["states"],
+                    run["heldStates"],
+                    run["heldComplete"],
+                    run["collaboration"]
+                ]));
+            }
+        }
+        rows.sort_by_key(serde_json::Value::to_string);
+        rows
+    };
+    let expected = independent::with_test_hourly(|| {
+        let source = fixture.source("occupation-trend-hourly");
+        plain(&source);
+        let expected: Vec<_> = hours
+            .iter()
+            .map(|&hour| query(&source, "series-state", state(hour)).unwrap())
+            .collect();
+        clear(source);
+        expected
+    });
+    own(&OCCUPATION, || {
+        let source = fixture.source("occupation-trend-cold");
+        for (&hour, expected) in hours.iter().zip(&expected) {
+            let cold = query(&source, "series-state", state(hour)).unwrap();
+            assert!(!cold.is_null());
+            assert_eq!(
+                values(&cold),
+                values(expected),
+                "numeric and collaboration facts at {hour}"
+            );
+            assert!(
+                cold["preparing"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|field| field == "identities")
+            );
+        }
+        let last = source.block_windows(1).last().unwrap().last_hour;
+        let summary = serde_json::json!({"branchId":"1", "family":family, "tags":[], "from":BASE, "to":last, "width":last-BASE+1});
+        let cold = query(&source, "series-summary", summary.clone()).unwrap();
+        assert!(!cold.is_null());
+        assert!(cold["series"].as_array().unwrap().iter().any(|series| {
+            !series["summary"]["approximate"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        }));
+        let sampled =
+            dashboard_base::prepared::query::observations::usage(&source, "occupation:first-read")
+                .2;
+        assert_eq!(query(&source, "series-summary", summary).unwrap(), cold);
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(&source, "occupation:first-read")
+                .2,
+            sampled
+        );
+        for block in source
+            .replay_ref()
+            .index
+            .iter()
+            .filter(|block| block.branch == 1)
+        {
+            let Some(hour) = (block.first_hour..=block.last_hour)
+                .find(|&hour| occupation_read(offset(1, hour)) == offset(1, hour))
+            else {
+                continue;
+            };
+            let exact = query(&source, "series-state", state(hour)).unwrap();
+            for series in exact["series"].as_array().unwrap() {
+                let Some(sampled) = cold["series"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|sampled| sampled["tag"] == series["tag"])
+                else {
+                    continue;
+                };
+                let Some(run) = sampled["summary"]["runs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|run| {
+                        run["firstHour"].as_i64().unwrap() <= i64::from(hour)
+                            && i64::from(hour) <= run["lastHour"].as_i64().unwrap()
+                    })
+                else {
+                    continue;
+                };
+                let raw = series["runs"][0]["resistanceRaw"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap();
+                assert_eq!(run["value"].as_f64().unwrap(), raw as f64 / 100_000.0);
+            }
+        }
+        clear(source);
+    });
 }
 
 /// `quiet_projects_at` with GER's state manpower, which nothing the block
@@ -1229,13 +1633,9 @@ fn special_projects_never_read_a_read_hour_carrying_a_built_table_as_whole() {
             product: "special-projects".into(),
             params: serde_json::json!({ "branchId": "1", "tag": "GER" }),
         };
-        let reply = super::super::super::query::query(
-            &source,
-            &request,
-            content,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let reply =
+            super::super::super::query::query(&source, &request, content, &AtomicBool::new(false))
+                .unwrap();
         super::super::super::files(&source, content)
             .unwrap()
             .0
@@ -1267,6 +1667,10 @@ fn special_projects_never_read_a_read_hour_carrying_a_built_table_as_whole() {
             prepass::noted("projects.fallback") > fallback,
             "{label}: the read hour carrying the built states was observed on its whole frame"
         );
-        assert_eq!(sequential(&PROJECTS), before, "{label}: no block read whole");
+        assert_eq!(
+            sequential(&PROJECTS),
+            before,
+            "{label}: no block read whole"
+        );
     }
 }

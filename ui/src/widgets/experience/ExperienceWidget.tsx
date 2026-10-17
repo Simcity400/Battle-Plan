@@ -224,6 +224,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     {!single && <p className="chart-line-key">{branches.map(branch => <span key={branch}>
       <LineSwatch dash={branchDash(branch)} />{BRANCH_LABELS[branch]}
     </span>)}</p>}
+    {prepared.enabled && lines.some(line => line.parts.some(part => prepared.summary(part.country.tag, part.country.identities?.[0], line.branch)?.approximate?.length))
+      && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="experience-chart">
       <TimeChart label={`Experience of ${headCountries.map(country => country.identityKnown ? country.name : 'Country name unavailable').join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays) * 24}

@@ -228,6 +228,79 @@ impl Census {
     }
 }
 
+/// Committed log pages remain useful while a newest-window proof is pending.
+pub fn prefix_query(
+    source: &Source,
+    product: &str,
+    params: &Value,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Value>> {
+    let id = params["branchId"]
+        .as_str()
+        .ok_or_else(|| dashboard_core::invalid("Invalid battle branch"))?;
+    let branch = branch_id(source, id)?;
+    let prefix = dashboard_base::prepared::prefix::read_or_empty(
+        source,
+        context.content.as_ref(),
+        product,
+        branch,
+        None,
+        cancelled,
+    )?;
+    let windows = windows(source.replay_ref(), branch);
+    let mut data = match product {
+        "land-battles-manifest" => {
+            let available = series::read_reply::<bool>(
+                store,
+                key,
+                &format!("land-battle-availability-{branch}"),
+                0,
+            )?
+            .unwrap_or(false);
+            serde_json::to_value(LandBattlesManifestReply {
+                windows,
+                available,
+                unavailable: None,
+                content_warnings: Vec::new(),
+            })?
+        }
+        "land-battles" => {
+            let params: LandBattlesParams = serde_json::from_value(params.clone())?;
+            LandBattles::validate(&params).map_err(dashboard_core::invalid)?;
+            let window = windows
+                .get(params.window)
+                .ok_or_else(|| dashboard_core::invalid("Battle window not in this recording"))?;
+            let reply = if window.last_hour <= prefix.coverage.last_hour {
+                series::read_reply::<LandBattlesReply>(
+                    store,
+                    key,
+                    &format!("land-battles-{branch}"),
+                    params.window as u64,
+                )?
+            } else {
+                None
+            };
+            serde_json::to_value(reply.unwrap_or_else(|| LandBattlesReply {
+                window: params.window,
+                interval: window.clone(),
+                rows: Vec::new(),
+                observed: Vec::new(),
+                reasons: Vec::new(),
+                warnings: Vec::new(),
+                content_warnings: Vec::new(),
+            }))?
+        }
+        _ => return Ok(None),
+    };
+    // Later terminal reads can repair earlier battle rows.
+    prefix.mark_revisable(source, branch, &mut data)?;
+    data["warningsComplete"] = Value::Bool(false);
+    Ok(Some(data))
+}
+
 pub fn query(
     source: &Source,
     product: &str,

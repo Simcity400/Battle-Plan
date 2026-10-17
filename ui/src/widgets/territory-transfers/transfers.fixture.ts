@@ -57,7 +57,7 @@ export function deal(id: string, moves: readonly Move[], extra: Partial<PeaceDea
   const hour = Math.max(...moves.map(move => move.after), extra.firstObservedHour ?? 0);
   return { id, derived: true, observation: 'recordedConference', conferenceId: id, warName: null, firstObservedHour: hour, lastObservedHour: hour,
     currentTurn: null, finalized: null, firstFinalizedHour: null, endHour: hour, endIsBy: true, firstAbsentHour: null, participantsDerived: true,
-    winners: [], losers: [], items, captured: null, captureUnavailable: null, transfers: graph(moves), limitations: [], ...extra };
+    winners: [], losers: [], items, captured: null, captureUnavailable: null, transfers: graph(moves), limitations: [], preparing: [], ...extra };
 }
 
 export const noGaps = (): PeaceUnobserved => ({ settlements: [], conferences: [], ownership: [], wars: [], subjects: [], governments: [], existence: [], victoryPoints: [] });

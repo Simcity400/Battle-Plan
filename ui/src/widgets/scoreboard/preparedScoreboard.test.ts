@@ -1,3 +1,4 @@
+import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -81,4 +82,17 @@ test('a 5000-country cell request rejects a partial successful reply in one requ
   } } as unknown as DashboardClient;
   await assert.rejects(queryScoreboard(client, source, cells, new AbortController().signal), /did not supply/);
   assert.equal(requests, 1);
+});
+
+test('scoreboard partial cells retain preparation metadata and do not claim missing countries', async () => {
+  const source = { id: 'prefix-cells', revision: '1' } as DashboardSource;
+  const prefix = { coverage: { firstHour: 10, lastHour: 9, complete: false }, pending: [{ firstHour: 10, lastHour: 10 }] };
+  const value = { ...reply([entry('a', 1)]), ...prefix, preparing: [losses.key] };
+  const validated = validatePreparedScoreboard(value);
+  assert.deepEqual(preparedPrefix(validated), prefix);
+  assert.equal(fieldPreparing(validated, losses.key), true);
+  assert.throws(() => validatePreparedScoreboard({ ...value, preparing: ['made-up'] }), /preparing/);
+  const cells = scoreboardCellPage(request, ['a', 'still-pending']);
+  const client = { preparedQuery: async () => value } as unknown as DashboardClient;
+  assert.deepEqual(await queryScoreboard(client, source, cells, new AbortController().signal), value);
 });

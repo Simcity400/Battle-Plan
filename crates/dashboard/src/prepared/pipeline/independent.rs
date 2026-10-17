@@ -95,8 +95,11 @@ pub(super) struct Beside<'a> {
 
 /// Publishes a batch of work beside the families in their next group commit.
 pub(super) struct Publish<'p> {
-    commit:
-        &'p mut dyn FnMut(&mut dyn FnMut(&mut store::Writer) -> io::Result<()>) -> io::Result<()>,
+    #[allow(clippy::type_complexity)]
+    commit: &'p mut dyn FnMut(
+        Option<(&'static str, u64, Coverage)>,
+        &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
+    ) -> io::Result<()>,
 }
 
 impl Publish<'_> {
@@ -106,7 +109,17 @@ impl Publish<'_> {
         &mut self,
         write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
     ) -> io::Result<()> {
-        (self.commit)(write)
+        (self.commit)(None, write)
+    }
+    /// Publish the proven window and its refresh gate in the same commit.
+    pub(super) fn window(
+        &mut self,
+        family: &'static str,
+        branch: u64,
+        window: Coverage,
+        write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
+    ) -> io::Result<()> {
+        (self.commit)(Some((family, branch, window)), write)
     }
 }
 
@@ -951,6 +964,12 @@ pub(super) fn gating(product: &str) -> Option<&'static str> {
 /// the hourly walk's of any other ([`joint`]). Its refusals are those of the
 /// families `FAMILIES` lists as read by it.
 const JOINT: &[(&str, &[&str])] = &[
+    ("operatives-roster", &["intelligence", "identities"]),
+    (
+        "agency-comparison-identities",
+        &["intelligence", "identities"],
+    ),
+    ("raids-tally", &["raids", "identities"]),
     // Named through the identity history up to their coverage.
     ("country-factories", &["factories", "identities"]),
     ("country-nukes", &["nukes", "identities"]),
@@ -964,6 +983,8 @@ const JOINT: &[(&str, &[&str])] = &[
         crate::products::faction_totals::FACTORIES_GATE,
         &["groups", "identities", "factories"],
     ),
+    // Casualty lifetimes joined with the wars' app continuity.
+    ("casualty-breakdown", &["casualties", "wars"]),
     // Territory faction totals read the faction rosters, the identity
     // history and territory's pages.
     (
@@ -1064,13 +1085,20 @@ struct Commits<'s> {
     published: (usize, usize),
 }
 
-/// One family's written batch, or one of work beside the families (without
-/// progress), queued for the group commit.
+/// What one commit member publishes beside its staged pages.
+enum Publication {
+    Family(Progress),
+    Newest { branch: u64, coverage: Coverage },
+    Beside,
+}
+
+/// One family's written batch, or one of work beside the families, queued
+/// with its publication metadata for the group commit.
 struct Queued {
     ticket: u64,
     lane: usize,
     name: &'static str,
-    progress: Option<Progress>,
+    publication: Publication,
     staged: Vec<store::Staged>,
 }
 
@@ -1127,7 +1155,7 @@ impl Commits<'_> {
                     && self
                         .queue
                         .iter()
-                        .filter(|queued| queued.progress.is_some())
+                        .filter(|queued| matches!(&queued.publication, Publication::Family(_)))
                         .count()
                         >= self.running
             }
@@ -1361,24 +1389,35 @@ pub(super) fn prepare(
                         let _installed = context.install();
                         let _cpu = ::replay::cpu::scope("newest", Some(name));
                         let result = {
-                            let mut publish =
-                                |write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>| {
-                                    let _cpu = ::replay::cpu::scope("commit", None);
-                                    let next = commit(
-                                        commits,
-                                        phase,
-                                        atomic,
-                                        families + at,
-                                        name,
-                                        None,
-                                        &mut own_workers,
-                                        |writer, _| write(writer),
-                                    )?;
-                                    // The caller reports it; a caller that
-                                    // has gone only misses the report.
-                                    let _ = sender.send(next);
-                                    Ok(())
+                            let mut publish = |window: Option<(&'static str, u64, Coverage)>,
+                                               write: &mut dyn FnMut(
+                                &mut store::Writer,
+                            )
+                                -> io::Result<()>| {
+                                let _cpu = ::replay::cpu::scope("commit", None);
+                                let (name, publication) = match window {
+                                    Some((name, branch, coverage)) => {
+                                        (name, Publication::Newest { branch, coverage })
+                                    }
+                                    None => (name, Publication::Beside),
                                 };
+                                let next = commit(
+                                    commits,
+                                    phase,
+                                    atomic,
+                                    families + at,
+                                    name,
+                                    &mut own_workers,
+                                    |writer| {
+                                        write(writer)?;
+                                        Ok(publication)
+                                    },
+                                )?;
+                                // The caller reports it; a caller that
+                                // has gone only misses the report.
+                                let _ = sender.send(next);
+                                Ok(())
+                            };
                             (job.run)(
                                 &mut Publish {
                                     commit: &mut publish,
@@ -1758,41 +1797,31 @@ fn prepare_family(
         let commit_started = super::start_timing(timings);
         let hour = reached.unwrap_or(index.last_hour);
         let cpu_commit = ::replay::cpu::scope("commit", None);
-        let next = commit(
-            commits,
-            phase,
-            atomic,
-            lane,
-            name,
-            Some(&mut progress),
-            workers,
-            |writer, progress| {
-                let progress = progress.expect("a family's progress");
-                let refused = progress.refused.entry(branch).or_default();
-                // The pages of the blocks it went through, refused since or
-                // not: those each block published, then those it holds.
-                pages.write(writer)?;
-                let result = state.publish(writer, branch, phase.cancelled);
+        let next = commit(commits, phase, atomic, lane, name, workers, |writer| {
+            let refused = progress.refused.entry(branch).or_default();
+            // The pages of the blocks it went through, refused since or
+            // not: those each block published, then those it holds.
+            pages.write(writer)?;
+            let result = state.publish(writer, branch, phase.cancelled);
+            refused.check(name, hour, result)?;
+            if refused.open(name) {
+                let result = state.flush(writer, replay, branch, phase.cancelled);
                 refused.check(name, hour, result)?;
-                if refused.open(name) {
-                    let result = state.flush(writer, replay, branch, phase.cancelled);
-                    refused.check(name, hour, result)?;
-                }
-                if refused.open(name) {
-                    let result = state.save(writer, branch)?;
-                    refused.check(name, hour, result)?;
-                }
-                if refused.open(name) {
-                    state.save_state(writer, branch)?;
-                }
-                progress.next_block = block + 1;
-                progress.refused.retain(|_, refused| !refused.0.is_empty());
-                for &branch in &touched {
-                    save_coverage(writer, phase, name, progress, branch)?;
-                }
-                Ok(())
-            },
-        )?;
+            }
+            if refused.open(name) {
+                let result = state.save(writer, branch)?;
+                refused.check(name, hour, result)?;
+            }
+            if refused.open(name) {
+                state.save_state(writer, branch)?;
+            }
+            progress.next_block = block + 1;
+            progress.refused.retain(|_, refused| !refused.0.is_empty());
+            for &branch in &touched {
+                save_coverage(writer, phase, name, &progress, branch)?;
+            }
+            Ok(Publication::Family(progress.clone()))
+        })?;
         touched.clear();
         drop(cpu_commit);
         super::finish_timing(timings, commit_started, "independent.commit", true);
@@ -1805,9 +1834,9 @@ fn prepare_family(
     Ok(())
 }
 
-/// Commits one family's batch (`write`, with its progress) and its progress
-/// in the checkpoint, then opens the next transaction; or a batch of the work
-/// beside the families, without progress. Returns what was accepted.
+/// Commits a batch and the publication metadata returned by `write`, then
+/// opens the next transaction. Family progress and proven newest-window
+/// extents enter the checkpoint with their pages. Returns what was accepted.
 ///
 /// With other families committing too (`atomic`), the family forks the open
 /// transaction, writes its batch into the fork on its own thread and queues
@@ -1831,16 +1860,15 @@ fn commit(
     atomic: bool,
     lane: usize,
     name: &'static str,
-    mut progress: Option<&mut Progress>,
     workers: &mut Timings,
-    write: impl FnOnce(&mut store::Writer, Option<&mut Progress>) -> io::Result<()>,
+    write: impl FnOnce(&mut store::Writer) -> io::Result<Publication>,
 ) -> io::Result<Accepted> {
     if !atomic {
         let mut guard = lock(group);
         let writer = guard.writer.as_mut().ok_or_else(|| lost_to(phase))?;
-        write(writer, progress.as_deref_mut())?;
+        let publication = write(writer)?;
         let started = super::start_timing(workers);
-        let (guard, result) = publish(group, guard, phase, &[(name, progress.as_deref().cloned())]);
+        let (guard, result) = publish(group, guard, phase, &[(name, publication)]);
         super::finish_timing(workers, started, "independent.publish", true);
         return result.map(|()| accepted_now(&guard, phase));
     }
@@ -1860,9 +1888,10 @@ fn commit(
         guard.forked += 1;
         forked = Forked { group, armed: true };
     }
-    let written = write(&mut fork, progress.as_deref_mut()).and_then(|()| fork.into_staged());
-    let staged = match written {
-        Ok(staged) => staged,
+    let written = write(&mut fork)
+        .and_then(|publication| fork.into_staged().map(|staged| (publication, staged)));
+    let (publication, staged) = match written {
+        Ok(written) => written,
         Err(error) => {
             drop(forked.finish(None));
             return Err(error);
@@ -1872,7 +1901,7 @@ fn commit(
         ticket: 0,
         lane,
         name,
-        progress: progress.as_deref().cloned(),
+        publication,
         staged,
     }));
     if !guard.leading {
@@ -1917,7 +1946,7 @@ fn lead<'m, 's>(
         Some(writer) => {
             for queued in queued {
                 match writer.adopt_all(queued.staged) {
-                    Ok(()) => members.push((queued.ticket, (queued.name, queued.progress))),
+                    Ok(()) => members.push((queued.ticket, (queued.name, queued.publication))),
                     Err(error) => refused.push((queued.ticket, Err(error))),
                 }
             }
@@ -1960,22 +1989,33 @@ fn lead<'m, 's>(
     guard
 }
 
-/// Writes the checkpoint with `members`' progress into the open transaction
-/// and publishes it, then opens the next. The lock is released while the
+/// Writes the checkpoint with `members`' publication metadata into the open
+/// transaction and publishes it, then opens the next. The lock is released while the
 /// store commits; returns with it held again. A failure loses the writer.
 fn publish<'m, 's>(
     group: &'m Group<'s>,
     mut guard: MutexGuard<'m, Commits<'s>>,
     phase: &Phase<'_>,
-    members: &[(&'static str, Option<Progress>)],
+    members: &[(&'static str, Publication)],
 ) -> (MutexGuard<'m, Commits<'s>>, io::Result<()>) {
     let commits = &mut *guard;
-    for (name, progress) in members {
-        if let Some(progress) = progress {
-            commits
-                .state
-                .independent
-                .insert((*name).to_owned(), progress.clone());
+    for (name, publication) in members {
+        match publication {
+            Publication::Family(progress) => {
+                commits
+                    .state
+                    .independent
+                    .insert((*name).to_owned(), progress.clone());
+            }
+            Publication::Newest { branch, coverage } => {
+                commits
+                    .state
+                    .newest
+                    .entry((*name).to_owned())
+                    .or_default()
+                    .insert(branch.to_string(), coverage.clone());
+            }
+            Publication::Beside => {}
         }
     }
     let Some(mut writer) = commits.writer.take() else {
@@ -2016,7 +2056,7 @@ fn publish<'m, 's>(
     *commits.bytes = bytes;
     let families = members
         .iter()
-        .filter(|(_, progress)| progress.is_some())
+        .filter(|(_, publication)| matches!(publication, Publication::Family(_)))
         .count();
     if families > 0 {
         commits.published.0 += 1;
@@ -2047,7 +2087,64 @@ fn accepted_now(commits: &Commits<'_>, phase: &Phase<'_>) -> Accepted {
         next_block: state.cursor.next_block,
         new_blocks: 0,
         coverage: super::accepted_coverage(&state.map, phase.last_blocks),
+        families: super::family_coverages(state, phase.replay, phase.last_blocks),
     }
+}
+
+/// A family's accepted extent of `branch` once it has gone through the
+/// blocks before `next_block`: the branch's first hour through the last hour
+/// of its last block among them, or its last hour when that block is the
+/// branch's last. None before the family has gone through any of its blocks.
+fn own_coverage(
+    replay: &Replay,
+    ranges: &BTreeMap<u64, (i32, i32)>,
+    last_blocks: &BTreeMap<u64, usize>,
+    next_block: usize,
+    branch: u64,
+) -> Option<Coverage> {
+    let &(first, last) = ranges.get(&branch)?;
+    let done = replay.index[..next_block]
+        .iter()
+        .rposition(|index| index.branch == branch)?;
+    let complete = last_blocks
+        .get(&branch)
+        .is_some_and(|&last| last < next_block);
+    Some(Coverage {
+        schema: SCHEMA,
+        first_hour: first,
+        last_hour: if complete {
+            last
+        } else {
+            replay.index[done].last_hour
+        },
+        complete,
+    })
+}
+
+/// Each family prepared on its own's accepted extent by branch, as its
+/// coverage pages publish them ([`save_coverage`]): the preparation status
+/// lists them, so a client re-asks a reply waiting on a family when that
+/// family's coverage moves.
+pub(super) fn coverages(
+    independent: &BTreeMap<String, Progress>,
+    replay: &Replay,
+    ranges: &BTreeMap<u64, (i32, i32)>,
+    last_blocks: &BTreeMap<u64, usize>,
+) -> BTreeMap<String, BTreeMap<String, Coverage>> {
+    independent
+        .iter()
+        .map(|(name, progress)| {
+            let next_block = progress.next_block.min(replay.index.len());
+            let branches = ranges
+                .keys()
+                .filter_map(|&branch| {
+                    own_coverage(replay, ranges, last_blocks, next_block, branch)
+                        .map(|coverage| (branch.to_string(), coverage))
+                })
+                .collect();
+            (name.clone(), branches)
+        })
+        .collect()
 }
 
 /// The family's accepted extent of one branch, with its refusals there.
@@ -2058,34 +2155,20 @@ fn save_coverage(
     progress: &Progress,
     branch: u64,
 ) -> io::Result<()> {
-    let replay = phase.replay;
-    let Some(&(first, last)) = phase.map.progress().ranges.get(&branch) else {
+    let Some(coverage) = own_coverage(
+        phase.replay,
+        &phase.map.progress().ranges,
+        phase.last_blocks,
+        progress.next_block,
+        branch,
+    ) else {
         return Ok(());
     };
-    let Some(done) = replay.index[..progress.next_block]
-        .iter()
-        .rposition(|index| index.branch == branch)
-    else {
-        return Ok(());
-    };
-    let complete = phase
-        .last_blocks
-        .get(&branch)
-        .is_some_and(|&last| last < progress.next_block);
     super::json(
         writer,
         &coverage_section(family, branch),
         &CoveragePage {
-            coverage: Coverage {
-                schema: SCHEMA,
-                first_hour: first,
-                last_hour: if complete {
-                    last
-                } else {
-                    replay.index[done].last_hour
-                },
-                complete,
-            },
+            coverage,
             refused: progress.refused.get(&branch).cloned().unwrap_or_default(),
         },
     )

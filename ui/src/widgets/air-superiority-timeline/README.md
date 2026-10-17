@@ -20,4 +20,13 @@
 
 Shared framework conventions: [widgets](../README.md).
 
-The widget reads prepared air-superiority windows and exposes the "Air superiority daily values" parity model.
+The widget reads prepared daily values with a cached keyframe sample for each
+later block. Approximate cells have the shared faded dashed edge and Approximate
+key. Most-active regions and historical side identities are marked
+approximate too. `sampleHours` dates the actual supplying frame in tooltips;
+recorded daily columns keep their own bounds. Cells crossing the preparation
+boundary are wholly approximate, while unread keyframes stay pending. The heat
+kit shows the pending band and Still being prepared key. Pending columns use
+that wording in tooltips and stay separate from the recording-gap shade. Exact prepared replies
+replace these markers as coverage completes. The parity model is "Air superiority
+daily values".

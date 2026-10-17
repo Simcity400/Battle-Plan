@@ -8,6 +8,93 @@ use replay::rows::{
 };
 use std::sync::Arc;
 
+#[cfg(feature = "slow-tests")]
+#[test]
+fn cold_and_prefix_research_states_match_prepared_values_at_the_supplying_read() {
+    use crate::{
+        prepared::coverage,
+        test_fixtures::{file_source, source_with_content},
+    };
+    engine::executable_tables::initialize_for_tests().unwrap();
+    let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let frames: Vec<_> = (100..=149)
+        .map(|hour| {
+            let read = 100 + (hour - 100) / 24 * 24;
+            sliced_research_frame(hour, read, &[Some(1), None])
+        })
+        .collect();
+    let (memory, context) = source_with_content(frames.clone(), &folder.0);
+    let (source, root) = file_source(
+        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
+    );
+    let (store, key) = crate::prepared::files(&source, context.content.as_ref()).unwrap();
+    let flag = AtomicBool::new(false);
+    let params = serde_json::json!({ "branchId": "1", "family": { "kind": "research" }, "reads": [{ "tag": "GER", "hour": 149 }] });
+    let cold = state_query(&source, &context, &params, &store, &key, &flag).unwrap();
+    assert!(!cold.is_null());
+    assert_eq!(cold["states"][0]["slots"][0]["readHour"], 148);
+    assert_eq!(
+        cold["states"][0]["preparing"],
+        serde_json::json!(["assignment", "breakdown", "stateHistory", "remainingDays"])
+    );
+    assert!(!cold["pending"].as_array().unwrap().is_empty());
+    let mut outside = params.clone();
+    outside["reads"][0]["hour"] = serde_json::json!(151);
+    let unrecorded = state_query(&source, &context, &outside, &store, &key, &flag).unwrap();
+    assert_eq!(
+        unrecorded["states"][0]["slots"],
+        serde_json::json!([]),
+        "a carry cannot invent an unrecorded hour"
+    );
+    let mut prepared = Prepared::default();
+    for frame in &frames[..21] {
+        prepared.observe(frame).unwrap();
+    }
+    let mut writer = store.replace(key.clone()).unwrap();
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    coverage::publish_coverage(&mut writer, 1, 100, 120, false).unwrap();
+    writer.commit().unwrap();
+    let prefix = state_query(&source, &context, &params, &store, &key, &flag).unwrap();
+    assert_eq!(cold["states"][0]["data"], prefix["states"][0]["data"]);
+    let reads = crate::prepared::query::frames::reads(&source);
+    for frame in &frames[21..] {
+        prepared.observe(frame).unwrap();
+    }
+    let mut writer = store.append(&key, key.clone()).unwrap();
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    coverage::publish_coverage(&mut writer, 1, 100, 149, true).unwrap();
+    writer.commit().unwrap();
+    let complete = state_query(&source, &context, &params, &store, &key, &flag).unwrap();
+    let exact_values = |reply: &serde_json::Value| -> serde_json::Value {
+        serde_json::Value::Array(reply["states"][0]["slots"].as_array().unwrap().iter().map(|slot| {
+            let state = &slot["state"];
+            serde_json::json!({ "index": slot["index"], "available": slot["available"], "readHour": slot["readHour"],
+                "token": state["token"], "speed": state["speedMultiplierRaw"], "banked": state["bankedDaysRaw"],
+                "applied": state["appliedDaysRaw"], "ahead": state["aheadReductionYearsRaw"],
+                "progress": slot["progress"]["progressRaw"], "base": slot["progress"]["baseDaysRaw"] })
+        }).collect())
+    };
+    assert_eq!(
+        exact_values(&cold),
+        exact_values(&complete),
+        "every claimed exact value is byte-equal"
+    );
+    assert!(
+        cold["states"][0]["data"]["history"]["slots"][0]["states"][0]["details"]["remainingDays"]
+            .is_null()
+    );
+    assert_eq!(complete["states"][0]["preparing"], serde_json::json!([]));
+    assert_eq!(complete["pending"], serde_json::json!([]));
+    assert_eq!(
+        crate::prepared::query::frames::reads(&source),
+        reads,
+        "prepared state needs no recorded read"
+    );
+    store.clear().unwrap();
+    drop(source);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn research_deadlines_expire_exactly_across_carried_spans_gaps_commits_resume_and_append() {
     use crate::prepared::frame_changes::FrameChangeTracker;
@@ -903,4 +990,66 @@ fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_
         reference.countries.contains_key("VIC"),
         "the renamed holder is read"
     );
+}
+
+#[test]
+fn cold_research_keeps_unavailable_slots_instead_of_reporting_no_slots() {
+    use crate::test_fixtures::{file_source, source_with_content};
+    engine::executable_tables::initialize_for_tests().unwrap();
+    let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let mut frames = vec![
+        sliced_research_frame(100, 100, &[Some(1), None]),
+        sliced_research_frame(101, 100, &[Some(1), None]),
+    ];
+    *frames[1].tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+        reason: "synthetic missed inputs".into(),
+    };
+    let (memory, context) = source_with_content(frames.clone(), &folder.0);
+    let (source, root) = file_source(
+        replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
+    );
+    let (store, key) = crate::prepared::files(&source, context.content.as_ref()).unwrap();
+    let flag = AtomicBool::new(false);
+    let params = serde_json::json!({"branchId":"1", "reads":[{"tag":"GER", "hour":101}]});
+    let cold = state_query(&source, &context, &params, &store, &key, &flag).unwrap();
+    let slots = cold["states"][0]["slots"].as_array().unwrap();
+    assert_eq!(slots.len(), 2);
+    assert!(slots.iter().all(|slot| slot["available"] == false));
+    assert_eq!(
+        cold["states"][0]["data"]["history"]["slots"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        cold["states"][0]["data"]["history"]["coverage"][0]["lastHour"],
+        100
+    );
+    assert!(
+        cold["states"][0]["data"]["history"]["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|slot| slot["states"].as_array().unwrap().is_empty())
+    );
+    let mut prepared = Prepared::default();
+    for frame in &frames {
+        prepared.observe(frame).unwrap();
+    }
+    let mut writer = store.replace(key.clone()).unwrap();
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    writer.commit().unwrap();
+    let exact = values_query("series-state", params, &store, &key, &flag).unwrap();
+    let availability = |reply: &serde_json::Value| {
+        reply["states"][0]["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|slot| (slot["index"].clone(), slot["available"].clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(availability(&cold), availability(&exact));
+    store.clear().unwrap();
+    let _ = std::fs::remove_dir_all(root);
 }

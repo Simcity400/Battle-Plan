@@ -2,6 +2,7 @@ import { withWindowEntries } from './windowMap.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 import { loadProduct } from './products.ts';
+import { preparationCoverage } from './preparedPrefix.ts';
 
 /** A product asked for one fixed window of hours at a time (such as a month of a
  * country's daily reads), so no reply grows with the campaign. */
@@ -37,6 +38,9 @@ export function useWindowDisplay<T>(identity: string | null, data: T | undefined
 
 const withEntries = withWindowEntries;
 
+/** Whether a prepared reply's coverage is still partial (it names some, not complete). */
+const partial = (data: unknown) => preparationCoverage(data) !== undefined && preparationCoverage(data)?.complete !== true;
+
 /** What is held once `wanted` is all that is wanted: nothing of another identity, and
  * none of the windows no longer wanted; the same object when nothing changes, so a
  * render that wants the same windows is not repeated. */
@@ -51,9 +55,10 @@ export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: Re
  * `identity` names everything else it asks, so a new one starts afresh) through the
  * shared product cache, and holds them while they are wanted: a window wanted ahead
  * (the next month during playback) is ready the moment it is shown, with no load in
- * between. Windows no longer wanted are released. */
+ * between. Windows no longer wanted are released. With `progressive`, a window
+ * answered from its prepared prefix is held and replaced as that prefix grows. */
 export function useProductWindows<T>(client: DashboardClient, identity: string | null, request: (window: number) => ProductRequest,
-  wanted: readonly number[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductWindows<T> {
+  wanted: readonly number[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource, progressive = false): ProductWindows<T> {
   const owner = useMemo(() => ({ client, identity }), [client, identity]);
   const [held, setHeld] = useState<Held<T> & { owner: typeof owner; attempt: number }>({ owner, identity, data: new Map(), errors: new Map(), attempt: 0 });
   const current = held.owner === owner ? held : null;
@@ -87,8 +92,10 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       frame ||= requestAnimationFrame(commit);
     };
     for (const window of want) {
-      if (current?.data.has(window) || current?.errors.has(window)) continue;
-      void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0).then(
+      // A window held from its prepared prefix is asked again until complete.
+      if (current?.errors.has(window) || current?.data.has(window) && !(progressive && partial(current.data.get(window)))) continue;
+      const publish = progressive ? (data: T) => arrive(() => arrived.data.push([window, data])) : undefined;
+      void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0, publish).then(
         data => arrive(() => arrived.data.push([window, data])),
         error => arrive(() => arrived.errors.push([window, error instanceof Error ? error.message : String(error)])),
       );

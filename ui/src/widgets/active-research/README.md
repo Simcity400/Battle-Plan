@@ -8,9 +8,15 @@ One compact card per research slot open at the hour shown: the technology it res
 
 The prepared research query, using the [`research`](../../../../crates/dashboard-base/src/products/research.rs) observer and reply presentation shared with Research history, and [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) for the pictures.
 
-Until the requested history is prepared, the shared preparation status says
-"This range is still being prepared." Slot segments, assignment attribution and
-carried progress require the research observer's earlier reads.
+The cards ask `series-state` for family `research`, with `reads: [{tag, hour}]`.
+Beyond the prepared prefix, the production observer reads only the supplying
+period and its previous daily progress, checking every intervening hour's owner
+read and identity. Slot state, latest-read progress and the Ahead-of-time badge are exact. Days
+left is exact at a supplying read; during a carry the older countdown segment
+phase remains still being prepared. A gap or missed supplying read stays unknown.
+Assignment dates and the time breakdown remain visibly "Still being prepared";
+Jump is disabled until assignment history is available. Gate coverage changes
+refresh the cards, and prepared history supplies their attribution.
 
 ## Settings
 
@@ -29,6 +35,7 @@ Country and campaign/follow/pin; Live is the default. No widget-specific options
 | File | Responsibility |
 |---|---|
 | [ActiveResearchWidget.tsx](ActiveResearchWidget.tsx) | Cards, tooltip and breakdown popover. |
+| [useActiveResearch.ts](useActiveResearch.ts) | Reached-state requests and validation; adjacent tests. |
 | [activeResearchData.ts](activeResearchData.ts) | Each slot's state at the hour; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [activeResearch.css](activeResearch.css) | Metadata, registration and layout. |
 

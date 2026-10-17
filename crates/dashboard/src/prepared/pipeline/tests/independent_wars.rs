@@ -803,10 +803,10 @@ fn wars_and_casualties_answer_from_their_own_coverage_while_the_hourly_walk_acce
                 );
             }
             assert!(
-                query(&source, "subjects", json!({"branchId": branch.to_string()}))
+                !query(&source, "subjects", json!({"branchId": branch.to_string()}))
                     .unwrap()
                     .is_null(),
-                "branch {branch}: a family of the hourly walk still waits"
+                "branch {branch}: a family of the hourly walk answers its pending prefix"
             );
         }
         // The hourly walk then resumes from its first block and both stay.
@@ -943,4 +943,97 @@ fn casualty_windows_of_a_batch_are_published_when_a_later_block_of_it_refuses() 
 /// A branch's casualty pair windows.
 fn casualty_pairs(branch: u64) -> String {
     format!("casualty-pairs-{branch}")
+}
+
+/// Before wars preparation covers the branch, the wars reply answers its
+/// prepared prefix instead of null: lanes walked through the prefix's change
+/// inputs, the hours after it pending rather than unobserved, and for a read
+/// past it the groups at that hour from its frame alone, whose sides, names
+/// and casualty counters are those the complete walk observes there. Once
+/// complete, nothing is pending and no hour is listed apart.
+#[test]
+fn wars_answer_their_prepared_prefix_with_the_groups_at_a_later_hour() {
+    let replay = scenario(4, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("wars-prefix");
+        let flag = AtomicBool::new(false);
+        let params = |reads: &[i32]| {
+            json!({"branchId": "1", "viewpointTag": null,
+                "reads": reads.iter().map(|hour| json!({"hour": hour})).collect::<Vec<_>>()})
+        };
+        let cold = query(&source, "wars", params(&[])).unwrap();
+        assert!(cold["wars"].as_array().unwrap().is_empty());
+        assert!(!cold["pending"].as_array().unwrap().is_empty());
+        while coverage(&source, None, 1, &flag)
+            .unwrap()
+            .is_none_or(|coverage| coverage.last_hour < 103)
+        {
+            run_measured(&source, None, &flag, true, Duration::ZERO, |_| {}).unwrap();
+        }
+        let accepted = coverage(&source, None, 1, &flag).unwrap().unwrap();
+        assert!(!accepted.complete && accepted.last_hour < 115);
+        let prefix = query(&source, "wars", params(&[accepted.last_hour, 115])).unwrap();
+        assert_eq!(prefix["coverage"], serde_json::to_value(&accepted).unwrap());
+        assert_eq!(
+            prefix["approximate"],
+            json!([{"firstHour": accepted.first_hour, "lastHour": accepted.last_hour}])
+        );
+        let pending = crate::prepared::prefix::pending(&source, 1, accepted.last_hour, None);
+        assert_eq!(pending.last().map(|span| span.last_hour), Some(117));
+        assert_eq!(prefix["pending"], serde_json::to_value(&pending).unwrap());
+        for field in ["unobserved", "capitulationsUnobserved"] {
+            for span in prefix[field].as_array().unwrap() {
+                assert!(
+                    span["lastHour"].as_i64().unwrap() <= i64::from(accepted.last_hour),
+                    "{prefix}"
+                );
+            }
+        }
+        assert!(!prefix["wars"].as_array().unwrap().is_empty());
+        let current = prefix["current"].as_array().unwrap();
+        assert_eq!(current.len(), 1, "only the read past the prefix: {prefix}");
+        assert_eq!(current[0]["hour"], 115);
+        assert_eq!(current[0]["available"], true);
+        let at = current[0]["wars"].as_array().unwrap();
+        assert!(!at.is_empty());
+        assert!(
+            at.iter()
+                .all(|war| war["id"].as_str().unwrap().starts_with("@115:"))
+        );
+        run(&source, None, &flag, |_| {}).unwrap();
+        let complete = query(&source, "wars", params(&[accepted.last_hour, 115])).unwrap();
+        assert!(complete.get("pending").is_none() && complete.get("current").is_none());
+        let wars = complete["wars"].as_array().unwrap();
+        for war in at {
+            let observed = &war["observations"][0];
+            let same = wars
+                .iter()
+                .find(|exact| {
+                    exact["observations"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|item| {
+                            item["firstHour"].as_i64().unwrap() <= 115
+                                && 115 <= item["lastHour"].as_i64().unwrap()
+                                && item["viewpointSide"] == observed["viewpointSide"]
+                                && item["opposingSide"] == observed["opposingSide"]
+                                && item["name"] == observed["name"]
+                        })
+                })
+                .unwrap_or_else(|| panic!("{war} is not observed at 115: {complete}"));
+            let losses = same["casualties"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run[0].as_i64().unwrap() <= 115 && 115 <= run[1].as_i64().unwrap())
+                .unwrap();
+            assert_eq!(
+                &war["casualties"][0].as_array().unwrap()[2..],
+                &losses.as_array().unwrap()[2..]
+            );
+        }
+        clear(source);
+    });
 }

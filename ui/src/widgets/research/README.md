@@ -11,9 +11,11 @@ The order each research slot worked through, as **Columns** (the default) or a *
 
 [`research`](../../../../crates/dashboard-base/src/products/research.rs) supplies the reference reply. The prepared research query uses its shared observer and naming to supply the complete selected-country slot states, assignments, progress, modifier credits, localized text and research folders; playback resolves them locally. Pending coverage follows the shared preparation query path. [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) loads pictures in small batches, so names and dates do not wait for them.
 
-Until the requested history is prepared, the shared preparation status says
-"This range is still being prepared." Assignment dates, completions and carried
-slot progress need earlier observations; no keyframe preview replaces them.
+Assignment dates, completions and carried slot progress need earlier
+observations; no keyframe preview replaces them. Before preparation covers the
+branch, the columns and list show the prepared prefix with the shared
+"Prepared A to B; the rest is still being prepared." status beneath; with
+nothing prepared yet the status says "This range is still being prepared.".
 
 ## Settings
 

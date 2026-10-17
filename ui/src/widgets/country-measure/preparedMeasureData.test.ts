@@ -53,7 +53,10 @@ test('sampled state never establishes an exact reached balance and summary prove
   const summary = { from: 0, to: 20, width: 10, buckets: [], approximate: [{ firstHour: 7, lastHour: 20 }] };
   const reply = { branchId: '1', measure: 'politicalPower', decimals: 5, warnings: [], series: [{ tag: state.tag, summary, marks: null }] };
   assert.deepEqual(validateMeasureSummaries(reply), reply);
-  assert.throws(() => validateMeasureSummaries({ ...reply, coverage: { firstHour: 10, lastHour: 9, complete: false } }));
+  const cold = { ...reply, coverage: { firstHour: 10, lastHour: 9, complete: false } };
+  assert.deepEqual(validateMeasureSummaries(cold), cold, 'the empty preparation extent precedes its first hour');
+  for (const coverage of [null, { firstHour: 10, lastHour: 8, complete: false }, { ...cold.coverage, complete: true }])
+    assert.throws(() => validateMeasureSummaries({ ...reply, coverage }));
 
   assert.throws(() => validateMeasureSummaries({ ...reply, series: [{ ...reply.series[0], summary: { ...summary,
     approximate: [{ firstHour: 7, lastHour: 6 }] } }] }));

@@ -36,7 +36,7 @@ test('operation rows retain a fallback picture and progress while stating status
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
-    '/charts/log/LogList.tsx': `import { createElement } from 'react'; export default props => {
+    '/charts/log/LogList.tsx': `export const PreparedLogCoverage = () => null; import { createElement } from 'react'; export default props => {
       globalThis.__operationLog = props; return createElement('div', null, props.rows.map(row => createElement('div', { key: row.key }, props.renderRow(row)))); };`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -86,7 +86,7 @@ test('a rejected operation description shows a short error and retains its detai
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
-    '/charts/log/LogList.tsx': 'export default props => { globalThis.__operationLog = props; return null; };',
+    '/charts/log/LogList.tsx': 'export const PreparedLogCoverage = () => null; export default props => { globalThis.__operationLog = props; return null; };',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'operation-description-fixture', enforce: 'pre',

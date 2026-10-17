@@ -28,7 +28,7 @@ export async function gatherPreparedFocusParity(client: FocusPreparedClient, sou
   if (row) for (const openedOrdinal of openedOrdinals) {
     const entry = completed.find(item => item.ordinal === openedOrdinal);
     if (entry) {
-      const openedKey = preparedArtKey(entry.completedByHour ?? row.orderFirstHour, entry.token);
+      const openedKey = preparedArtKey(entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token);
       openedKeys.add(openedKey);
       const detail = visible?.details?.get(openedOrdinal)
         ?? await loadPreparedFocusDetail(client, source, branchId, tag, row, entry, signal);
@@ -40,7 +40,7 @@ export async function gatherPreparedFocusParity(client: FocusPreparedClient, sou
   if (signal.aborted) throw new DOMException('Focus parity cancelled', 'AbortError');
   return focusParityModel(row && { completed, current: row.current, continuous: row.continuous, paused: row.paused },
     row && moment ? { progress: BigInt(row.progressRaw), dailyGain: row.dailyGainRaw === null ? null : BigInt(row.dailyGainRaw) } : null,
-    row?.orderFirstHour, hour, moment, [...staticByToken.values()], (token, date) => {
+    row?.orderFirstHour ?? undefined, hour, moment, [...staticByToken.values()], (token, date) => {
       const key = preparedArtKey(date, token), item = artwork.get(key), fallback = staticByToken.get(token);
       return { artwork: item ? { ...item.artwork, description: item.artwork.description ?? fallback?.description ?? null } : fallback ?? null,
         pending: false, reason: item?.reason ?? null, descriptionDemanded: openedKeys.has(key) };

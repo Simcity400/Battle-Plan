@@ -26,3 +26,14 @@ fold on the carried prepared state, described in the
 The `test-support` feature compiles the outcome frames
 (`prepared::test_fixtures`) the dashboard's pipeline tests build on and the
 whole-recording loader, the parity oracle they compare against.
+
+A prepared leaderboard request may add an `hour`. Beyond the accepted prefix,
+`frame_at` supplies that hour to the ordinary leader observer, including its
+visibility and content evaluation. Rank, skill, attributes, traits and portrait
+selection are current facts. Battle arrays, trait-gain dates and commands are
+withheld with `preparing: ["battles", "history"]`; the UI keeps their counts null,
+disables history actions and waits for battle-count sorts. Reached requests use
+the prepared history, and root coverage/pending fields keep mounted requests
+following preparation. Other history requests answer their prepared prefix.
+Country-filtered requests wait for complete identity history to resolve selected
+native holders and their aliases, including transfers and reused tags.

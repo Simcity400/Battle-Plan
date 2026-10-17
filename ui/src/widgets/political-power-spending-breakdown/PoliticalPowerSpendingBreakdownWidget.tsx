@@ -16,6 +16,7 @@ import type { PowerGain } from '../../dashboard/powerBalance';
 import { formatPower, powerDecimals } from '../../dashboard/powerDecimals';
 import { usePoliticsSpending, useSpendingIdeaTooltips } from '../../dashboard/usePoliticsSpending';
 import { OPTIONS } from './definition';
+import { preparedThrough } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 
 const NO_WARNINGS: string[] = [];
@@ -45,8 +46,11 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
   const items = useMemo(() => data && hour != null && end != null ? spendingItems(data, 'Political', { from, hour, end }, selection, finalData ?? data) : [], [data, finalData, from, hour, end, selection]);
   const spends = useMemo(() => data && hour != null ? spendingAt(data, 'Political', hour, from, selection) : [], [data, hour, from, selection]);
-  const gaps = useMemo(() => data && hour != null ? spendingGaps(data, 'Political', { from, hour }, selection) : [], [data, hour, from, selection]);
-  const gain = useMemo(() => data && hour != null ? powerGain(data, 'Political', { from, hour }, selection) : null, [data, hour, from, selection]);
+  // Before preparation reaches the hour shown, the totals are those of the
+  // prepared prefix: the hours after it are still being prepared, not unrecorded.
+  const through = useMemo(() => hour == null ? hour : preparedThrough(data, hour), [data, hour]);
+  const gaps = useMemo(() => data && through != null ? spendingGaps(data, 'Political', { from, hour: through }, selection) : [], [data, through, from, selection]);
+  const gain = useMemo(() => data && through != null ? powerGain(data, 'Political', { from, hour: through }, selection) : null, [data, through, from, selection]);
   const grouped = useMemo(() => spendingGroups(spends), [spends]);
   useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Political power spending breakdown totals', scope: 'displayed-hour', hour,
     complete: !!data && !!finalData && ready, total: grouped.size, rows: [...grouped].map(([id, group]) => ({ id,
@@ -76,8 +80,11 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (!tags.length) return <WidgetState kind="empty" message="Choose a country to see its political power spending." />;
   if (!data) return <WidgetState kind="loading" label="Loading political power spending…" />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (through != null && through < track.branch.firstHour) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (data.every(reply => !reply.spendingCoverage.length)) return <WidgetState kind="unavailable" message="Political power spending wasn’t recorded." />;
-  const notes = [gainNote(gain, digits), spendingGapNote(gaps), ...spendingCostNotes(spendingSummary(spends))].filter(Boolean);
+  if (through != null && from != null && from > through) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  const notes = [through != null && through < hour ? `Spent through ${dayLabel(through)}; the rest is still being prepared.` : null,
+    gainNote(gain, digits), spendingGapNote(gaps), ...spendingCostNotes(spendingSummary(spends))].filter(Boolean);
   if (!items.some(item => item.present)) {
     return <div ref={parityRoot} style={{ height: '100%' }}><WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes.length ? notes.join(' ') : undefined} /></div>;
   }

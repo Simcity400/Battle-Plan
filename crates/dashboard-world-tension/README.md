@@ -12,3 +12,7 @@ The [dashboard](../dashboard/README.md) re-exports it at the old
 
 `cargo test -p dashboard-world-tension` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation, and the tension frames (`world_tension::test_fixtures`) for the dashboard's tests.
+
+Reached first views read the independent tension and current country aggregates from the frame using the preparation observer. Remembered attribution and historical zeroes remain preparing; unresolved slots retain exact amounts separately and the unnamed total stays null until proved. Campaign geometry joins the prefix with cached keyframe totals and currently named amounts, marked approximate. An absent contributor stays unknown. Events use the prepared prefix. Native tag/slot keys identify transient catalogue entries.
+
+Each sampled contribution set is indexed once by native tag and slot. Contributor selections use that retained index on every re-ask.

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { plotFrame } from '../charts/frame.ts';
 import { tokensFromValues } from '../charts/tokens.ts';
 
 const requests: unknown[] = [];
@@ -375,4 +376,53 @@ test('air hover labels receive the recorded country identity bounds, including r
     assert.equal(shared.airHoverSegment!('A', 20), 12);
     assert.equal(shared.airHoverSegment!('missing', 7), null);
   } finally { shared.airTimeline = original; delete shared.airHoverSegment; }
+});
+
+test('air timeline integrates pending bands and tooltips separately from recording gaps', async () => {
+  const original = shared.airTimeline;
+  const tokens = tokensFromValues(variable => variable === '--surface' ? '#112233' : variable === '--error' ? '#ff0033' : '#8899aa', 'sans-serif');
+  const state = { air: undefined as ReturnType<typeof useAir> | undefined, chart: undefined as import('../charts/TimeChart').TimeChartProps | undefined };
+  const host = globalThis as typeof globalThis & { __airPending?: typeof state };
+  host.__airPending = state;
+  const server = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'air-pending-heat-integration', enforce: 'pre',
+      transform(_code, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/dashboard/useAirSuperiority.ts')) return 'export const useAir = () => globalThis.__airPending.air;';
+        if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ open() {}, menu: null });';
+        if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)});`;
+        if (path.endsWith('/charts/TimeChart.tsx')) return 'export default props => { globalThis.__airPending.chart = props; return null; };';
+        if (path.endsWith('/charts/Legend.tsx')) return 'export default () => null;';
+      } }] });
+  try {
+    const Widget = (await server.ssrLoadModule('/ui/src/widgets/air-superiority-timeline/AirSuperiorityTimelineWidget.tsx')).default;
+    shared.airTimeline = { ...(original as object), firstHour: 0, lastHour: 71, days: [23, null, null],
+      coverage: { firstHour: 0, lastHour: 23, complete: false }, pending: [{ firstHour: 48, lastHour: 71 }],
+      rows: [{ region: 1, name: 'Synthetic region', cells: [[3, null]] }] };
+    shared.airChoices = { regions: [{ id: 1, name: 'Synthetic region' }], warnings: [] };
+    state.air = render(70, 'campaign').result;
+    const html = renderToStaticMarkup(createElement(Widget, { widget: { options: {}, time: { mode: 'campaign' } }, runtime: {}, active: true }));
+    assert.match(html, /Still being prepared/);
+    const chart = state.chart!;
+    assert.equal(chart.rows!.tooltip(0, 60)!.rows[0].value, 'Still being prepared');
+    assert.match(JSON.stringify(chart.rows!.tooltip(0, 30)), /Not recorded/);
+    const fills: { color: unknown; alpha: number; rect: number[] }[] = [];
+    const context = { fillStyle: '', globalAlpha: 1, save() {}, restore() { this.globalAlpha = 1; },
+      fillRect(...rect: number[]) { fills.push({ color: this.fillStyle, alpha: this.globalAlpha, rect }); } };
+    const frame = plotFrame(72, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 72], [0, 1], false);
+    chart.layers[0].draw(context as unknown as CanvasRenderingContext2D, frame, tokens, { playhead: null });
+    assert.deepEqual(fills, [
+      { color: tokens.error, alpha: tokens.gapOpacity, rect: [24, 0, 24, 100] },
+      { color: tokens.muted, alpha: 0.12, rect: [48, 0, 24, 100] },
+    ]);
+    // Prepared inactivity replaces the pending state without turning a true gap into data.
+    shared.airTimeline = { ...(shared.airTimeline as object), coverage: { firstHour: 0, lastHour: 71, complete: true }, pending: [], days: [23, null, 71] };
+    state.air = render(70, 'campaign').result;
+    const exact = renderToStaticMarkup(createElement(Widget, { widget: { options: {}, time: { mode: 'campaign' } }, runtime: {}, active: true }));
+    assert.doesNotMatch(exact, /Still being prepared/);
+    assert.doesNotMatch(JSON.stringify(state.chart!.rows!.tooltip(0, 60)), /Still being prepared|Not recorded/);
+    assert.match(JSON.stringify(state.chart!.rows!.tooltip(0, 30)), /Not recorded/);
+  } finally {
+    shared.airTimeline = original; delete shared.airChoices; delete host.__airPending; await server.close();
+  }
 });

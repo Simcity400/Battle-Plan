@@ -8,7 +8,7 @@ The recorded political-power payments of the shown period as a sunburst, categor
 
 [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) (`spending` view) through [usePoliticsSpending](../../dashboard/usePoliticsSpending.ts); [politicsSpending.ts](../../dashboard/politicsSpending.ts) owns exact grouping and [powerBalance.ts](../../dashboard/powerBalance.ts) the gain.
 
-Prepared clients request per-item totals and latest matched facts for the selected native-date window. Current and final totals stay separate for Share/Fill, and aggregate payment counts need no list of contributing day IDs.
+Prepared clients request per-item totals and latest matched facts for the selected native-date window. Before preparation reaches the hour shown, the totals are the prepared prefix's: the note reads "Spent through <date>; the rest is still being prepared.", and the hours after it are neither gaps nor unrecorded spending. Before the first publication it says "This range is still being prepared." and claims no zero total. Current and final totals stay separate for Share/Fill, and aggregate payment counts need no list of contributing day IDs.
 
 ## Settings
 

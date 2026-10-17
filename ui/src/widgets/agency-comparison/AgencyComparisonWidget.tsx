@@ -1,3 +1,4 @@
+import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
@@ -94,7 +95,9 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   if (needsGroups && groups.error) return <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading intelligence agencies…" />;
-  if (!data.available) return <WidgetState kind="unavailable" message="Intelligence agencies are not in this recording." />;
+  if (pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  if (!data.available) return <WidgetState kind="unavailable" message={preparedPrefix(data) && !preparedPrefix(data)?.coverage?.complete
+    ? 'Agency values were not recorded at this time.' : 'Intelligence agencies are not in this recording.'} />;
   if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this time." />;
   if (!rows.length) return <WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." />;
   return <div ref={root} className="agency-comparison">

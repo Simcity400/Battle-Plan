@@ -12,6 +12,10 @@ The widgets request only the selected native-date window. Recurring daily charge
 
 The shared browser projection also folds individual daily payment rows by country, category and game month; prepared monthly subtotals are joined without enumerating their paid days.
 
+The country-groups first view supplies native `countryIdentities` at the shown
+hour independently of its pending dated event lists. The table's default Follow
+view uses the exact ledger prefix at that hour.
+
 ## Settings
 
 Countries, campaign/follow/pin/range and the shared [spending options](../../dashboard/politicsSpendingOptions.ts): game artwork, filter chips, categories, summary, decimals, cell bars, density and sort. Follow is the default.

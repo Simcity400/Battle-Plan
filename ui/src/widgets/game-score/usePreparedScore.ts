@@ -4,12 +4,12 @@ import type { BoundTrack } from '../../dashboard/model';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { object } from '../../dashboard/validation';
-import { isPreparedCoverage } from '../../shell/preparation/contract';
+import { isPreparationExtent } from '../../dashboard/preparedPrefix';
 import { validateGameScoreReply } from './gameScoreData';
 
 export function validatePreparedScore(value: unknown) {
   if (!object(value) || typeof value.approximate !== 'boolean'
-    || !(value.coverage === null || isPreparedCoverage(value.coverage))
+    || !isPreparationExtent(value.coverage)
     || !object(value.stretches) || !Object.values(value.stretches).every(stretch => typeof stretch === 'string')) {
     throw new Error('The prepared game score reply is malformed.');
   }

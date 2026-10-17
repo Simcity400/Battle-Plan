@@ -11,7 +11,7 @@ here as `dashboard_base::…`.
 | Module | What it does |
 |---|---|
 | [source.rs](src/source.rs), [content.rs](src/content.rs), [catalogue.rs](src/catalogue.rs) | One recording revision with its metadata, resolved content and typed per-source caches; content verification and cache keys; one content catalogue per source and folders (the catalogue itself is in [dashboard-text](../dashboard-text/README.md)). |
-| [prepared/](src/prepared/mod.rs) | The prepared store of one recording path and its source key, each branch's published coverage (with the gates the dashboard installs for families prepared on their own), binary series and event batches (with the recorded accumulator calls block folds make again, and the patched family catalogues), frame changes, the contract of a family prepared from blocks (its fields, block extract and fold outcome), exact group sums, progressive (prepared plus recorded tail) query helpers and the per-source cache of their decoded reads; the scheduling priority every preparation thread takes from its job (`priority`, re-exported from [job-priority](../job-priority/README.md)). |
+| [prepared/](src/prepared/mod.rs) | The prepared store of one recording path and its source key, each branch's published coverage (with the gates the dashboard installs for families prepared on their own), binary series and event batches (with the recorded accumulator calls block folds make again, and the patched family catalogues), frame changes, the contract of a family prepared from blocks (its fields, block extract and fold outcome), exact group sums, progressive (prepared plus recorded tail) query helpers and the per-source cache of their decoded reads, and replies answered from a gate's prepared prefix with the requested hours after it pending ([prepared/prefix.rs](src/prepared/prefix.rs)); the scheduling priority every preparation thread takes from its job (`priority`, re-exported from [job-priority](../job-priority/README.md)). |
 | [prepared_chart.rs](src/prepared_chart.rs), [prepared_measure.rs](src/prepared_measure.rs), [prepared_production.rs](src/prepared_production.rs) | Aligned width summaries and event clusters; exact balance and holder observations; production observations and selections. |
 | [prepared_map.rs](src/prepared_map.rs) | Sparse native map checkpoints prepared beside the products, and the reader that serves viewer playback from them. |
 | [ranking.rs](src/ranking.rs) | Event-based top-N selection and clipping. |
@@ -88,6 +88,15 @@ catalogue's ranges through one store session; restoration after growth reads the
 saved key's chain (`series::read_saved_catalogue`); the event feed stamps its
 decoded catalogues with the identities of every range in their chains.
 
+Accepted prefix coverage measures preparation progress. Backdated observations and
+branch-wide type classifications can revise earlier accepted hours. Those products
+use `Prefix::revisable` to mark every presented recorded hour approximate until
+completion when the data provides no finite revision bound; pending hours and gaps
+are separate. `Prefix::answered` removes independently proven windows from pending.
+Total-by-type production selections also carry `typeTotals`, sums of known values
+for the selected countries before paging, in type order. This supplies a provisional
+automatic type without waiting for the whole-history equipment scan.
+
 ## Sampled reads
 
 Beyond a family's committed prepared prefix, queries sample the recording itself
@@ -100,6 +109,64 @@ in the same order as a serial read. `tail_recorded` also hands the sampler each
 exactly read hour's recorded updates (`Recorded`), so a sampler can carry its own
 state from hour to hour; a frame read alone (a keyframe, the hour before a window)
 comes without them.
+
+A family read at its own cadence (a daily read) whose sampler answers only from
+a read it has seen uses `tail_first_read` and `state_tail_recorded`. A short
+tail, and each state hour's block, is read exactly after every block intersecting
+its supplying-read look-back, including a read period split across short blocks,
+so the read before the window carries into its first hours; the look-back is
+the family's read cadence, never a chosen count. The cached fold stays exact
+even when short blocks split that look-back into more blocks than the ordinary
+exact-zoom threshold. A longer tail uses the family's independent first-read extractor: metrics locate
+the first fresh supplying read, and only that hour's selected rows are reconstructed.
+Exact at its hour, it stands for the block's hours after the prefix, approximate. A block without such a read is not
+sampled.
+
+A family whose lanes hold a state of each frame samples the blocks after its
+prefix by their keyframes alone
+([prepared/query/keyframes.rs](src/prepared/query/keyframes.rs)): each keyframe is
+read and decoded on its own, half the hardware threads ahead of the visit, and
+visited in hour order with the block's hours after the prefix, without recorded
+gaps. The extractor can return no observation, leaving those hours pending; the
+hours of those sampled are the reply's approximate spans. An unreadable keyframe
+or one inside a gap samples nothing.
+
+Compact observations also live in a shared per-source cache
+([prepared/query/observations.rs](src/prepared/query/observations.rs)). Keys contain
+the product, block bounds, result type and the parameters affecting extraction;
+the prepared prefix only clips a cached observation. Concurrent requests share an
+extraction. Recording revisions start empty; dashboard requests bind the whole
+cache to their recording/content key, and products can bind their own scope.
+Failures and cancellations are not retained. Each product's LRU budget is its
+largest observed entry, including allocation capacities and charged map/Arc
+storage, times the live block count. Exact callers instead declare their actual
+window working set; parameter variants share that budget. Caller-held values and
+in-flight extraction are transient. `usage` exposes retained bytes, bound and
+extraction count in test builds. The cache accepts arbitrary immutable block
+facts or proved windows, without assuming a decoder, cadence or predecessor.
+
+Subjects keep compact relation/level observations for each keyframe. Banked
+experience keeps all three banks and the read hour once per native holder at a
+block's first fresh read; measure and country selection only project it. Its
+exact state and short-window queries cache each whole block's selected observations
+with its supplying-read predecessor, shared by all bank measures, and clip them
+for each reached hour or moving prefix. Changing a requested hour inside an
+already held block therefore needs no new observation.
+
+Capacity charges use actual vector and string capacities. On a 64-bit target a
+banked holder's compact observation has 64 inline bytes plus its fitted native
+key; all three bank measures share it. A subject relation has 80 inline bytes
+plus its two tags and optional level token. At 1,500 holders with 20–40-byte
+native keys, the banked observations occupy about 0.12–0.15 MiB per block and
+80–100 MiB for 663 blocks, plus charged cache entries. Subject sizing follows
+the live relation count and token lengths. Exact bank folds retain the selected
+holders' three banks and read-hour runs, with a bound of their largest charged
+block times the largest exact working set requested. Proved occupation windows
+and faction reached replies share the live-block budget across their request
+variants; retaining several windows prevents head/hover/prefetch re-asks from
+evicting each other. A caller can use the same cache for a stockpile block's
+immutable read facts, fold/anchor state or proved at-hour reply, with the
+selection and end hour in its parameters.
 
 Each source keeps a cache of what these reads decode
 ([prepared/query/frames.rs](src/prepared/query/frames.rs)): a block's frames as
@@ -120,11 +187,24 @@ an entry left empty when its read ends is removed. It evicts
 the least recently used entry first. A reader publishes and accounts its read before
 any other request may read the same block or hour.
 
+`progressive::latest_read` finds the latest complete supplying read within a
+family's cadence. Recorded read slots locate its supplying hour first; an
+unchanged carry reconstructs only that hour. A snapshot or delta without a read
+witness needs decoder validation of the carry's rows. Its `read_window` reads
+only the intersecting blocks and keeps requested hours in the same 512 MiB frame
+cache as `frame_at`. Windows and seeks share hour slots and table joins; each
+window advances its own block decoders, with no lock across windows. An added
+table reconstructs only the missing tables. Gaps, unavailable tables and an
+expired supplying read leave the value unknown.
+Owner-sliced families use their observer to prove every hour's owner read and
+identity, rather than treating a held keyframe row as a fresh read.
+
 `progressive::without_block_decodes` runs a query with every block decode refused
 (a sampled read with blocks to read, an hour the cache does not hold) and says
 whether one was; the data service answers prepared queries this way first. Such a
 query takes what the cache holds and never waits on another request's read of a
-block or hour: it is refused at once.
+block or hour: it is refused at once. A product that reads recorded blocks itself
+calls `progressive::decodes_allowed` before it reads one.
 
 The `test-support` feature compiles the fixtures, test oracles (the `#[cfg(test)]`
 whole-recording loaders of prepared-only products) and the test instrumentation
@@ -259,16 +339,24 @@ Idea classification content is bound at configuration; the shared result cache
 retains successful and refused loads, and fixed token classifications use the
 shared keyed result cache. Only new additions contribute classification counts.
 
-Prepared `idea-history` requests use `{branchId, tag}` and the production topic
-reply builder. The observer retains both identity-start naming for topic replies
-and span-start naming for event-feed, plus country-scoped refusal counts.
-Queries wait for the family's own complete coverage and refuse from its own
-coverage page. The shared idea-history UI hook uses
-the ordinary preparation status, cancellation and retry handling; idea timelines
-and national-spirit widgets retain their existing reply shapes and presentation.
-The legacy product and event-feed branch scan remain available as references.
-Idea holdings, acquisition/removal bounds, advisor seats and recorded renames
-depend on preceding observations; they have no stateless progressive sampler.
+Prepared `idea-history` requests name `{branchId, tag}`, optionally `through`,
+`preview` and an at-hour `hour`. They answer the family's exact prepared prefix,
+including an empty prefix before its first commit. The reply's `pending` hours
+exclude recorded gaps. With `preview`, each later keyframe supplies held ideas,
+laws and appointed advisors for its block, with `approximate` spans; sampled
+edges never claim acquisition or removal dates. The keyframes read ahead through
+`keyframes::blocks_after`, with one function sampling one block's keyframe for a
+country. Compact holdings and naming use the per-source observation cache, keyed
+by tag and selected tables; a moving prefix or shorter preview clips the same
+observation without reading, decoding or extracting that block again.
+
+An hour beyond coverage adds `held`: the exact frame's held set, in content
+order, with acquisition order, dates and acquisition-context naming marked
+`preparing`. The icon grid uses this state; lane widgets use the approximate
+geometry and the shared key. Accepted coverage replaces sampled spans with the
+observer's exact holdings and dates. The observer retains identity-start naming
+for topic replies and span-start naming for event-feed; the reference branch
+scan remains available.
 
 ## Territory breakdown
 
@@ -312,5 +400,42 @@ passed-hour callbacks, and reads never extend beyond accepted branch progress.
 No recording format, directory, index or setting is added.
 Changed gaps become interval records with reasons in original occurrence order,
 including repeats and overlaps. Readers binary-search gap records on disk.
+
+Newest-window proofs can read an earlier prefix by selected key fields
+([earlier.rs](src/prepared/query/earlier.rs)). Blocks are change-read in parallel,
+then combined from immutable per-block key sets in the shared observation cache.
+A longer or shorter prefix reuses retained blocks. Each requested proof's
+compressed reply, including an unproven result, uses that cache's content binding
+and live-block bound in a separate product scope. No separate history map or
+eviction policy is retained. These observations publish no prepared-store layout.
+
+Frame observers use `state_tail` with their supplying predecessor explicitly
+selected; a re-ask visits every hour again through the shared frame cache.
+`state_tail_recorded` instead caches the sampler's returned block observations,
+independently of requested hours and moving coverage. State requests visit every
+requested block exactly even when a day is split across many short blocks. The wide keyframe approximation belongs to summary
+requests; it cannot omit requested state hours.
+
+Cold object replies carry an empty preparation extent: `firstHour` is the
+branch's first recorded hour, `lastHour` the preceding hour, and `complete`
+is false. `prefix::extent` constructs it; `read_or_empty` reads accepted
+coverage or uses it, and `mark_unprepared` marks it through the same `Prefix`
+writer. Named `preparedCoverage` uses the same extent beside capture evidence.
+Keyframe re-asks without block decodes visit retained observations on the
+calling thread; missing or busy observations refuse immediately. Air superiority
+keeps its viewpoint projections in this shared content-bound cache, charged for
+every retained allocation. Supplying-read lookups keep validated supplying hours
+in the same bounded observation cache by branch, target hour, table and cadence;
+selected table unions are reconstructed through the shared frame cache.
+
+Cold cumulative queries use `prefix::read_or_empty`, the same prefix shape as a
+published reply. Production spending has no leaves or numeric totals before its
+first endpoint, and its pending total runs carry `preparing`. Production
+selection projects an unobserved endpoint through the ordinary selection
+builder: there are no country amounts, ranks or known inventory.
+
+Cold research state replies retain the last witnessed slot availability when
+current inputs are unavailable. Those slots have no current state or fabricated
+read coverage, so the active view shows them as unavailable.
 
 Prepared map selection retains the Operatives map's mission, operation, agency-buffer, strategic-operative and stability inputs alongside the shared map and trigger operands.

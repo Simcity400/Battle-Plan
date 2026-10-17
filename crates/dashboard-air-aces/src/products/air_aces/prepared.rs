@@ -3,6 +3,8 @@ use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_text::metadata::check_cancel;
 
+const ROSTER_READ_HOURS: i32 = 24;
+
 #[derive(Serialize, Deserialize)]
 struct PortraitRun {
     first: i32,
@@ -486,6 +488,183 @@ impl Prepared {
     }
 }
 
+fn sample_roster(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<(Scan, Option<i32>)> {
+    let replay = source.replay_ref();
+    let declaration = replay
+        .branches
+        .iter()
+        .find(|row| row.id == branch)
+        .ok_or_else(|| dashboard_core::invalid("Branch not in this recording"))?;
+    let (first, last) = branch_bounds(replay, declaration);
+    let mut selected = vec![
+        TableId::Campaign,
+        TableId::AirAces,
+        TableId::AirWings,
+        TableId::WingEquipment,
+        TableId::Raids,
+        TableId::RaidTooltipOperands,
+    ];
+    selected.extend(VariantCatalogue::TABLES);
+    selected.sort_unstable();
+    selected.dedup();
+    let frame = dashboard_base::prepared::query::progressive::latest_read(
+        source,
+        branch,
+        hour,
+        TableId::AirAces,
+        ROSTER_READ_HOURS,
+        &selected,
+        cancelled,
+    )?;
+    let read_hour = frame.as_ref().map(|frame| frame.hour);
+    let mut scan = Scan {
+        format: replay.format,
+        first,
+        last,
+        windows: vec![HourSpan {
+            first_hour: read_hour.unwrap_or(hour),
+            last_hour: hour,
+        }],
+        ..Default::default()
+    };
+    if let Some(frame) = frame {
+        if let Some(variants) = dashboard_base::prepared::query::progressive::latest_read(
+            source,
+            branch,
+            frame.hour,
+            TableId::VariantDefinitions,
+            replay::cadence::STAGGER_PERIOD,
+            &VariantCatalogue::TABLES,
+            cancelled,
+        )? {
+            scan.variants.observe(replay.format, &variants);
+            scan.variants.advance(frame.hour);
+        }
+        scan.observe_roster(&frame, None);
+        scan.close(hour);
+        if let Some(observed) = scan.observed.last_mut() {
+            observed.last_hour = hour;
+        }
+    }
+    Ok((scan, read_hour))
+}
+
+fn roster(
+    source: &Source,
+    params: AirAcesRosterParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let branch = params
+        .branch_id
+        .parse::<u64>()
+        .map_err(|_| dashboard_core::invalid("Invalid ace branch"))?;
+    let prefix = dashboard_base::prepared::prefix::read(
+        source,
+        context.content.as_ref(),
+        AirAces::KEY,
+        branch,
+        Some(params.hour),
+        cancelled,
+    )?;
+    let replay = source.replay_ref();
+    let declaration = replay
+        .branches
+        .iter()
+        .find(|row| row.id == branch)
+        .ok_or_else(|| dashboard_core::invalid("Branch not in this recording"))?;
+    let (first, last) = branch_bounds(replay, declaration);
+    if params.hour < first || params.hour > last {
+        return Err(dashboard_core::invalid("Ace roster hour outside recording"));
+    }
+    let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
+    let window = source
+        .block_windows(branch)
+        .partition_point(|window| window.last_hour < params.hour);
+    let request = AirAcesParams {
+        branch_id: params.branch_id.clone(),
+        view: AirAcesView::Window,
+        window: Some(window),
+    };
+    let mut reply = if prefix
+        .as_ref()
+        .is_some_and(|prefix| params.hour <= prefix.coverage.last_hour)
+    {
+        let mut state = Prepared::read(&store, &key, None, branch)?;
+        let AirAcesReply::Manifest(manifest) =
+            state.manifest(source, &store, &key, &request, context, cancelled)?
+        else {
+            unreachable!()
+        };
+        let roster = series::read_reply::<AirAcesWindowReply>(
+            &store,
+            &key,
+            &format!("air-aces-{branch}-windows"),
+            window as u64,
+        )?
+        .ok_or_else(|| dashboard_core::invalid("Prepared ace window is missing"))?;
+        let read_hour = manifest
+            .read_hours
+            .iter()
+            .rev()
+            .copied()
+            .find(|&hour| hour <= params.hour);
+        AirAcesRosterReply {
+            manifest,
+            roster,
+            read_hour,
+            preparing: vec![],
+        }
+    } else {
+        let (scan, read_hour) = sample_roster(source, branch, params.hour, cancelled)?;
+        let cat = context
+            .content()
+            .and_then(|options| catalogue::catalogue(source, options));
+        let sampled = AirAcesParams {
+            window: Some(0),
+            ..request
+        };
+        let manifest = super::manifest(&scan, &sampled, cat.as_deref().ok(), cancelled)?;
+        let mut roster = window_reply(&scan, &sampled, cat.as_deref().ok(), cancelled)?;
+        for ace in &mut roster.aces {
+            ace.first_seen = None;
+            for run in &mut ace.runs {
+                if let Some(death) = &mut run.death {
+                    death.last_alive = None;
+                    death.by_hour = None;
+                }
+            }
+        }
+        AirAcesRosterReply {
+            manifest,
+            roster,
+            read_hour,
+            preparing: vec!["firstSeen".into(), "death".into()],
+        }
+    };
+    // First sightings are not known from one roster read.
+    if !reply.preparing.is_empty() {
+        reply.manifest.aces.clear();
+    }
+    let mut data = serde_json::to_value(reply)?;
+    match prefix {
+        Some(prefix) => prefix.mark(&mut data)?,
+        None => dashboard_base::prepared::prefix::mark_unprepared(
+            source,
+            branch,
+            Some(params.hour),
+            &mut data,
+        )?,
+    }
+    dashboard_base::products::check_reply_budget(&data)?;
+    Ok(data)
+}
+
 pub fn query(
     source: &Source,
     product: &str,
@@ -493,6 +672,11 @@ pub fn query(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<serde_json::Value> {
+    if product == AirAces::KEY
+        && params.get("view").and_then(serde_json::Value::as_str) == Some("roster")
+    {
+        return roster(source, serde_json::from_value(params)?, context, cancelled);
+    }
     let branch = params
         .get("branchId")
         .and_then(serde_json::Value::as_str)
@@ -511,18 +695,32 @@ pub fn query(
         let params: AirAcePortraitParams = serde_json::from_value(params)?;
         AirAcePortraits::validate(&params).map_err(dashboard_core::invalid)?;
         let branch = params.branch_id.parse().expect("validated branch");
-        let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
+        let coverage = dashboard_base::prepared::coverage::product_coverage(
             source,
             context.content.as_ref(),
             branch,
             AirAcePortraits::KEY,
             cancelled,
-        )?
-        else {
-            return Ok(serde_json::Value::Null);
-        };
-        if !coverage.complete && params.hour > coverage.last_hour {
-            return Ok(serde_json::Value::Null);
+        )?;
+        if coverage
+            .as_ref()
+            .is_none_or(|coverage| !coverage.complete && params.hour > coverage.last_hour)
+        {
+            let (scan, _) = sample_roster(source, branch, params.hour, cancelled)?;
+            return serde_json::to_value(portrait_reply(
+                source,
+                &params,
+                context,
+                cancelled,
+                |id, _| {
+                    scan.aces
+                        .iter()
+                        .find(|ace| ace.id == id)
+                        .and_then(|ace| ace.runs.last())
+                        .map(|run| PortraitOperands::from(&run.facts))
+                },
+            )?)
+            .map_err(Into::into);
         }
         let state = Prepared::read(&store, &key, None, branch)?;
         return serde_json::to_value(portrait_reply(

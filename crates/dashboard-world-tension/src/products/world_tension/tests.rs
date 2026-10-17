@@ -30,8 +30,20 @@ fn prepared_tension_requires_history_for_disappeared_country_names() {
     remembered.observe(format, &tail).unwrap();
     let mut fresh = Scan::default();
     fresh.observe(format, &tail).unwrap();
-    assert_eq!(remembered.result.reads.last().unwrap().unnamed_raw, "0");
-    assert_eq!(fresh.result.reads.last().unwrap().unnamed_raw, "10000");
+    assert_eq!(
+        remembered
+            .result
+            .reads
+            .last()
+            .unwrap()
+            .unnamed_raw
+            .as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        fresh.result.reads.last().unwrap().unnamed_raw.as_deref(),
+        Some("10000")
+    );
     assert_eq!(remembered.result.events[0].tag.as_deref(), Some("D01 mod"));
     assert_eq!(fresh.result.events[0].tag, None);
 }
@@ -380,7 +392,7 @@ fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_ga
                 read.starts_segment,
                 read.tension_raw.as_str(),
                 read.sum_raw.as_str(),
-                read.unnamed_raw.as_str(),
+                read.unnamed_raw.as_deref().unwrap(),
             )
         })
         .collect();
@@ -573,7 +585,12 @@ fn world_tension_reply_states_its_scales_and_what_did_not_add_up() {
         (1_000, 100_000, "10000000")
     );
     assert_eq!(reply.reads.len(), 2);
-    assert!(reply.reads.iter().all(|read| read.unnamed_raw == "1"));
+    assert!(
+        reply
+            .reads
+            .iter()
+            .all(|read| read.unnamed_raw.as_deref() == Some("1"))
+    );
     assert_eq!(reply.warnings.len(), 3, "{:?}", reply.warnings);
     for start in [
         "Reads whose country contributions",
@@ -610,7 +627,7 @@ fn world_tension_remembers_countries_recorded_at_hours_without_its_tables() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.reads.len(), 1);
-    assert_eq!(scanned.reads[0].unnamed_raw, "0");
+    assert_eq!(scanned.reads[0].unnamed_raw.as_deref(), Some("0"));
     assert_eq!(
         scanned
             .countries
@@ -722,7 +739,7 @@ fn world_tension_keeps_two_countries_sharing_a_tag_apart() {
             ("AAA", 8, vec![(24, 24, "50000")]),
         ]
     );
-    assert_eq!(scanned.reads[1].unnamed_raw, "0");
+    assert_eq!(scanned.reads[1].unnamed_raw.as_deref(), Some("0"));
 }
 
 #[test]

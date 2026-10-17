@@ -6,7 +6,7 @@ Signed factory IC applied to equipment lines and rocket sites, grouped as produc
 
 ## Products it reads
 
-[`production-spending`](../../../../crates/dashboard-base/src/products/production_spending.rs) reads Equipment produced’s prepared endpoints and classifications through its existing reply builder. Background preparation computes equipment/refit/Rocket accounting once. One shared spent series supplies exact range maxima for unknown-final ordering; endpoint identities and segments retain range continuity. The widget requests its reached, final and range-baseline dates with the bound prepared source. [line_output_sites.rs](../../../../crates/engine-production/src/line_output_sites.rs) defines line-output hook sites.
+[`production-spending`](../../../../crates/dashboard-base/src/products/production_spending.rs) reads Equipment produced’s prepared endpoints and classifications through its existing reply builder. Background preparation computes equipment/refit/Rocket accounting once. One shared spent series supplies exact range maxima for unknown-final ordering; endpoint identities and segments retain range continuity. The widget requests its reached, final and range-baseline dates with the bound prepared source. Before preparation reaches them, the reply answers its prepared prefix: the widget shows the amounts spent through the prefix's last hour with the note "Spent through <date>; the rest is still being prepared.", and a range starting after the prefix reads "This range is still being prepared." It refreshes as preparation moves. [line_output_sites.rs](../../../../crates/engine-production/src/line_output_sites.rs) defines line-output hook sites.
 
 ## Settings
 
@@ -27,3 +27,10 @@ Campaign/follow/pin/range; refitted ships (off), hierarchy levels, IC decimals a
 | [ProductionSpendingWidget.tsx](ProductionSpendingWidget.tsx) | Product and Sunburst adapter. |
 | [spendingData.ts](spendingData.ts) | Exact amounts, hierarchy and plain attribution unknowns; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts) | Levels, shared options and registration. |
+
+The prefix's signed IC operands remain recorded values, while its type attribution
+is marked Approximate until preparation completes: a later nonempty token can
+reclassify any earlier design. Pending output remains unknown with `preparing`.
+
+A cold reply without accepted reads renders Still being prepared. Pending total
+runs remain null with the preparing reason, including before any leaf exists.

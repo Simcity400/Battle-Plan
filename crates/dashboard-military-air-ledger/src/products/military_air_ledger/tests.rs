@@ -633,3 +633,98 @@ fn military_air_identities_restarted_after_an_unread_interval_start_a_new_epoch(
     air_frame(&mut scan, &frame(2, vec![air_loss(5, 1, 1)], vec![])).unwrap();
     assert!(air_frame(&mut scan, &frame(3, vec![air_loss(0, 3, 1)], vec![])).is_err());
 }
+
+#[test]
+fn military_air_events_recorded_again_after_an_unread_interval_refuse_by_name() {
+    // A recording that repeats an earlier stretch of its own rows: one hour
+    // unread, then the same events again, with their identities restarted
+    // and their native dates from before the unread hour, while the read
+    // hours go on. The collector restarts identities only across an interval
+    // it did not deliver and delivers only events applied after it, so
+    // these are earlier events recorded again.
+    let unread = |frame: &mut DecodedFrame| {
+        for table in [TableId::AirLossEvents, TableId::BuildingBombingDamage] {
+            *frame.tables[table.index()] = TableView::Unavailable {
+                reason: "event ledger first/branch/recovery interval is partial".into(),
+            };
+        }
+    };
+    let tiled = |air: bool, bombing: bool, rebased: bool| {
+        let losses = |ids: [u64; 2], hour: i32| {
+            ids.iter()
+                .filter(|_| air)
+                .map(|&id| air_loss(id, hour, 100_000))
+                .collect()
+        };
+        let damage = |ids: [u64; 2], hour: i32| {
+            ids.iter()
+                .filter(|_| bombing)
+                .map(|&id| air_mission_damage(id, hour, 1_000_000))
+                .collect()
+        };
+        let mut seam = frame(3, vec![], vec![]);
+        unread(&mut seam);
+        // Rebased, the repeated stretch's events are dated in their own reads.
+        let again = |hour: i32| if rebased { hour } else { hour - 3 };
+        vec![
+            frame(1, losses([0, 1], 1), damage([0, 1], 1)),
+            frame(2, losses([2, 3], 2), damage([2, 3], 2)),
+            seam,
+            frame(4, losses([0, 1], again(4)), damage([0, 1], again(4))),
+            frame(5, losses([2, 3], again(5)), damage([2, 3], again(5))),
+        ]
+    };
+    let refusal = |events: &str| {
+        format!(
+            "{events} events restart their ordinals after the unread interval from hour 3 \
+             but are dated from hour 1, before it: earlier events recorded again, not new ones"
+        )
+    };
+    for (air, bombing, events) in [(true, true, "air loss"), (false, true, "bombing")] {
+        let frames = tiled(air, bombing, false);
+        // The whole-recording oracle.
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let error = match scan(&replay, 1, &AtomicBool::new(false)) {
+            Ok(_) => panic!("{events} events recorded again were accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), refusal(events));
+        // Hourly preparation refuses the same hour with the same words.
+        let mut state = prepared::Prepared::default();
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        let format = replay::format::FormatVersion::default();
+        for frame in &frames[..3] {
+            state
+                .observe_changed(frame, &tracker.observe(frame, format))
+                .unwrap();
+        }
+        let error = state
+            .observe_changed(&frames[3], &tracker.observe(&frames[3], format))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), refusal(events));
+    }
+
+    // The same seam with the repeated events dated in their own reads is a
+    // new identity epoch, as the collector produces it, and every event counts.
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, tiled(true, true, true))]).unwrap();
+    let result = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let air = leaves(&result.air, None).unwrap();
+    assert_eq!(air[0].points.last().unwrap().total_raw, "800000");
+    assert_eq!(
+        result.bombing.observed,
+        [
+            HourSpan {
+                first_hour: 1,
+                last_hour: 2
+            },
+            HourSpan {
+                first_hour: 4,
+                last_hour: 5
+            }
+        ]
+    );
+}

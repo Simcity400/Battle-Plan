@@ -15,6 +15,7 @@ use std::{
 
 mod casualty_pending;
 mod catalogue_refusals;
+mod cold_defaults;
 mod commit_points;
 mod equipment_loss_pending;
 mod family_lanes;
@@ -42,6 +43,7 @@ mod newest_windows;
 mod parallel_flush;
 mod prepass_parity;
 mod production_scans;
+mod reply_gates;
 mod serialization_order;
 mod stability_progressive;
 mod walk_selection;
@@ -2331,7 +2333,7 @@ fn prepared_groups_replace_one_state_across_commits_cancel_resume_and_append_at_
 }
 
 #[test]
-fn prepared_groups_wait_when_other_prepared_sections_exist_without_group_state() {
+fn prepared_groups_sample_when_other_prepared_sections_exist_without_group_state() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("groups-pending");
@@ -2359,7 +2361,17 @@ fn prepared_groups_wait_when_other_prepared_sections_exist_without_group_state()
         &crate::prepared::query::query(&source, &request, None, &AtomicBool::new(false)).unwrap(),
     )
     .unwrap();
-    assert!(reply["data"].is_null());
+    let data = &reply["data"];
+    assert!(data.is_object());
+    assert_eq!(data["coverage"]["firstHour"], 10);
+    assert_eq!(data["coverage"]["lastHour"], 9);
+    assert_eq!(data["coverage"]["complete"], false);
+    assert_eq!(data["pending"], serde_json::json!([]));
+    assert_eq!(
+        data["approximate"],
+        serde_json::json!([{"firstHour": 10, "lastHour": 11}])
+    );
+    assert_eq!(reply["gate"], serde_json::json!(["groups"]));
 }
 
 #[test]
@@ -2618,10 +2630,17 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
             product: "subjects".into(),
             params: serde_json::json!({"branchId":"1"}),
         };
-        let actual: serde_json::Value = serde_json::from_str(
+        let mut actual: serde_json::Value = serde_json::from_str(
             &crate::prepared::query::query(source, &request, None, &flag).unwrap(),
         )
         .unwrap();
+        // The prepared reply also names its complete coverage and nothing pending.
+        let actual = &mut actual["data"];
+        assert_eq!(actual["coverage"]["complete"], true);
+        assert_eq!(actual["pending"], serde_json::json!([]));
+        for field in ["coverage", "pending"] {
+            actual.as_object_mut().unwrap().remove(field);
+        }
         let expected = Subjects::load(
             source,
             &SubjectParams {
@@ -2631,7 +2650,7 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
             &flag,
         )
         .unwrap();
-        assert_eq!(actual["data"], serde_json::to_value(&expected).unwrap());
+        assert_eq!(*actual, serde_json::to_value(&expected).unwrap());
         let (store, key) = super::super::files(source, None).unwrap();
         assert_eq!(store.range_count(&key, "subjects-1").unwrap(), Some(1));
         expected
@@ -3331,7 +3350,12 @@ fn progressive_autonomy_queries_join_prepared_prefix_and_tail_then_zoom_exactly_
         29
     );
     let cold = query("series-summary", summary(0));
-    assert!(cold["coverage"].is_null());
+    assert!(
+        cold["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+            && cold["coverage"]["complete"] == false
+    );
     assert!(
         !cold["summaries"]["holder"]["approximate"]
             .as_array()
@@ -3595,10 +3619,15 @@ fn naval_losses_unprepared_spans_are_pending_not_zero() {
                 &super::super::query::query(&source, &request, None, &flag).unwrap(),
             )
             .unwrap();
-            assert!(
-                reply["data"].is_null(),
-                "{product}, prefix={accepted_prefix}: an unprepared sinking tally must be pending, never a zero or retained-vector count"
-            );
+            if *product == "naval-losses" {
+                assert!(reply["data"]["series"].as_array().unwrap().is_empty());
+                assert!(!reply["data"]["pending"].as_array().unwrap().is_empty());
+            } else {
+                assert!(
+                    reply["data"].is_null(),
+                    "{product}, prefix={accepted_prefix}: an unprepared tally has no sampled count"
+                );
+            }
         }
         if !accepted_prefix {
             assert!(
@@ -3690,7 +3719,12 @@ fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_w
     let summary = |from: i32, tags: &[&str]| serde_json::json!({"branchId":"1","family":{"kind":"country-measure","measure":"politicalPower"},"tags":tags,"from":from,"to":29,"width":30});
     // No cache still gives a rough line and tail-only native states.
     let cold = query("series-summary", summary(0, &["GER", "tail only"]));
-    assert!(cold["coverage"].is_null());
+    assert!(
+        cold["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+            && cold["coverage"]["complete"] == false
+    );
     assert_eq!(
         cold["series"][0]["summary"]["approximate"][0]["firstHour"],
         0
@@ -3800,7 +3834,14 @@ fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_w
     .unwrap();
     writer.commit().unwrap();
     let invalidated = query("series-summary", summary(0, &["GER"]));
-    assert!(invalidated["coverage"].is_null());
+    assert!(
+        invalidated["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(
+                |first| invalidated["coverage"]["lastHour"].as_i64() == first.checked_sub(1)
+            )
+            && invalidated["coverage"]["complete"] == false
+    );
     assert_eq!(
         invalidated["series"][0]["summary"]["approximate"][0]["firstHour"],
         0
@@ -3819,7 +3860,8 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
 }
 
 /// Stability parts are written as the hourly walk publishes them.
-fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly() {
+fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly()
+ {
     use crate::test_fixtures::{stability_frame, stability_inputs};
     fn sampled(hour: i32) -> DecodedFrame {
         let mut inputs = stability_inputs();
@@ -3927,7 +3969,12 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
             .clone()
     };
     let cold = query("series-summary", summary(0, 30));
-    assert!(cold["coverage"].is_null());
+    assert!(
+        cold["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+            && cold["coverage"]["complete"] == false
+    );
     assert_eq!(
         child(&cold, "GER", "term:base")["approximate"],
         serde_json::json!([{"firstHour":0,"lastHour":29}])
@@ -4245,7 +4292,12 @@ fn progressive_fuel_factories_and_nukes() {
     };
     for kind in ["country-fuel", "country-factories", "country-nukes"] {
         let cold = query("series-summary", summary(kind, 0));
-        assert!(cold["coverage"].is_null());
+        assert!(
+            cold["coverage"]["firstHour"]
+                .as_i64()
+                .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+                && cold["coverage"]["complete"] == false
+        );
         assert_eq!(
             lines(&cold, kind)[0]["summary"]["approximate"],
             serde_json::json!([{"firstHour":0,"lastHour":29}])
@@ -4518,7 +4570,8 @@ fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly
 }
 
 /// Territory's pages are written as the hourly walk publishes them.
-fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly() {
+fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly()
+ {
     use crate::products::{LoadContext, country_history::HistoryScan, territory};
     use replay::rows::{CountryLinkRow, CountryRow, ProvinceRow};
     fn sampled(hour: i32) -> DecodedFrame {
@@ -4619,7 +4672,12 @@ fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly
     };
     let summary = |from: i32| serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":"victoryPoints","rule":"controlled"},"tags":["FRA","tail only"],"from":from,"to":29,"width":30});
     let cold = query("series-summary", summary(0));
-    assert!(cold["coverage"].is_null());
+    assert!(
+        cold["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(|first| cold["coverage"]["lastHour"].as_i64() == first.checked_sub(1))
+            && cold["coverage"]["complete"] == false
+    );
     assert_eq!(
         cold["series"][0]["summary"]["approximate"],
         serde_json::json!([{"firstHour":0,"lastHour":29}])
@@ -5582,8 +5640,14 @@ fn prepared_leaders_pipeline_resumes_appended_outcomes_under_the_current_key() {
             )
             .unwrap();
             let oracle = UnitLeaders::load(&source, &params, &context, &flag).unwrap();
+            let mut data = reply["data"].clone();
+            assert_eq!(data["coverage"]["complete"], true);
+            assert_eq!(data["pending"], serde_json::json!([]));
+            for field in ["coverage", "pending"] {
+                data.as_object_mut().unwrap().remove(field);
+            }
             assert_eq!(
-                reply["data"],
+                data,
                 serde_json::to_value(oracle).unwrap(),
                 "append={end} view={view:?}"
             );
@@ -5753,7 +5817,14 @@ fn progressive_game_score_state_reads_unprepared_hour_and_tail_only_countries_wi
         (value["data"].clone(), actual)
     };
     let (cold_value, cold) = query(103);
-    assert!(cold_value["coverage"].is_null());
+    assert!(
+        cold_value["coverage"]["firstHour"]
+            .as_i64()
+            .is_some_and(
+                |first| cold_value["coverage"]["lastHour"].as_i64() == first.checked_sub(1)
+            )
+            && cold_value["coverage"]["complete"] == false
+    );
     assert!(cold.approximate);
     assert!(cold.stretches.is_empty());
     assert_eq!(cold.reply.reads, vec![103]);

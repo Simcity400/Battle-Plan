@@ -15,6 +15,7 @@ import { jumpItem, rowJumpProps } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
 import Table from '../../charts/table/Table';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import type { TableColumn } from '../../charts/table/Table';
 import { tableSortOf } from '../../charts/table/options';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
@@ -192,6 +193,7 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics,
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{header}<div className="dash-empty" role="status">This time is outside the recording.</div></>;
   if (error) return <>{header}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!data || !slots) return <>{header}{preparing ? <PreparedLogCoverage coverage={null} /> : <ListSkeleton label="Loading research…" />}</>;
+  if (!lanes.length && preparedPrefix(data)?.pending.length) return <>{header}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} /></>;
   if (!lanes.length) return <>{header}<div className="dash-empty" role="status"><span className="empty-icon"><Icon name="history" /></span>
     <p>No research slots recorded by {researchDate(hour)}.</p></div></>;
   const shownSlot = shown ? detailsSlots?.find(owner => owner.index === shown.slotIndex) : undefined;
@@ -214,6 +216,7 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics,
         sort={tableSortOf(options.tableSort, DEFAULT_SORT)} density={options.density === 'compact' ? 'compact' : 'comfortable'}
         setOption={setOption} menu={row => row.kind === 'gap' ? [] : [jumpItem(runtime, track.id, row.kind === 'held' ? row.run.endedByHour ?? row.run.lastHour : row.hour)]}
         onOpen={open} />}
+    <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && shownSlot && shownEntry && <>
         <PopoverHeading title={text.name(shownEntry.token)} menu={breakdown} />

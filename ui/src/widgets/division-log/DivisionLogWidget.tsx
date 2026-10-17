@@ -1,10 +1,11 @@
+import { preparedPrefix, pendingAt, fieldPreparing } from '../../dashboard/preparedPrefix';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
-import LogList from '../../charts/log/LogList';
+import LogList, { PreparedLogCoverage } from '../../charts/log/LogList';
 import type { LogListProps } from '../../charts/log/LogList';
 import { logCountryRequests } from '../../charts/log/logData';
 import type { LogRow } from '../../charts/log/logData';
@@ -66,7 +67,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
     : battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], first);
   const history = useProductWindows<DivisionLogReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'division-log', params: { branchId: track!.branch.id, window: index } }), wantedWindows,
-  active && manifest.data?.available === true, validateDivisionLog);
+  active && manifest.data?.available === true, validateDivisionLog, track?.source, true);
   const templatesValue = typeof options.templates === 'string' ? options.templates : '';
   const campaign = track?.source.metadata.campaignKey ?? '';
   const branch = track?.branch.id ?? '';
@@ -151,6 +152,8 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!manifest.data || !match.ready) return <WidgetState kind="loading" label="Loading division log…" />;
+  if (!manifest.data.available && preparedPrefix(manifest.data)?.pending.length) return <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} />;
+  if (!manifest.data.lossesAvailable && events === 'lost' && preparedPrefix(manifest.data)?.pending.length) return <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} />;
   if (!manifest.data.available || events === 'lost' && !manifest.data.lossesAvailable) return <WidgetState kind="unavailable" message="Not in this recording" />;
   const error = history.errors.get(browseIndex);
   if (error) return <WidgetState kind="error" detail={error} onRetry={history.retry} />;
@@ -167,14 +170,15 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
       </span><span className="log-tag">{divisionStatus(row)}</span></>;
   };
   return <div className="log-widget division-log">
+    <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} exact={(history.data.get(browseIndex) as { exact?: number } | undefined)?.exact} />
     {options.totals === true && <div ref={parityTotalsRoot} className="division-log-summary" aria-live="polite">
-      {totals.error ? <WidgetState kind="error" what="division totals" detail={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : <>
-        {events !== 'lost' && <span><b>{totals.data.created.toLocaleString()}</b> created</span>}
-        {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? totals.data.lost.toLocaleString() : 'Not recorded'}</b> lost / removed</span>
-          <span><b>{manifest.data.lossesAvailable ? totals.data.transferred.toLocaleString() : 'Not recorded'}</b> transferred / merged</span></>}
+      {totals.error ? <WidgetState kind="error" what="division totals" detail={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : fieldPreparing(totals.data, 'created') ? 'Totals are still being prepared.' : <>
+        {events !== 'lost' && <span><b>{(totals.data.created?.toLocaleString() ?? 'Still being prepared')}</b> created</span>}
+        {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? (totals.data.lost?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> lost / removed</span>
+          <span><b>{manifest.data.lossesAvailable ? (totals.data.transferred?.toLocaleString() ?? 'Still being prepared') : 'Not recorded'}</b> transferred / merged</span></>}
       </>}
     </div>}
-    {!manifest.data.lossesAvailable && events !== 'created' && <p className="division-log-note">Losses and transfers: Not in this recording.</p>}
+    {!manifest.data.lossesAvailable && events !== 'created' && <p className="division-log-note">Losses and transfers: {preparedPrefix(manifest.data)?.pending.length ? 'Still being prepared.' : 'Not in this recording.'}</p>}
     {log.chips && <div className="log-chips"><ChipSet label="Division events" chips={[{ value: 'both', label: 'Both' }, { value: 'created', label: 'Created' }, { value: 'lost', label: 'Lost / transferred' }]}
       selected={[events]} max={1} full={false} onToggle={value => setOption?.('events', value)} />
       {chosen.length > 0 && <ContentSetPicker label="Division template types" automatic="All templates" choices={templateChoices} selected={chosen}
@@ -190,6 +194,6 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
       columns="var(--space-6) minmax(0, 1fr) auto" renderRow={renderRow} anchorRows onVisible={onVisible}
       describe={({ item: row }) => { const named = labels(row); return `${named.country.name}: ${divisionName(row)}, ${divisionStatus(row)}, ${row.templateName ?? 'template not recorded'}, ${named.place}, ${named.killer.name}.`; }}
       tooltip={({ item: row }) => { const named = labels(row); return [divisionTooltip(row, named.country, named.killer, named.place)]; }}
-      menu={({ item: row }) => [jumpItem(runtime, track.id, row.readHour)]} empty="No recorded division events match these settings." />
+      menu={({ item: row }) => [jumpItem(runtime, track.id, row.readHour)]} empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? first) ? "This range is still being prepared." : "No recorded division events match these settings."} />
   </div>;
 }

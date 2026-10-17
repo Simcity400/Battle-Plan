@@ -711,3 +711,61 @@ fn unprepared_inputs_remain_pending_and_complete_empty_relations_are_available()
     );
     assert_parity(&full, &fixture, &["ONE"]);
 }
+
+/// While the joint prefix ends before the requested window, the window
+/// answers from the prefix's newest window, as that window's own reply
+/// gives it, instead of waiting; observation stops at the prefix's end.
+#[test]
+fn a_window_past_the_prepared_prefix_answers_the_prefix_newest_window() {
+    let frames: Vec<_> = (100..=103).map(wars::test_fixtures::recorded).collect();
+    let chunks = vec![frames[..2].to_vec(), frames[2..].to_vec()];
+    let full = source(&chunks);
+    let mut fixture = Fixture::new();
+    let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
+    let mut wars = wars::prepared::Observer::default();
+    publish(
+        &full,
+        &chunks[0],
+        &mut fixture,
+        &mut casualties,
+        &mut wars,
+        false,
+    );
+    let through = chunks[0].last().unwrap().hour;
+    let ask = |window, through| {
+        let params = CasualtyBreakdownParams {
+            branch_id: "1".into(),
+            tag: "ONE".into(),
+            window,
+        };
+        let context = LoadContext { content: None };
+        let flag = AtomicBool::new(false);
+        query_through(
+            &full,
+            &params,
+            &context,
+            &fixture.store,
+            &fixture.key,
+            through,
+            &flag,
+        )
+        .unwrap()
+    };
+    assert!(ask(Some(1), None).is_none(), "an unpublished window waits");
+    let newest = ask(Some(0), None).unwrap();
+    let ahead = ask(Some(1), Some(through)).unwrap();
+    assert_eq!(ahead.window, Some(0));
+    assert!(!ahead.series.is_empty());
+    assert_eq!(
+        serde_json::to_value(&ahead).unwrap(),
+        serde_json::to_value(&newest).unwrap()
+    );
+    let manifest = ask(None, Some(through)).unwrap();
+    assert!(!manifest.observed.is_empty());
+    assert!(
+        manifest
+            .observed
+            .iter()
+            .all(|span| span.last_hour <= through)
+    );
+}

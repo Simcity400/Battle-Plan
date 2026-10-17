@@ -47,7 +47,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
       setVisible(_task: FrameTask, value: boolean) { visible = value; } },
   };
   const context = { setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
-    closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {} };
+    closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {}, setLineDash() {} };
   let layoutReads = 0;
   const element = { get clientWidth() { layoutReads++; return 500; }, clientHeight: 240, width: 500, height: 240, style: {}, focus() {}, setPointerCapture() {},
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 240 }),

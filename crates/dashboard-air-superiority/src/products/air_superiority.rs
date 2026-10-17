@@ -561,41 +561,62 @@ fn timeline(cache: &DayCache, params: &AirParams) -> io::Result<AirTimelineReply
             cells,
         });
     }
+    let read_hours: Vec<_> = samples
+        .iter()
+        .flatten()
+        .map(|sample| sample.hour)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let sides = compact_sides(
         &cache.sides,
         &mut rows
             .iter_mut()
             .flat_map(|row| row.cells.iter_mut().map(|(_, cell)| cell))
             .collect::<Vec<_>>(),
-        &samples
-            .iter()
-            .flatten()
-            .map(|sample| sample.hour)
-            .collect::<Vec<_>>(),
+        &read_hours,
         last,
     );
+    let displayed = |day: usize, sample: &Snapshot| {
+        cache
+            .sampled_days
+            .get(&(first_day + day as i32))
+            .copied()
+            .unwrap_or(sample.hour)
+    };
     let excluded = samples
         .iter()
-        .filter_map(|sample| sample.map(|sample| (sample.hour, sample.hour, sample.excluded)))
+        .enumerate()
+        .filter_map(|(day, sample)| {
+            sample.map(|sample| {
+                let hour = displayed(day, sample);
+                (hour, hour, sample.excluded)
+            })
+        })
         .collect();
     let theatre_reads = samples
         .iter()
-        .flatten()
-        .filter_map(|sample| {
-            sample
-                .theatre_read
-                .map(|read| (sample.hour, sample.hour, read))
+        .enumerate()
+        .filter_map(|(day, sample)| {
+            sample.and_then(|sample| {
+                let hour = displayed(day, sample);
+                sample.theatre_read.map(|read| (hour, hour, read))
+            })
         })
         .collect();
     Ok(AirTimelineReply {
         view: AirView::Timeline,
+        sample_hours: None,
+        approximate: Vec::new(),
+        rows_approximate: false,
         branch_id: params.branch_id.clone(),
         available: cache.available,
         first_hour: first_day_hour,
         last_hour: last,
         days: samples
             .iter()
-            .map(|sample| sample.map(|sample| sample.hour))
+            .enumerate()
+            .map(|(day, sample)| sample.map(|sample| displayed(day, sample)))
             .collect(),
         sides,
         segments: BTreeMap::new(),
@@ -1128,7 +1149,7 @@ fn check_reply_size(reply: &AirReply) -> io::Result<usize> {
 
 fn reply_budget_error() -> io::Error {
     invalid(format!(
-        "Exact air view exceeds MAX_PRODUCT_REPLY_BYTES ({MAX_PRODUCT_REPLY_BYTES} bytes); no reads were sampled or omitted"
+        "Air view exceeds MAX_PRODUCT_REPLY_BYTES ({MAX_PRODUCT_REPLY_BYTES} bytes); select fewer regions or a shorter range"
     ))
 }
 

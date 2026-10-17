@@ -21,7 +21,7 @@ function window(): AirAcesWindowReply {
 }
 function reply(): AirAcesManifestReply {
   return { branchId: '1', firstHour: 100, lastHour: 147, available: true, unavailable: null, observed: [{ firstHour: 100, lastHour: 147 }], readHours: [100, 124, 131, 140], warnings: [],
-    windows: [{ firstHour: 100, lastHour: 147 }], aces: window().aces.map(({ id, firstSeen }) => ({ id, firstSeen })), variants: { '80': [
+    windows: [{ firstHour: 100, lastHour: 147 }], aces: window().aces.map(({ id, firstSeen }) => ({ id, firstSeen: firstSeen! })), variants: { '80': [
       { firstHour: 100, name: 'First design', known: true, design: 'first' },
       { firstHour: 131, name: 'Later design', known: true, design: 'later' },
       { firstHour: 140, name: null, known: false, design: null },
@@ -173,7 +173,7 @@ test('the approved kit sort choices and every recorded country remain available'
   const many = reply();
   const detail = window();
   detail.aces = Array.from({ length: 100_000 }, (_, index) => ({ id: String(index + 1), firstSeen: 100, runs: [{ ...alive, tag: `opaque country ${Math.floor(index / 20)}:Ω` }] }));
-  many.aces = detail.aces.map(({ id, firstSeen }) => ({ id, firstSeen }));
+  many.aces = detail.aces.map(({ id, firstSeen }) => ({ id, firstSeen: firstSeen! }));
   const served = aceRows(validateAces(many), validateAcesWindow(detail), 100);
   assert.equal(served.length, 100_000);
   assert.equal(new Set(served.map(row => row.run.tag)).size, 5000);
@@ -223,4 +223,14 @@ test('assigned wing text slot zero preserves an empty name while null stays unre
   assert.equal(aceTooltip(row, String).rows.find(item => item.label === 'Air wing')?.value, 'Wing name not recorded');
   row.run = { ...row.run, wing: null };
   assert.equal(wingName(row), 'No wing');
+});
+
+test('a roster first view keeps current facts while its dates are preparing', () => {
+  const detail = window();
+  const cold = { ...detail, aces: detail.aces.map(ace => ({ ...ace, firstSeen: null })) };
+  const validated = validateAcesWindow(cold);
+  const rows = aceRows(reply(), validated, 124).map(row => ({ ...row, preparing: true }));
+  assert.equal(rows[0].ace.firstSeen, null);
+  assert.match(aceStatus(rows[0]), /dates still being prepared/);
+  assert.equal(aceTooltip(rows[0], tag => tag).rows?.find(row => row.label === 'Became an ace')?.value, 'Still being prepared');
 });

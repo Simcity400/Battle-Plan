@@ -8,7 +8,7 @@ import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendin
 import type { PreparedProductionSpendingReply } from './spendingData';
 import { groupTree, amountText, arcTargets, sliceTooltip } from '../../charts/sunburst/layout.ts';
 import type { SunburstText } from '../../charts/sunburst/layout';
-import { UNIT, formatAppliedIc, productionSpendingItems, spendingAt, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
+import { UNIT, formatAppliedIc, preparedWindow, productionSpendingItems, spendingAt, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -446,6 +446,28 @@ test('prepared spending ranges use native segments and exact extrema rather than
   assert.deepEqual(spendingFinals(data, 124, 171)[0], { exact: null, geometry: 17 });
   data.continuity['148'] = [false, true];
   assert.equal(productionSpendingItems(data, { from: 124, hour: 148, end: 171 })[0].exact, null);
+});
+
+test('a reply answered from a prepared prefix reads at the prefix’s last hour; the later hours are still being prepared', () => {
+  const coverage = { schema: 24, firstHour: 100, lastHour: 147, complete: false };
+  const preparing = { firstHour: 148, lastHour: 171, totalRaw: null, reason: 'preparing' } as const;
+  const prefix = { ...reply(), coverage, pending: [{ firstHour: 148, lastHour: 171 }], total: [known(100, 123, '0'), known(124, 147, '2734567'), preparing],
+    leaves: reply().leaves.map(item => ({ ...item, runs: [...item.runs.filter(run => run.lastHour <= 147), preparing] })) };
+  validateProductionSpendingReply(prefix);
+  assert.throws(() => validateProductionSpendingReply({ ...prefix, pending: [{ firstHour: 171, lastHour: 148 }] }), /malformed/);
+  // Campaign view at the branch's end: the amounts spent through the prefix.
+  const shown = preparedWindow(prefix, { from: null, hour: 171, end: 171 })!;
+  assert.deepEqual(shown, { from: null, hour: 147, end: 147 });
+  assert.equal(spendingTotal(prefix, shown).exact, 2734567n);
+  assert.equal(spendingAt(prefix.total, 171).reason, 'preparing', 'a later hour is still being prepared, never unread');
+  assert.equal(productionSpendingItems(prefix, shown).find(item => item.path[2]?.id === 'v/2')?.exact, 1500000n);
+  // A range the prefix has not reached is still being prepared; one inside it is answered.
+  assert.equal(preparedWindow(prefix, { from: 148, hour: 171, end: 171 }), null);
+  assert.deepEqual(preparedWindow(prefix, { from: 124, hour: 160, end: 171 }), { from: 124, hour: 147, end: 147 });
+  // A complete reply answers the requested dates.
+  const complete = { ...reply(), coverage: { ...coverage, lastHour: 171, complete: true }, pending: [] };
+  assert.deepEqual(preparedWindow(complete, { from: null, hour: 160, end: 171 }), { from: null, hour: 160, end: 171 });
+  assert.deepEqual(preparedWindow(reply(), { from: null, hour: 160, end: 171 }), { from: null, hour: 160, end: 171 });
 });
 
 test('the actual spending widget shows the census-backed empty state even with its legend disabled', async () => {

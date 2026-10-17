@@ -7,8 +7,10 @@ A world log of Wars & peace, Diplomacy, Politics and Milestones, newest first wi
 ## Products it reads
 
 [`event-feed`](../../../../crates/dashboard/src/products/event_feed.rs) supplies backward cursor pages composed directly from prepared topic events. A test-only recording scan supplies the parity oracle. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) names the states of state changes and nuclear strikes at their event hour.
-A Live bound inside accepted coverage reads that prefix; an unprepared supplying
-read stays pending. A page of obsolete project changes can return no rows while
+A Live bound inside accepted coverage reads that prefix. A Live bound past it
+reads back from the prefix's last hour, under the shared "Prepared A to B; the
+rest is still being prepared." status, and every continuation keeps that hour;
+a grown prefix starts the pages again. A page of obsolete project changes can return no rows while
 its cursor advances to older facts. Repeated continuations stop page discovery
 and show the existing error/retry state.
 

@@ -559,9 +559,7 @@ impl Scan {
             serde_json::from_reader(zstd::stream::Decoder::new(
                 writer
                     .read_at(&format!("ships-sunk-manifest-{branch}"), 0)?
-                    .ok_or_else(|| {
-                        dashboard_core::invalid("Prepared sinking manifest is missing")
-                    })?
+                    .ok_or_else(|| dashboard_core::invalid("Prepared sinking manifest is missing"))?
                     .as_slice(),
             )?)?;
         series::write_reply(
@@ -571,6 +569,78 @@ impl Scan {
             &manifest.content_warnings,
         )
     }
+}
+
+/// Committed log pages remain useful while a newest-window proof is pending.
+pub fn prefix_query(
+    source: &Source,
+    product: &str,
+    params: &Value,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Value>> {
+    let id = params["branchId"]
+        .as_str()
+        .ok_or_else(|| dashboard_core::invalid("Invalid battle branch"))?;
+    let branch = branch_id(source, id)?;
+    let prefix = dashboard_base::prepared::prefix::read_or_empty(
+        source,
+        context.content.as_ref(),
+        product,
+        branch,
+        None,
+        cancelled,
+    )?;
+    let windows = windows(source.replay_ref(), branch);
+    let mut data = match product {
+        "naval-battles-manifest" => {
+            let available = series::read_reply::<bool>(
+                store,
+                key,
+                &format!("naval-battle-availability-{branch}"),
+                0,
+            )?
+            .unwrap_or(false);
+            serde_json::to_value(NavalBattlesManifestReply {
+                windows,
+                available,
+                unavailable: None,
+                content_warnings: Vec::new(),
+            })?
+        }
+        "naval-battles" => {
+            let params: NavalBattlesParams = serde_json::from_value(params.clone())?;
+            NavalBattles::validate(&params).map_err(dashboard_core::invalid)?;
+            let window = windows
+                .get(params.window)
+                .ok_or_else(|| dashboard_core::invalid("Battle window not in this recording"))?;
+            let reply = if window.last_hour <= prefix.coverage.last_hour {
+                series::read_reply::<NavalBattlesReply>(
+                    store,
+                    key,
+                    &format!("naval-battles-{branch}"),
+                    params.window as u64,
+                )?
+            } else {
+                None
+            };
+            serde_json::to_value(reply.unwrap_or_else(|| NavalBattlesReply {
+                window: params.window,
+                interval: window.clone(),
+                rows: Vec::new(),
+                observed: Vec::new(),
+                warnings: Vec::new(),
+                content_warnings: Vec::new(),
+            }))?
+        }
+        _ => return Ok(None),
+    };
+    // Later terminal reads can repair earlier battle rows.
+    prefix.mark_revisable(source, branch, &mut data)?;
+    data["warningsComplete"] = Value::Bool(false);
+    Ok(Some(data))
 }
 
 pub fn query(

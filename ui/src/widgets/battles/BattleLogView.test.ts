@@ -11,14 +11,14 @@ import { sortKey } from '../../charts/table/options.ts';
 test('background battle loading has one Updating status; dynamic and explicit sorts remain distinct', async () => {
   const windows = [{ firstHour: 100, lastHour: 150 }, { firstHour: 151, lastHour: 200 }];
   const data = { observed: [[100, 150]], warnings: [], contentWarnings: [] };
-  const state = { data: new Map([[0, data]]), available: true, sort: undefined as { column: string } | undefined };
+  const state = { data: new Map([[0, data]]), available: true, prefix: undefined as Record<string, unknown> | undefined, sort: undefined as { column: string } | undefined };
   const host = globalThis as typeof globalThis & { __battleRefresh?: typeof state };
   host.__battleRefresh = state;
   const replacements: Record<string, string> = {
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 125;',
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({
       data: request?.product.endsWith('-manifest') ? { windows: ${JSON.stringify(windows)},
-        available: globalThis.__battleRefresh.available, unavailable: 'Synthetic native refusal', contentWarnings: [] }
+        ...globalThis.__battleRefresh.prefix, available: globalThis.__battleRefresh.available, unavailable: 'Synthetic native refusal', contentWarnings: [] }
         : request?.product.endsWith('-ranking') ? {censusHour: 125, effectiveMeasure: 'losses', warnings: [], contentWarnings: []} : undefined,
       retry() {} });`,
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({data: globalThis.__battleRefresh.data, errors: new Map(), retry() {}});',
@@ -60,6 +60,14 @@ test('background battle loading has one Updating status; dynamic and explicit so
     const unavailable = render();
     assert.match(unavailable, /Battles were not recorded\./);
     assert.doesNotMatch(unavailable, /Synthetic native refusal/);
+    state.prefix = { coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 200 }] };
+    const cold = render();
+    assert.match(cold, /This range is still being prepared/);
+    assert.doesNotMatch(cold, /Battles were not recorded/);
+    state.available = true;
+    state.prefix = { coverage: { firstHour: 100, lastHour: 150, complete: false }, pending: [{ firstHour: 151, lastHour: 200 }], approximate: [{ firstHour: 100, lastHour: 150 }] };
+    assert.match(render(), /Approximate/);
+
   } finally { await vite.close(); delete host.__battleRefresh; }
 });
 

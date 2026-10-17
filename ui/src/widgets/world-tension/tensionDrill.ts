@@ -7,7 +7,7 @@ import { formatFixed, rescale } from '../../charts/valueAxis.ts';
 import { lookPlan } from '../../dashboard/countryLooks.ts';
 import type { RecordedBranch } from '../../dashboard/countryLooks';
 import { runAt } from '../../charts/series.ts';
-import { contributionAt, contributionPercent, layerTagAt, readAt, tensionPercent } from './tensionData.ts';
+import { contributionAt, contributionPercent, layerTagAt, readAt, tensionPercent, tensionReadPreparing } from './tensionData.ts';
 import type { TensionModel } from './tensionData';
 
 export const TENSION_BREAKDOWN = { id: 'breakdown', label: 'Country contributions' };
@@ -55,6 +55,7 @@ export function tensionDrillHistory(model: TensionModel, keys: readonly string[]
   const deltas = new Map<number, bigint>();
   const delta = (hour: number, value: bigint) => deltas.set(hour, (deltas.get(hour) ?? 0n) + value);
   for (const read of model.reply.reads) {
+    if (tensionReadPreparing(read, 'historicalContributors')) continue;
     const previous = coverage.at(-1);
     if (previous && previous.lastHour + 1 === read.firstHour && !read.startsSegment) previous.lastHour = read.lastHour;
     else coverage.push({ firstHour: read.firstHour, lastHour: read.lastHour });
@@ -105,7 +106,14 @@ export function tensionDrillHistory(model: TensionModel, keys: readonly string[]
 export function tensionDrillAt(model: TensionModel, hour: number) {
   const read = readAt(model, hour);
   if (!read) return null;
-  const parts = [...model.raw.keys()].map(key => ({ key, tag: layerTagAt(model, key, hour), raw: contributionAt(model, key, hour)! }));
+  const parts: { key: string; tag: string | null; raw: string; preparing?: boolean }[] = [...model.raw.keys()].flatMap(key => {
+    const raw = contributionAt(model, key, hour);
+    return raw === null ? [] : [{ key, tag: layerTagAt(model, key, hour), raw }];
+  });
+  if ('preparingContributors' in model.reply && Array.isArray(model.reply.preparingContributors)) {
+    for (const item of model.reply.preparingContributors) if (item.hour === Math.floor(hour))
+      parts.push({ key: `@preparing:${item.slot}`, tag: null, raw: item.valueRaw, preparing: true });
+  }
   const known = parts.reduce((sum, part) => sum + BigInt(part.raw), 0n);
   return { read, parts, remainder: (BigInt(read.sumRaw) - known).toString() };
 }

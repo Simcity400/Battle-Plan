@@ -634,7 +634,7 @@ pub fn query(
             prepared_hour
         };
         return Ok(
-            json!({"hour":hour,"coverage":accepted,"approximate":hour.is_some_and(|hour| tail.1.iter().any(|span| f64::from(span.first_hour)<=hour && hour<=f64::from(span.last_hour)))}),
+            json!({"hour":hour,"coverage":crate::prepared::prefix::extent(source, branch, accepted)?,"approximate":hour.is_some_and(|hour| tail.1.iter().any(|span| f64::from(span.first_hour)<=hour && hour<=f64::from(span.last_hour)))}),
         );
     }
     if product == "events-page" {
@@ -1005,7 +1005,7 @@ pub fn query(
     )?;
     let mut reply = serde_json::to_value(reply)?;
     reply["summaries"] = json!(display);
-    reply["coverage"] = json!(accepted);
+    reply["coverage"] = json!(crate::prepared::prefix::extent(source, branch, accepted)?);
     super::super::check_reply_budget(&reply)?;
     Ok(reply)
 }

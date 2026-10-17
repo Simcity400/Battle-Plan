@@ -112,6 +112,14 @@ pub(super) struct SideKey {
     factions: Vec<u64>,
     members: Vec<String>,
 }
+impl dashboard_base::prepared::prepass::Held for SideKey {
+    fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        bytes
+            .heap(&self.present)
+            .heap(&self.factions)
+            .heap(&self.members);
+    }
+}
 impl SideKey {
     pub fn from_side(side: &AssignedSide) -> Self {
         let factions: Vec<_> = side

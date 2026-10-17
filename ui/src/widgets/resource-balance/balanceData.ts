@@ -187,7 +187,7 @@ export function orderResources(reply: ResourceBalanceReply, hour: number, order:
 /** The token of the resource with the largest supply or demand anywhere in the
  * branch: the over-time view's choice until the user picks (the kit's `largestToken`). */
 export function automaticResource(reply: ResourceBalanceReply): string | null {
-  const prepared = reply as ResourceBalanceReply & { campaignSizes?: Record<string, string>; coverage?: { complete: boolean } | null;
+  const prepared = reply as ResourceBalanceReply & { campaignSizes?: Record<string, string>; coverage?: { complete: boolean };
     summaries?: { id: number; supply: ChartSummary; demand: ChartSummary }[] };
   return largestToken(reply.series.map(series => {
     const summary = prepared.summaries?.find(item => item.id === series.id);

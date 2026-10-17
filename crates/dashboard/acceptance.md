@@ -298,11 +298,20 @@ content stack from the game and user folders; by default an earlier open with pr
 the content hash index, and `--readiness-cold-content` skips it. `src/readiness/widgets.json`
 lists each widget's default requests (`--readiness-table` replaces it for one run); a test fails
 when a registered widget has no entry. All requests are in flight at once, as mounted widgets issue
-them, and a pending prepared request is asked again when accepted preparation changes. A reply is
-ready when it is exact or answered beyond accepted coverage by the product's own sampling (flagged
-approximate spans count); a null reply or an event list cut at accepted coverage is pending. JSON
-lines report preparation progress (each status row's state, counts and text, the newest battle
-windows' rows among them: per branch, the earlier blocks read, every look-back tried with its
-first block, blocks, time and failed check, and the outcome), each request's settle and query
-time, each widget's ready time and gating request, the map, and the overall time, until
-everything is ready or `--readiness-limit` seconds (default 1200) pass.
+them, and a pending prepared request is asked again when the coverage its last reply waits for (its
+`gate`) moves, as the client's prepared query loop asks. A reply is
+ready when it is exact; answered beyond accepted coverage by the product's own sampling (flagged
+approximate spans count); or answered from its gate's prepared prefix (`prefix`): it names requested
+hours after the prefix `pending`, names values `preparing`, or is an event list cut at accepted
+coverage. A null reply is pending. Each request may name its first view's class (`firstView`):
+`a` exact at the hour, `b` sampled and marked approximate, `c` the newest window with a proven
+look-back, `d` the prepared prefix. A ready reply is asked again as its gate moves until it is
+exact (or unavailable). JSON lines report preparation progress (each status row's state,
+counts and text, including the newest battle windows' per-branch earlier-block reads,
+look-backs, failed checks and outcomes), each request's first-view (`firstViewMs`), exact (`exactMs`) and query times, each widget's first-view and exact times and
+gating request, the map, and the overall time, until every widget is exact or
+`--readiness-limit` seconds (default 1200) pass.
+
+The CPU snapshot at `allReady` records the first-view milestone. The final snapshot
+records the end of the exactness probe. With `BATTLE_PLAN_READINESS_CPU_UNTIL_PREPARED`
+set, the probe also waits for preparation to end before its final snapshot.

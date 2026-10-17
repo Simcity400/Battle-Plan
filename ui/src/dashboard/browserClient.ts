@@ -1,8 +1,8 @@
 import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
-import { validateProductReply } from './client.ts';
+import { preparedReplyData, validateProductReply } from './client.ts';
 import type { PreparationAction, PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, ProductRequest, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
 import { BrowserRequestQueue } from './browserRequestQueue.ts';
@@ -73,10 +73,10 @@ export const browserDashboardClient: DashboardClient = {
 
   preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>({ type: 'preparationPreferences', id: crypto.randomUUID(), enabled }, signal)),
   preparationStatus: (query, signal) => preparation('status', query, signal),
-  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T> {
+  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };
     const reply = await request<ProductReply<T>>({ type: 'preparedQuery', request: query }, options.signal);
-    return validateProductReply(reply, query).data;
+    return preparedReplyData(validateProductReply(reply, query), options);
   },
   prepareSource: (query, signal) => preparation('start', query, signal),
   cancelPreparation: (query, signal) => preparation('cancel', query, signal),

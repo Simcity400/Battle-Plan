@@ -29,3 +29,12 @@ queries subtract endpoints without loading events. An adjacent-drain boundary
 correction keeps a witnessed destruction dated before its read out of a later
 native-date range. Unknown actors remain separate. Parity models are labelled
 Division log for rows and Division totals for the displayed counts.
+
+The manifest and log show committed prefixes immediately, with pending hours
+marked Still being prepared. A local window is exact after an earlier complete
+census and adjacent drains, seeded with earlier seen handles from a cached
+key-only change read, so reappearing divisions are never counted as creations.
+Its newest rows add their template choices while the rest of the catalogue is
+still being prepared. Requested windows keep following preparation; cumulative
+totals say Totals are still being prepared until their requested range is
+covered. Before any covered hour, their numeric fields are null.

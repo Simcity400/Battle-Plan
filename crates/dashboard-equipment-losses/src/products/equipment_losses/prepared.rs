@@ -3,8 +3,12 @@ use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
 #[cfg(test)]
 use dashboard_base::prepared::series::Run;
-use dashboard_base::prepared::series::{self, Accumulator, Reader};
+use dashboard_base::prepared::{
+    prefix::Prefix,
+    series::{self, Accumulator, Reader},
+};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 type Identity = (u32, u32);
 
@@ -1035,12 +1039,26 @@ struct Params {
     detail_hour: i32,
 }
 
-/// Only viewport geometry is sampled. Every reached hour is an exact run read.
+/// Reached values come from runs; until complete, later sinking observations
+/// and type tokens can revise any prefix hour.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedLossesReply {
+    pub branch_id: String,
+    pub tag: String,
+    pub land_source: LandSource,
+    pub land_lower_bound: Option<String>,
+    pub amount_scale: u32,
+    pub causes: Vec<LossCause>,
+    pub designs: Vec<LossDesign>,
+    pub land_coverage: Vec<CoverageSpan>,
+    pub destruction_coverage: Vec<DestructionCoverageSpan>,
+    pub destruction_counted_from: Option<i32>,
+    pub retained_months: Option<i32>,
+    pub warnings: Vec<String>,
     #[serde(flatten)]
-    pub reply: LossesReply,
+    pub prefix: Prefix,
+    pub approximate: Vec<dashboard_base::products::country_groups::HourSpan>,
     pub prepared_reads: Vec<i32>,
     pub prepared_head_hour: i32,
     pub prepared_detail_hour: i32,
@@ -1144,45 +1162,65 @@ pub fn query(
         dashboard_core::invalid("Choose a recorded native country for equipment losses")
     })?;
     let branch = params.selection.branch();
-    if !validate_origin(source, &params.selection, context, cancelled)? {
-        return Ok(Value::Null);
-    }
-    // With the identity history's, while the family is prepared on its own.
-    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
+    let origin_ready = validate_origin(source, &params.selection, context, cancelled)?;
+    let coverage = dashboard_base::prepared::prefix::read_or_empty(
         source,
         context.content.as_ref(),
-        branch,
         "equipment-losses",
+        branch,
+        None,
         cancelled,
     )?
-    else {
-        return Ok(Value::Null);
+    .coverage;
+    // Until the selected holder's origin is witnessed, none of its totals
+    // can be published even if the losses family is ahead of identities.
+    let coverage = if origin_ready {
+        coverage
+    } else {
+        dashboard_base::prepared::prefix::extent(source, branch, None)?
     };
     let (from, to, width) = series::viewport(params.from, params.to, params.width)?;
-    if !coverage.complete
-        && (to.ceil() as i32 > coverage.last_hour
-            || params.reads.iter().any(|hour| *hour > coverage.last_hour))
-    {
-        return Ok(Value::Null);
-    }
+    // Every loss leaf is a cumulative signed total: before coverage completes,
+    // a read after the prepared prefix answers at the prefix's last hour, the
+    // viewport ends there, and the later hours are pending.
+    let requested = params.reads.iter().copied().chain([to.ceil() as i32]).max();
+    let prefix = Prefix::new(source, branch, coverage, requested);
+    let mut params = params;
+    let (from, to) = through_prefix(&mut params, (from, to), &prefix);
     let (store, source_key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let Some(scanned) = read_scanned(
-        &store,
-        &source_key,
-        branch,
-        (selected.slot, selected.country_id),
-        (from, to, width),
-        &params.reads,
-        source.replay_ref().format,
-        cancelled,
-    )?
-    else {
-        return Ok(Value::Null);
+    let mut scanned = if origin_ready {
+        read_scanned(
+            &store,
+            &source_key,
+            branch,
+            (selected.slot, selected.country_id),
+            (from, to, width),
+            &params.reads,
+            source.replay_ref().format,
+            cancelled,
+        )?
+        .unwrap_or_default()
+    } else {
+        Scanned::default()
     };
+    scanned.format = source.replay_ref().format;
     dashboard_text::metadata::check_cancel(cancelled)?;
     let reply = reply_with_content(source, &params.selection, context, &scanned)?;
     let result = PreparedLossesReply {
-        reply,
+        branch_id: reply.branch_id,
+        tag: reply.tag,
+        land_source: reply.land_source,
+        land_lower_bound: reply.land_lower_bound,
+        amount_scale: reply.amount_scale,
+        causes: reply.causes,
+        designs: reply.designs,
+        land_coverage: reply.coverage,
+        destruction_coverage: reply.destruction_coverage,
+        destruction_counted_from: reply.destruction_counted_from,
+        retained_months: reply.retained_months,
+        warnings: reply.warnings,
+        approximate: prefix.revisable(source, branch),
+        prefix,
         prepared_reads: params.reads,
         prepared_head_hour: params.head_hour,
         prepared_detail_hour: params.detail_hour,
@@ -1192,6 +1230,22 @@ pub fn query(
     };
     dashboard_base::products::check_reply_budget(&result)?;
     serde_json::to_value(result).map_err(io::Error::from)
+}
+
+/// The request a reply answers from `prefix`: before coverage completes, each
+/// reached hour after the prefix reads its last hour, and the viewport ends
+/// there. The reads stay ordered and hold the head and detail hours.
+fn through_prefix(params: &mut Params, (from, to): (f64, f64), prefix: &Prefix) -> (f64, f64) {
+    if prefix.coverage.complete {
+        return (from, to);
+    }
+    let last = prefix.coverage.last_hour;
+    params.reads = params.reads.iter().map(|&hour| hour.min(last)).collect();
+    params.reads.dedup();
+    params.head_hour = params.head_hour.min(last);
+    params.detail_hour = params.detail_hour.min(last);
+    let to = to.min(f64::from(last));
+    (from.min(to), to)
 }
 
 fn validate_origin(
@@ -1204,14 +1258,32 @@ fn validate_origin(
         dashboard_core::invalid("Choose a recorded native country for equipment losses")
     })?;
     let branch = selection.branch();
-    let Some(history) = dashboard_base::products::country_history::prepared_branch_histories(
+    let history = match dashboard_base::products::country_history::prepared_branch_histories(
         source,
         branch,
         context.content.as_ref(),
         cancelled,
-    )?
-    else {
-        return Ok(false);
+    )? {
+        Some(history) => history,
+        None => {
+            let Some(frame) = dashboard_base::prepared::query::progressive::frame_at(
+                source,
+                branch,
+                selected.origin_hour,
+                &[
+                    replay::rows::TableId::Campaign,
+                    replay::rows::TableId::Countries,
+                    replay::rows::TableId::CountryLinks,
+                ],
+                cancelled,
+            )?
+            else {
+                return Ok(false);
+            };
+            let mut scan = dashboard_base::products::country_history::HistoryScan::new(false, &[]);
+            scan.observe(&frame);
+            Arc::new(scan.finish())
+        }
     };
     let witnessed = history
         .countries

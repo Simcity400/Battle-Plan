@@ -5,6 +5,11 @@ import { runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { CountryLabel } from './countryFlagsAt';
 
+export function provisionalGroupEvent(groups: unknown, hour: number): boolean {
+  const spans = (groups as { eventsApproximate?: readonly Span[] } | undefined)?.eventsApproximate;
+  return !!spans?.some(span => span.firstHour <= hour && hour <= span.lastHour);
+}
+
 /** Callers supply the drawn native-holder histories, including selected aliases.
  * An absent legacy identity field uses proven coverage; an empty field proves none. */
 export function countryCapitulationBadges(groups: Pick<CountryGroupReply, 'capitulations'> | undefined,
@@ -19,7 +24,8 @@ export function countryCapitulationBadges(groups: Pick<CountryGroupReply, 'capit
       || country.membership && !runAt(country.membership, event.hour)) continue;
     const rows = badges.get(event.tag) ?? [];
     if (!badges.has(event.tag)) badges.set(event.tag, rows);
-    rows.push({ hour: event.hour, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: event.tag });
+    rows.push({ hour: event.hour, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: event.tag,
+      ...(provisionalGroupEvent(groups, event.hour) ? { approximate: true } : {}) });
   }
   return badges;
 }

@@ -40,3 +40,7 @@ Countries, campaign/follow/pin/range; line/marker toggles, end labels, fixed 0â€
 | [preparedStability.ts](preparedStability.ts), [usePreparedScalarParity.ts](../country-measure/usePreparedScalarParity.ts) | Windowed prepared values and the "Stability chart values" browser parity model. |
 | [markers.ts](markers.ts) | Event rules; adjacent helper/render tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [stability.css](stability.css) | Options/registration/layout. |
+
+War-start and capitulation badges from an unfinished native event inventory are
+faded with dashed edges and an Approximate tooltip. Later observations can add
+an event at an earlier native date; complete preparation removes these marks.

@@ -1,3 +1,4 @@
+import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -62,6 +63,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading the raid tally…" />;
+  if (pendingAt(preparedPrefix(data), moment)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raid totals unavailable.'} />;
   if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;

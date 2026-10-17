@@ -406,6 +406,69 @@ impl Prepared {
             .flush(writer, &format!("sinking-windows-{branch}"), 0, flag)
     }
 }
+/// Before the first commit there are no sinking facts or class choices.
+pub fn empty(source: &Source, product: &str, params: &Value) -> io::Result<Value> {
+    let branch = params
+        .get("branchId")
+        .and_then(Value::as_str)
+        .and_then(|id| id.parse::<u64>().ok())
+        .ok_or_else(|| dashboard_core::invalid("Invalid ships sunk branch"))?;
+    let windows: Vec<_> = source
+        .block_windows(branch)
+        .iter()
+        .map(|window| HourSpan {
+            first_hour: window.first_hour,
+            last_hour: window.last_hour,
+        })
+        .collect();
+    let reply = ShipsSunkReply {
+        branch_id: branch.to_string(),
+        available: false,
+        first_hour: windows.first().map_or(0, |window| window.first_hour),
+        last_hour: windows.last().map_or(0, |window| window.last_hour),
+        first_read: None,
+        unread: vec![],
+        classes: vec![],
+        places: vec![],
+        recorded_names: vec![],
+        rows: vec![],
+        warnings: vec![],
+    };
+    match product {
+        "ships-sunk-manifest" => {
+            let params: BranchParams = serde_json::from_value(params.clone())?;
+            ShipsSunk::validate(&params).map_err(dashboard_core::invalid)?;
+            serde_json::to_value(ShipsSunkManifestReply {
+                windows,
+                classes: reply,
+                content_warnings: vec![],
+            })
+            .map_err(Into::into)
+        }
+        "ships-sunk" => {
+            let params: WindowParams = serde_json::from_value(params.clone())?;
+            let window = windows.partition_point(|window| window.last_hour < params.hour);
+            if window == windows.len() {
+                return Err(dashboard_core::invalid("Sinking hour outside recording"));
+            }
+            serde_json::to_value(ShipsSunkWindowReply {
+                window,
+                indices: vec![],
+                reply,
+            })
+            .map_err(Into::into)
+        }
+        "ships-sunk-battle-titles" => {
+            let params: battle_titles::ShipsSunkBattleTitlesParams =
+                serde_json::from_value(params.clone())?;
+            battle_titles::ShipsSunkBattleTitles::validate(&params)
+                .map_err(dashboard_core::invalid)?;
+            Ok(serde_json::json!({"rows":[], "warnings":[]}))
+        }
+        _ => unreachable!(),
+    }
+}
+
 pub fn types() -> Vec<String> {
     vec![ShipsSunkWindowReply::decl(), ShipsSunkManifestReply::decl()]
 }

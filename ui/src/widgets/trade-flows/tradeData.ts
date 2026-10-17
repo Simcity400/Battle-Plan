@@ -27,7 +27,7 @@ export interface PreparedTradeReply extends TradeFlowsReply {
   exactHours?: number[];
   basis?: number;
   scoped?: boolean;
-  coverage?: { firstHour: number; lastHour: number; complete: boolean } | null;
+  coverage?: { firstHour: number; lastHour: number; complete: boolean };
   cumulativePending?: boolean;
 }
 

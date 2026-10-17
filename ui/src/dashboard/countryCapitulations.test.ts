@@ -6,6 +6,15 @@ import { tooltipText } from '../charts/tooltip.ts';
 
 const span = (firstHour: number, lastHour: number) => ({ firstHour, lastHour });
 
+test('a native-dated event in a provisional inventory is visibly approximate and becomes exact later', () => {
+  const countries = [{ tag: 'A', identities: [span(0, 30)], segments: [] }];
+  const groups = { capitulations: [{ tag: 'A', hour: 10 }], eventsApproximate: [span(0, 20)] };
+  const badge = countryCapitulationBadges(groups, countries, [0, 30]).get('A')![0];
+  assert.equal(badge.approximate, true);
+  assert.equal(countryCapitulationRows([badge], () => () => ({ name: 'A' }))[0].value, 'Approximate');
+  assert.equal(countryCapitulationBadges({ capitulations: groups.capitulations }, countries, [0, 30]).get('A')![0].approximate, undefined);
+});
+
 test('capitulations use the drawn native holder, exact event coverage and dated membership', () => {
   // The selected identity renamed old -> new. A later reuse of old is excluded.
   const countries = [

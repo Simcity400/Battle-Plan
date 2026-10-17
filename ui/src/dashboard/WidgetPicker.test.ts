@@ -91,8 +91,8 @@ test('the catalogue splits the idea timeline into a card per content category an
     const template: DashboardTemplate = { version: 1, name: 'Synthetic', alignment: 'calendar', roles: [{ id: 'primary', label: 'Primary', selectedTag: null }, { id: 'active', label: 'Active', selectedTag: null }],
       tracks: [{ id: 'selected', roleId: 'active', label: 'Selected', branchIndex: 0, anchorOffset: null }], widgets: [], layouts: {} };
     const track = { ...template.tracks[0], selectedTag: null, source: { id: 'source-a', revision: 'revision-a',
-      metadata: { playerCountryId: 14, countries: [{ id: 14, tag: 'recorded_country' }] } }, branch: { id: 'branch', firstHour: 0, lastHour: 100 } } as unknown as BoundTrack;
-    const runtime = { client, defaultRoleId: 'active', campaignTracks: [{ ...template.tracks[0], id: 'unrelated', roleId: 'unrelated' }, ...template.tracks],
+      metadata: { playerCountryId: 14, countries: [{ id: 14, tag: 'recorded_country' }] } }, axisOffset: 0, branch: { id: 'branch', firstHour: 0, lastHour: 100 } } as unknown as BoundTrack;
+    const runtime = { client, clock: { getHour: () => 50 }, defaultRoleId: 'active', campaignTracks: [{ ...template.tracks[0], id: 'unrelated', roleId: 'unrelated' }, ...template.tracks],
       tracks: [{ ...track, id: 'unrelated', roleId: 'unrelated', source: { ...track.source, id: 'unrelated-source' } }, track] } as unknown as WidgetRuntime;
     const added: WidgetSpec[] = [];
     const render = (placed: WidgetSpec[] = []) => { cursor = 0; fixture.cards = []; return renderToStaticMarkup(createElement(Picker, { runtime, disabled: false, onOpen() {}, placed,
@@ -102,7 +102,7 @@ test('the catalogue splits the idea timeline into a card per content category an
     fixture.open = true;
     assert.match(render(), /Loading this campaign’s idea categories/, 'until its categories are known the widget keeps its own card, saying why');
     fixture.commit(); await settle();
-    assert.deepEqual(calls[0].request, { sourceId: 'source-a', revision: 'revision-a', product: 'idea-history', params: { branchId: 'branch', tag: 'recorded_country' } });
+    assert.deepEqual(calls[0].request, { sourceId: 'source-a', revision: 'revision-a', product: 'idea-history', params: { branchId: 'branch', tag: 'recorded_country', through: 50, preview: true, hour: undefined } });
     calls[0].answer(reply([category('mod_laws', 'Mod laws'), category('mod_staff', 'Mod staff'), category(MOD_CATEGORY, 'Extra council'),
       category('hidden', 'Hidden category', { hidden: true }), category('nonpolitical', 'Outside politics', { politicsTab: false }), category('empty', 'Empty category', { slots: [] })]));
     await settle();

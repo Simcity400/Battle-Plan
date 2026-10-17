@@ -21,7 +21,7 @@ export interface TraitGain { hour: number; token: number; date: LeaderChangeDate
 export type LeaderCareer = Omit<WireLeaderCareer, 'runs' | 'traitGains'> & { runs: LeaderRun[]; traitGains: TraitGain[] };
 export type LeaderRole = WireLeaderRole & { attributeNames: [string | null, string | null, string | null, string | null] };
 export type LeaderObservation = UnitLeadersReply['observed'][number] & { landCommands: boolean; navalCommands: boolean };
-export type UnitLeadersData = Omit<UnitLeadersReply, 'leaders' | 'roles' | 'observed'> & { leaders: LeaderCareer[]; roles: LeaderRole[]; observed: LeaderObservation[] };
+export type UnitLeadersData = Omit<UnitLeadersReply, 'leaders' | 'roles' | 'observed'> & { leaders: LeaderCareer[]; roles: LeaderRole[]; observed: LeaderObservation[]; preparing?: string[] };
 const text = (v: unknown) => v === null || typeof v === 'string';
 const png = (v: unknown) => typeof v === 'string' && v.startsWith('data:image/png;base64,');
 const ascending = (a: number, b: number) => a - b;
@@ -47,6 +47,7 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
     || !(input.selectionTags === undefined || Array.isArray(input.selectionTags) && input.selectionTags.every(opaqueTag))
     || typeof input.resultsMissing !== 'string' || typeof input.navyCommandsMissing !== 'string'
     || !Array.isArray(input.warnings) || !input.warnings.every(w => typeof w === 'string')) return bad();
+  if (input.preparing !== undefined && (!Array.isArray(input.preparing) || !input.preparing.every(field => typeof field === 'string'))) return bad();
   const firstHour = input.firstHour;
   for (const p of input.people) if (!object(p) || !u32(p.characterId) || !text(p.token) || !text(p.name) || !integer(p.portraitHour) || !handle(p.portraitReference)) return bad();
   for (const t of input.traits) if (!object(t) || typeof t.token !== 'string' || !text(t.name) || !text(t.missing) || !(t.icon === null || png(t.icon))) return bad();
@@ -114,7 +115,7 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
   return reply;
 }
 
-export interface LeaderRow { key: string; hour: number; career: LeaderCareer; value: LeaderValues & LeaderRole; person: LeaderPerson; traitCatalogue: UnitLeadersData['traits']; fought: number; foughtPartial: boolean; won: number | null; lost: number | null; winRate: number | null; unresolved: number }
+export interface LeaderRow { key: string; hour: number; career: LeaderCareer; value: LeaderValues & LeaderRole; person: LeaderPerson; traitCatalogue: UnitLeadersData['traits']; fought: number | null; preparing: boolean; foughtPartial: boolean; won: number | null; lost: number | null; winRate: number | null; unresolved: number | null }
 
 /** Current battle-table coverage, shared by every row of the same kind/hour. */
 export function battleHistoryComplete(reply: UnitLeadersData, kind: number, hour: number): boolean {
@@ -168,9 +169,10 @@ export function battleTotals(leader: LeaderCareer, hour: number) {
 export function leaderAt(reply: UnitLeadersData, leader: LeaderCareer, hour: number, coverage?: ReadonlyMap<number, boolean>): LeaderRow | null {
   const run = runAt(leader.runs, hour); if (!run) return null;
   const role = reply.roles[run.value.role]; const totals = battleTotals(leader, hour);
+  const preparing = reply.preparing?.includes('battles') === true;
   const foughtPartial = leader.partialFrom != null && leader.partialFrom <= hour || !(coverage?.get(role.kind) ?? battleHistoryComplete(reply, role.kind, hour));
   return { key: leader.reference, hour, career: leader, value: { ...run.value, ...role }, person: reply.people[run.value.person], traitCatalogue: reply.traits, ...totals,
-    foughtPartial, fought: totals.fought };
+    foughtPartial, preparing, ...(preparing ? { fought: null, won: null, lost: null, unresolved: null, winRate: null } : { fought: totals.fought }) };
 }
 export function leadersAt(reply: UnitLeadersData, hour: number, countries: ReadonlySet<string> | null, kind: string): LeaderRow[] {
   const coverage = new Map([1, 2].map(k => [k, battleHistoryComplete(reply, k, hour)]));
@@ -228,14 +230,14 @@ export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: st
     rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? '' : ` / ${row.value.maximumSkill}`}` },
       { label: `${names[0]} · ${names[1]}`, value: `${row.value.components[0]} · ${row.value.components[1]}` },
       { label: `${names[2]} · ${names[3]}`, value: `${row.value.components[2]} · ${row.value.components[3]}` },
-      { label: 'Battles won / fought', value: `${row.won ?? 'Result not recorded'} / ${row.fought}`, divider: true },
-      { label: 'Battles lost', value: row.lost == null ? 'Result not recorded' : String(row.lost) },
-      { label: 'Unresolved battles', value: String(row.unresolved) },
-      { label: 'Win rate', value: row.winRate == null ? row.won == null ? 'Result not recorded' : 'No battles with known results.' : `${Math.round(row.winRate)}%` },
+      { label: 'Battles won / fought', value: row.preparing ? 'Still being prepared' : `${row.won ?? 'Result not recorded'} / ${row.fought}`, divider: true },
+      { label: 'Battles lost', value: row.preparing ? 'Still being prepared' : row.lost == null ? 'Result not recorded' : String(row.lost) },
+      { label: 'Unresolved battles', value: row.preparing ? 'Still being prepared' : String(row.unresolved) },
+      { label: 'Win rate', value: row.preparing ? 'Still being prepared' : row.winRate == null ? row.won == null ? 'Result not recorded' : 'No battles with known results.' : `${Math.round(row.winRate)}%` },
       ...(row.value.traits?.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }] : row.value.traits?.map((token, i) => {
         const gain = dates.get(token); const trait = row.traitCatalogue[token];
         return { label: contentTitle(trait.name, trait.token, 'Trait name unavailable'), icon: trait.icon ?? undefined, divider: i === 0,
-          value: gain ? `${gain.date === 'heldBefore' ? 'Held before' : gain.date === 'gained' ? 'Gained' : 'Held by'} ${formatDateTime(gain.hour)}` : 'Date not recorded' };
+          value: row.preparing ? 'Still being prepared' : gain ? `${gain.date === 'heldBefore' ? 'Held before' : gain.date === 'gained' ? 'Gained' : 'Held by'} ${formatDateTime(gain.hour)}` : 'Date not recorded' };
       }) ?? [{ label: 'Traits not recorded', divider: true }])],
   };
 }

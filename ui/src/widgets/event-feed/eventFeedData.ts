@@ -1,3 +1,5 @@
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
+import type { PreparedPrefixFields } from '../../dashboard/preparedPrefix';
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -82,7 +84,9 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
 }
 
 /** Feed-only cursor envelope; source IDs stay internal to this reader. */
-export interface PreparedFeedPage { reply: EventFeedReply; nextCursor: string | null }
+/** A page of the feed; `prefix` while it is answered from its gates' prepared
+ * prefix, backwards from that prefix's last hour. */
+export interface PreparedFeedPage { reply: EventFeedReply; nextCursor: string | null; prefix?: PreparedPrefixFields | null }
 export function validateEventFeedPage(value: unknown): PreparedFeedPage {
   if (!object(value) || !(value.nextCursor === null || typeof value.nextCursor === 'string')) {
     throw new Error('The prepared event feed page is malformed.');
@@ -92,7 +96,7 @@ export function validateEventFeedPage(value: unknown): PreparedFeedPage {
   // Live validation may remove every obsolete project candidate. The hook
   // checks this continuation against the request and earlier page cursors.
   if (value.nextCursor === '') throw new Error('The event feed page made no progress.');
-  return { reply, nextCursor: value.nextCursor };
+  return { reply, nextCursor: value.nextCursor, prefix: preparedPrefix(value) };
 }
 
 export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null; reply: EventFeedReply }

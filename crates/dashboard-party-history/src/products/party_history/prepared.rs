@@ -1228,7 +1228,7 @@ pub fn query(
         cancelled,
     )?;
     Ok(
-        json!({"coverage": accepted, "reply": reply, "segments": segments, "summaries": summaries, "marks": marks, "cursor": cursor, "total": total}),
+        json!({"coverage": dashboard_base::prepared::prefix::extent(source, branch, accepted.cloned())?, "reply": reply, "segments": segments, "summaries": summaries, "marks": marks, "cursor": cursor, "total": total}),
     )
 }
 
@@ -2365,7 +2365,13 @@ mod tests {
             .unwrap()
         };
         let unprepared = summary(0, 29, 2, None);
-        assert_eq!(unprepared["coverage"], Value::Null);
+        assert_eq!(
+            unprepared["coverage"],
+            serde_json::to_value(
+                dashboard_base::prepared::prefix::extent(&source, 1, None).unwrap()
+            )
+            .unwrap()
+        );
         assert!(!unprepared["summaries"].as_array().unwrap().is_empty());
         assert_eq!(
             unprepared["summaries"][0]["summary"]["approximate"],

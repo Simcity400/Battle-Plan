@@ -519,6 +519,73 @@ pub fn section(branch: u64) -> String {
     format!("unit-leaders-events-{branch}")
 }
 
+/// An isolated hour supplies current leader facts, never cumulative battles
+/// or the dates of holdings. The ordinary observer still owns visibility,
+/// content resolution and native identity joins.
+pub fn at_hour(
+    source: &Source,
+    params: &UnitLeadersParams,
+    hour: i32,
+    context: &LoadContext,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let branch = params.branch_id.parse().expect("validated branch");
+    let replay = source.replay_ref();
+    let mut scan = Scan::new(replay, branch)?;
+    let cat = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options));
+    let content = Content::for_catalogue(source, context, cat.ok())?;
+    let sampled = UnitLeadersParams {
+        selection: match &params.selection {
+            LeaderSelection::Countries { .. } => LeaderSelection::All,
+            selection => selection.clone(),
+        },
+        ..params.clone()
+    };
+    if let Some(frame) = dashboard_base::prepared::query::progressive::frame_at(
+        source,
+        branch,
+        hour,
+        &scan_tables(false, false),
+        cancelled,
+    )? {
+        let changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
+            .observe(&frame, replay.format);
+        scan.observe_changes(
+            &frame,
+            replay,
+            &sampled,
+            content.as_ref(),
+            &changes,
+            &changes,
+            None,
+            &mut |_, _, _| {},
+        )?;
+    }
+    let mut reply = scan.finish(&sampled, content.as_ref())?;
+    if matches!(params.selection, LeaderSelection::Countries { .. }) {
+        reply = project(&reply, params, history);
+    }
+    for leader in &mut reply.leaders {
+        leader.trait_gains.clear();
+        leader.commands.clear();
+        leader.battle_starts = None;
+        leader.battle_start_read_hours = None;
+        leader.unknown_battle_starts = None;
+        leader.battle_won = None;
+        leader.battle_result_hours = None;
+        leader.battle_result_read_hours = None;
+        leader.fought_hours = None;
+        leader.won_hours = None;
+        leader.lost_hours = None;
+        leader.partial_from = None;
+    }
+    reply.preparing = vec!["battles".into(), "history".into()];
+    serde_json::to_value(reply).map_err(Into::into)
+}
+
 /// The prepared path uses the original materializer and selection/view projection.
 pub fn query(
     store: &store::Store,

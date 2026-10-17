@@ -2127,7 +2127,144 @@ pub fn query(
 ) -> io::Result<serde_json::Value> {
     let params: SpecialProjectsParams = serde_json::from_value(params)?;
     SpecialProjects::validate(&params).map_err(dashboard_core::invalid)?;
-    serde_json::to_value(complete_reply(store, source_key, &params, cancelled)?).map_err(Into::into)
+    let reply = complete_reply(store, source_key, &params, cancelled)?
+        .unwrap_or_else(|| build_reply(Builder::default(), &params.country(), false, Vec::new()).0);
+    serde_json::to_value(reply).map_err(Into::into)
+}
+
+/// Current cards use preparation's observation, presentation and episode
+/// builders. A fresh observation has no episode history: keep only in-progress
+/// projects, and retain its observation bound rather than dating a start.
+pub fn frame_reply(
+    source: &Source,
+    context: &LoadContext,
+    params: &SpecialProjectsParams,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<SpecialProjectsReply> {
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, query::progressive};
+    let branch = params.country().branch();
+    let mut prepared = Prepared::new(source.replay_ref(), branch);
+    prepared.configure(source, context)?;
+    let mut tables = WATCHED_WHOLE.to_vec();
+    tables.extend([TableId::Campaign, TableId::Countries]);
+    if prepared.reads_trigger_world() {
+        tables.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
+    }
+    tables.sort_unstable();
+    tables.dedup();
+    let mut builder = Builder::default();
+    let mut identities = Vec::new();
+    let mut refusals = catalogue::Refusals::default();
+    let mut selected = if params.selection_tags.is_empty() {
+        None
+    } else {
+        let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
+        let accepted = dashboard_base::prepared::coverage::product_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            "country-identities",
+            cancelled,
+        )?;
+        let histories = progressive::histories(
+            &store,
+            &key,
+            branch,
+            accepted.as_ref(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            source.replay_ref(),
+            &params.selection_tags,
+            cancelled,
+        )?;
+        Some(country_history::selected_identities(
+            &histories,
+            &params.selection_tags,
+        ))
+    };
+    if let Some(frame) = progressive::frame_at(source, branch, hour, &tables, cancelled)? {
+        let changes = FrameChangeTracker::new().observe(&frame, source.replay_ref().format);
+        prepared.observe_changed(&frame, &changes, cancelled)?;
+        if let Some(selected) = &mut selected {
+            for tag in &params.selection_tags {
+                if let Some(observation) = prepared
+                    .countries
+                    .get(tag)
+                    .and_then(|country| country.current.as_ref())
+                {
+                    selected.insert(observation.identity);
+                }
+            }
+        }
+        if let Some(country) = prepared.countries.get(&params.tag)
+            && let Some(mut observation) = country.current.clone()
+        {
+            if selected
+                .as_ref()
+                .is_some_and(|selected| !selected.contains(&observation.identity))
+            {
+                let mut reply = build_reply(builder, &params.country(), false, Vec::new()).0;
+                reply.unavailable =
+                    Some("The selected country's native holder is still being prepared.".into());
+                return Ok(reply);
+            }
+            if let Some(projects) = &mut observation.projects {
+                projects.retain(|(facts, _)| {
+                    matches!(
+                        facts.state,
+                        ProjectState::Running | ProjectState::Paused | ProjectState::Unknown
+                    )
+                });
+            }
+            let facts = observation
+                .projects
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|(facts, _)| facts.clone())
+                .collect::<Vec<_>>();
+            identities.push(CountryIdentityRun {
+                first_hour: hour,
+                last_hour: hour,
+                slot: observation.identity.0,
+                country_id: observation.identity.1,
+            });
+            apply_interval(
+                &mut builder,
+                &params.tag,
+                &Interval {
+                    first: hour,
+                    last: hour,
+                    observation,
+                },
+                hour,
+                hour,
+                &facts,
+                &mut refusals,
+            );
+            if !builder.available.is_empty() {
+                builder.reads.push(hour);
+            }
+        }
+    }
+    let mut warnings = prepared.metadata.warnings;
+    warnings.extend(refusals.lines("Project texts"));
+    let mut reply = build_reply(
+        builder,
+        &params.country(),
+        prepared.metadata.definitions_empty,
+        warnings,
+    )
+    .0;
+    if let Some(reason) = prepared.metadata.content_error {
+        reply.warnings.push(reason);
+    }
+    for project in &mut reply.projects {
+        project.id = format!("@{hour}:{}", project.id);
+    }
+    append_identities(&mut reply, &identities.iter().collect::<Vec<_>>())?;
+    Ok(reply)
 }
 #[cfg(test)]
 mod tests;

@@ -1,3 +1,4 @@
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { NavalBattleHistory, NavalBattleRun, NavalBattlesReply, NavalBattlesManifestReply, NavalBattlesRankingReply } from '../../generated/dashboard';
@@ -219,4 +220,11 @@ test('all three replies preserve content diagnostics and refuse malformed diagno
   }
   const later = { ...reply([], 110, 119), window: 1, contentWarnings };
   assert.deepEqual(navalBattleWarnings(new Map([[1, later], [0, data]]), 110, 119), contentWarnings);
+});
+
+test('cold naval windows preserve the ordinary empty-prefix metadata', () => {
+  const prefix = { coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 120 }] };
+  const value = { ...prefix, window: 0, interval: { firstHour: 100, lastHour: 120 }, rows: [], observed: [], reasons: [], warnings: [], contentWarnings: [] };
+  assert.deepEqual(preparedPrefix(validateNavalBattlesReply(value)), prefix);
+  assert.doesNotThrow(() => validateNavalBattlesManifest({ ...prefix, windows: [value.interval], available: false, unavailable: null, contentWarnings: [] }));
 });

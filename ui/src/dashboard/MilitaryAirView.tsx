@@ -29,7 +29,7 @@ import type { OptionField } from './options';
 import { usePlaybackHour, usePlaybackSpeed } from './playback';
 import { useCountryGroups } from './useCountryGroups';
 import { useMilitaryAirLedger } from './useMilitaryAirLedger';
-import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerFormat, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip } from './militaryAirLedger';
+import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerFormat, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip, militaryAirPreparing } from './militaryAirLedger';
 import type { LedgerRow } from './militaryAirLedger';
 import { airLossDrillActor, airLossDrillActors, pinAirLossDrill } from './airLossDrill';
 import AirLossDrill from './AirLossDrill.tsx';
@@ -156,6 +156,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (grouped && groups.error) return <WidgetState kind="error" what="country groups" detail={groups.error} onRetry={groups.retry} />;
   if (!data || grouped && !groups.data) return <WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} />;
+  if (militaryAirPreparing(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!data.available) return <WidgetState kind="unavailable" message={air ? "Aircraft losses were not recorded." : "Bombing damage was not recorded."} />;
   if (!air && selected.reason) return <WidgetState kind="unavailable" message={selected.reason} />;
   const open = (row: LedgerRow, dealt: boolean) => {

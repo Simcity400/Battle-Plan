@@ -10,6 +10,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { CountrySelection } from '../../dashboard/model';
 import { countryIdentityIndex, validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import { countryMatch, countryMatchFilter, worldRequestTags } from '../../dashboard/groups.ts';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
@@ -27,6 +28,12 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     || !object(input.iterationTexts) || !Object.entries(input.iterationTexts).every(([count, text]) => /^-?(0|[1-9][0-9]*)$/.test(count) && integer(Number(count)) && nullableString(text))
     || !Array.isArray(input.projects) || !Array.isArray(input.presentations) || !Array.isArray(input.people)
     || !Array.isArray(input.warnings) || !input.warnings.every(item => typeof item === 'string')) return bad();
+  // A reply answered from the prepared prefix names its coverage and the hours still pending.
+  try { preparedPrefix(input); } catch { return bad(); }
+  if (input.current !== undefined) {
+    if (!object(input.current) || input.current.current !== undefined) return bad();
+    validateSpecialProjectsReply(input.current);
+  }
   const ordered = (values: readonly { firstHour: number; lastHour: number }[]) => values.every((value, i) => !i || values[i - 1].lastHour < value.firstHour);
   if (!ordered(input.available as HourSpan[]) || !spansCovered(input.available as HourSpan[], input.identities as CountryIdentityRun[])
     || !(input.readHours as number[]).every((hour, i, reads) => (!i || reads[i - 1] < hour) && runAt(input.available as HourSpan[], hour) !== null)) return bad();
@@ -55,6 +62,16 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     }
   }
   return input as unknown as SpecialProjectsReply;
+}
+
+export function projectPrefix(reply: SpecialProjectsReply) {
+  return preparedPrefix(reply);
+}
+export function projectPending(reply: SpecialProjectsReply) {
+  return preparedPrefix(reply)?.pending ?? [];
+}
+export function currentProjectReply(reply: SpecialProjectsReply): SpecialProjectsReply | null {
+  return 'current' in reply && reply.current ? reply.current as SpecialProjectsReply : null;
 }
 
 export const projectDate = (date: ProjectDate) => `${date.exact ? '' : 'by '}${dayLabel(date.hour)}`;
@@ -237,11 +254,11 @@ export function closedLane(id: string, history: ProjectHistory): TimelineLane | 
 
 /** Details the rows leave out: type, last-assignment date, bounded dates and the
  * game's own iteration text. "By" appears here, never in a row's plain date. */
-export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard): TooltipContent {
+export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard, preparingStart = false): TooltipContent {
   const { project, run, info } = card;
   const rows = [{ label: 'Scientist', value: scientistName(data, info) }];
   if (info.scientistAsOf !== null && (!run.completion || dayLabel(info.scientistAsOf) !== dayLabel(run.completion.hour))) rows.push({ label: 'Last assigned', value: dayLabel(info.scientistAsOf) });
-  rows.push({ label: 'Started', value: projectDate(project.start) });
+  rows.push({ label: 'Started', value: preparingStart ? 'Still being prepared' : projectDate(project.start) });
   rows.push(run.completion ? { label: 'Completed', value: projectDate(run.completion) } : { label: 'Progress', value: `${run.progress}%` });
   if (run.state === 'paused' || run.state === 'unknown') rows.push({ label: 'State', value: run.state === 'paused' ? 'Paused' : 'Unknown' });
   if (run.cancellation) rows.push({ label: 'Cancelled', value: projectDate(run.cancellation) });

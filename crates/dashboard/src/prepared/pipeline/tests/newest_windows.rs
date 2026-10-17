@@ -17,7 +17,7 @@ use replay::rows::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
@@ -63,11 +63,23 @@ fn query(source: &Source, flag: &AtomicBool, product: &str, params: Value) -> Va
         product: product.into(),
         params,
     };
-    serde_json::from_str::<Value>(
+    let mut data = serde_json::from_str::<Value>(
         &crate::prepared::query::query(source, &request, None, flag).unwrap(),
     )
     .unwrap()["data"]
-        .clone()
+        .clone();
+    // Compare observed facts with the recording oracle, independently of the
+    // prefix metadata tested by cold_defaults. Only a proof's diagnostics
+    // marker identifies the diagnostics publication this suite waits for.
+    if let Some(fields) = data.as_object_mut() {
+        if fields.contains_key("coverage") && !fields.contains_key("exact") {
+            fields.remove("warningsComplete");
+        }
+        for field in ["coverage", "pending", "approximate", "exact"] {
+            fields.remove(field);
+        }
+    }
+    data
 }
 
 #[test]
@@ -145,8 +157,8 @@ fn newest_land_window_answers_while_forward_preparation_has_accepted_nothing() {
             "land-battles",
             json!({ "branchId": "1", "window": 0 })
         )
-        .is_null(),
-        "an earlier window waits for forward preparation"
+        .is_object(),
+        "an earlier window answers its pending prefix"
     );
     run(&source, None, &flag, |_| {}).unwrap();
     for (branch, params, manifest, window) in answered {
@@ -331,8 +343,8 @@ fn naval_answers_first(name: &str) {
             "naval-battles",
             json!({ "branchId": "1", "window": 0 })
         )
-        .is_null(),
-        "an earlier window waits for forward preparation"
+        .is_object(),
+        "an earlier window answers its pending prefix"
     );
     run(&source, None, &flag, |_| {}).unwrap();
     for (branch, params, manifest, window) in answered {
@@ -428,6 +440,68 @@ fn newest_land_and_naval_windows_prepared_at_once_publish_what_in_turn_does() {
         );
     }
     super::family_lanes::assert_payloads_equal(&together, &in_turn, "newest windows at once");
+}
+
+/// The newest land window answers from the commit that proves it, before its
+/// diagnostics (every earlier block's naming tables) are read: its reply then
+/// says its warnings are not complete. Once forward preparation covers the
+/// branch, the page's rows are forward preparation's.
+#[test]
+fn newest_land_window_answers_from_its_proof_before_its_diagnostics() {
+    let replay = gapped(land_frame);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("newest-land-proof");
+    let flag = AtomicBool::new(false);
+    let params = json!({ "branchId": "1", "window": 3 });
+    let mut proven = None;
+    let observed = Arc::new((Mutex::new(false), Condvar::new()));
+    let signal = Arc::clone(&observed);
+    let waited = Arc::new(Mutex::new(false));
+    let outcome = Arc::clone(&waited);
+    super::super::newest::with_test_stall(
+        move |family, branch| {
+            if family != "newest.land.diagnostics" || branch != 1 {
+                return;
+            }
+            let (done, changed) = &*signal;
+            let (guard, _) = changed
+                .wait_timeout_while(done.lock().unwrap(), Duration::from_secs(30), |done| !*done)
+                .unwrap();
+            *outcome.lock().unwrap() = *guard;
+        },
+        || {
+            run(&source, None, &flag, |_| {
+                // Family and naval commits can precede this branch's proof.
+                if proven.is_none() {
+                    let reply = query(
+                        &source,
+                        &AtomicBool::new(false),
+                        "land-battles",
+                        params.clone(),
+                    );
+                    if reply["warningsComplete"] == false {
+                        proven = Some(reply);
+                        let (done, changed) = &*observed;
+                        *done.lock().unwrap() = true;
+                        changed.notify_all();
+                    }
+                }
+            })
+        },
+    )
+    .unwrap();
+    assert!(
+        *waited.lock().unwrap(),
+        "the proof answered before the diagnostics started"
+    );
+    let proven = proven.unwrap();
+    assert_eq!(proven["warningsComplete"], false, "{proven}");
+    let complete = query(&source, &flag, "land-battles", params);
+    assert!(complete.get("warningsComplete").is_none());
+    let mut page = proven.clone();
+    page.as_object_mut().unwrap().remove("warningsComplete");
+    page["contentWarnings"] = complete["contentWarnings"].clone();
+    assert_eq!(page, complete);
 }
 
 /// Each branch's blocks of `frame`, the first behind a recorded gap, so its
@@ -532,6 +606,24 @@ fn each_familys_newest_windows_publish_on_their_own() {
     let source = fixture.source("newest-each-on-its-own");
     let (store, key) = super::super::super::files(&source, None).unwrap();
     let flag = AtomicBool::new(false);
+    let cold_gates: Vec<_> = ["land-battles-manifest", "naval-battles-manifest"]
+        .into_iter()
+        .map(|product| {
+            let request = crate::transport::ProductRequest {
+                source_id: source.key().source_id.clone(),
+                revision: source.key().revision.clone(),
+                product: product.into(),
+                params: json!({"branchId":"1"}),
+            };
+            serde_json::from_str::<Value>(
+                &crate::prepared::query::query(&source, &request, None, &flag).unwrap(),
+            )
+            .unwrap()["gate"]
+                .clone()
+        })
+        .collect();
+    let mut moved = BTreeSet::new();
+
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (outcomes, reading, read) = (Arc::clone(&seen), Arc::clone(&store), key.clone());
     let recorded = Arc::clone(&replay);
@@ -548,9 +640,43 @@ fn each_familys_newest_windows_publish_on_their_own() {
             let land = land_battles::newest::published(&reading, &read, &recorded, branch).unwrap();
             outcomes.lock().unwrap().push((branch, naval, land));
         },
-        || run(&source, None, &flag, |_| {}),
+        || {
+            run(&source, None, &flag, |accepted| {
+                if !accepted.coverage.is_empty() {
+                    return;
+                }
+                for (index, family) in ["newest.land", "newest.naval"].into_iter().enumerate() {
+                    if accepted
+                        .families
+                        .get(family)
+                        .is_some_and(|branches| branches.contains_key("1"))
+                    {
+                        assert!(
+                            cold_gates[index]
+                                .as_array()
+                                .unwrap()
+                                .contains(&json!(family)),
+                            "the cold reply follows the window's publication gate"
+                        );
+                        moved.insert(family);
+                    }
+                }
+            })
+        },
     )
     .unwrap();
+    assert_eq!(
+        moved,
+        BTreeSet::from(["newest.land", "newest.naval"]),
+        "newest commits advance mounted requests before the walk accepts an hour"
+    );
+    let restored = restore(&source, None, &flag)
+        .unwrap()
+        .expect("window gates survive checkpoint restore");
+    for family in ["newest.land", "newest.naval"] {
+        assert!(restored.families[family].contains_key("1"));
+        assert!(restored.families[family].contains_key("2"));
+    }
     assert_eq!(
         *seen.lock().unwrap(),
         vec![(1, true, false), (2, true, false)],

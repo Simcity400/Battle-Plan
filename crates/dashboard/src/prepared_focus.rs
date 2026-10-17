@@ -1380,6 +1380,9 @@ pub struct PresentedFocus {
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparedFocusPages")]
 pub struct Pages {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<_>")]
+    pub sampled: bool,
     #[serde(with = "decimal_u64")]
     #[ts(type = "string")]
     pub first: u64,
@@ -1415,7 +1418,10 @@ pub struct Hour {
     pub country_id: u32,
     pub hour: i32,
     pub last_hour: i32,
-    pub order_first_hour: i32,
+    pub order_first_hour: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub preparing: Vec<String>,
     pub current: Option<String>,
     pub continuous: Option<String>,
     pub paused: bool,
@@ -1440,7 +1446,7 @@ pub mod art;
 pub(crate) mod family;
 mod query;
 pub use art::{FocusArt, FocusArtFailure, FocusArtMode, FocusArtParams, FocusArtReply};
-pub use query::{order_page, query_hour, query_unavailable};
+pub use query::{order_page, query_hour, query_unavailable, sampled_hour, sampled_page};
 
 /// The runner unions these inputs with scripted-text inputs and Clock before decoding.
 pub const TABLES: &[TableId] = crate::products::national_focus::FOCUS_COMPLETION_TABLES;

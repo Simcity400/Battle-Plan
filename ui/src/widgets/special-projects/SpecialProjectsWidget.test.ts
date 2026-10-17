@@ -332,3 +332,55 @@ test('Current comparison props remain stable during playback and wrapper hooks k
     state.groups = heldGroups; render();
   } finally { delete global.__projectStable; await vite.close(); }
 });
+
+test('a reply answered from its prepared prefix lists what the prefix holds and leaves later hours still being prepared', async () => {
+  // Prepared through 150; 151 to 300 still being prepared.
+  const prefix = { ...reply('X'), coverage: { schema: 24, firstHour: 100, lastHour: 150, complete: false }, pending: [{ firstHour: 151, lastHour: 300 }] };
+  const state = { timeline: undefined as TimelineProps | undefined };
+  const shared = globalThis as typeof globalThis & { __projectPrefix?: typeof state & { reply: typeof prefix } };
+  shared.__projectPrefix = { ...state, reply: prefix };
+  const replacements: Record<string, string> = {
+    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
+    '/dashboard/products.ts': 'export const useProducts = (_client, requests, _active, validate) => ({ data: requests.map(() => validate(globalThis.__projectPrefix.reply)) });',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__projectPrefix.timeline = props; return null; };',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'special-project-prefix', enforce: 'pre',
+      transform(_code, id) { return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1]; } }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/special-projects/SpecialProjectsWidget.tsx');
+    const props = (view: string) => ({ widget: { id: 'projects', kind: 'special-projects', trackIds: ['main'], time: { mode: 'follow' },
+      countries: { kind: 'tags', tags: ['X'] }, options: { view } }, runtime: { tracks: [{ id: 'main', axisOffset: 0,
+        source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: { id: '1', firstHour: 100, lastHour: 300 } }],
+        clock: { getHour: () => 200, getSnapshot: () => ({ hoursPerSecond: 0 }) }, client: {} }, active: true, onDiagnostics() {} }) as unknown as WidgetProps;
+    const current = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.ok(current.includes('Projects in progress are still being prepared.'), current);
+    assert.ok(current.includes('the rest is still being prepared'), current);
+    assert.ok(!current.includes('In progress') && !current.includes('not recorded at this time'), current);
+    renderToStaticMarkup(createElement(Widget, props('history')));
+    assert.deepEqual((shared.__projectPrefix.timeline as TimelineProps | undefined)?.pending, [{ firstHour: 151, lastHour: 300 }]);
+    const projects = shared.__projectPrefix.reply.projects;
+    shared.__projectPrefix.reply.projects = [];
+    shared.__projectPrefix.timeline = undefined;
+    const emptyHistory = renderToStaticMarkup(createElement(Widget, props('history')));
+    assert.match(emptyHistory, /Still being prepared/);
+    assert.deepEqual((shared.__projectPrefix.timeline as TimelineProps | undefined)?.pending, [{ firstHour: 151, lastHour: 300 }],
+      'an empty prefix keeps the time axis and pending band');
+    shared.__projectPrefix.reply.projects = projects;
+    const frame = reply('X');
+    const run = { ...frame.projects[1].runs[0], firstHour: 200, lastHour: 200, progress: 73, state: 'paused' as const };
+    const currentReply = { ...frame, identities: [{ firstHour: 200, lastHour: 200, slot: 2, countryId: 22 }],
+      available: [{ firstHour: 200, lastHour: 200 }], readHours: [200],
+      projects: [{ id: '@200:X-1', start: { hour: 200, exact: false }, runs: [run] }] };
+    Object.assign(shared.__projectPrefix.reply, { current: currentReply });
+    const cards = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.ok(cards.includes('73%') && cards.includes('Paused'), cards);
+    assert.ok(cards.includes('Started') && cards.includes('Still being prepared'), cards);
+    assert.ok(!cards.includes('Projects in progress are still being prepared.'), cards);
+
+  } finally { delete shared.__projectPrefix; await vite.close(); }
+});

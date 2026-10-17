@@ -90,7 +90,7 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
 
     // An idle preparation job cannot erase the values already drawn for this hour.
     let idleQueries = 0, idleStatuses = 0;
-    const idleClient = { preparedQuery: async () => { assert.ok(++idleQueries <= 1); return { ...partial, coverage: null }; },
+    const idleClient = { preparedQuery: async () => { assert.ok(++idleQueries <= 1); return { ...partial, coverage: { firstHour: 0, lastHour: -1, complete: false } }; },
       preparationStatus: async (request: object) => { assert.ok(++idleStatuses <= 1); return { ...request, state: 'idle', sections: [], bytes: '0',
         error: null, backgroundEnabled: false, coverage: {} }; } } as unknown as DashboardClient;
     render(track, idleClient);
@@ -101,7 +101,10 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
     assert.match(idle.error!, /Background preparation is off/);
     assert.deepEqual({ idleQueries, idleStatuses }, { idleQueries: 1, idleStatuses: 1 });
     assert.throws(() => validatePreparedScore({ ...partial, approximate: 'true' }), /malformed/);
-    assert.throws(() => validatePreparedScore({ ...partial, coverage: { ...partial.coverage, lastHour: 99 } }), /malformed/);
+    const cold = { ...partial, coverage: { ...partial.coverage, lastHour: 99 } };
+    assert.deepEqual(validatePreparedScore(cold), cold);
+    for (const coverage of [null, { ...cold.coverage, lastHour: 98 }, { ...cold.coverage, complete: true }])
+      assert.throws(() => validatePreparedScore({ ...partial, coverage }), /malformed/);
 
     const changed = { ...track, source: { ...track.source, revision: '2' } };
     let changedQueries = 0;

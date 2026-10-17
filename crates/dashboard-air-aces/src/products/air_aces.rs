@@ -100,7 +100,7 @@ pub struct AirAceRun {
 #[serde(rename_all = "camelCase")]
 pub struct AirAceEntry {
     pub id: String,
-    pub first_seen: i32,
+    pub first_seen: Option<i32>,
     pub runs: Vec<AirAceRun>,
 }
 
@@ -148,6 +148,25 @@ pub struct AirAcesWindowReply {
 pub enum AirAcesReply {
     Manifest(AirAcesManifestReply),
     Window(AirAcesWindowReply),
+}
+
+/// The roster at one hour, with historical dates pending past preparation.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AirAcesRosterReply {
+    pub manifest: AirAcesManifestReply,
+    pub roster: AirAcesWindowReply,
+    pub read_hour: Option<i32>,
+    pub preparing: Vec<String>,
+}
+
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AirAcesRosterParams {
+    pub branch_id: String,
+    #[ts(type = "\"roster\"")]
+    pub view: String,
+    pub hour: i32,
 }
 
 impl dashboard_base::products::ReplyWarnings for AirAcesReply {
@@ -868,7 +887,7 @@ fn window_reply(
         if !runs.is_empty() {
             aces.push(AirAceEntry {
                 id: ace.id.to_string(),
-                first_seen: ace.first_seen,
+                first_seen: Some(ace.first_seen),
                 runs,
             });
         }
@@ -1124,6 +1143,8 @@ impl Product for AirAces {
             AirAcesParams::decl(),
             AirAcesView::decl(),
             AirAcesReply::decl(),
+            AirAcesRosterReply::decl(),
+            AirAcesRosterParams::decl(),
             AirAcesManifestReply::decl(),
             AirAcesWindowReply::decl(),
             AirAceIdentity::decl(),

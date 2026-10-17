@@ -149,7 +149,8 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     props.lineSummaries = new Map([[props.lines[0].id!, resistance], [props.lines[1].id!, compliance]]);
     host.__countrySummaries = [];
     render();
-    host.__countryMarkerTime!.layers[0].draw({} as never, { x: [10, 20] } as never, {} as never, {} as never);
+    for (const layer of host.__countryMarkerTime!.layers)
+      layer.draw({} as never, { x: [10, 20] } as never, {} as never, {} as never);
     assert.deepEqual(host.__countrySummaries, [resistance, compliance], 'two measures of one country draw their distinct prepared summaries');
     props.lineSummaries = undefined;
 
@@ -176,7 +177,7 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     props.exactLineTags = async () => ['native alias', 'nearby actor'];
     props.onPick = (hour, tag, choices) => picks.push({ hour, tag, choices });
     render(); chart = host.__countryMarkerTime!;
-    assert.deepEqual(chart.layers[0].extent!([10, 20]), [3, 8], 'fuel and capacity use their separate prepared summary extents');
+    assert.deepEqual(chart.layers.find(layer => layer.extent)!.extent!([10, 20]), [3, 8], 'fuel and capacity use their separate prepared summary extents');
     const context = { frame, until: null, point: { x: frame.toX(15), y: frame.toY(8) } };
     await chart.onPick!(15, context);
     assert.deepEqual(picks, [{ hour: 15, tag: 'native alias', choices: ['native alias'] }],
@@ -196,7 +197,8 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     assert.match(render(),/Approximate/);
     const alpha:number[]=[];
     const canvas=new Proxy({globalAlpha:1,fill(){alpha.push(this.globalAlpha);}}, {get(target,key){return key in target ? target[key as keyof typeof target] : ()=>{};}}) as unknown as CanvasRenderingContext2D;
-    host.__countryMarkerTime!.layers[0].draw(canvas,frame,{} as never,{playhead:null} as never);
+    for (const layer of host.__countryMarkerTime!.layers)
+      layer.draw(canvas,frame,{} as never,{playhead:null} as never);
     assert.ok(alpha.includes(0.55),'mix bands use the real shared approximate clipping and faded drawing');
     assert.ok(alpha.includes(1),'settled bands retain the original opacity');
   } finally {

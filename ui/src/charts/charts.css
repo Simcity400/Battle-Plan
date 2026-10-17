@@ -75,8 +75,10 @@
 
 /* A key naming a chart's solid and dashed lines, so a line never rests on its dash alone. */
 .chart-line-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-3); font-size: var(--type-sm); color: var(--muted); }
-.chart-line-key > i { width: 16px; flex: none; border-top: 2px solid currentColor; }
-.chart-line-key > i.is-dashed { border-top-style: dashed; }
+.chart-line-key > i, .chart-line-key > span > i { width: 16px; flex: none; border-top: 2px solid currentColor; }
+.chart-line-key > i.is-dashed, .chart-line-key > span > i.is-dashed { border-top-style: dashed; }
+/* Hours still being prepared: the light band their charts draw (PENDING_ALPHA). */
+.chart-line-key > span > i.is-pending { height: 10px; border: none; background: color-mix(in srgb, var(--muted) 12%, transparent); }
 .chart-line-key > span { display: inline-flex; align-items: center; gap: var(--space-1); }
 .chart-line-swatch { flex: none; }
 

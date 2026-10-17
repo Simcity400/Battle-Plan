@@ -8,8 +8,10 @@ import { nudgeApart } from '../../charts/palette';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import { extentOf } from '../../charts/series';
-import { drawLineSummary, extentOfSummary, summaryStack } from '../../charts/chartSummary';
+import { drawApproximateSpans, drawLineSummary, extentOfSummary, summaryStack } from '../../charts/chartSummary';
 import TimeChart from '../../charts/TimeChart';
+import { pendingLayer } from '../../charts/prepared';
+import { PreparedKey } from '../../charts/PreparedKey';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
@@ -28,7 +30,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { parseColor, toHex } from '../../shell/appearance/color';
-import { contributionPercent, countryKey, formatContribution, formatTension, formatTensionAxis, tensionModel } from './tensionData';
+import { contributionPercent, countryKey, formatContribution, formatTension, formatTensionAxis, tensionModel, tensionReadPreparing } from './tensionData';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import type { TensionModel } from './tensionData';
 import { tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill';
@@ -109,11 +111,11 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const summary = prepared.data?.summaries.world;
       if (!prepared.geometryReady || !summary || summary.from !== frame.x[0] || summary.to !== to || summary.width !== Math.ceil(frame.plotWidth)) return;
-      if (!summary.runs) {
-        if (denseStack) forEachCompactStackSegment(denseStack.model,frame.x[0],to,0,piece => {
+      if (!summary.runs || summary.approximate?.length) {
+        if (denseStack) drawApproximateSpans(ctx,frame,denseStack.approximate,state.playhead,() => forEachCompactStackSegment(denseStack.model,frame.x[0],to,0,piece => {
           const segment=heldStackSegment(piece);
           drawBands(ctx,frame,chartTokens,segment.hours,segment.bands,layerColours,segment);
-        },denseStack.sample);
+        },denseStack.sample));
         drawLineSummary(ctx,frame,chartTokens,summary,chartTokens.text,true,state.playhead,{ endDot: false });
         drawPlayhead(ctx,frame,chartTokens,hour); return;
       }
@@ -126,7 +128,7 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     },
     extent: x => {
       if (!prepared.geometryReady) return null;
-      if (!prepared.data?.summaries.world?.runs) {
+      if (!prepared.data?.summaries.world?.runs || prepared.data.summaries.world.approximate?.length) {
         const bands=denseStack ? compactStackExtent(denseStack.model,x[0],Math.min(x[1],until ?? x[1])) : null;
         const world=prepared.data?.summaries.world ? extentOfSummary(prepared.data.summaries.world) : null;
         return bands && world ? [Math.min(bands[0],world[0]),Math.max(bands[1],world[1])] : bands ?? world;
@@ -148,16 +150,18 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     <DrillParts virtual active={active} onVisible={onVisible} signedShares
       parts={at?.parts.map(part => {
         const sample = samples.get(part.key);
-        return { id: part.key, label: visibleSet.has(part.key) ? countryLabel(part.key) : 'Country name unavailable',
+        return { id: part.key, label: part.preparing ? 'Still being prepared' : visibleSet.has(part.key) ? countryLabel(part.key) : 'Country name unavailable',
           value: contributionPercent(model, part.raw), raw: BigInt(part.raw), text: exact(part.raw),
           shareText: tensionShareText(part.raw, at?.read.sumRaw ?? null), color: colours.get(part.key) ?? tokens.muted,
           icon: sample ? flags.get(nameKey(sample.hour, sample.tag)) : undefined };
       }) ?? []}
       format={value => `${value}%`} total={at ? contributionPercent(model, at.read.sumRaw) : null}
-      unattributed={at ? { label: 'Other', value: contributionPercent(model, at.remainder), raw: BigInt(at.remainder),
+      unattributed={at ? { label: tensionReadPreparing(at.read, 'unnamedRaw') ? 'Contributor attribution still being prepared' : 'Other', value: contributionPercent(model, at.remainder), raw: BigInt(at.remainder),
         text: exact(at.remainder), shareText: tensionShareText(at.remainder, at.read.sumRaw), color: tokens.muted } : undefined}
       totalRow={{ label: 'Total contributions', value: at ? exact(at.read.sumRaw) : 'Not recorded' }} />
     <p className="drill-empty">World tension: {at ? formatTension(model, at.read.tensionRaw, model.tensionDecimals) : 'Not recorded'}.</p>
+    {prepared.data?.preparing?.length ? <p className="chart-line-key">Contributor history and events are still being prepared.</p> : null}
+    <PreparedKey approximate={prepared.data?.summaries.world?.approximate} pending={prepared.data?.pending} />
     <div className="world-tension-cause">Cause
       <Select label="Cause" value={selectedCause == null ? '' : String(selectedCause)} onChange={value => onCause(value === '' ? null : Number(value))}
         options={[{ value: '', label: 'Choose a cause' }, ...model.reply.events.map((event, index) => ({ value: String(index), label: `${dayLabel(event.hour)} · ${event.reason}` }))]} />
@@ -169,7 +173,7 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     <div className="world-tension-drill-chart"><TimeChart label="Country contributions over time" extent={extent} playhead={playhead}
       playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
-      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} active={active}
+      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={[pendingLayer(prepared.data?.pending), ...layers]} active={active}
       formatValue={formatTensionAxis} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision} onNavigateHour={prepared.onNavigateHour}
       onHover={setHoverHour}
       onSummaryView={view => prepared.onSummaryView(view,keys.map(key => {
@@ -187,7 +191,7 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
         }));
         const countryRows = value.parts.map(part => {
           const sample = tipSamples.get(part.key);
-          const label = sample ? tooltipLabels.labelAt(sample.hour)(sample.tag) : { name: 'Country name unavailable', flag: undefined };
+          const label = part.preparing ? { name: 'Still being prepared', flag: undefined } : sample ? tooltipLabels.labelAt(sample.hour)(sample.tag) : { name: 'Country name unavailable', flag: undefined };
           return { label: label.name, countryFlag: sample ? label : undefined, swatch: colours.get(part.key) ?? tokens.muted, value: exact(part.raw) };
         });
         const rowKeys = new Map<TooltipRow, string>(countryRows.map((row, index) => [row, value.parts[index].key]));

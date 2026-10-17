@@ -91,33 +91,51 @@ fn gate(column: ScoreboardColumnKey) -> Option<&'static str> {
     })
 }
 
-/// Whether every page `columns` read covers `hour`: the coverage each
-/// column's supplier has ([`gate`]).
-fn suppliers_cover(
+/// Each requested column follows its supplier's prefix. Exact frame columns
+/// can still answer at the moment while the other columns are preparing.
+fn prefix(
     source: &Source,
     context: &LoadContext,
     branch: u64,
     columns: &[ScoreboardColumnKey],
     hour: i32,
+    accepted: Option<crate::prepared::coverage::Coverage>,
     cancelled: &AtomicBool,
-) -> io::Result<bool> {
-    let gates: BTreeSet<&str> = columns.iter().filter_map(|&column| gate(column)).collect();
-    for product in gates {
-        let coverage = match crate::prepared::pipeline::product_coverage(
-            source,
-            context.content.as_ref(),
-            branch,
-            product,
-            cancelled,
-        ) {
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
-            other => other?,
+) -> io::Result<(
+    crate::prepared::prefix::Prefix,
+    BTreeSet<ScoreboardColumnKey>,
+)> {
+    let mut joint = crate::prepared::prefix::extent(source, branch, accepted)?;
+    let mut preparing = BTreeSet::new();
+    let mut suppliers = BTreeMap::new();
+    for &column in columns {
+        let Some(product) = gate(column) else {
+            continue;
         };
-        if !coverage.is_some_and(|coverage| coverage.complete || hour <= coverage.last_hour) {
-            return Ok(false);
+        if let std::collections::btree_map::Entry::Vacant(entry) = suppliers.entry(product) {
+            let accepted = match crate::prepared::pipeline::product_coverage(
+                source,
+                context.content.as_ref(),
+                branch,
+                product,
+                cancelled,
+            ) {
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+                other => other?,
+            };
+            entry.insert(crate::prepared::prefix::extent(source, branch, accepted)?);
+        }
+        let coverage = &suppliers[product];
+        joint.last_hour = joint.last_hour.min(coverage.last_hour);
+        joint.complete &= coverage.complete;
+        if !coverage.complete && hour > coverage.last_hour && column.factory_count().is_none() {
+            preparing.insert(column);
         }
     }
-    Ok(true)
+    Ok((
+        crate::prepared::prefix::Prefix::new(source, branch, joint, Some(hour)),
+        preparing,
+    ))
 }
 
 struct Binding {
@@ -550,6 +568,7 @@ pub(crate) fn query(
     }
     let (mut reply, catalogue) = metadata(source, &params.selection.branch_id, context);
     let mut maxima = BTreeMap::new();
+    let mut marking = None;
     if !params.selection.tags.is_empty() || params.selection.top.is_some() {
         check_cancel(cancelled)?;
         if params.sort.unavailable_reason().is_some() {
@@ -589,24 +608,39 @@ pub(crate) fn query(
         } else {
             params.selection.columns.clone()
         };
-        let sampled = if accepted
-            .as_ref()
-            .is_some_and(|coverage| coverage.complete || params.hour <= coverage.last_hour)
-            && suppliers_cover(
-                source,
-                context,
-                branch,
-                &needed,
-                params.hour,
-                cancelled,
-            )?
-        {
+        let (mut prefix, preparing) = prefix(
+            source,
+            context,
+            branch,
+            &needed,
+            params.hour,
+            accepted.clone(),
+            cancelled,
+        )?;
+        if params.index && preparing.contains(&params.sort) {
+            let mut data = serde_json::to_value(ScoreboardPreparedReply {
+                hour: params.hour,
+                data: checked_reply(reply)?,
+                maxima,
+            })?;
+            prefix.mark(&mut data)?;
+            data["preparing"] = serde_json::to_value(preparing)?;
+            return Ok(data);
+        }
+        let sampled = if prefix.coverage.complete || params.hour <= prefix.coverage.last_hour {
             None
-        } else if needed.iter().all(|column| column.factory_count().is_some()) {
-            Some(sample_moment(source, branch, params.hour, cancelled)?)
         } else {
-            return Ok(Value::Null);
+            Some(sample_moment(source, branch, params.hour, cancelled)?)
         };
+        if preparing.is_empty() {
+            prefix.answered(&[HourSpan {
+                first_hour: params.hour,
+                last_hour: params.hour,
+            }]);
+        }
+        if !prefix.coverage.complete {
+            marking = Some((prefix, preparing.clone()));
+        }
         let history = if complete {
             let Some(history) = country_history::prepared_branch_histories(
                 source,
@@ -680,11 +714,14 @@ pub(crate) fn query(
                             with_reads: bool,
                             warnings: &mut Vec<String>|
          -> io::Result<Option<Vec<Cell>>> {
+            if preparing.contains(&column) {
+                return Ok(Some(vec![Cell::default(); rows.len()]));
+            }
             match &sampled {
-                Some((_, samples)) => {
+                Some((_, samples)) if column.factory_count().is_some() => {
                     sampled_cells(samples, column, rows, params.hour, with_reads).map(Some)
                 }
-                None => cells(
+                _ => cells(
                     store,
                     source_key,
                     branch,
@@ -747,6 +784,9 @@ pub(crate) fn query(
             reached.insert(params.sort, sort);
             if params.bars {
                 for column in &params.selection.columns {
+                    if preparing.contains(column) {
+                        continue;
+                    }
                     let values = if *column == params.sort {
                         reached.get(column).cloned()
                     } else {
@@ -806,10 +846,16 @@ pub(crate) fn query(
     if let Some(catalogue) = catalogue {
         reply.warnings.extend(catalogue.refusal_lines());
     }
-    serde_json::to_value(ScoreboardPreparedReply {
+    let mut data = serde_json::to_value(ScoreboardPreparedReply {
         hour: params.hour,
         data: checked_reply(reply)?,
         maxima,
-    })
-    .map_err(io::Error::from)
+    })?;
+    if let Some((prefix, preparing)) = marking {
+        prefix.mark(&mut data)?;
+        if !preparing.is_empty() {
+            data["preparing"] = serde_json::to_value(preparing)?;
+        }
+    }
+    Ok(data)
 }

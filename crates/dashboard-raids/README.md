@@ -18,3 +18,13 @@ pipeline.
 `cargo test -p dashboard-raids` builds and runs only this crate's tests. The
 `test-support` feature compiles the whole-recording loader, the parity oracle
 the dashboard's pipeline tests compare against.
+
+The tally answers from the raid and country-identity joint prepared prefix; no
+counts are assigned to its pending hours. The log combines its prefix with a
+proven newest block. A two-block observation is exact when none of its native
+raid keys occurs earlier: launch witnesses and frozen ended victims persist by
+that key, so an earlier occurrence leaves the newest block pending. Earlier keys
+are change-read in parallel and retained per block in the shared source-revision
+observation cache. Compressed newest proofs use the same cache in a content-bound
+scope. Both use its live-block retention bound; recording/content changes
+invalidate them, while coverage re-asks reuse retained observations.

@@ -58,6 +58,9 @@ pub enum ProductionSpendingUnknown {
     RocketInputInexact,
     RocketOwnerUnreadable,
     RocketDesignUnreadable,
+    /// The value needs earlier observations than the prepared prefix it was
+    /// answered from reaches; preparation supplies it later.
+    Preparing,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]

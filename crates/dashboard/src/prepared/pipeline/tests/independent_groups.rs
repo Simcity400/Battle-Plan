@@ -24,7 +24,7 @@ const C: u32 = 100_002;
 /// hour without changing the war. The dictionary grows at 115 (inside a block)
 /// and 118 (a block's first hour), when C is renamed. C capitulates at 119.
 /// Every hour's country rows change without changing their keys.
-fn groups_frame(branch: u64, hour: i32) -> DecodedFrame {
+pub(super) fn groups_frame(branch: u64, hour: i32) -> DecodedFrame {
     let mut observed = frame(branch, hour, 3);
     if hour >= 118
         && let TableView::Complete(TableRows::Countries(rows)) =
@@ -171,7 +171,7 @@ fn refused(source: &Source) -> BTreeMap<u64, Refused> {
     checkpoint(&store, &key, None).unwrap().unwrap().0.refused
 }
 
-fn query(source: &Source, product: &str, branch: &str) -> io::Result<serde_json::Value> {
+pub(super) fn query(source: &Source, product: &str, branch: &str) -> io::Result<serde_json::Value> {
     let request = crate::transport::ProductRequest {
         source_id: source.key().source_id.clone(),
         revision: source.key().revision.clone(),
@@ -748,4 +748,106 @@ fn country_groups_read_by_their_changes_keep_a_built_dictionary_until_it_rebuild
     );
     assert_same(&payloads(&source, None), &hourly, "read by changes", true);
     clear(source);
+}
+
+/// Before groups preparation covers the branch, the country groups answer
+/// their prepared prefix instead of null, carried on by each later block's
+/// keyframe: those hours are approximate, the hours after the prefix are
+/// neither unobserved nor pending once sampled (the recorded gap stays
+/// unobserved), faction ids keep their lanes across samples, and the dated
+/// event lists stay the prefix's. Once complete it is hourly preparation's
+/// reply, with nothing approximate.
+#[test]
+fn country_groups_answer_their_prepared_prefix_carried_on_by_later_keyframes() {
+    let replay = scenario(6, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        use serde_json::json;
+        let source = fixture.source("groups-prefix");
+        let flag = AtomicBool::new(false);
+        let cold = query(&source, "country-groups", "1").unwrap();
+        assert_eq!(
+            cold["coverage"]["lastHour"].as_i64().unwrap() + 1,
+            cold["coverage"]["firstHour"].as_i64().unwrap()
+        );
+        assert!(cold["pending"].is_array());
+        while coverage(&source, None, 1, &flag)
+            .unwrap()
+            .is_none_or(|coverage| coverage.last_hour < 103)
+        {
+            run_measured(&source, None, &flag, true, Duration::ZERO, |_| {}).unwrap();
+        }
+        let accepted = coverage(&source, None, 1, &flag).unwrap().unwrap();
+        assert!(!accepted.complete && accepted.last_hour < 108);
+        let first = accepted.last_hour;
+        let prefix = query(&source, "country-groups", "1").unwrap();
+        assert_eq!(prefix["coverage"], serde_json::to_value(&accepted).unwrap());
+        assert_eq!(
+            prefix["eventsApproximate"],
+            json!([{"firstHour": accepted.first_hour, "lastHour": accepted.last_hour}])
+        );
+        assert_eq!(
+            prefix["approximate"],
+            json!([{"firstHour": first + 1, "lastHour": 111}, {"firstHour": 114, "lastHour": 125}])
+        );
+        assert_eq!(prefix["pending"], json!([]), "every later block is sampled");
+        for list in ["humans", "factions", "wars"] {
+            assert_eq!(
+                prefix["unobserved"][list],
+                json!([{"firstHour": 112, "lastHour": 113}]),
+                "{list}: only the recorded gap is unobserved"
+            );
+        }
+        run(&source, None, &flag, |_| {}).unwrap();
+        let complete = query(&source, "country-groups", "1").unwrap();
+        assert!(complete.get("approximate").is_none() && complete.get("pending").is_none());
+        let ids = |reply: &serde_json::Value| -> Vec<serde_json::Value> {
+            let mut ids: Vec<_> = reply["factions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|faction| faction["id"].clone())
+                .collect();
+            ids.sort_by_key(|id| id.to_string());
+            ids
+        };
+        assert_eq!(
+            ids(&prefix),
+            ids(&complete),
+            "recorded faction ids keep their lanes"
+        );
+        // Members first seen inside the prefix start there exactly.
+        for faction in complete["factions"].as_array().unwrap() {
+            let sampled = prefix["factions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|other| other["id"] == faction["id"])
+                .unwrap();
+            for run in faction["members"].as_array().unwrap() {
+                if run["firstHour"].as_i64().unwrap() <= i64::from(first) {
+                    assert!(
+                        sampled["members"].as_array().unwrap().iter().any(|other| {
+                            other["tag"] == run["tag"] && other["firstHour"] == run["firstHour"]
+                        }),
+                        "{run} in {sampled}"
+                    );
+                }
+            }
+        }
+        let through = |list: &str| -> Vec<serde_json::Value> {
+            complete[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["hour"].as_i64().unwrap() <= i64::from(first))
+                .cloned()
+                .collect()
+        };
+        for list in ["warStarts", "capitulations", "identityChanges"] {
+            assert_eq!(prefix[list].as_array().unwrap(), &through(list), "{list}");
+        }
+        assert!(!complete["capitulations"].as_array().unwrap().is_empty());
+        clear(source);
+    });
 }

@@ -50,6 +50,11 @@ test('validation accepts exact mod values and refuses malformed nested payloads'
   // The window's first observation can continue a read before it.
   const continued = { ...reply, observed: [{ ...OBSERVED[0], readHour: 5 }, ...OBSERVED.slice(1)] };
   assert.equal(validateOccupiedStatesReply(continued), continued);
+  // A window answered before preparation reached it carries the laws its states hold.
+  const ahead = { ...reply, laws: manifest.laws };
+  assert.equal(validateOccupiedStatesReply(ahead), ahead);
+  for (const laws of [[...manifest.laws, ...manifest.laws], [{ ...manifest.laws[0], icon: 'icon.png' }], 'laws'])
+    assert.throws(() => validateOccupiedStatesReply({ ...reply, laws }), /malformed/);
   const state = reply.states[0];
   const withState = (fields: Record<string, unknown>) => ({ ...reply, states: [{ ...state, ...fields }] });
   for (const data of [null, {}, { ...reply, states: [null] }, { ...reply, observed: [null] }, { ...reply, states: [state, state] },

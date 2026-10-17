@@ -15,6 +15,10 @@ import { drawUnknownHatch } from '../hatch';
 import { drawRecordedGap } from '../draw';
 import type { HeatLook, HeatPart, HeatPeriod, HeatRow } from './layout';
 import { useChartTokens } from '../useChartTokens';
+import { fillPendingBand, markApproximate, spanRanges } from '../prepared';
+import type { Span } from '../prepared';
+import { overlayRuns } from '../series.ts';
+import { PreparedKey } from '../PreparedKey';
 import './heat.css';
 
 export interface HeatChartProps {
@@ -24,6 +28,10 @@ export interface HeatChartProps {
   extent: Range; playhead: number | null; branchStart: number;
   afterPlayhead?: boolean; legend?: readonly { id?: string; label: string; color?: string }[];
   look: HeatLook; active: boolean; revision: unknown; hoursPerSecond?: number;
+  /** Hours whose cells come from sampled keyframes: faded, with the dashed approximate edge. */
+  approximate?: readonly Span[];
+  /** Hours still being prepared: a light band, with no cells there yet. */
+  pending?: readonly Span[];
   tooltip: (row: HeatRow, period: HeatPeriod | null, hour: number) => TooltipContent | null;
   onContextMenu?: (hour: number, x: number, y: number) => void;
 }
@@ -97,7 +105,7 @@ export default function HeatChart(props: HeatChartProps) {
   const navigation = useMemo(() => heatNavigation(props.periods), [props.periods]);
   const layers = useMemo<ChartLayer[]>(() => {
     const colours = new WeakMap<readonly HeatPart[], { grey: string; color: string | null }>();
-    const gaps = props.periods.filter(period => period.readHour == null);
+    const gaps = overlayRuns(props.periods.filter(period => period.readHour == null), [], () => false, props.pending ?? []);
     let builtUntil = -Infinity;
     let drawnRows: ReturnType<typeof cellRuns>[] = [];
     return [{ draw(ctx, frame, tokens, state) {
@@ -111,6 +119,8 @@ export default function HeatChart(props: HeatChartProps) {
       for (const period of gaps) {
         drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
       }
+      for (const [from, to] of spanRanges(props.pending, frame.x[0], frame.x[1], state.playhead))
+        fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
       drawnRows.forEach((runs, index) => runs.forEach(({ period, cell }) => {
         const rect = cellRect(period, index, visible.length, { ...frame, plotTop: frame.plotTop - window.offset,
           plotHeight: visible.length * window.rowHeight }, frame.x[0], frame.x[1], state.playhead);
@@ -129,9 +139,13 @@ export default function HeatChart(props: HeatChartProps) {
           if (!cached || cached.grey !== grey) { cached = { grey, color: marginColor(cell.parts, grey) }; colours.set(cell.parts, cached); }
           if (cached.color) { ctx.fillStyle = cached.color; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
         }
+        for (const [from, to] of spanRanges(props.approximate, period.firstHour, period.lastHour + 1)) {
+          const left = Math.max(rect.left, frame.toX(from)), right = Math.min(rect.left + rect.width, frame.toX(to));
+          markApproximate(ctx, tokens, left, rect.top, right - left, rect.height);
+        }
       }));
     } }];
-  }, [visible, props.periods, props.look, navigation.keyHours, window.offset, window.rowHeight]);
+  }, [visible, props.periods, props.look, props.approximate, props.pending, navigation.keyHours, window.offset, window.rowHeight]);
   const rows = useMemo(() => ({ labels: visible.map(row => row.label), labelWidth,
     tooltip: (_row: number, hour: number) => {
       const index = keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length);
@@ -158,5 +172,6 @@ export default function HeatChart(props: HeatChartProps) {
           active={props.active} revision={props.revision} onContextMenu={props.onContextMenu} /></div>
       </div>
     </div>
-  </div><Legend label={`${props.label} legend`} items={legend} always windowed /></div>;
+  </div><Legend label={`${props.label} legend`} items={legend} always windowed />
+    <PreparedKey approximate={props.approximate} pending={props.pending} /></div>;
 }

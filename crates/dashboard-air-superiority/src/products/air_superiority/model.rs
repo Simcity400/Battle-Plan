@@ -150,6 +150,16 @@ pub struct AirTimelineReply {
     pub first_hour: i32,
     pub last_hour: i32,
     pub days: Vec<Option<i32>>,
+    /// Supplying keyframe hours for approximate daily cells, None for exact cells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sample_hours: Option<Vec<Option<i32>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<AirSpan>>", optional)]
+    pub approximate: Vec<AirSpan>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub rows_approximate: bool,
     pub sides: Vec<AirSide>,
     pub segments: std::collections::BTreeMap<String, Vec<AirSpan>>,
     pub anchor_reads: std::collections::BTreeMap<String, (String, i32)>,

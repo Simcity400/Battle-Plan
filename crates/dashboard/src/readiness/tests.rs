@@ -162,7 +162,7 @@ fn replies_classify_by_their_own_coverage_and_sampling_fields() {
     let page = json!({"coverage":{"schema":1,"firstHour":0,"lastHour":1,"complete":false},"total":"0","rows":[]});
     assert_eq!(
         classify("events-page", &json!({"to":29}), &page, false),
-        Outcome::Partial
+        Outcome::Prefix
     );
     assert_eq!(
         classify("events-page", &json!({"to":1}), &page, false),
@@ -170,7 +170,48 @@ fn replies_classify_by_their_own_coverage_and_sampling_fields() {
     );
     assert_eq!(
         classify("events-page", &json!({}), &page, false),
-        Outcome::Partial
+        Outcome::Prefix
+    );
+    assert!(Outcome::Prefix.ready());
+    // A reply answered from its gate's prefix names the hours still pending;
+    // within the prefix, nothing is pending and the reply is exact.
+    let prefix = json!({"coverage":{"schema":1,"firstHour":0,"lastHour":1,"complete":false},
+        "pending":[{"firstHour":2,"lastHour":29}],"spans":[]});
+    assert_eq!(
+        classify("idea-history", &json!({}), &prefix, false),
+        Outcome::Prefix
+    );
+    let within = json!({"coverage":{"schema":1,"firstHour":0,"lastHour":1,"complete":false},
+        "pending":[],"rows":[]});
+    assert_eq!(
+        classify("politics-ledger", &json!({"hour":1}), &within, false),
+        Outcome::Exact
+    );
+    // A value still being prepared inside an answered row, with or without
+    // prepared coverage at the root.
+    for row in [
+        json!({"preparing":["completedByHour"]}),
+        json!({"reason":"preparing"}),
+        json!({"unknown":"preparing"}),
+    ] {
+        assert_eq!(
+            classify(
+                "focus-hour",
+                &json!({"hour":1}),
+                &json!({"rows":[row]}),
+                false
+            ),
+            Outcome::Prefix
+        );
+    }
+    assert_eq!(
+        classify(
+            "focus-hour",
+            &json!({"hour":1}),
+            &json!({"rows":[{"preparing":[]}],"token":"preparing"}),
+            false
+        ),
+        Outcome::Exact
     );
     let complete = json!({"coverage":{"schema":1,"firstHour":0,"lastHour":29,"complete":true}});
     assert_eq!(
@@ -263,21 +304,106 @@ fn coverage_gated_replies_wait_for_preparation_and_sampled_ones_do_not() {
     // Nothing prepared: the sampled summary already answers the whole branch,
     // while the event list holds no accepted events yet.
     assert_eq!(sampled(), Outcome::Sampled { approximate: true });
-    assert_eq!(gated(), Outcome::Pending);
-    assert_eq!(events(), Outcome::Partial);
+    assert_eq!(gated(), Outcome::Sampled { approximate: true });
+    assert_eq!(events(), Outcome::Prefix);
     // One accepted block of fifteen.
     let (prefix, _) =
         crate::prepared::pipeline::run_measured(&source, None, &flag, true, Duration::ZERO, |_| {})
             .unwrap();
     assert_eq!(prefix.next_block, 1);
     assert!(sampled().ready());
-    assert_eq!(gated(), Outcome::Pending);
-    assert_eq!(events(), Outcome::Partial);
-    assert!(!events().ready());
+    // Groups finish on their own before the hourly walk accepts its first block.
+    assert_eq!(gated(), Outcome::Exact);
+    assert_eq!(events(), Outcome::Prefix);
+    assert!(events().ready());
     crate::prepared::pipeline::run(&source, None, &flag, |_| {}).unwrap();
     assert_eq!(sampled(), Outcome::Exact);
     assert_eq!(gated(), Outcome::Exact);
     assert_eq!(events(), Outcome::Exact);
     drop(source);
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// Requests name their first view's class, which the probe reports beside
+/// their first-view and exact times; a class outside the four is refused.
+#[test]
+fn table_requests_name_their_first_view_class() {
+    let table = widgets(WIDGETS).unwrap();
+    let class = |kind: &str| -> Vec<Option<FirstView>> {
+        table
+            .iter()
+            .find(|widget| widget.kind == kind)
+            .unwrap()
+            .requests
+            .iter()
+            .map(|template| template.first_view)
+            .collect()
+    };
+    assert_eq!(class("casualties"), [Some(FirstView::Prefix)]);
+    assert_eq!(class("event-feed"), [Some(FirstView::Prefix)]);
+    let named = |class: &str| {
+        widgets(&format!(
+            r#"{{"widgets": [{{"kind": "x", "requests": [{{"product": "wars", "route": "prepared", "firstView": "{class}", "params": {{}}}}]}}]}}"#
+        ))
+        .map(|table| table[0].requests[0].first_view.map(FirstView::name))
+    };
+    for class in ["a", "b", "c", "d"] {
+        assert_eq!(named(class), Ok(Some(class)));
+    }
+    assert!(named("e").is_err());
+    assert!(Outcome::Exact.complete() && Outcome::Unavailable.complete());
+    assert!(!Outcome::Prefix.complete() && Outcome::Prefix.settled());
+    assert!(!Outcome::Sampled { approximate: false }.complete());
+}
+
+#[test]
+fn a_proven_newest_detail_is_exact_without_whole_branch_preparation() {
+    let data = serde_json::json!({"coverage":{"firstHour":100,"lastHour":99,"complete":false},"pending":[],"exact":100,"warningsComplete":false,
+        "interval":{"firstHour":100,"lastHour":123},"rows":[]});
+    assert_eq!(
+        classify(
+            "division-log",
+            &serde_json::json!({"branchId":"1","window":3}),
+            &data,
+            false
+        ),
+        Outcome::Exact
+    );
+}
+
+#[test]
+fn experience_templates_send_native_holder_keys_from_the_groups_reply() {
+    let widget = widgets(WIDGETS)
+        .unwrap()
+        .into_iter()
+        .find(|widget| widget.kind == "experience")
+        .unwrap();
+    let bindings = Bindings {
+        branch: "1".into(),
+        tag: "opaque tag".into(),
+        first: 10,
+        last: 30,
+        width: 20,
+    };
+    let key = serde_json::to_string(&("opaque tag", 7, 9001)).unwrap();
+    let replies = BTreeMap::from([(
+        0,
+        json!({"countryIdentities":[
+            {"tag":"opaque tag", "identities":[{"firstHour":10,"lastHour":30,"slot":7,"countryId":9001}]},
+            {"tag":"other", "identities":[{"firstHour":10,"lastHour":30,"slot":8,"countryId":9002}]}
+        ]}),
+    )]);
+    for template in &widget.requests[1..] {
+        assert_eq!(waits_for(template), vec![0]);
+        let Instantiated::Ready(params) =
+            instantiate(&template.params, &bindings, &replies).unwrap()
+        else {
+            panic!("groups are ready")
+        };
+        if template.product == "series-state" {
+            assert_eq!(params["reads"][0]["tag"], key);
+        } else {
+            assert_eq!(params["tags"], json!([key]));
+        }
+    }
 }

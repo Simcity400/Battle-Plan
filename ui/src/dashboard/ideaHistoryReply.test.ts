@@ -4,6 +4,15 @@ import { validateIdeaHistoryReply, validateIdeaTooltipData } from './ideaHistory
 
 const reply = { branchId: '1', tag: 'GER', spans: [], ideas: [], artwork: [], holders: [], categories: [], unobserved: [], identityStarts: [], modifiers: [], texts: [], warnings: [] };
 
+test('idea first views retain approximate lanes and mark held order and acquisition pending', () => {
+  const held = { hour: 200, slot: 7, countryId: 9001, spans: [{ token: 'mod_spirit', firstHour: 200, lastHour: 200, slot: null, character: null }], preparing: ['order', 'acquired', 'acquisitionContext'] };
+  const first = validateIdeaHistoryReply({ ...reply, held, approximate: [{ firstHour: 101, lastHour: 200 }] });
+  assert.deepEqual(first.held, held);
+  assert.deepEqual(first.approximate, [{ firstHour: 101, lastHour: 200 }]);
+  assert.throws(() => validateIdeaHistoryReply({ ...reply, held: { ...held, hour: 201 } }), /malformed/);
+  assert.throws(() => validateIdeaHistoryReply({ ...reply, approximate: [{ firstHour: 101, lastHour: 100 }] }), /malformed/);
+});
+
 test('an idea history reply without per-holder artwork is refused, not rendered', () => {
   assert.equal(validateIdeaHistoryReply(reply).tag, 'GER');
   const { holders: _, ...older } = reply;

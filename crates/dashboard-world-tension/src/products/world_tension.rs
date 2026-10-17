@@ -77,6 +77,7 @@ use ts_rs::TS;
 pub struct WorldTension;
 
 pub mod block;
+mod first_view;
 pub mod prepared;
 
 /// Branches kept per source.
@@ -108,7 +109,11 @@ pub struct TensionRead {
     pub sum_raw: String,
     /// The part of `sum_raw` from country slots no recorded country row names,
     /// in the same units; "0" when every contributing country is named.
-    pub unnamed_raw: String,
+    pub unnamed_raw: Option<String>,
+    /// Fields needing earlier holder observations in a frame-only first view.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub preparing: Vec<String>,
 }
 
 /// One country's contribution: runs of reads where it was not zero. An hour of a
@@ -177,6 +182,18 @@ pub struct TensionReply {
     /// In hour order, then first read.
     pub events: Vec<TensionEvent>,
     pub warnings: Vec<String>,
+    /// Exact current amounts whose remembered contributor name is not prepared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub preparing_contributors: Vec<PreparingContributor>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparingContributor {
+    pub hour: i32,
+    pub slot: u32,
+    pub value_raw: String,
 }
 
 /// An event's identity: its recorded country and second country references, date,
@@ -484,7 +501,12 @@ impl Scan {
                 .last()
                 .expect("held contribution projection");
             sum = previous.sum_raw.parse().expect("native contribution sum");
-            unnamed = previous.unnamed_raw.parse().expect("native unnamed sum");
+            unnamed = previous
+                .unnamed_raw
+                .as_deref()
+                .expect("prepared unnamed contribution")
+                .parse()
+                .expect("native unnamed sum");
         } else {
             self.current.clear();
             for &(slot, total) in aggregates.iter().filter(|(_, total)| *total != 0) {
@@ -530,7 +552,8 @@ impl Scan {
             starts_segment,
             tension_raw: tension.total_raw.to_string(),
             sum_raw: sum.to_string(),
-            unnamed_raw: unnamed.to_string(),
+            unnamed_raw: Some(unnamed.to_string()),
+            preparing: Vec::new(),
         });
         // World tension stores the clamped and scaled sum.
         let capped = sum.clamp(0, cworld_threat::CLAMP_CEILING) / cworld_threat::SCALAR_DIVISOR;
@@ -783,8 +806,14 @@ impl Scan {
         {
             dashboard_base::products::country_groups::record_hour(&mut self.coverage, frame.hour);
             let broken = read.starts_segment && read.first_hour == frame.hour;
-            let values = [&read.tension_raw, &read.sum_raw, &read.unnamed_raw]
-                .map(|raw| raw.parse::<i128>().expect("native tension integer"));
+            let values = [
+                read.tension_raw.as_str(),
+                read.sum_raw.as_str(),
+                read.unnamed_raw
+                    .as_deref()
+                    .expect("prepared unnamed contribution"),
+            ]
+            .map(|raw| raw.parse::<i128>().expect("native tension integer"));
             let shares_changed =
                 self.batch
                     .state(0)
@@ -831,20 +860,7 @@ impl Scan {
             }
             for index in indices {
                 let value = self.current.get(&index).copied().unwrap_or(0);
-                let share = if values[1] > 0 {
-                    let product = i128::from(value) * values[0];
-                    let scale = i128::from(cworld_threat::SCALAR_DIVISOR);
-                    (product / values[1])
-                        .checked_mul(scale)
-                        .and_then(|whole| {
-                            whole.checked_add((product % values[1]) * scale / values[1])
-                        })
-                        .ok_or_else(|| {
-                            io::Error::other("World tension share exceeds signed 128-bit range")
-                        })?
-                } else {
-                    0
-                };
+                let share = contribution_share(i128::from(value), values[0], values[1])?;
                 for (key, value) in [
                     (5 + index as u64 * 2, i128::from(value)),
                     (6 + index as u64 * 2, share),
@@ -905,7 +921,6 @@ impl Scan {
             self,
         )
     }
-    #[cfg(test)]
     fn finish(mut self) -> ScannedTension {
         let mut result = self.result;
         let reads = &result.reads;
@@ -949,6 +964,18 @@ struct Cache {
     entries: VecDeque<(u64, Arc<ScannedTension>)>,
 }
 
+fn contribution_share(value: i128, tension: i128, sum: i128) -> io::Result<i128> {
+    if sum <= 0 {
+        return Ok(0);
+    }
+    let product = value * tension;
+    let scale = i128::from(cworld_threat::SCALAR_DIVISOR);
+    (product / sum)
+        .checked_mul(scale)
+        .and_then(|whole| whole.checked_add((product % sum) * scale / sum))
+        .ok_or_else(|| io::Error::other("World tension share exceeds signed 128-bit range"))
+}
+
 impl Product for WorldTension {
     const KEY: &'static str = "world-tension";
     // Display text comes from the recording only.
@@ -961,6 +988,7 @@ impl Product for WorldTension {
             BranchParams::decl(),
             TensionRead::decl(),
             TensionCountry::decl(),
+            PreparingContributor::decl(),
             TensionAdded::decl(),
             TensionEvent::decl(),
             TensionReply::decl(),
@@ -1076,6 +1104,7 @@ impl ScannedTension {
             countries,
             events: self.events.clone(),
             warnings,
+            preparing_contributors: Vec::new(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)

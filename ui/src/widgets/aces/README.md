@@ -4,7 +4,13 @@
 
 **Product(s) it reads:** [`air-aces`](../../../../crates/dashboard-air-aces/src/products/air_aces.rs) supplies the manifest and recording-block roster windows; `air-ace-portraits` in the same module supplies artwork. Country filtering uses [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs).
 
-Roster windows and compact dated portrait selections come from background preparation. Manifest naming versions and successful read dates use the shared append-only event pages.
+A `view: roster` request at the shown hour uses prepared windows when reached,
+and the latest complete daily supplying read otherwise. Current facts are exact
+at that supplying read. First-sighting and death dates stay null and visibly
+**Still being prepared** until history reaches the hour. While dates are pending,
+the roster uses name order and date Jump actions are disabled. Compact dated
+portrait selections use the same read. Prepared naming versions and successful
+read dates use shared append-only event pages.
 
 **Settings:** All countries by default, with manual and smart-group filters; newest-first or name sorting; Campaign, Follow or Pin.
 

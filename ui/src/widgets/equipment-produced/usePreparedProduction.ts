@@ -2,23 +2,28 @@ import { useEffect, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { validatePreparationReply } from '../../shell/preparation/contract.ts';
-import { validateProductionSelection } from './preparedProducedData.ts';
+import { answeredHour, validateProductionSelection } from './preparedProducedData.ts';
+import { gateMoved, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import type { ProductionSelection, ProductionSelectionRequest } from './preparedProducedData';
 
 export interface ProductionQueryClient {
-  preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T>;
+  preparedQuery<T>(source: DashboardSource, product: string, params: unknown,
+    options: { signal: AbortSignal; gate?: (entries: readonly string[] | undefined) => void }): Promise<T>;
 }
 export function hasPreparedProduction(client: DashboardClient): client is DashboardClient & ProductionQueryClient {
   return client != null && typeof (client as Partial<ProductionQueryClient>).preparedQuery === 'function';
 }
 
-export async function queryProductionSelection(client: ProductionQueryClient, source: DashboardSource, request: ProductionSelectionRequest, signal: AbortSignal): Promise<ProductionSelection | null> {
-  const value = await client.preparedQuery<unknown>(source, 'production-select', request, { signal });
+export async function queryProductionSelection(client: ProductionQueryClient, source: DashboardSource, request: ProductionSelectionRequest, signal: AbortSignal,
+  gate?: (entries: readonly string[] | undefined) => void): Promise<ProductionSelection | null> {
+  const value = await client.preparedQuery<unknown>(source, 'production-select', request, { signal, gate });
   if (signal.aborted) throw new DOMException('Production query cancelled', 'AbortError');
   return value === null ? null : validateProductionSelection(value, request);
 }
 
-/** Pending presentation retains its own supplying hour and source/selector owner. */
+/** Pending presentation retains its own supplying hour and source/selector owner.
+ * A page answered from a prepared prefix shows the prefix's last hour and is
+ * asked again once the coverage it waits for (its gate) moves. */
 export function usePreparedProduction(client: DashboardClient, source: DashboardSource | undefined, request: ProductionSelectionRequest | null, active: boolean) {
   const content = useContentRevision(client);
   const owner = JSON.stringify([source?.id, source?.revision, content, request?.selection, request?.ranked]);
@@ -29,7 +34,7 @@ export function usePreparedProduction(client: DashboardClient, source: Dashboard
   const owned = stored?.client === client && stored.owner === owner ? stored : undefined;
   const covered = request != null && owned?.rangeKey === rangeKey && owned.data != null && owned.data.firstHour <= request.hour && request.hour <= owned.data.lastHour;
   useEffect(() => {
-    if (!active || !source || !request || !hasPreparedProduction(client) || covered) return;
+    if (!active || !source || !request || !hasPreparedProduction(client) || covered && preparedPrefix(owned?.data)?.coverage.complete !== false) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let started = false;
@@ -38,7 +43,8 @@ export function usePreparedProduction(client: DashboardClient, source: Dashboard
       hour: previous?.client === client && previous.owner === owner ? previous.hour : undefined, pending: true }));
     const query = async () => {
       try {
-        const data = await queryProductionSelection(client, source, request, controller.signal);
+        let gate: readonly string[] | undefined;
+        const data = await queryProductionSelection(client, source, request, controller.signal, entries => { gate = entries; });
         if (controller.signal.aborted) return;
         if (data === null) {
           if (client.preparationStatus) {
@@ -54,7 +60,22 @@ export function usePreparedProduction(client: DashboardClient, source: Dashboard
           }
           timer = setTimeout(() => { void query(); }, 250); return;
         }
-        setStored({ client, owner, rangeKey, data, hour: request.hour, pending: false });
+        setStored({ client, owner, rangeKey, data, hour: answeredHour(data, request), pending: false });
+        const prefix = preparedPrefix(data);
+        if (!prefix || prefix.coverage.complete || !client.preparationStatus) return;
+        const follow = async () => {
+          try {
+            const status = validatePreparationReply(await client.preparationStatus!(statusRequest, controller.signal), statusRequest);
+            if (controller.signal.aborted) return;
+            // A failed or cancelled preparation leaves the prefix shown.
+            if (status.state === 'failed' || status.state === 'cancelled') return;
+            if (gateMoved(status, gate, request.selection.branchId, prefix.coverage)) { void query(); return; }
+            timer = setTimeout(() => { void follow(); }, 500);
+          } catch (error) {
+            if (!controller.signal.aborted) setStored({ client, owner, pending: false, error: error instanceof Error ? error.message : String(error) });
+          }
+        };
+        timer = setTimeout(() => { void follow(); }, 500);
       } catch (error) {
         if (!controller.signal.aborted) setStored({ client, owner, pending: false, error: error instanceof Error ? error.message : String(error) });
       }

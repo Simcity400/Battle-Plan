@@ -1,4 +1,4 @@
-import { isPreparedCoverage } from '../../shell/preparation/contract.ts';
+import { isPreparationExtent } from '../../dashboard/preparedPrefix.ts';
 import type { PreparedCoverage } from '../../shell/preparation/contract';
 import type { BalanceDrop, FixedRun, MeasureReply, ExperienceRead } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -20,7 +20,7 @@ export interface MeasureState {
   segmentFirstHour?: number | null;
 }
 export interface MeasureStates {
-  coverage?: PreparedCoverage | null;
+  coverage?: PreparedCoverage;
   branchId: string;
   measure: string;
   decimals: number;
@@ -30,7 +30,7 @@ export interface MeasureStates {
   warnings: string[];
 }
 export interface MeasureSummaries {
-  coverage?: PreparedCoverage | null;
+  coverage?: PreparedCoverage;
   branchId: string;
   measure: string;
   decimals: number;
@@ -38,7 +38,7 @@ export interface MeasureSummaries {
   warnings: string[];
 }
 export interface MeasureDrops {
-  coverage?: PreparedCoverage | null;
+  coverage?: PreparedCoverage;
   firstOrdinal: string;
   total: string;
   rows: { tag: string; hour: number; ordinal: string; row: BalanceDrop }[];
@@ -50,7 +50,7 @@ const raw = (value: unknown): value is string => typeof value === 'string' && /^
 const ordinal = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
 const hour = (value: unknown): value is number => Number.isSafeInteger(value);
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
-const validCoverage = (value: Record<string, unknown>) => value.coverage === undefined || value.coverage === null || isPreparedCoverage(value.coverage);
+const validCoverage = (value: Record<string, unknown>) => value.coverage === undefined || isPreparationExtent(value.coverage);
 const warnings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 const drop = (value: unknown): value is BalanceDrop => object(value) && hour(value.hour) && raw(value.beforeRaw) && raw(value.afterRaw);
 const run = (value: unknown): value is NonNullable<MeasureState['run']> => object(value) && hour(value.firstHour) && hour(value.lastHour)

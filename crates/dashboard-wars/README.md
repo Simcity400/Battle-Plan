@@ -29,3 +29,9 @@ coverage steps still run with their original supplying evidence.
 `cargo test -p dashboard-wars` builds and runs only these products' tests. The
 `test-support` feature compiles their test oracles, instrumentation and the
 casualty fixtures (`war_casualties::test_fixtures`) for the dashboard's tests.
+
+Wars, casualty states, pair manifests/windows and breakdowns answer before the
+first commit with empty ordinary replies and the shared empty prefix extent.
+No cumulative loss is supplied for those pending hours. The wars' independent
+at-hour groups remain available without continuity lanes; published prefixes
+use the existing observers and projections.

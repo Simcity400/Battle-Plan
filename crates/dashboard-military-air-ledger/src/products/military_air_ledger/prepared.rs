@@ -245,6 +245,45 @@ pub fn query(
         .map_err(Into::into)
 }
 
+/// A cold ledger has no observed totals; every recorded hour is pending.
+pub fn empty(
+    source: &Source,
+    mut params: serde_json::Value,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let availability = params
+        .as_object_mut()
+        .and_then(|params| params.remove("availability"));
+    let params: MilitaryAirParams = serde_json::from_value(params)?;
+    MilitaryAirLedger::validate(&params).map_err(dashboard_core::invalid)?;
+    let branch = params.branch_id.parse::<u64>().expect("validated branch");
+    if let Some(value) = availability {
+        if !value.is_boolean() {
+            return Err(dashboard_core::invalid(
+                "Invalid ledger availability request",
+            ));
+        }
+        if value == true {
+            return Ok(serde_json::json!({"available": false}));
+        }
+    }
+    let declaration = source
+        .replay_ref()
+        .branches
+        .iter()
+        .find(|row| row.id == branch)
+        .ok_or_else(|| dashboard_core::invalid("Unknown branch"))?;
+    let (first, last) = branch_bounds(source.replay_ref(), declaration);
+    Scan {
+        first,
+        last,
+        ..Default::default()
+    }
+    .reply(source, &params, context, cancelled)
+    .and_then(|reply| serde_json::to_value(reply).map_err(Into::into))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

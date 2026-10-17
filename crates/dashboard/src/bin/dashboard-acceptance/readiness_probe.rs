@@ -5,8 +5,10 @@
 //! so preparation starts from the same entry point on the same workers. Every
 //! widget's default requests are then in flight at once, as mounted widgets
 //! issue them, and the service serves them on its own lanes. A prepared request
-//! that is still pending is asked again whenever accepted preparation changes,
-//! as the client's prepared query loop does; product loads are issued once.
+//! that is still pending is asked again when the coverage its last reply waits
+//! for moves (the entries its `gate` names: a family prepared on its own, or
+//! the hourly walk's), as the client's prepared query loop does
+//! ([`progress_key`]); product loads are issued once.
 
 use dashboard::{
     Config, Service, Source, prepared,
@@ -169,10 +171,23 @@ struct Tracked {
     route: Route,
     params: Value,
     in_flight: Option<Asked>,
-    /// Preparation epoch of the last ask; asked again once the epoch moves.
+    /// Preparation epoch of the last ask.
     asked_epoch: Option<u64>,
+    /// The status when it was last asked.
+    asked_status: Value,
+    /// The progress its last reply follows ([`progress_key`]); a pending
+    /// prepared request is asked again once it moves, or when None.
+    asked_key: Option<String>,
+    /// The status entries its last reply waits for; None when it names none.
+    gate: Option<Vec<String>>,
     outcome: Option<Outcome>,
+    /// Its first view's class, as the table names it.
+    first_view: Option<readiness::FirstView>,
+    /// When its first view arrived: its first ready (or unavailable) reply.
     settled_ms: Option<f64>,
+    /// When its reply became exact (or unavailable): no later preparation
+    /// changes it. A ready reply is asked again until then.
+    exact_ms: Option<f64>,
     /// Start and duration of the query whose reply settled it.
     settle_asked_ms: Option<f64>,
     settle_query_ms: Option<f64>,
@@ -197,7 +212,56 @@ struct WidgetState {
     entry: readiness::Widget,
     slots: Vec<Slot>,
     auxiliary: Vec<usize>,
+    /// When every default request had its first view.
     ready_ms: Option<f64>,
+    /// When every default request was exact (or unavailable).
+    exact_ms: Option<f64>,
+}
+
+impl WidgetState {
+    /// Resolve in dependency order from the latest replies, including slots
+    /// already resolved from a sampled selection or an empty window list.
+    fn refresh(&mut self, probe: &mut Probe, bindings: &Bindings) -> io::Result<()> {
+        let kept: HashSet<usize> = self
+            .entry
+            .requests
+            .iter()
+            .flat_map(readiness::waits_for)
+            .collect();
+        let mut replies = BTreeMap::new();
+        for index in 0..self.slots.len() {
+            let template = &self.entry.requests[index];
+            let waits = readiness::waits_for(template);
+            if !waits.is_empty() || matches!(self.slots[index], Slot::Unresolved) {
+                self.slots[index] =
+                    match readiness::instantiate(&template.params, bindings, &replies)
+                        .map_err(io::Error::other)?
+                    {
+                        Instantiated::Ready(params) => {
+                            Slot::Request(probe.track(template, params, kept.contains(&index)))
+                        }
+                        Instantiated::Absent => {
+                            let at = waits
+                                .iter()
+                                .filter_map(|&wait| match self.slots[wait] {
+                                    Slot::Request(tracked) => probe.tracked[tracked].settled_ms,
+                                    Slot::Absent(at) => Some(at),
+                                    Slot::Unresolved => None,
+                                })
+                                .fold(0.0, f64::max);
+                            Slot::Absent(at)
+                        }
+                        Instantiated::Waiting => Slot::Unresolved,
+                    };
+            }
+            if let Slot::Request(tracked) = self.slots[index]
+                && let Some(data) = &probe.tracked[tracked].data
+            {
+                replies.insert(index, data.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 struct Probe<'a> {
@@ -213,6 +277,68 @@ struct Probe<'a> {
     status_queries: u32,
     status_ms: f64,
     lines: Vec<Value>,
+    /// The latest preparation status.
+    status: Value,
+}
+
+/// What the client's prepared query loop (`preparedSeriesQuery`) asks a
+/// pending or partial request again on: the coverage on the request's branch
+/// (every branch without one) of each status entry its reply's `gate` names,
+/// a family prepared on its own from `families` or the hourly walk's
+/// `coverage`, or the walk's for a reply that names none; section progress
+/// from a status that lists no coverage. Preparation finishing moves it too,
+/// so a reply still null then is asked once more and settles as unavailable.
+fn progress_key(status: &Value, params: &Value, gate: Option<&[String]>) -> String {
+    let branch = params.get("branchId").and_then(Value::as_str);
+    let extent = |coverage: &Value| {
+        if coverage.is_object() {
+            json!([
+                coverage["firstHour"],
+                coverage["lastHour"],
+                coverage["complete"]
+            ])
+        } else {
+            Value::Null
+        }
+    };
+    let key = |map: &Value| match branch {
+        Some(branch) => extent(&map[branch]),
+        None => Value::Array(map.as_object().map_or_else(Vec::new, |branches| {
+            branches
+                .iter()
+                .map(|(id, coverage)| json!([id, extent(coverage)]))
+                .collect()
+        })),
+    };
+    let walk = [prepared::coverage::WALK.to_owned()];
+    let entries = gate.unwrap_or(&walk);
+    let maps: Option<Vec<&Value>> = entries
+        .iter()
+        .map(|entry| {
+            if entry == prepared::coverage::WALK {
+                status.get("coverage")
+            } else {
+                status
+                    .get("families")
+                    .map(|families| &families[entry.as_str()])
+            }
+        })
+        .collect();
+    let progress = match (maps, gate) {
+        (None, _) => json!([status["state"] == "ready", status["sections"]]),
+        (Some(maps), None) => key(maps[0]),
+        (Some(maps), Some(gate)) => Value::Array(
+            gate.iter()
+                .zip(maps)
+                .map(|(entry, map)| json!([entry, key(map)]))
+                .collect(),
+        ),
+    };
+    let finished = matches!(
+        status["state"].as_str(),
+        Some("ready" | "failed" | "cancelled")
+    );
+    json!([finished, progress]).to_string()
 }
 
 impl Probe<'_> {
@@ -250,6 +376,7 @@ impl Probe<'_> {
         .expect("request key");
         if let Some(&index) = self.by_key.get(&key) {
             self.tracked[index].keep |= keep;
+            self.tracked[index].first_view = self.tracked[index].first_view.or(template.first_view);
             return index;
         }
         let index = self.tracked.len();
@@ -259,8 +386,13 @@ impl Probe<'_> {
             params,
             in_flight: None,
             asked_epoch: None,
+            asked_status: Value::Null,
+            asked_key: None,
+            gate: None,
             outcome: None,
+            first_view: template.first_view,
             settled_ms: None,
+            exact_ms: None,
             settle_asked_ms: None,
             settle_query_ms: None,
             error: None,
@@ -292,6 +424,7 @@ impl Probe<'_> {
         };
         let at_ms = self.now_ms();
         let epoch = self.epoch;
+        let status = self.status.clone();
         let tracked = &mut self.tracked[index];
         tracked.in_flight = Some(Asked {
             id,
@@ -299,6 +432,12 @@ impl Probe<'_> {
             at_ms,
         });
         tracked.asked_epoch = Some(epoch);
+        tracked.asked_key = Some(progress_key(
+            &status,
+            &tracked.params,
+            tracked.gate.as_deref(),
+        ));
+        tracked.asked_status = status;
         tracked.queries += 1;
         if tracked.first_asked_ms.is_none() {
             tracked.first_asked_ms = Some(at_ms);
@@ -346,31 +485,50 @@ impl Probe<'_> {
         let data = reply.and_then(|text| {
             serde_json::from_str::<Value>(&text)
                 .map(|mut value| {
-                    value
+                    let gate = value.get("gate").and_then(Value::as_array).map(|gate| {
+                        gate.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    });
+                    let data = value
                         .get_mut("data")
                         .map(Value::take)
-                        .unwrap_or(Value::Null)
+                        .unwrap_or(Value::Null);
+                    (data, gate.filter(|gate| !gate.is_empty()))
                 })
                 .map_err(|error| format!("Malformed reply: {error}"))
         });
         match data {
-            Ok(data) => {
+            Ok((data, gate)) => {
+                // The client follows the status it asked with, under the gate
+                // this reply names; after a first null reply it asks once more
+                // at its next status.
+                tracked.asked_key = (!(data.is_null() && tracked.queries == 1))
+                    .then(|| progress_key(&tracked.asked_status, &tracked.params, gate.as_deref()));
+                tracked.gate = gate;
                 // A product load is the whole reply: null there means nothing to show.
                 let finished = finished || tracked.route == Route::Product;
                 let outcome =
                     readiness::classify(&tracked.product, &tracked.params, &data, finished);
                 tracked.error = None;
                 tracked.outcome = Some(outcome);
+                if tracked.keep {
+                    tracked.data = outcome.settled().then_some(data);
+                }
                 if outcome.settled() && tracked.settled_ms.is_none() {
                     tracked.settled_ms = Some(now);
                     tracked.settle_asked_ms = Some(asked_ms);
                     tracked.settle_query_ms = Some(spent);
-                    if tracked.keep {
-                        tracked.data = Some(data);
-                    }
                     let line = json!({"event": "request", "ms": now, "request": index,
                         "settled": self.describe(index), "queries": self.tracked[index].queries,
                         "queryMs": self.tracked[index].query_ms});
+                    self.lines.push(line);
+                }
+                if outcome.complete() && self.tracked[index].exact_ms.is_none() {
+                    self.tracked[index].exact_ms = Some(now);
+                    let line = json!({"event": "request-exact", "ms": now, "request": index,
+                        "exact": self.describe(index), "queries": self.tracked[index].queries});
                     self.lines.push(line);
                 }
             }
@@ -379,6 +537,7 @@ impl Probe<'_> {
                 // the next preparation change, as its query loop does.
                 if error.starts_with(CAPACITY_REACHED) {
                     tracked.asked_epoch = None;
+                    tracked.asked_key = None;
                 }
                 if tracked.error.as_ref() != Some(&error) {
                     let line = json!({"event": "request-error", "ms": now, "request": index,
@@ -397,6 +556,8 @@ impl Probe<'_> {
             "family": tracked.params.get("family").and_then(|family| family.get("kind")),
             "route": if tracked.route == Route::Product { "product" } else { "prepared" },
             "outcome": tracked.outcome.map(Outcome::name), "settledMs": tracked.settled_ms,
+            "firstView": tracked.first_view.map(readiness::FirstView::name),
+            "firstViewMs": tracked.settled_ms, "exactMs": tracked.exact_ms,
             "settleAskedMs": tracked.settle_asked_ms, "settleQueryMs": tracked.settle_query_ms,
             "firstAskedMs": tracked.first_asked_ms, "error": tracked.error,
             "inFlightSinceMs": tracked.in_flight.as_ref().map(|asked| asked.at_ms),
@@ -417,12 +578,25 @@ fn accepted_hours(status: &Value) -> i64 {
 
 /// Settle time of a slot list and the slot that set it, or None while any waits.
 fn settled(probe: &Probe, slots: &[Slot]) -> Option<(f64, Option<usize>)> {
+    reached(probe, slots, |tracked| tracked.settled_ms)
+}
+
+/// When every slot's reply was exact, with the request that became so last.
+fn exact(probe: &Probe, slots: &[Slot]) -> Option<(f64, Option<usize>)> {
+    reached(probe, slots, |tracked| tracked.exact_ms)
+}
+
+fn reached(
+    probe: &Probe,
+    slots: &[Slot],
+    at: impl Fn(&Tracked) -> Option<f64>,
+) -> Option<(f64, Option<usize>)> {
     let mut latest = (0.0, None);
     for slot in slots {
         let (at, gate) = match *slot {
             Slot::Unresolved => return None,
             Slot::Absent(at) => (at, None),
-            Slot::Request(index) => (probe.tracked[index].settled_ms?, Some(index)),
+            Slot::Request(index) => (at(&probe.tracked[index])?, Some(index)),
         };
         if at >= latest.0 {
             latest = (at, gate.or(latest.1));
@@ -632,25 +806,20 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
         status_queries: 0,
         status_ms: 0.0,
         lines: Vec::new(),
+        status: Value::Null,
     };
     let mut widgets = Vec::with_capacity(entries.len());
     for entry in entries {
-        let kept: HashSet<usize> = entry
-            .requests
-            .iter()
-            .flat_map(readiness::waits_for)
-            .collect();
-        let mut slots = vec![Slot::Unresolved; entry.requests.len()];
-        for (index, template) in entry.requests.iter().enumerate() {
-            if let Instantiated::Ready(params) =
-                readiness::instantiate(&template.params, &bindings, &BTreeMap::new())
-                    .map_err(io::Error::other)?
-            {
-                slots[index] = Slot::Request(probe.track(template, params, kept.contains(&index)));
-            }
-        }
+        let mut widget = WidgetState {
+            slots: vec![Slot::Unresolved; entry.requests.len()],
+            entry,
+            auxiliary: Vec::new(),
+            ready_ms: None,
+            exact_ms: None,
+        };
+        widget.refresh(&mut probe, &bindings)?;
         let mut auxiliary = Vec::new();
-        for template in &entry.auxiliary {
+        for template in &widget.entry.auxiliary {
             if let Instantiated::Ready(params) =
                 readiness::instantiate(&template.params, &bindings, &BTreeMap::new())
                     .map_err(io::Error::other)?
@@ -658,12 +827,8 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                 auxiliary.push(probe.track(template, params, false));
             }
         }
-        widgets.push(WidgetState {
-            entry,
-            slots,
-            auxiliary,
-            ready_ms: None,
-        });
+        widget.auxiliary = auxiliary;
+        widgets.push(widget);
     }
 
     let mut previous: Option<Value> = None;
@@ -708,13 +873,19 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             status = serde_json::from_str(&text)?;
             let state = status["state"].as_str().unwrap_or_default().to_owned();
             finished = matches!(state.as_str(), "ready" | "failed" | "cancelled");
-            let key = json!([status["state"], status["coverage"], status["sections"]]);
+            probe.status = status.clone();
+            let key = json!([
+                status["state"],
+                status["coverage"],
+                status["families"],
+                status["sections"]
+            ]);
             if previous.as_ref() != Some(&key) {
                 probe.epoch += 1;
                 output.line(json!({
                     "event": "preparation", "ms": probe.now_ms(), "state": state,
                     "acceptedHours": accepted_hours(&status), "totalHours": total_hours,
-                    "coverage": status["coverage"], "error": status["error"],
+                    "coverage": status["coverage"], "families": status["families"], "error": status["error"],
                     "inFlight": probe.in_flight(),
                     "sections": status["sections"].as_array().map(|sections| sections.iter().map(|section| json!({
                         "id": section["id"], "state": section["state"], "done": section["done"], "total": section["total"],
@@ -729,52 +900,40 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
             next_status = Instant::now() + poll;
         }
         probe.collect(finished);
-        // Requests that read another reply's window list.
+        // Requests follow the latest dependency reply, as widget selections do.
         for widget in &mut widgets {
-            let mut replies = BTreeMap::new();
-            for (index, slot) in widget.slots.iter().enumerate() {
-                if let Slot::Request(tracked) = slot
-                    && let Some(data) = &probe.tracked[*tracked].data
-                {
-                    replies.insert(index, data.clone());
-                }
-            }
-            for index in 0..widget.slots.len() {
-                if !matches!(widget.slots[index], Slot::Unresolved) {
-                    continue;
-                }
-                let template = widget.entry.requests[index].clone();
-                let waits = readiness::waits_for(&template);
-                match readiness::instantiate(&template.params, &bindings, &replies)
-                    .map_err(io::Error::other)?
-                {
-                    Instantiated::Ready(params) => {
-                        widget.slots[index] = Slot::Request(probe.track(&template, params, false));
-                    }
-                    Instantiated::Absent => {
-                        let at = waits
-                            .iter()
-                            .filter_map(|&wait| match widget.slots[wait] {
-                                Slot::Request(tracked) => probe.tracked[tracked].settled_ms,
-                                Slot::Absent(at) => Some(at),
-                                Slot::Unresolved => None,
-                            })
-                            .fold(0.0, f64::max);
-                        widget.slots[index] = Slot::Absent(at);
-                    }
-                    Instantiated::Waiting => {}
-                }
-            }
+            widget.refresh(&mut probe, &bindings)?;
         }
         // Every request not yet answered is in flight, as mounted widgets keep
-        // theirs; a pending prepared reply is asked again at the next epoch.
+        // theirs; a pending prepared reply is asked again once the coverage it
+        // waits for moves ([`progress_key`]).
+        let active: HashSet<usize> = widgets
+            .iter()
+            .flat_map(|widget| {
+                widget
+                    .slots
+                    .iter()
+                    .filter_map(|slot| match slot {
+                        Slot::Request(index) => Some(*index),
+                        _ => None,
+                    })
+                    .chain(widget.auxiliary.iter().copied())
+            })
+            .collect();
         for index in 0..probe.tracked.len() {
+            if !active.contains(&index) {
+                continue;
+            }
             let tracked = &probe.tracked[index];
+            // A ready reply is asked again as its gate moves until it is exact.
             let due = tracked.in_flight.is_none()
-                && tracked.settled_ms.is_none()
+                && tracked.exact_ms.is_none()
                 && match tracked.route {
                     Route::Product => tracked.asked_epoch.is_none(),
-                    Route::Prepared => tracked.asked_epoch.is_none_or(|asked| asked < probe.epoch),
+                    Route::Prepared => tracked.asked_key.as_ref().is_none_or(|asked| {
+                        *asked
+                            != progress_key(&probe.status, &tracked.params, tracked.gate.as_deref())
+                    }),
                 };
             if due && probe.in_flight() < IN_FLIGHT {
                 probe.ask(index);
@@ -792,6 +951,20 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
         }
         for widget in &mut widgets {
             if widget.ready_ms.is_some() {
+                if widget.exact_ms.is_none() {
+                    let reached = if widget.entry.map {
+                        widget.ready_ms.map(|at| (at, None))
+                    } else {
+                        exact(&probe, &widget.slots).map(|(at, gate)| (at.max(open_ms), gate))
+                    };
+                    if let Some((at, gate)) = reached {
+                        widget.exact_ms = Some(at);
+                        output.line(json!({
+                            "event": "widget-exact", "kind": widget.entry.kind, "exactMs": at,
+                            "gatedBy": gate.map(|gate| probe.describe(gate)),
+                        }))?;
+                    }
+                }
                 continue;
             }
             // Nothing can draw before the recording opens.
@@ -822,7 +995,8 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
         }
         // Measurement only: with BATTLE_PLAN_READINESS_CPU_UNTIL_PREPARED set, the
         // CPU record continues until preparation itself ends.
-        if (ready_now && (!until_prepared || finished)) || Instant::now() >= deadline {
+        let exact_now = widgets.iter().all(|widget| widget.exact_ms.is_some());
+        if (exact_now && (!until_prepared || finished)) || Instant::now() >= deadline {
             break;
         }
         let mut waiting: HashSet<String> = probe
@@ -886,6 +1060,10 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                 .collect();
             json!({
                 "kind": widget.entry.kind, "readyMs": widget.ready_ms,
+                "firstViewMs": widget.ready_ms, "exactMs": widget.exact_ms,
+                "firstViews": widget.entry.requests.iter()
+                    .map(|template| template.first_view.map(readiness::FirstView::name))
+                    .collect::<Vec<_>>(),
                 "gatedBy": if widget.entry.map { json!({"product": "map first frame"}) } else { gate.map(|gate| probe.describe(gate)).unwrap_or(Value::Null) },
                 "pending": waiting, "auxiliary": auxiliary, "note": widget.entry.note,
             })
@@ -900,6 +1078,8 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                 "request": index, "product": tracked.product, "params": tracked.params,
                 "route": if tracked.route == Route::Product { "product" } else { "prepared" },
                 "outcome": tracked.outcome.map(Outcome::name), "settledMs": tracked.settled_ms,
+                "firstView": tracked.first_view.map(readiness::FirstView::name),
+                "firstViewMs": tracked.settled_ms, "exactMs": tracked.exact_ms,
                 "settleAskedMs": tracked.settle_asked_ms, "settleQueryMs": tracked.settle_query_ms,
                 "error": tracked.error, "queries": tracked.queries, "firstAskedMs": tracked.first_asked_ms,
                 "inFlightSinceMs": tracked.in_flight.as_ref().map(|asked| asked.at_ms),
@@ -930,15 +1110,16 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
                         "epochs": probe.epoch},
         "polling": {"loops": loops, "statusQueries": probe.status_queries, "statusMs": probe.status_ms,
                     "queries": queries, "queryMs": query_ms, "inFlightLimit": IN_FLIGHT,
-                    "scope": "Every default request is in flight at once, as mounted widgets issue them, and the data service serves them on its own lanes; query times are dispatch to last reply fragment and overlap. A pending prepared request is asked again when accepted preparation changes. Status is polled every 250 ms, backing off to 1 s while unchanged."},
+                    "scope": "Every default request is in flight at once, as mounted widgets issue them, and the data service serves them on its own lanes; query times are dispatch to last reply fragment and overlap. A pending prepared request is asked again when the coverage its last reply waits for (its gate) moves, as the client's prepared query loop does. Status is polled every 250 ms, backing off to 1 s while unchanged."},
         "widgets": rows,
         "requests": requests,
-        "rule": "A widget is ready when every default request is exact or answered beyond accepted coverage by the product's own sampling (flagged approximate spans count); null replies and event lists cut at accepted coverage are pending; a reply still null after preparation finished is unavailable and settles the widget. A widget whose default view reads nothing is ready at open. Auxiliary requests are reported, not gated.",
+        "rule": "A widget is ready when every default request has a useful first view: exact; answered beyond accepted coverage by the product's own sampling, with its approximate spans marked; or answered from its gate's prepared prefix, naming the hours and values still being prepared (pending, preparing), as an event list cut at accepted coverage does. Exact data replaces each of these as preparation covers its span. Null replies are pending; a reply still null after preparation finished is unavailable and settles the widget. A widget whose default view reads nothing is ready at open. Auxiliary requests are reported, not gated. Each widget's firstViewMs is when every default request had its first view, and its exactMs when every one was exact (or unavailable); a ready reply is asked again as its gate moves until it is exact, and the probe runs until every widget is exact or the limit. firstViews names each default request's class: a exact at the hour, b sampled approximate, c the proven newest window, d the prepared prefix.",
     });
     serde_json::to_writer_pretty(File::create(path.join("readiness-summary.json"))?, &summary)?;
     output.line(json!({
         "event": "done", "allReady": all_ready, "allReadyMs": overall, "endedMs": ended_ms,
         "pendingWidgets": widgets.iter().filter(|widget| widget.ready_ms.is_none()).map(|widget| widget.entry.kind.clone()).collect::<Vec<_>>(),
+        "inexactWidgets": widgets.iter().filter(|widget| widget.exact_ms.is_none()).map(|widget| widget.entry.kind.clone()).collect::<Vec<_>>(),
         "summary": path.join("readiness-summary.json"),
     }))?;
     // Queries still running at the limit are cancelled before the service stops.
@@ -953,3 +1134,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
     service.shutdown();
     Ok(true)
 }
+
+#[cfg(test)]
+#[path = "readiness_probe_tests.rs"]
+mod tests;

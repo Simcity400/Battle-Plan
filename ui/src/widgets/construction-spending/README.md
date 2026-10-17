@@ -6,7 +6,7 @@ One countryâ€™s signed civilian-factory output as a sunburst: new/repair work â†
 
 ## Products it reads
 
-[`construction-spending`](../../../../crates/dashboard-construction/src/products/construction_spending.rs) shares the Construction log observer and leaf grouping. Prepared leaf series supply only the selected start, reached and final totals; the catalogue retains project and partial-output operands. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies state names at the shown hour.
+[`construction-spending`](../../../../crates/dashboard-construction/src/products/construction_spending.rs) shares the Construction log observer and leaf grouping. Prepared leaf series supply only the selected start, reached and final totals; the catalogue retains project and partial-output operands. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies state names at the shown hour. Before preparation reaches the hour shown, the reply answers its prepared prefix: amounts are those spent through the prefix's last hour, drawn partial, with the note "Spent through <date>; the rest is still being prepared."; a range starting after the prefix reads "This range is still being prepared." The widget refreshes as preparation moves.
 
 ## Settings
 
@@ -28,3 +28,11 @@ Parity builds expose the **Construction spending values** model.
 | [ConstructionSpendingWidget.tsx](ConstructionSpendingWidget.tsx) | Product, dated naming and shared Sunburst wiring. |
 | [spendingData.ts](spendingData.ts) | Exact totals, project counts, unknowns and hierarchy; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts) | Settings and registration. |
+
+Prefix replies mark their presentation Approximate while later queue/output reads
+can repair inferred work intervals or supply unresolved building names. Their
+signed factory-output operands remain recorded values, and output after the prefix
+remains pending. The approximate note disappears at complete coverage.
+
+Before any output read is accepted, an empty prefix renders Still being prepared.
+It supplies neither a zero total nor a recording refusal.

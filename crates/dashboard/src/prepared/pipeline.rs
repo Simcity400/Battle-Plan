@@ -38,17 +38,20 @@ pub const MAP_PROGRESS: &str = "preparation-map-progress-v1";
 // Commit budgets, never limits on actors, hours or complete replies.
 const BATCH_BYTES: usize = 64 * 1024 * 1024;
 /// Blocks of one branch a publication batch goes through at most: a family
-/// prepared on its own commits about 21 times over a 50-year branch (663
-/// blocks).
+/// prepared on its own commits about 26 times over a 50-year branch (663
+/// blocks), five of them early ([`Batches`]).
 const BATCH_BLOCKS: usize = 32;
 
 /// Where publication batches end, from the recording alone, so the hourly
 /// walk and every family prepared on its own publish the same ranges however
 /// fast the machine runs: after a branch's last block before another
-/// branch's (or the recording's end), and after every [`BATCH_BLOCKS`]th
-/// block of a branch, counted from the branch's first block wherever
-/// preparation started, resumed or grew. The byte budget and measured runs
-/// end batches earlier; wall time never does.
+/// branch's (or the recording's end); early, after a branch's 1st, 2nd, 4th,
+/// 8th and 16th blocks (every power of two below [`BATCH_BLOCKS`]), so a view
+/// at the branch's start is exact once its family has folded one block; and
+/// after every [`BATCH_BLOCKS`]th block of a branch. Blocks are counted from
+/// the branch's first block wherever preparation started, resumed or grew.
+/// The byte budget and measured runs end batches earlier; wall time never
+/// does.
 pub(super) struct Batches {
     /// Each block's position within its own branch.
     pub ordinals: Vec<usize>,
@@ -73,12 +76,20 @@ impl Batches {
         }
     }
 
-    /// Whether a batch that went through `block` reached its block budget.
+    /// Whether a batch that went through `block` ends there by the
+    /// recording: at an early commit or at its block budget.
     pub(super) fn full(&self, block: usize) -> bool {
         self.ordinals
             .get(block)
-            .is_some_and(|&ordinal| (ordinal + 1) % self.blocks == 0)
+            .is_some_and(|&ordinal| ends_batch(ordinal + 1, self.blocks))
     }
+}
+
+/// Whether a batch ends after a branch's `through`th block (counted from 1)
+/// with a budget of `blocks`: at every power of two below the budget, then at
+/// every multiple of it.
+fn ends_batch(through: usize, blocks: usize) -> bool {
+    (through < blocks && through.is_power_of_two()) || through % blocks == 0
 }
 
 /// Run `run` with every family prepared hour by hour, for query tests that
@@ -123,7 +134,11 @@ pub struct Accepted {
     pub bytes: u64,
     pub next_block: usize,
     pub new_blocks: usize,
+    /// The hourly walk's coverage, by branch.
     pub coverage: BTreeMap<String, Coverage>,
+    /// Each family prepared on its own's coverage, by branch
+    /// ([`independent::coverages`]).
+    pub families: BTreeMap<String, BTreeMap<String, Coverage>>,
 }
 
 pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section> {
@@ -682,6 +697,9 @@ struct Checkpoint {
     /// progress. Preparation of other families starts over when these differ.
     #[serde(default)]
     independent: BTreeMap<String, independent::Progress>,
+    /// Refresh extents published atomically with proven newest windows.
+    #[serde(default)]
+    newest: BTreeMap<String, BTreeMap<String, Coverage>>,
     /// Active payload bytes excluding this checkpoint's own file.
     bytes: u64,
 }
@@ -1055,6 +1073,31 @@ fn accepted_coverage(
         })
         .collect()
 }
+/// Each family prepared on its own's coverage by branch, as its own coverage
+/// pages publish it with `state`.
+fn family_coverages(
+    state: &Checkpoint,
+    replay: &Replay,
+    last_blocks: &BTreeMap<u64, usize>,
+) -> BTreeMap<String, BTreeMap<String, Coverage>> {
+    let mut families =
+        independent::coverages(&state.independent, replay, &state.map.ranges, last_blocks);
+    for (name, windows) in &state.newest {
+        let current = windows
+            .iter()
+            .filter(|(branch, window)| {
+                branch
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|branch| state.map.ranges.get(&branch))
+                    .is_some_and(|&(_, last)| window.last_hour == last)
+            })
+            .map(|(branch, window)| (branch.clone(), window.clone()))
+            .collect();
+        families.insert(name.clone(), current);
+    }
+    families
+}
 /// A branch's published coverage page, carrying its family refusals so a
 /// query reads both from one small page. The reply's coverage stays unchanged.
 #[derive(Serialize, Deserialize)]
@@ -1104,16 +1147,19 @@ fn joint_coverage(
     source: &Source,
     content: Option<&ContentOptions>,
     branch: u64,
-    families: &[&str],
+    families: &[&'static str],
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Coverage>> {
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
     let mut walked = None;
     let mut joint: Option<Coverage> = None;
-    for &family in families {
+    for (position, &family) in families.iter().enumerate() {
         let extent = if independent::registered(family) {
-            own_page(&store, &key, family, branch)?.map(|page| page.coverage)
+            own_short(
+                family,
+                own_page(&store, &key, family, branch)?.map(|page| page.coverage),
+            )
         } else {
             if walked.is_none() {
                 walked = Some(coverage(source, content, branch, cancelled)?);
@@ -1121,6 +1167,10 @@ fn joint_coverage(
             walked.clone().flatten()
         };
         let Some(extent) = extent else {
+            // The families after it wait too, as far as this reply knows.
+            for &family in &families[position + 1..] {
+                super::coverage::note_short(gate_entry(family));
+            }
             return Ok(None);
         };
         joint = Some(match joint {
@@ -1156,7 +1206,50 @@ pub(crate) fn product_coverage(
     }
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
-    Ok(family_page(&store, &key, branch, product)?.map(|(_, page)| page.coverage))
+    Ok(match family_page(&store, &key, branch, product)? {
+        Some((family, page)) => own_short(family, Some(page.coverage)),
+        None => {
+            if let Some(family) = independent::gating(product) {
+                super::coverage::note_short(family);
+            }
+            None
+        }
+    })
+}
+/// `extent`, the coverage of `family` prepared on its own, noted as short
+/// for the query collecting what it waits for when absent or incomplete
+/// ([`super::coverage::waiting`]).
+fn own_short(family: &'static str, extent: Option<Coverage>) -> Option<Coverage> {
+    if !extent.as_ref().is_some_and(|extent| extent.complete) {
+        super::coverage::note_short(family);
+    }
+    extent
+}
+/// The status entry `family`'s coverage is listed under: its own while it
+/// is prepared on its own, the hourly walk's otherwise.
+fn gate_entry(family: &'static str) -> &'static str {
+    if independent::registered(family) {
+        family
+    } else {
+        super::coverage::WALK
+    }
+}
+/// The status entries `product`'s replies wait for, as [`product_coverage`]
+/// chooses its coverage: each family of a joint product, the family gating
+/// it, or the hourly walk. A pending reply that consulted no coverage names
+/// these.
+pub(crate) fn gate(product: &str) -> Vec<&'static str> {
+    let mut entries: Vec<_> = match (independent::joint(product), independent::gating(product)) {
+        (Some(families), _) => families.iter().map(|&family| gate_entry(family)).collect(),
+        (None, Some(family)) => vec![family],
+        (None, None) => vec![super::coverage::WALK],
+    };
+    if let Some(window) = newest::gate(product) {
+        entries.push(window);
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    entries
 }
 /// The gates readers below the dashboard ask ([`super::coverage::Gates`]):
 /// [`product_coverage`] and [`refusal`].
@@ -1767,6 +1860,11 @@ pub fn restore(
         next_block: state.cursor.next_block,
         new_blocks: 0,
         coverage: accepted_coverage(&state.map, &last_blocks(source.replay_ref())),
+        families: family_coverages(
+            &state,
+            source.replay_ref(),
+            &last_blocks(source.replay_ref()),
+        ),
     }))
 }
 
@@ -1826,6 +1924,7 @@ mod independent;
 mod lanes;
 mod newest;
 mod production_scans;
+pub(crate) use newest::gate as newest_gate;
 
 /// One completed manifest commit, emitted before any next block is admitted.
 pub struct MeasuredBlock {
@@ -2088,6 +2187,7 @@ fn run_inner(
                         )
                     )
                 ),
+                families: family_coverages(&state, replay, &last_blocks(replay)),
             };
             time_family!(
                 family_timings,
@@ -2165,6 +2265,7 @@ fn run_inner(
                     .iter()
                     .map(|&name| (name.to_owned(), independent::Progress::default()))
                     .collect(),
+                newest: BTreeMap::new(),
                 bytes: 0,
             },
             0,
@@ -2393,6 +2494,7 @@ fn run_inner(
             observe,
             accepted_coverage(&state.map, &last_blocks)
         ),
+        families: family_coverages(&state, replay, &last_blocks),
     };
     if (state.cursor.next_block == replay.index.len() && saved.as_ref() == Some(&key))
         || measurement.as_ref().is_some_and(|value| {
@@ -3926,6 +4028,7 @@ fn run_inner(
                     next_block: published.next_block,
                     new_blocks: published.new_blocks,
                     coverage: published.coverage.clone(),
+                    families: published.families.clone(),
                 })
             );
         }
@@ -4723,6 +4826,7 @@ fn run_inner(
                 observe,
                 accepted_coverage(&state.map, &last_blocks)
             ),
+            families: family_coverages(&state, replay, &last_blocks),
         };
         time_family!(
             family_timings,

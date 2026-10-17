@@ -258,6 +258,12 @@ pub struct PeaceDeal {
     pub transfers: PeaceTransferGraph,
     /// Missing inputs or an attribution limitation, not evidence of no actions.
     pub limitations: Vec<String>,
+    /// What still needs later observations, in a reply answered from a
+    /// prepared prefix: `outcome` while the deal's conference is open or its
+    /// settlement unread at the prefix's last hour. Never set once
+    /// preparation has reached the branch's end.
+    #[serde(default)]
+    pub preparing: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
@@ -1010,6 +1016,7 @@ fn card(id: String, observation: PeaceObservation, hour: i32) -> PeaceDeal {
         first_absent_hour: None, participants_derived: true, winners: Vec::new(),
         losers: Vec::new(), items: Vec::new(), captured: None, capture_unavailable: None, capture_observed_hour: None, capture_unavailable_hour: None, transfers: PeaceTransferGraph::default(),
         limitations: vec!["Conference participants and war name are not recorded; sides are inferred only from qualifying transfers.".into()],
+        preparing: Vec::new(),
     }
 }
 
@@ -1132,6 +1139,10 @@ struct Scan {
     victory_points: VictoryPoints,
     #[serde(skip)]
     snapshot_inputs: SnapshotInputs,
+    /// The scan ends at a prepared prefix's last hour, not the branch's:
+    /// what it has not yet observed is still being prepared.
+    #[serde(skip)]
+    prefix: bool,
 }
 impl Scan {
     fn new(branch: u64, first: i32, last: i32, format: u16) -> Self {
@@ -1142,6 +1153,7 @@ impl Scan {
             has_active: false, has_ambiguous: false, previous: None, previous_hour: first.checked_sub(1), unobserved_frontier: None,
             first_existing: HashMap::new(), exact: Default::default(), lexical_view: None, action_key: None,
             action_reasons: Default::default(), country_tags: Default::default(), victory_points: Default::default(), snapshot_inputs: Default::default(),
+            prefix: false,
         }
     }
     fn seal_unobserved(&mut self) {
@@ -1514,17 +1526,29 @@ impl Scan {
         true
     }
     fn close_continuation(&mut self) {
+        // At a prepared prefix's end, a later read may still settle the deal.
+        let prefix = self.prefix;
+        let unsettled = |deal: &mut PeaceDeal, limitation: &str| {
+            if prefix {
+                if deal.preparing.is_empty() {
+                    deal.preparing.push("outcome".into());
+                }
+            } else {
+                deal.limitations.push(limitation.into());
+            }
+        };
         for (index, _) in self.pending.drain() {
-            self.reply.deals[index].limitations.push(
-                "No complete ownership and war read after settlement; outcomes are not recorded."
-                    .into(),
+            unsettled(
+                &mut self.reply.deals[index],
+                "No complete ownership and war read after settlement; outcomes are not recorded.",
             );
         }
         for conference in self.open.values() {
             if !self.processed.contains(&conference.index) {
-                self.reply.deals[conference.index]
-                    .limitations
-                    .push("No end was observed; the conference outcome is not recorded.".into());
+                unsettled(
+                    &mut self.reply.deals[conference.index],
+                    "No end was observed; the conference outcome is not recorded.",
+                );
             }
         }
         self.open.clear();

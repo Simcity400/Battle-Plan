@@ -7,6 +7,8 @@ import { loadProduct, useProduct } from '../../dashboard/products.ts';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
 import { validateLossesReply } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
+import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
+import type { PreparedPrefixFields } from '../../dashboard/preparedPrefix';
 
 export interface PreparedLosses extends LossesReply {
   preparedReads: number[];
@@ -15,10 +17,18 @@ export interface PreparedLosses extends LossesReply {
   preparedFrom: number;
   preparedTo: number;
   preparedWidth: number;
+  /** The prepared prefix the reply answers: the preparation coverage it reads
+   * through and the requested hours still being prepared. */
+  prefix?: PreparedPrefixFields | null;
 }
 const hour = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= -2147483648 && (value as number) <= 2147483647;
+/** The reply's root `coverage` and `pending` are its prepared prefix, which the
+ * query loop follows; its land coverage spans travel as `landCoverage`. */
 export function validatePreparedLosses(value: unknown): PreparedLosses {
-  const reply = validateLossesReply(value) as PreparedLosses;
+  if (!value || typeof value !== 'object' || !('landCoverage' in value)) throw new Error('The prepared equipment-loss reads are malformed.');
+  const prefix = preparedPrefix(value);
+  const { landCoverage, coverage: _prepared, pending: _pending, ...rest } = value as Record<string, unknown>;
+  const reply = validateLossesReply({ ...rest, coverage: landCoverage }) as PreparedLosses;
   if (!Array.isArray(reply.preparedReads) || !reply.preparedReads.every((read, index) => hour(read) && (index === 0 || reply.preparedReads[index - 1] < read))
     || !hour(reply.preparedHeadHour) || !hour(reply.preparedDetailHour)
     || !reply.preparedReads.includes(reply.preparedHeadHour) || !reply.preparedReads.includes(reply.preparedDetailHour)
@@ -27,9 +37,23 @@ export function validatePreparedLosses(value: unknown): PreparedLosses {
     || !Number.isInteger(reply.preparedWidth) || reply.preparedWidth < 1) {
     throw new Error('The prepared equipment-loss reads are malformed.');
   }
+  reply.prefix = prefix;
   return reply;
 }
 export const preparedLossHour = (reply: PreparedLosses, hour: number) => reply.preparedReads.includes(hour);
+
+/** The window a reply answers for `view`: the requested hour, or the reply's
+ * head hour when it read another; and before preparation reaches the window,
+ * through the prepared prefix's last hour, since every loss is a cumulative
+ * signed total. Null when the prefix has not reached a range's start. */
+export function preparedLossWindow(reply: PreparedLosses, view: LossWindow): LossWindow | null {
+  const hour = preparedLossHour(reply, view.hour) ? view.hour : reply.preparedHeadHour;
+  const prefix = reply.prefix;
+  if (!prefix?.pending.length) return { ...view, hour };
+  const last = prefix.coverage.lastHour;
+  if (view.from != null && view.from > last) return null;
+  return { ...view, hour: Math.min(hour, last), end: Math.min(view.end, last) };
+}
 
 /** Shared product routing holds one viewport and its reached exact dates. */
 export function usePreparedLosses(client: DashboardClient, track: BoundTrack | undefined, selection: LossesParams | null,

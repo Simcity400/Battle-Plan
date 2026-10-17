@@ -21,6 +21,10 @@ filters merge selected type changes. Exact views use the same plotted runs as th
 recorded product, including supplying bounds at the viewport edges. Dense ratios
 divide exact numerator/denominator samples in the same float order; hover amounts
 come from dated canonical runs. The recorded product remains the parity oracle.
+Before preparation completes, the table at the shown hour comes from the
+recording: each last stock, line and logistics read carries to the hour, so its
+amounts are exact. Its type groups classify each design by its latest name by
+that hour, and charts and automatic choices wait for preparation.
 
 ## Settings
 
@@ -79,3 +83,7 @@ come from dated canonical runs. The recorded product remains the parity oracle.
 | [preparedStockpileChart.ts](preparedStockpileChart.ts), [usePreparedStockpileChart.ts](usePreparedStockpileChart.ts) | Integer summaries, exact supplying edges, owner-scoped display and hover queries. |
 | [stockpileParityModel.ts](stockpileParityModel.ts) | Complete exact displayed stockpile and breakdown facts for the parity build. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [equipmentStockpile.css](equipmentStockpile.css) | Options, registration and layout. |
+
+A table before complete preparation labels its equipment types Approximate.
+Its supplying-read quantities remain exact; a later nonempty token can revise
+which type holds a model. This note disappears with the complete reply.

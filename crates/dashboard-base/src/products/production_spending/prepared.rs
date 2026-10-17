@@ -1,6 +1,6 @@
 //! Spending reads share production endpoints, classifications and exact S values.
 use super::*;
-use crate::prepared::series::Reader;
+use crate::prepared::{prefix::Prefix, series::Reader};
 use crate::prepared_production::{self as pages, EndpointPage, SourceEndpoint};
 use serde_json::{Value, json};
 
@@ -37,28 +37,46 @@ pub fn query(
         return Err(crate::invalid("Unknown production branch"));
     };
     // Production prepared on its own answers from its own coverage.
-    let Some(coverage) = crate::prepared::coverage::product_coverage(
+    let coverage = crate::prepared::prefix::read_or_empty(
         source,
         content,
-        branch,
         "production-spending",
+        branch,
+        None,
         cancel,
     )?
-    else {
-        return Ok(None);
-    };
-    let hour = input.hour.unwrap_or(bounds.1);
-    let end = input.end.unwrap_or(bounds.1);
-    // The original reply's complete design inventory and later learned type
-    // facts require the branch catalogue, even for a pinned historical range.
-    if !coverage.complete {
-        return Ok(None);
+    .coverage;
+    let requested = (
+        input.hour.unwrap_or(bounds.1),
+        input.end.unwrap_or(bounds.1),
+    );
+    // The amounts are cumulative endpoints, but a later token can reclassify
+    // any earlier design. The prefix's grouping is provisional until complete.
+    let prefix = Prefix::new(source, branch, coverage, Some(requested.0.max(requested.1)));
+    let through = |hour: i32| prefix.through(Some(hour)).unwrap_or(hour);
+    let (hour, end) = (through(requested.0), through(requested.1));
+    let mut input = input;
+    // A range whose baseline lies after the prefix has nothing prepared yet:
+    // no page after the prefix is read, and every hour of it is pending.
+    if !prefix.coverage.complete
+        && input
+            .from
+            .is_some_and(|from| from.saturating_sub(1) > prefix.coverage.last_hour)
+    {
+        input.from = None;
     }
     let (store, key) = crate::prepared::files(source, content)?;
-    let Some(mut data) = read_pages(&store, &key, branch, bounds, &input, hour, end, cancel)?
-    else {
-        return Ok(None);
+    let mut data = match read_pages(&store, &key, branch, bounds, &input, hour, end, cancel)? {
+        Some(data) => data,
+        None => serde_json::to_value(ProductionSpendingReply {
+            branch_id: input.branch_id.clone(),
+            tag: input.tag.clone(),
+            decimals: 5,
+            ..Default::default()
+        })?,
     };
+    pend(&mut data, &prefix)?;
+    prefix.mark_revisable(source, branch, &mut data)?;
     let context = LoadContext {
         content: content.cloned(),
     };
@@ -90,6 +108,46 @@ pub fn query(
         .expect("spending warnings")
         .extend(warnings.into_iter().map(Value::String));
     Ok(Some(data))
+}
+
+/// Ends every run list of a prefix reply (each leaf's, the total and the
+/// Rocket total) with the pending hours, unknown with the reason
+/// `preparing`: later preparation answers them, so a reader at one of them
+/// finds no unread hour.
+fn pend(data: &mut Value, prefix: &Prefix) -> io::Result<()> {
+    if prefix.pending.is_empty() {
+        return Ok(());
+    }
+    let pending = |runs: &mut Value| -> io::Result<()> {
+        let runs = runs
+            .as_array_mut()
+            .ok_or_else(|| crate::invalid("Production spending runs are not a list"))?;
+        let after = runs
+            .last()
+            .and_then(|run| run["lastHour"].as_i64())
+            .map_or(i64::MIN, |hour| hour);
+        for span in &prefix.pending {
+            if i64::from(span.last_hour) <= after {
+                continue;
+            }
+            let first = i64::from(span.first_hour).max(after.saturating_add(1));
+            runs.push(serde_json::to_value(ProductionSpendingRun {
+                first_hour: i32::try_from(first).expect("between two hours"),
+                last_hour: span.last_hour,
+                total_raw: None,
+                reason: Some(ProductionSpendingUnknown::Preparing),
+            })?);
+        }
+        Ok(())
+    };
+    for leaf in data["leaves"]
+        .as_array_mut()
+        .ok_or_else(|| crate::invalid("Production spending leaves are not a list"))?
+    {
+        pending(&mut leaf["runs"])?;
+    }
+    pending(&mut data["total"])?;
+    pending(&mut data["rocketTotal"])
 }
 
 fn country<'a>(page: &'a EndpointPage, tag: &str) -> Option<&'a pages::CountryEndpoint> {

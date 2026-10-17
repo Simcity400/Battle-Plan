@@ -212,11 +212,14 @@ impl Prepared {
     }
 }
 
+/// The reply through `last`: the branch's last hour, or a prepared prefix's
+/// (`prefix`), whose unobserved later hours are pending rather than missing.
 fn reply(
     store: &store::Store,
     source_key: &store::SourceKey,
     branch: u64,
     last: i32,
+    prefix: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<PeaceDealsReply>> {
     let Some((keys, ())) = series::read_catalogue::<()>(store, source_key, "peace-deals", branch)?
@@ -229,6 +232,7 @@ fn reply(
         return Ok(None);
     };
     scan.last = last;
+    scan.prefix = prefix;
     let mut reader = Reader::new(store, source_key, section(branch), cancelled)?;
     let mut cursor = 0;
     let mut completed = Vec::new();
@@ -282,6 +286,22 @@ pub fn query(
     source_key: &store::SourceKey,
     cancelled: &AtomicBool,
 ) -> io::Result<serde_json::Value> {
+    query_through(source, context, params, store, source_key, None, cancelled)
+}
+
+/// [`query`] answered through `through`, the last hour of the prepared
+/// prefix its pages hold, while preparation has not reached the branch's end
+/// (None once it has): deals its later hours may still settle are marked
+/// `preparing`, and those hours are not called unobserved.
+pub fn query_through(
+    source: &Source,
+    context: &LoadContext,
+    params: serde_json::Value,
+    store: &store::Store,
+    source_key: &store::SourceKey,
+    through: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
     let params: PeaceDealsParams =
         serde_json::from_value(serde_json::json!({ "branchId": params.get("branchId") }))?;
     PeaceDeals::validate(&params).map_err(dashboard_core::invalid)?;
@@ -293,8 +313,25 @@ pub fn query(
         .find(|start| start.id == branch)
         .ok_or_else(|| dashboard_core::invalid("Peace-deals branch is not in this recording"))?;
     let (_, last) = branch_bounds(source.replay_ref(), start);
-    let Some(reply) = reply(store, source_key, branch, last, cancelled)? else {
-        return Ok(serde_json::Value::Null);
+    let last = through.map_or(last, |through| through.min(last));
+    let Some(reply) = reply(
+        store,
+        source_key,
+        branch,
+        last,
+        through.is_some(),
+        cancelled,
+    )?
+    else {
+        return serde_json::to_value(PeaceDealsReply {
+            branch_id: params.branch_id,
+            derived: true,
+            deals: Vec::new(),
+            transfers: PeaceTransferGraph::default(),
+            unobserved: PeaceUnobserved::default(),
+            warnings: Vec::new(),
+        })
+        .map_err(Into::into);
     };
     serde_json::to_value(present(
         source,

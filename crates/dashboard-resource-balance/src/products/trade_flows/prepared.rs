@@ -932,12 +932,13 @@ pub fn query(
         (bounds, &states.0, states.1.as_slice(), &states.2, true),
         fallback,
     ));
+    let extent = dashboard_base::prepared::prefix::extent(source, branch, coverage)?;
     read_pages(
         &store, &key, branch, input, params, &history, last_hour, complete, context, cancelled,
     )
     .map(|value| {
         value.map(|mut value| {
-            value["coverage"] = json!(coverage);
+            value["coverage"] = json!(extent);
             value
         })
     })

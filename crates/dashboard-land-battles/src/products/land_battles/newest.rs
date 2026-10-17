@@ -3,7 +3,8 @@
 //! answers before forward preparation reaches it.
 //!
 //! A look-back observes the branch's blocks from one of them through the last,
-//! each read alone, on a fresh census configured as forward preparation's, and
+//! read ahead alone and observed in order on a fresh census configured as forward
+//! preparation's, and
 //! builds the last window's page as forward preparation's publication of the
 //! last block does. That page is forward preparation's when the look-back
 //! starts at the branch's first block (it is then forward preparation's walk
@@ -36,8 +37,8 @@
 //! own text refusals come from naming the
 //! variants its loss reads use, each one a variant read on the branch; when
 //! naming every variant read on the branch refuses nothing, forward
-//! preparation's naming refuses nothing either, and otherwise nothing is
-//! published.
+//! preparation's naming refuses nothing either. Otherwise the proven page
+//! remains available and only its diagnostics are withheld.
 //!
 //! One read of the branch's blocks by their changes alone decides where the
 //! look-back starts ([`start`]): the last block's by the combat and naming
@@ -59,8 +60,15 @@
 //! block would be forward preparation's walk of the branch: none is tried,
 //! and the window is left to forward preparation. A census refusal or a
 //! block that cannot be read publishes nothing: forward preparation refuses
-//! the branch or reports the error itself. The page is saved under names of
-//! its own, with the bytes forward preparation writes for the window.
+//! the branch or reports the error itself.
+//!
+//! The page is saved under names of its own, with the bytes forward
+//! preparation writes for the window, as soon as it is proven ([`prove`],
+//! [`Proven::write`]); the diagnostics follow ([`Proven::diagnose`],
+//! [`Diagnosed::write`]) beside the families' preparation. Until they are
+//! saved, the window's reply carries no content warnings and says so
+//! (`warningsComplete: false`). A variant naming refusal withholds only
+//! those diagnostics.
 use super::*;
 use dashboard_base::{
     prepared::{
@@ -91,7 +99,16 @@ pub(super) struct Check {
     pub(super) unnamed: bool,
 }
 
-/// What is saved beside a newest window's page.
+/// Which window a newest page is, saved beside it when it is proven.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Position {
+    /// The window's position in its branch.
+    window: usize,
+    interval: BattleWindow,
+}
+
+/// What is saved beside a newest window's page once its diagnostics are read.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Meta {
@@ -104,10 +121,12 @@ struct Meta {
     content_warnings: Vec<String>,
 }
 
-/// A branch's newest window, proven equal to forward preparation's.
+/// A branch's newest window, proven equal to forward preparation's, with its
+/// diagnostics.
 pub struct Newest {
     branch: u64,
     reply: LandBattlesReply,
+    position: Position,
     meta: Meta,
     /// Blocks the look-back observed, the last block's included.
     #[cfg(any(test, feature = "test-support"))]
@@ -122,8 +141,32 @@ fn page_section(branch: u64) -> String {
     format!("land-battles-newest-{branch}")
 }
 
+fn position_section(branch: u64) -> String {
+    format!("land-battles-newest-window-{branch}")
+}
+
 fn meta_section(branch: u64) -> String {
     format!("land-battle-newest-diagnostics-{branch}")
+}
+
+/// A branch's newest window proven equal to forward preparation's, before
+/// its diagnostics are read.
+pub struct Proven {
+    branch: u64,
+    reply: LandBattlesReply,
+    position: Position,
+    census: Box<Census>,
+    /// The branch's blocks before the proven look-back's.
+    earlier: Vec<usize>,
+    /// Blocks read over every look-back tried, the last block's included.
+    #[cfg(any(test, feature = "test-support"))]
+    pub blocks_read: usize,
+}
+
+/// A newest window's diagnostics, as forward preparation publishes them.
+pub struct Diagnosed {
+    branch: u64,
+    meta: Meta,
 }
 
 /// A look-back's outcome.
@@ -167,28 +210,70 @@ pub fn prepare(
     Ok(prepare_reported(source, branch, context, cancelled)?.0)
 }
 
-/// [`prepare`], with what it did: every look-back tried and the outcome.
+/// [`prepare`], with what it did: the look-back and its diagnostics.
 pub fn prepare_reported(
     source: &Source,
     branch: u64,
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<(Option<Newest>, Report)> {
-    let mut report = Report::default();
-    let newest = prepare_into(source, branch, context, cancelled, &mut report)?;
-    if newest.is_some() {
-        report.outcome = Outcome::Proven;
-    }
-    Ok((newest, report))
+    let (proven, mut report) = prove_reported(source, branch, context, cancelled)?;
+    let Some(proven) = proven else {
+        return Ok((None, report));
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    let (blocks_read, naming_blocks) = (proven.blocks_read, proven.earlier.len());
+    let (reply, position) = (proven.reply.clone(), proven.position.clone());
+    let Some(diagnosed) =
+        proven.diagnose_reported(source.replay_ref(), workers(), cancelled, &mut report)?
+    else {
+        return Ok((None, report));
+    };
+    Ok((
+        Some(Newest {
+            branch,
+            reply,
+            meta: diagnosed.meta,
+            position,
+            #[cfg(any(test, feature = "test-support"))]
+            blocks_read,
+            #[cfg(any(test, feature = "test-support"))]
+            naming_blocks,
+        }),
+        report,
+    ))
 }
 
-fn prepare_into(
+/// The branch's newest window, when the look-back proves it and an hour it
+/// read is available; None where the look-back leaves it to forward preparation.
+pub fn prove(
+    source: &Source,
+    branch: u64,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Proven>> {
+    Ok(prove_reported(source, branch, context, cancelled)?.0)
+}
+
+/// [`prove`], with its change-read start, look-back and outcome.
+pub fn prove_reported(
+    source: &Source,
+    branch: u64,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<(Option<Proven>, Report)> {
+    let mut report = Report::default();
+    let proven = prove_into(source, branch, context, cancelled, &mut report)?;
+    Ok((proven, report))
+}
+
+fn prove_into(
     source: &Source,
     branch: u64,
     context: &LoadContext,
     cancelled: &AtomicBool,
     report: &mut Report,
-) -> io::Result<Option<Newest>> {
+) -> io::Result<Option<Proven>> {
     let replay = source.replay_ref();
     let blocks: Vec<usize> = replay
         .index
@@ -261,34 +346,18 @@ fn prepare_into(
         report.outcome = Outcome::Unavailable;
         return Ok(None);
     }
-    let started = std::time::Instant::now();
-    let named = diagnostics(replay, &blocks[..from], page.census, cancelled);
-    report.naming = from;
-    report.naming_took = started.elapsed();
-    let content_warnings = match named {
-        Ok(Some(warnings)) => warnings,
-        Ok(None) => {
-            report.outcome = Outcome::NamingRefuses;
-            return Ok(None);
-        }
-        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-        Err(error) => {
-            report.outcome = Outcome::Unreadable(error.to_string());
-            return Ok(None);
-        }
-    };
-    Ok(Some(Newest {
+    report.outcome = Outcome::Proven;
+    Ok(Some(Proven {
         branch,
         reply: page.reply,
-        meta: Meta {
+        position: Position {
             window: last,
             interval: window.clone(),
-            content_warnings,
         },
+        census: page.census,
+        earlier: blocks[..from].to_vec(),
         #[cfg(any(test, feature = "test-support"))]
         blocks_read: blocks.len() - from,
-        #[cfg(any(test, feature = "test-support"))]
-        naming_blocks: from,
     }))
 }
 
@@ -930,11 +999,12 @@ fn diagnostics(
     replay: &Replay,
     earlier: &[usize],
     mut census: Box<Census>,
+    workers: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Vec<String>>> {
     // Every variant read on the branch: its refusals do not depend on the
     // order of the reads, nor on the forgetting between them.
-    let mut variants = variant_reads(replay, earlier, workers(), cancelled)?;
+    let mut variants = variant_reads(replay, earlier, workers, cancelled)?;
     for (id, versions) in std::mem::take(&mut census.variants.versions) {
         variants.versions.entry(id).or_default().extend(versions);
     }
@@ -1149,31 +1219,122 @@ pub(super) fn variant_reads_in_order(
 }
 
 /// Threads the earlier blocks' naming tables are read on: one per core.
-fn workers() -> usize {
+pub fn workers() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
 impl Newest {
     /// Writes the page, with the bytes forward preparation writes for the
-    /// window, and what the query checks it by.
+    /// window, what the query checks it by, and its diagnostics.
     pub fn write(&self, writer: &mut store::Writer) -> io::Result<()> {
-        series::write_reply(writer, &page_section(self.branch), 0, &self.reply)?;
+        write_page(writer, self.branch, &self.reply, &self.position)?;
         series::write_reply(writer, &meta_section(self.branch), 0, &self.meta)
     }
 }
 
-/// Whether `meta` names the branch's current last window.
-fn current(replay: &Replay, branch: u64, meta: &Meta) -> bool {
+fn write_page(
+    writer: &mut store::Writer,
+    branch: u64,
+    reply: &LandBattlesReply,
+    position: &Position,
+) -> io::Result<()> {
+    series::write_reply(writer, &page_section(branch), 0, reply)?;
+    series::write_reply(writer, &position_section(branch), 0, position)
+}
+
+impl Proven {
+    /// Writes the page, with the bytes forward preparation writes for the
+    /// window, and what the query checks it by.
+    pub fn write(&self, writer: &mut store::Writer) -> io::Result<()> {
+        write_page(writer, self.branch, &self.reply, &self.position)
+    }
+
+    /// The window's diagnostics, from its look-back's census and the naming
+    /// tables of the branch's earlier blocks, read on `workers` threads;
+    /// None where forward preparation would refuse or fail where they read,
+    /// or naming the variants read refuses text.
+    pub fn diagnose(
+        self,
+        replay: &Replay,
+        workers: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Diagnosed>> {
+        self.diagnose_reported(replay, workers, cancelled, &mut Report::default())
+    }
+
+    /// [`Self::diagnose`], counting its reads and outcome in the proof's report.
+    pub fn diagnose_reported(
+        self,
+        replay: &Replay,
+        workers: usize,
+        cancelled: &AtomicBool,
+        report: &mut Report,
+    ) -> io::Result<Option<Diagnosed>> {
+        let started = std::time::Instant::now();
+        let named = diagnostics(replay, &self.earlier, self.census, workers, cancelled);
+        report.naming = self.earlier.len();
+        report.naming_took = started.elapsed();
+        let content_warnings = match named {
+            Ok(Some(warnings)) => warnings,
+            Ok(None) => {
+                report.outcome = Outcome::NamingRefuses;
+                return Ok(None);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                report.outcome = Outcome::Unreadable(error.to_string());
+                return Ok(None);
+            }
+        };
+        Ok(Some(Diagnosed {
+            branch: self.branch,
+            meta: Meta {
+                window: self.position.window,
+                interval: self.position.interval,
+                content_warnings,
+            },
+        }))
+    }
+}
+
+impl Diagnosed {
+    /// Writes the diagnostics beside the window's page.
+    pub fn write(&self, writer: &mut store::Writer) -> io::Result<()> {
+        series::write_reply(writer, &meta_section(self.branch), 0, &self.meta)
+    }
+}
+
+/// Whether `window` at `interval` is the branch's current last window.
+fn current(replay: &Replay, branch: u64, window: usize, interval: &BattleWindow) -> bool {
     let windows = windows(replay, branch);
-    windows.len().checked_sub(1) == Some(meta.window)
-        && windows.last().is_some_and(|window| {
-            window.first_hour == meta.interval.first_hour
-                && window.last_hour == meta.interval.last_hour
+    windows.len().checked_sub(1) == Some(window)
+        && windows.last().is_some_and(|last| {
+            last.first_hour == interval.first_hour && last.last_hour == interval.last_hour
         })
 }
 
+/// The newest page's position when it is the branch's current last window:
+/// its own section, or the diagnostics written with it by earlier builds.
+fn position(
+    store: &store::Store,
+    key: &store::SourceKey,
+    replay: &Replay,
+    branch: u64,
+) -> io::Result<Option<Position>> {
+    let position = match series::read_reply::<Position>(store, key, &position_section(branch), 0)? {
+        Some(position) => Some(position),
+        None => {
+            series::read_reply::<Meta>(store, key, &meta_section(branch), 0)?.map(|meta| Position {
+                window: meta.window,
+                interval: meta.interval,
+            })
+        }
+    };
+    Ok(position.filter(|position| current(replay, branch, position.window, &position.interval)))
+}
+
 /// Whether the store holds the newest window of the branch's current last
-/// block.
+/// block and its diagnostics.
 pub fn published(
     store: &store::Store,
     key: &store::SourceKey,
@@ -1182,7 +1343,7 @@ pub fn published(
 ) -> io::Result<bool> {
     Ok(
         series::read_reply::<Meta>(store, key, &meta_section(branch), 0)?
-            .is_some_and(|meta| current(replay, branch, &meta)),
+            .is_some_and(|meta| current(replay, branch, meta.window, &meta.interval)),
     )
 }
 
@@ -1202,12 +1363,9 @@ pub fn query(
         return Ok(None);
     }
     let replay = source.replay_ref();
-    let Some(meta) = series::read_reply::<Meta>(store, key, &meta_section(branch), 0)? else {
+    let Some(position) = position(store, key, replay, branch)? else {
         return Ok(None);
     };
-    if !current(replay, branch, &meta) {
-        return Ok(None);
-    }
     if product == "land-battles-manifest" {
         let params: LandBattlesManifestParams = serde_json::from_value(params.clone())?;
         LandBattlesManifest::validate(&params).map_err(dashboard_core::invalid)?;
@@ -1223,7 +1381,7 @@ pub fn query(
     }
     let params: LandBattlesParams = serde_json::from_value(params.clone())?;
     LandBattles::validate(&params).map_err(dashboard_core::invalid)?;
-    if params.window != meta.window {
+    if params.window != position.window {
         return Ok(None);
     }
     let Some(mut reply) =
@@ -1231,6 +1389,15 @@ pub fn query(
     else {
         return Ok(None);
     };
-    reply.content_warnings = meta.content_warnings;
-    Ok(Some(serde_json::to_value(bounded(reply)?)?))
+    // The page is published once proven; its diagnostics follow.
+    let meta = series::read_reply::<Meta>(store, key, &meta_section(branch), 0)?.filter(|meta| {
+        meta.window == position.window && current(replay, branch, meta.window, &meta.interval)
+    });
+    let complete = meta.is_some();
+    reply.content_warnings = meta.map(|meta| meta.content_warnings).unwrap_or_default();
+    let mut value = serde_json::to_value(bounded(reply)?)?;
+    if !complete && let Some(fields) = value.as_object_mut() {
+        fields.insert("warningsComplete".into(), Value::Bool(false));
+    }
+    Ok(Some(value))
 }

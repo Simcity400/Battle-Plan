@@ -494,3 +494,28 @@ test('smart group selection changes with its recorded membership and keeps unkno
   assert.equal(groupMembers(runs, 'hour', 101, 104, Infinity, [{ firstHour: 101, lastHour: 101 }]), null);
   assert.deepEqual(groupMembers(runs, 'ever', 102, 104), ['Mod target', 'New member']);
 });
+
+
+test('a sampled active cipher keeps exact amounts while its attempt dates are preparing', () => {
+  const data = reply();
+  const encoded = data.pairs[0].runs[0] as DecryptionRun & { preparing: string[] };
+  encoded.started = null;
+  encoded.preparing = ['started', 'breaks'];
+  const rows = raceRows(validateDecryptionReply(data), 101, 'progress', null, 'decryptor');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].run.amountRaw, '400000');
+  assert.equal(rows[0].run.progressPercent, 50);
+  assert.equal(rows[0].run.started, null);
+  const tooltip = decryptionTooltip(rows[0], 'Owner', 'Target', 1000);
+  assert.equal(tooltip.rows?.find(row => row.label === 'Started')?.value, 'Still being prepared');
+});
+
+
+test('a sampled stopped-zero pair does not invent idle or discard a possibly paused attempt', () => {
+  const data = reply();
+  Object.assign(data.pairs[0].runs[0], { startAmountRaw: '0', stateFlags: 0, started: null, preparing: ['started', 'breaks'] });
+  const rows = raceRows(validateDecryptionReply(data), 101, 'progress');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].run.amountRaw, '0');
+  assert.equal(workingStatus(rows[0].run), 'Attempt history still being prepared');
+});

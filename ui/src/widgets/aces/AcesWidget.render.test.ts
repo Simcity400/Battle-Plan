@@ -4,9 +4,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
-import type { AirAcesManifestReply, AirAcesWindowReply } from '../../generated/dashboard';
+import type { AirAcesManifestReply } from '../../generated/dashboard';
 import type { TableProps } from '../../charts/table/Table';
-import type { AceRow } from './acesData';
+import type { AceRow, AirAcesWindowReply } from './acesData';
 
 test('ace portrait slots use a helmet and refresh failures retain Retry without artwork reasons', async () => {
   const interval = { firstHour: 100, lastHour: 147 };
@@ -15,15 +15,16 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
       wing: null, wingName: null, aircraft: [], alive: true, death: null }] }] };
   const manifest: AirAcesManifestReply = { branchId: '1', ...interval, available: true, unavailable: null,
     observed: [interval], readHours: [100], warnings: [], windows: [interval], aces: [{ id: 'ace', firstSeen: 100 }], variants: {} };
-  const state = { manifest, detail, pending: false, failure: false, portrait: null as string | null, retries: 0,
+  const state = { manifest, detail, pending: false, failure: false, preparing: false, portrait: null as string | null, retries: 0,
     parity: undefined as TableProps<AceRow>['parity'], rows: [] as AceRow[] };
   const globals = globalThis as typeof globalThis & { __acePresentation?: typeof state };
   globals.__acePresentation = state;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__acePresentation.manifest, retry() {} });',
-    '/dashboard/productWindows.ts': `export const useProductWindows = () => { const state = globalThis.__acePresentation; return {
-      data: state.pending ? new Map() : new Map([[0, state.detail]]), errors: state.failure ? new Map([[0, 'Synthetic native refusal']]) : new Map(),
-      retry() { state.retries++; } }; }; export const useWindowDisplay = () => ({data: globalThis.__acePresentation.detail, hour: 100});`,
+    '/dashboard/products.ts': `export const useProduct = () => { const state = globalThis.__acePresentation; return {
+      data: state.pending ? undefined : { manifest: state.manifest, roster: state.detail, readHour: 100, preparing: state.preparing ? ['firstSeen','death'] : [] },
+      error: state.failure ? 'Synthetic native refusal' : undefined, retry() { state.retries++; } }; };`,
+    '/dashboard/productWindows.ts': `export const useWindowDisplay = () => { const state = globalThis.__acePresentation; return {
+      data: { manifest: state.manifest, roster: state.detail, readHour: 100, preparing: state.preparing ? ['firstSeen','death'] : [] }, hour: 100 }; };`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 100;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
@@ -61,6 +62,9 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
     const present = render();
     assert.match(present, /class="aces-portrait" src="data:image\/png;base64,synthetic"/);
     assert.doesNotMatch(present, /art-fallback aces-portrait/);
+    state.preparing = true;
+    state.detail = { ...detail, aces: detail.aces.map(ace => ({ ...ace, firstSeen: null })) };
+    assert.match(render(), /Alive; dates still being prepared/);
     state.pending = true; state.failure = true;
     const failed = render();
     assert.match(failed, /Couldn’t load aces\./); assert.match(failed, /Retry/);

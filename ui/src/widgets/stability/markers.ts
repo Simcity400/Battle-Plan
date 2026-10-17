@@ -3,6 +3,7 @@ import type { EventBadge } from '../../charts/badges';
 import type { Artwork, CountryGroupReply, FactionGroup, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
 import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import type { FactionName } from '../../dashboard/factionNames';
+import { provisionalGroupEvent } from '../../dashboard/countryCapitulations.ts';
 import { partyBadges } from '../ruling-party/partyData.ts';
 
 /** The event markers along the top of Stability & War support:
@@ -44,7 +45,8 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
   const badges: EventBadge[] = [];
   // A label is built only for an event shown, so only those ask for names.
   const push = (kind: MarkerKind, hour: number, label: string | (() => string)) => {
-    if (kinds.has(kind) && within(hour)) badges.push({ hour, glyph: MARKER_GLYPHS[kind], label: typeof label === 'string' ? label : label() });
+    if (kinds.has(kind) && within(hour)) badges.push({ hour, glyph: MARKER_GLYPHS[kind], label: typeof label === 'string' ? label : label(),
+      ...(kind === 'wars' && provisionalGroupEvent(sources.groups, hour) ? { approximate: true } : {}) });
   };
   const groups = sources.groups;
   if (groups && kinds.has('wars')) {

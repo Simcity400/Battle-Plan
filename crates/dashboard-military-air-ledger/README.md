@@ -20,3 +20,10 @@ pipeline.
 `cargo test -p dashboard-military-air-ledger` builds and runs only this crate's
 tests. The `test-support` feature compiles the whole-recording loader, the
 parity oracle the dashboard's pipeline tests compare against.
+
+Prepared ledger replies expose the committed prefix with root `coverage` and
+`pending` hours. Before the first commit, an empty marked reply has null coverage;
+it asserts no observed interval or total. Signed events, native dates, supplying
+reads, ranking and refusal rules use the same saved observer state and reply
+builder as a complete reply. A shown hour beyond that prefix is still being
+prepared in each of the three widgets.

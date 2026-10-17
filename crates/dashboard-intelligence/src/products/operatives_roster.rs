@@ -93,6 +93,9 @@ pub struct OperativeRosterEntry {
     /// First complete read establishing absence or killed status; an upper bound.
     pub departed_hour: Option<i32>,
     pub departed_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub preparing: Vec<String>,
     pub runs: Vec<OperativeRosterRun>,
 }
 
@@ -590,6 +593,7 @@ impl History {
             joined_hour: hour,
             departed_hour: None,
             departed_reason: None,
+            preparing: Vec::new(),
             runs: Vec::new(),
         }
     }

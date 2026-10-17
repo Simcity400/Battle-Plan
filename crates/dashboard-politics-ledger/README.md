@@ -72,3 +72,12 @@ state encode the same sorted flat key map.
 `cargo test -p dashboard-politics-ledger` builds and runs only this product's
 tests. The `test-support` feature compiles its whole-recording test loader and
 instrumentation for the dashboard's pipeline tests.
+
+Spending totals can answer before the first catalogue exists: the empty reply
+has no payments or spending coverage. The dashboard marks its requested hours
+pending, then replaces it with exact prefix totals as the ledger publishes.
+No empty prefix claims zero spending or a recording gap.
+
+The live spending ledger shares that cold reply with spending totals. Both read
+only through the accepted prefix and keep following their joint coverage; an
+unprepared live hour does not claim an empty day or zero spending.

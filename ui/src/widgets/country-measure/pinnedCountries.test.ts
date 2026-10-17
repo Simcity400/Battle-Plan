@@ -85,13 +85,13 @@ test('registered politics and losses pins retain legacy native-holder fixtures t
           : request.product === 'country-measure' ? {...balance, measure: request.params.measure}
           : request.product === 'stability-parts' ? parts.find(row => row.tag === request.params.tag)
           : request.product === 'politics-ledger' ? ledgers.find(row => row.tag === request.params.tag)
-          : request.product === 'equipment-losses' ? {...losses, preparedReads:request.params.reads,
+          : request.product === 'equipment-losses' ? {...losses, landCoverage:losses.coverage, preparedReads:request.params.reads,
             preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
             preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width} : undefined;
         return {data: reply && validate(reply), retry() {}};
       }; export const useProducts = (client, requests, active, validate) => ({data: requests.length
         ? requests.map(request => useProduct(client, request, active, validate).data) : undefined, retry() {}});
-      export const loadProduct = (_client, request) => Promise.resolve({...losses, preparedReads:request.params.reads,
+      export const loadProduct = (_client, request) => Promise.resolve({...losses, landCoverage:losses.coverage, preparedReads:request.params.reads,
         preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
         preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width});`,
     '/dashboard/useCountryGroups.ts': `const data = ${JSON.stringify(groups)}; export const useCountryGroups = (_runtime, _track, active) => ({data: active ? data : undefined, retry() {}});`,

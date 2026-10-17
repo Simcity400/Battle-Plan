@@ -28,3 +28,7 @@ rows retain duplicates and both native and supplying dates. Drawn details read
 only their battle, fleet and sinking pages; the production selection and detail
 builder preserve full references and missing names. The Naval battles log and
 biggest table retain their parity row labels.
+
+A cold manifest may have no availability evidence and no refusal message while
+its recorded hours are pending. The shared battle view renders Still being
+prepared, then follows approximate committed pages or the exact newest proof.

@@ -23,6 +23,7 @@ import { resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
 import { usePreparedNaval } from './preparedNaval';
+import { pendingReplyAt } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useParityPreparation } from '../../dashboard/parityPreparation';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -89,7 +90,8 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (!data || !model || (grouped && !groups.data)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-    if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
+    if (pendingReplyAt(prepared.manifest, wantedMoment)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+    if (!data.available) return <WidgetState kind="unavailable" message="Naval losses were not recorded at this time." />;
     return undefined;
   })();
   const scopeKey = JSON.stringify([request, widget.countries, widget.time, view, options.show, widget.options?.drillOriginOffset, widget.options?.drillOriginTag]);

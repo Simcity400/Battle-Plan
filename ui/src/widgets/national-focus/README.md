@@ -41,15 +41,15 @@ strings and BigInt. Requests are cancelled on changed client, source, revision,
 country, content, page or hour. Pending display belongs to its original hour;
 known gaps and completed missing reads do not retain it. Native slot and country
 id bind that carry: a reused tag never carries a replacement holder's data. A
-null point while preparation is active stays pending until accepted coverage
-grows; null after readiness is genuine missing data, with exact table reasons
-reported separately. Readiness polling keeps its 500 ms cadence through repeated
-status while a block is preparing; an instant wait with unchanged status stops
-with a retryable error. Numeric order remains
-available when dated artwork refuses. Readiness polls only queued or preparing
-work, starts an idle source once, and stops on ready or terminal failures.
-Focus-hour replies wait for the focus family's accepted coverage because
-confirming dates and order runs require preceding observations.
+null point remains an unavailable recorded observation. Beyond accepted focus
+coverage, the recorded order, count, active focus, pause and progress appear
+immediately. Completion and order dates are null and marked "Still being
+prepared"; their Jump actions are disabled. The daily gain comes from a bounded
+look-back when the same focus's previous gain is proven; it otherwise stays
+pending. Artwork for undated preview rows uses the shown hour. Gate coverage
+changes re-ask the view and replace its pending dates with prepared dates. Page
+successes and failures belong to their reply generation; a departed page cannot
+replace a newer successful view.
 
 Opened-row descriptions read `focus-art` in `text` mode at their confirming or
 undated order hour. Icon failures do not contaminate those text requests. A

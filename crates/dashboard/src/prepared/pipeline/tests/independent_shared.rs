@@ -201,7 +201,11 @@ fn scenario(blocks: usize, second: bool) -> Replay {
             .append(&[records(2, frames(2, start, &spans[0]))])
             .unwrap();
         replay = replay
-            .append(&[continuation_records(&replay, 2, frames(2, start, &spans[1]))])
+            .append(&[continuation_records(
+                &replay,
+                2,
+                frames(2, start, &spans[1]),
+            )])
             .unwrap();
     }
     replay
@@ -283,9 +287,8 @@ fn families_reading_together_publish_and_save_what_each_reading_alone_does() {
     let replay = full();
     let mut fixture = Fixture::new(&replay);
     let revision = "shared-parity";
-    let reference = alone(|| {
-        prepass::with_test_prepass(2, None, || prepared(&mut fixture, revision, plain))
-    });
+    let reference =
+        alone(|| prepass::with_test_prepass(2, None, || prepared(&mut fixture, revision, plain)));
     for (workers, parallelism) in [(1, 2), (3, 4)] {
         for one_after_another in [false, true] {
             let label = format!(
@@ -526,9 +529,8 @@ fn shared_reads_hold_to_their_budget_and_are_timed_apart() {
     let replay = full();
     let mut fixture = Fixture::new(&replay);
     let revision = "shared-budget";
-    let reference = alone(|| {
-        prepass::with_test_prepass(2, None, || prepared(&mut fixture, revision, plain))
-    });
+    let reference =
+        alone(|| prepass::with_test_prepass(2, None, || prepared(&mut fixture, revision, plain)));
     let together = shared::with_test_budget(0, || {
         prepass::with_test_prepass(3, None, || prepared(&mut fixture, revision, plain))
     });

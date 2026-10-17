@@ -12,6 +12,8 @@ import { heldStackSegment } from '../../charts/race/countryRace';
 import { nudgeApart } from '../../charts/palette';
 import { compactStackExtent, forEachCompactStackSegment, stackedSegments, stackExtent } from '../../charts/stack';
 import TimeChart from '../../charts/TimeChart';
+import { pendingLayer } from '../../charts/prepared';
+import { PreparedKey } from '../../charts/PreparedKey';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -39,7 +41,7 @@ import { OPTIONS } from './definition';
 import TensionDrill from './TensionDrillView';
 import { pinTensionDrill, TENSION_BREAKDOWN } from './tensionDrill';
 import { addedAt, contributionAt, contributionPercent, eventGroup, eventsOutsideReads, eventsWithin, formatContribution, formatTension, formatTensionAxis,
-  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot } from './tensionData';
+  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing } from './tensionData';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import './worldTension.css';
 
@@ -157,7 +159,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const summary = data?.summaries.world;
       if (!prepared.geometryReady || !summary || summary.from !== frame.x[0] || summary.to !== to || summary.width !== Math.ceil(frame.plotWidth)) return;
-      if (!summary.runs) {
+      if (!summary.runs || summary.approximate?.length) {
         if (denseStack) { ctx.save(); ctx.globalAlpha = 0.85;
           drawApproximateSpans(ctx,frame,denseStack.approximate,state.playhead,() => {
           forEachCompactStackSegment(denseStack.model,frame.x[0],to,0,piece => {
@@ -181,7 +183,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     extent: x => {
       if (!prepared.geometryReady) return null;
       const to=Math.min(x[1],until ?? x[1]);
-      if (data?.summaries.world?.runs) return stackExtent(stack,x[0],to);
+      if (data?.summaries.world?.runs && !data.summaries.world.approximate?.length) return stackExtent(stack,x[0],to);
       const bands=denseStack ? compactStackExtent(denseStack.model,x[0],to) : null;
       const world=data?.summaries.world ? extentOfSummary(data.summaries.world) : null;
       return bands && world ? [Math.min(bands[0],world[0]),Math.max(bands[1],world[1])] : bands ?? world;
@@ -216,6 +218,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   if (groups.error && widget.countries.kind !== 'all') return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!model || (widget.countries.kind !== 'all' && !identities)) return <WidgetState kind="loading" label="Loading world tension…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
+  if (!data?.available && data?.pending?.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!data?.available) return <WidgetState kind="unavailable" message="World tension was not recorded." />;
 
   const otherCount = (hour: number) => Math.max(0, rankedAt(model, hour).length - keys.length);
@@ -277,7 +280,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
       rows.push({ label: label.name, countryFlag: label, swatch: keys.includes(item.key) ? colourOf(item.tag) : undefined,
         value: formatContribution(model, item.raw, true), short: true, divider: index === 0 });
     });
-    if (read.unnamedRaw !== '0') rows.push({ label: 'Unknown countries', value: formatContribution(model, read.unnamedRaw, true), short: true });
+    if (read.unnamedRaw !== null && !tensionReadPreparing(read, 'unnamedRaw') && read.unnamedRaw !== '0') rows.push({ label: 'Unknown countries', value: formatContribution(model, read.unnamedRaw, true), short: true });
+    if (tensionReadPreparing(read, 'unnamedRaw')) rows.push({ label: 'Contributor attribution', value: 'Still being prepared', tone: 'muted' });
     rows.push(...eventRows(here, hour, true));
     const notes = [
       ...(hoveredFilter?.reason ? [hoveredFilter.reason] : []),
@@ -315,7 +319,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
         // 0–100%, grown to whatever is drawn beyond it (negative parts, or sources past the cap), never cut.
         fitValues={shown => [Math.min(0, shown?.[0] ?? 0), Math.max(100, shown?.[1] ?? 100)]}
-        layers={layers} active={active && (drill.breakdown == null || options.drill === 'popout')}
+        layers={[pendingLayer(data.pending), ...layers]} active={active && (drill.breakdown == null || options.drill === 'popout')}
         revision={`${head}:${model.reply.branchId}:${keysKey}:${share}:${looks.revision}:${hover.revision}:${tokens.countryColours}:${viewport}`}
         formatValue={formatTensionAxis}
         badges={badgeList.length ? badgeList : undefined}
@@ -330,6 +334,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
         tooltip={(hour, _frame, hovered) => tooltip(hour, hovered)}
         onPick={open}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+      <PreparedKey approximate={data.summaries.world?.approximate} pending={data.pending} />
+      {data.preparing?.length ? <p className="chart-line-key">Contributor history and events are still being prepared.</p> : null}
     </div>
     {options.list !== false && <aside className="world-tension-list" aria-label={`World tension on ${dayLabel(head)}`}>
       <button type="button" className="world-tension-total" onClick={() => open(head)}><span>World tension</span><b>{total}</b></button>

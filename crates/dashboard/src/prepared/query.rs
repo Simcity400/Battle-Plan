@@ -66,6 +66,28 @@ struct Reply<'a> {
     revision: &'a str,
     product: &'a str,
     data: Value,
+    /// For a pending or partial reply ([`waits`]), the preparation status
+    /// entries it waits for: `walk` for the hourly walk's coverage, or a
+    /// family prepared on its own, listed under its name in the status's
+    /// `families`. A client re-asks when one of them moves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate: Option<Vec<&'static str>>,
+}
+
+/// Whether a reply is pending (null) or partial (its coverage is missing or
+/// incomplete), so that its client re-asks as preparation goes on.
+fn waits(data: &Value) -> bool {
+    match data {
+        Value::Null => true,
+        Value::Object(reply) => reply
+            .get("preparedCoverage")
+            .or_else(|| reply.get("coverage"))
+            .is_some_and(|coverage| {
+                coverage.is_null()
+                    || coverage.get("complete").and_then(Value::as_bool) != Some(true)
+            }),
+        _ => false,
+    }
 }
 
 fn branch(source: &Source, value: &str) -> io::Result<u64> {
@@ -110,6 +132,25 @@ fn coverage(
     Ok(true)
 }
 
+/// Whether an experience series request names banked measures alone: its
+/// measure, and each of the measures it navigates by.
+fn banked_experience(params: &Value) -> bool {
+    let banked = |measure: Option<&str>| {
+        measure.is_some_and(|measure| {
+            crate::products::country_experience::SAMPLED_MEASURES.contains(&measure)
+        })
+    };
+    banked(
+        params
+            .get("family")
+            .and_then(|family| family.get("measure"))
+            .and_then(Value::as_str),
+    ) && params
+        .get("measures")
+        .and_then(Value::as_array)
+        .is_none_or(|measures| measures.iter().all(|measure| banked(measure.as_str())))
+}
+
 fn series_coverage(product: &str, params: &Value) -> io::Result<(Option<i32>, bool)> {
     let invalid = || crate::invalid("Invalid series query hour");
     let integer = |value: &Value| -> io::Result<i32> {
@@ -149,6 +190,28 @@ fn series_coverage(product: &str, params: &Value) -> io::Result<(Option<i32>, bo
     }
 }
 
+/// A casualty state request whose reads past `prefix` are read at its last
+/// hour instead ([`super::prefix::Prefix::through`]).
+fn casualty_reads_through(params: &Value, prefix: &super::prefix::Prefix) -> Value {
+    let mut params = params.clone();
+    for read in params
+        .get_mut("reads")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(hour) = read
+            .get("hour")
+            .and_then(Value::as_i64)
+            .and_then(|hour| i32::try_from(hour).ok())
+            && let Some(through) = prefix.through(Some(hour))
+        {
+            read["hour"] = Value::from(through);
+        }
+    }
+    params
+}
+
 fn query_data(
     source: &Source,
     request: &ProductRequest,
@@ -156,6 +219,7 @@ fn query_data(
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     let (store, key) = super::files(source, content)?;
+    dashboard_base::prepared::query::observations::bind(source, &key);
     Ok(match request.product.as_str() {
         "party-history" => {
             let id = request
@@ -235,13 +299,34 @@ fn query_data(
             )? {
                 // The manifest and the newest window answer from the newest
                 // window published before forward preparation.
-                return Ok(crate::products::land_battles::newest::query(
+                if let Some(mut data) = crate::products::land_battles::newest::query(
                     source,
                     product,
                     branch,
                     &request.params,
                     &store,
                     &key,
+                )? {
+                    let mut prefix = super::prefix::read_or_empty(
+                        source, content, product, branch, None, cancelled,
+                    )?;
+                    if let Some(window) = source.block_windows(branch).last() {
+                        prefix.answered(std::slice::from_ref(window));
+                        data["exact"] = Value::from(window.first_hour);
+                    }
+                    prefix.mark(&mut data)?;
+                    return Ok(data);
+                }
+                return Ok(crate::products::land_battles::prepared::prefix_query(
+                    source,
+                    product,
+                    &request.params,
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    &store,
+                    &key,
+                    cancelled,
                 )?
                 .unwrap_or(Value::Null));
             }
@@ -275,13 +360,34 @@ fn query_data(
             )? {
                 // The manifest and the newest window answer from the newest
                 // window published before forward preparation.
-                return Ok(crate::products::naval_battles::newest::query(
+                if let Some(mut data) = crate::products::naval_battles::newest::query(
                     source,
                     product,
                     branch,
                     &request.params,
                     &store,
                     &key,
+                )? {
+                    let mut prefix = super::prefix::read_or_empty(
+                        source, content, product, branch, None, cancelled,
+                    )?;
+                    if let Some(window) = source.block_windows(branch).last() {
+                        prefix.answered(std::slice::from_ref(window));
+                        data["exact"] = Value::from(window.first_hour);
+                    }
+                    prefix.mark(&mut data)?;
+                    return Ok(data);
+                }
+                return Ok(crate::products::naval_battles::prepared::prefix_query(
+                    source,
+                    product,
+                    &request.params,
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    &store,
+                    &key,
+                    cancelled,
                 )?
                 .unwrap_or(Value::Null));
             }
@@ -298,29 +404,13 @@ fn query_data(
             )?
         }
         product @ ("division-log" | "division-log-manifest" | "division-log-totals") => {
-            let id = request
-                .params
-                .get("branchId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::invalid("Invalid division log branch"))?;
-            let branch = branch(source, id)?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            crate::products::division_log::prepared::query(
+            crate::products::division_log::prepared::first_view(
                 source,
                 product,
                 request.params.clone(),
-                &store,
-                &key,
+                &crate::products::LoadContext {
+                    content: content.cloned(),
+                },
                 cancelled,
             )?
         }
@@ -331,55 +421,102 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Invalid ships sunk branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
-                return Ok(Value::Null);
+            let prefix = super::prefix::read(source, content, product, branch, None, cancelled)?;
+            let requested = if product == "ships-sunk" {
+                Some(
+                    request.params["hour"]
+                        .as_i64()
+                        .and_then(|hour| i32::try_from(hour).ok())
+                        .ok_or_else(|| crate::invalid("Invalid sinking hour"))?,
+                )
+            } else {
+                None
+            };
+            let mut data = if prefix.as_ref().is_some_and(|prefix| {
+                requested.is_none_or(|hour| hour <= prefix.coverage.last_hour)
+            }) {
+                crate::products::ships_sunk::prepared::query(
+                    source,
+                    product,
+                    request.params.clone(),
+                    &store,
+                    &key,
+                    cancelled,
+                )?
+            } else {
+                crate::products::ships_sunk::prepared::empty(source, product, &request.params)?
+            };
+            match prefix {
+                Some(prefix) => prefix.mark_revisable(source, branch, &mut data)?,
+                None => super::prefix::mark_unprepared(source, branch, None, &mut data)?,
             }
-            crate::products::ships_sunk::prepared::query(
-                source,
-                product,
-                request.params.clone(),
-                &store,
-                &key,
-                cancelled,
-            )?
+            data
         }
         "naval-losses" => {
-            let id = request
-                .params
-                .get("branchId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::invalid("Invalid naval loss branch"))?;
-            let branch = branch(source, id)?;
-            if !coverage(
+            let branch = branch(
+                source,
+                request
+                    .params
+                    .get("branchId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| crate::invalid("Invalid naval loss branch"))?,
+            )?;
+            let requested =
+                if let Some(hour) = request.params.get("hour").filter(|hour| !hour.is_null()) {
+                    Some(
+                        hour.as_i64()
+                            .and_then(|hour| i32::try_from(hour).ok())
+                            .ok_or_else(|| crate::invalid("Invalid naval loss hour"))?,
+                    )
+                } else if let Some(window) = request
+                    .params
+                    .get("window")
+                    .filter(|window| !window.is_null())
+                {
+                    let index = window
+                        .as_u64()
+                        .and_then(|index| usize::try_from(index).ok())
+                        .ok_or_else(|| crate::invalid("Invalid naval loss window"))?;
+                    Some(
+                        source
+                            .block_windows(branch)
+                            .get(index)
+                            .ok_or_else(|| crate::invalid("Unknown naval loss window"))?
+                            .last_hour,
+                    )
+                } else {
+                    None
+                };
+            let prefix = super::prefix::read(
                 source,
                 content,
                 &request.product,
                 branch,
-                None,
-                true,
+                requested,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
+            )?;
+            let mut data = if prefix.as_ref().is_some_and(|prefix| {
+                requested.is_none_or(|hour| hour <= prefix.coverage.last_hour)
+            }) {
+                crate::products::naval_losses::prepared::query(
+                    source,
+                    "naval-losses",
+                    &request.params,
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    &store,
+                    &key,
+                    cancelled,
+                )?
+            } else {
+                crate::products::naval_losses::prepared::empty(source, &request.params)?
+            };
+            match prefix {
+                Some(prefix) => prefix.mark_revisable(source, branch, &mut data)?,
+                None => super::prefix::mark_unprepared(source, branch, requested, &mut data)?,
             }
-            crate::products::naval_losses::prepared::query(
-                source,
-                "naval-losses",
-                &request.params,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                &store,
-                &key,
-                cancelled,
-            )?
+            data
         }
         "equipment-losses" => crate::products::equipment_losses::prepared::query(
             source,
@@ -408,40 +545,61 @@ fn query_data(
                     cancelled,
                 )?)?
             };
-            if let Some(reply) = data.as_object_mut() {
-                let id = request.params["branchId"]
-                    .as_str()
-                    .ok_or_else(|| crate::invalid("Invalid force branch"))?;
-                reply.insert(
-                    "coverage".into(),
-                    serde_json::to_value(super::pipeline::product_coverage(
-                        source,
-                        content,
-                        branch(source, id)?,
-                        &request.product,
-                        cancelled,
-                    )?)?,
-                );
-            }
+            let id = request.params["branchId"]
+                .as_str()
+                .ok_or_else(|| crate::invalid("Invalid force branch"))?;
+            super::prefix::read_or_empty(
+                source,
+                content,
+                &request.product,
+                branch(source, id)?,
+                None,
+                cancelled,
+            )?
+            .mark(&mut data)?;
             data
         }
         "event-feed" => {
-            let params: crate::products::event_feed::prepared::query::Params =
-                serde_json::from_value(request.params.clone())?;
+            use crate::products::event_feed::prepared::query::{Params, cursor_live};
+            let mut params: Params = serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            let accepted = super::pipeline::product_coverage(
+            let requested = params.last_hour;
+            // The feed answers backwards from the joint coverage's last hour,
+            // as from any live hour inside it; a continuation keeps the live
+            // hour its first page was answered through.
+            let prefix = super::prefix::read_or_empty(
                 source,
                 content,
-                branch,
                 &request.product,
+                branch,
+                Some(requested),
                 cancelled,
             )?;
-            if !accepted
-                .as_ref()
-                .is_some_and(|coverage| coverage.complete || params.last_hour <= coverage.last_hour)
+            if prefix.coverage.last_hour < prefix.coverage.first_hour
+                || params
+                    .first_hour
+                    .is_some_and(|first| first > prefix.coverage.last_hour)
             {
-                return Ok(Value::Null);
+                let mut prefix = prefix;
+                if let Some(first) = params.first_hour {
+                    prefix.pending.retain_mut(|span| {
+                        span.first_hour = span.first_hour.max(first);
+                        span.first_hour <= span.last_hour
+                    });
+                }
+                let mut data = serde_json::to_value(
+                    crate::products::event_feed::prepared::query::empty(source, &params)?,
+                )?;
+                prefix.mark(&mut data)?;
+                return Ok(data);
             }
+            let mut live = prefix.through(Some(requested)).unwrap_or(requested);
+            if let Some(kept) = params.cursor.as_deref().and_then(cursor_live)
+                && kept < live
+            {
+                live = kept;
+            }
+            params.last_hour = live;
             let mut data = serde_json::to_value(crate::products::event_feed::prepared::query(
                 source,
                 params,
@@ -452,9 +610,11 @@ fn query_data(
                 &key,
                 cancelled,
             )?)?;
-            if let Some(reply) = data.as_object_mut() {
-                reply.insert("coverage".into(), serde_json::to_value(accepted)?);
+            super::prefix::Prefix {
+                pending: super::prefix::pending(source, branch, live, Some(requested)),
+                coverage: prefix.coverage,
             }
+            .mark(&mut data)?;
             data
         }
         "land-owners" => {
@@ -482,39 +642,19 @@ fn query_data(
             )?)?
         }
         "idea-history" => {
-            use crate::products::{
-                CountryParams, idea_history, politics_content::politics_content,
-            };
-            let params: CountryParams = serde_json::from_value(request.params.clone())?;
-            params.validate().map_err(crate::invalid)?;
-            let branch = branch(source, &params.branch_id)?;
-            if !coverage(
+            let options = content.ok_or_else(|| {
+                crate::invalid("Choose the game and user folders in Settings first")
+            })?;
+            let content = crate::products::politics_content::politics_content(source, options)?;
+            crate::products::idea_history::progressive::query(
                 source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
+                &content,
+                options,
+                &request.params,
+                &store,
+                &key,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            let Some(file) = store.read(&key, &format!("idea-history-{branch}"), 0)? else {
-                return Ok(Value::Null);
-            };
-            let scan = idea_history::Scan::read(io::BufReader::new(file))?;
-            check_cancel(cancelled)?;
-            let scanned = scan.country(source.replay_ref(), branch, &params.tag)?;
-            let content = politics_content(
-                source,
-                content.ok_or_else(|| {
-                    crate::invalid("Choose the game and user folders in Settings first")
-                })?,
-            )?;
-            let mut reply =
-                idea_history::reply(&content, source.replay_ref(), &params, &scanned, cancelled)?;
-            source.append_content_warnings(&mut reply.warnings);
-            serde_json::to_value(reply)?
+            )?
         }
         "air-superiority" => crate::products::air_superiority::prepared::query(
             source,
@@ -550,119 +690,47 @@ fn query_data(
                     .and_then(Value::as_str)
                     .ok_or_else(|| crate::invalid("Invalid ledger branch"))?,
             )?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
-                return Ok(Value::Null);
+            let prefix =
+                super::prefix::read(source, content, &request.product, branch, None, cancelled)?;
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let mut data = if prefix.is_some() {
+                crate::products::military_air_ledger::prepared::query(
+                    source,
+                    &store,
+                    &key,
+                    request.params.clone(),
+                    &context,
+                    cancelled,
+                )?
+            } else {
+                crate::products::military_air_ledger::prepared::empty(
+                    source,
+                    request.params.clone(),
+                    &context,
+                    cancelled,
+                )?
+            };
+            match prefix {
+                Some(prefix) => prefix.mark(&mut data)?,
+                None => super::prefix::mark_unprepared(source, branch, None, &mut data)?,
             }
-            crate::products::military_air_ledger::prepared::query(
-                source,
-                &store,
-                &key,
-                request.params.clone(),
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                cancelled,
-            )?
+            data
         }
         product @ ("decryption"
         | "operative-placements"
         | "agency-comparison"
         | "operatives-roster"
-        | "espionage-log") => {
-            let selection = request.params.get("selection").unwrap_or(&request.params);
-            let id = selection
-                .get("branchId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::invalid("Missing prepared intelligence branch"))?;
-            let branch = branch(source, id)?;
-            let last = request
-                .params
-                .get("lastHour")
-                .filter(|value| !value.is_null())
-                .map(|value| {
-                    value
-                        .as_i64()
-                        .and_then(|hour| i32::try_from(hour).ok())
-                        .ok_or_else(|| crate::invalid("Invalid prepared intelligence hour"))
-                })
-                .transpose()?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                last,
-                last.is_none(),
-                cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            match product {
-                "decryption" => {
-                    let params = serde_json::from_value(request.params.clone())?;
-                    serde_json::to_value(crate::products::decryption::prepared::query(
-                        &store, &key, branch, &params, cancelled,
-                    )?)?
-                }
-                "operative-placements" => {
-                    let params = serde_json::from_value(request.params.clone())?;
-                    serde_json::to_value(crate::products::operative_placements::prepared::query(
-                        &store, &key, branch, &params, cancelled,
-                    )?)?
-                }
-                "agency-comparison" => {
-                    let params = serde_json::from_value(request.params.clone())?;
-                    serde_json::to_value(crate::products::agency_comparison::prepared::query(
-                        source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        &store,
-                        &key,
-                        branch,
-                        &params,
-                        cancelled,
-                    )?)?
-                }
-                "operatives-roster" => {
-                    let params = serde_json::from_value(request.params.clone())?;
-                    serde_json::to_value(crate::products::operatives_roster::prepared::query(
-                        source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        &store,
-                        &key,
-                        branch,
-                        &params,
-                        cancelled,
-                    )?)?
-                }
-                "espionage-log" => {
-                    let params = serde_json::from_value(request.params.clone())?;
-                    serde_json::to_value(crate::products::espionage_log::prepared::query(
-                        source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        &store,
-                        &key,
-                        branch,
-                        &params,
-                        cancelled,
-                    )?)?
-                }
-                _ => unreachable!("explicit intelligence product arms"),
-            }
-        }
+        | "espionage-log") => crate::products::intelligence_prepared::query(
+            source,
+            product,
+            request.params.clone(),
+            &crate::products::LoadContext {
+                content: content.cloned(),
+            },
+            cancelled,
+        )?,
         product @ ("construction-log" | "construction-log-manifest" | "construction-spending") => {
             let id = request.params["branchId"]
                 .as_str()
@@ -715,18 +783,24 @@ fn query_data(
             let params: crate::products::war_casualties::breakdown::CasualtyBreakdownParams =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
+            // Lifetime counters joined with the wars' app continuity wait for
+            // both families' joint coverage. Before it is complete, a window
+            // it has not reached answers from its newest window, and the
+            // requested hours after it are pending.
+            let requested = params
+                .window
+                .and_then(|window| source.block_windows(branch).get(window))
+                .map(|window| window.last_hour);
+            let prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
                 branch,
-                None,
-                true,
+                requested,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            serde_json::to_value(crate::products::war_casualties::breakdown::prepared::query(
+            )?;
+            let through = (!prefix.coverage.complete).then_some(prefix.coverage.last_hour);
+            let reply = crate::products::war_casualties::breakdown::prepared::query_through(
                 source,
                 &params,
                 &crate::products::LoadContext {
@@ -734,8 +808,20 @@ fn query_data(
                 },
                 &store,
                 &key,
+                through,
                 cancelled,
-            )?)?
+            )?;
+            let reply = match reply {
+                Some(reply) => reply,
+                None => {
+                    crate::products::war_casualties::breakdown::prepared::empty(source, &params)?
+                }
+            };
+            let mut data = serde_json::to_value(reply)?;
+            if through.is_some() {
+                prefix.mark(&mut data)?;
+            }
+            data
         }
         "casualty-pairs" => crate::products::war_casualties::pairs::prepared_query(
             source,
@@ -750,56 +836,118 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Missing prepared wars branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(
+            // App continuity numbers groups across consecutive observed hours,
+            // so the lanes are the walk of the prepared prefix's change inputs;
+            // the walk's hours after its last input are pending, not
+            // unobserved. A requested read past the prefix also lists the
+            // groups at that hour from its frame alone (`current`).
+            let prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
                 branch,
                 None,
-                true,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            crate::products::wars::prepared::query(
+            )?;
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let mut data = crate::products::wars::prepared::query(
                 source,
                 &request.params,
                 &store,
                 &key,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
+                &context,
                 cancelled,
-            )?
+            )?;
+            if !prefix.coverage.complete
+                && let Some(reply) = data.as_object_mut()
+            {
+                for field in ["unobserved", "capitulationsUnobserved"] {
+                    if let Some(spans) = reply.get_mut(field) {
+                        let mut clipped: Vec<crate::products::country_groups::HourSpan> =
+                            serde_json::from_value(spans.take())?;
+                        prefix.clip(&mut clipped);
+                        *spans = serde_json::to_value(clipped)?;
+                    }
+                }
+                let current = crate::products::wars::prepared::current(
+                    source,
+                    &request.params,
+                    prefix.coverage.last_hour,
+                    &context,
+                    cancelled,
+                )?;
+                if !current.is_empty() {
+                    reply.insert("current".into(), serde_json::to_value(current)?);
+                }
+                // Native capitulation dates may precede their first read by
+                // any number of hours, revising earlier timeline glyphs.
+                prefix.mark_revisable(source, branch, &mut data)?;
+            }
+            data
         }
         "subjects" => {
             let params: crate::products::subjects::SubjectParams =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
+            // The subject scan is the family's continuation, saved with each
+            // commit of its coverage, so before completion it answers the
+            // prepared prefix. Each later block's keyframe supplies its
+            // relations and levels, marked approximate; a block it cannot
+            // sample stays pending.
+            let mut prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
                 branch,
                 None,
-                true,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            let Some(file) = store.read(&key, &format!("subjects-{branch}"), 0)? else {
-                return Ok(Value::Null);
-            };
+            )?;
             let scan: crate::products::subjects::Scan =
-                serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
+                match store.read(&key, &format!("subjects-{branch}"), 0)? {
+                    Some(file) => serde_json::from_reader(zstd::stream::Decoder::new(file)?)?,
+                    None => crate::products::subjects::Scan::new(source.replay_ref(), branch),
+                };
             check_cancel(cancelled)?;
-            serde_json::to_value(scan.finish(source.replay_ref(), branch).reply(
+            let mut scan = scan.finish(source.replay_ref(), branch);
+            let approximate = if prefix.coverage.complete {
+                None
+            } else {
+                Some(scan.sample_tail(source, branch, prefix.coverage.last_hour, cancelled)?)
+            };
+            let mut reply = scan.reply(
                 source,
                 &params.branch_id,
                 &crate::products::LoadContext {
                     content: content.cloned(),
                 },
-            )?)?
+            )?;
+            if let Some(approximate) = approximate {
+                prefix.clip(&mut reply.unobserved);
+                // Recorded gaps after the prefix are unobserved however far
+                // preparation has gone.
+                let after = prefix.coverage.last_hour;
+                let mut gaps: Vec<_> = source
+                    .replay_ref()
+                    .gaps
+                    .iter()
+                    .filter(|gap| gap.branch == branch && gap.last_hour > after)
+                    .collect();
+                gaps.sort_by_key(|gap| gap.first_hour);
+                for gap in gaps {
+                    crate::products::country_groups::mark_unobserved(
+                        &mut reply.unobserved,
+                        gap.first_hour.max(after.saturating_add(1)),
+                        gap.last_hour,
+                    );
+                }
+                prefix.sampled(&approximate);
+                reply.approximate = Some(approximate);
+            }
+            let mut data = serde_json::to_value(reply)?;
+            prefix.mark(&mut data)?;
+            data
         }
         product @ ("occupied-states" | "occupied-states-manifest") => {
             let id = request
@@ -808,86 +956,176 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Missing occupation branch"))?;
             let branch = branch(source, id)?;
-            let hour = if product == "occupied-states" {
-                let window = request
-                    .params
-                    .get("window")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| crate::invalid("Invalid occupied states window"))?;
-                Some(
-                    source
-                        .block_windows(branch)
-                        .get(window)
-                        .ok_or_else(|| {
-                            crate::invalid("Occupied states window not in this recording")
-                        })?
-                        .last_hour,
-                )
-            } else {
-                None
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
             };
-            if !coverage(
+            let accepted = super::pipeline::product_coverage(
                 source,
                 content,
-                &request.product,
                 branch,
-                hour,
-                product == "occupied-states-manifest",
+                &request.product,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
+            )?;
+            if product == "occupied-states-manifest" {
+                // The windows are the branch's blocks; the laws and warnings
+                // those published so far wrote, the rest still being prepared.
+                let mut data = crate::products::occupied_states::prepared::window_query(
+                    source,
+                    &context,
+                    product,
+                    request.params.clone(),
+                    cancelled,
+                )?;
+                match accepted {
+                    Some(coverage) => super::prefix::Prefix::new(source, branch, coverage, None)
+                        .mark(&mut data)?,
+                    None => {
+                        if let Some(reply) = data.as_object_mut() {
+                            reply.insert(
+                                "coverage".into(),
+                                serde_json::to_value(super::prefix::extent(source, branch, None)?)?,
+                            );
+                        }
+                    }
+                }
+                return Ok(data);
             }
-            crate::products::occupied_states::prepared::window_query(
-                source,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                product,
-                request.params.clone(),
-                cancelled,
-            )?
+            let window = request
+                .params
+                .get("window")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| crate::invalid("Invalid occupied states window"))?;
+            let last_hour = source
+                .block_windows(branch)
+                .get(window)
+                .ok_or_else(|| crate::invalid("Occupied states window not in this recording"))?
+                .last_hour;
+            if accepted
+                .as_ref()
+                .is_some_and(|coverage| coverage.complete || last_hour <= coverage.last_hour)
+            {
+                crate::products::occupied_states::prepared::window_query(
+                    source,
+                    &context,
+                    product,
+                    request.params.clone(),
+                    cancelled,
+                )?
+            } else {
+                // A window preparation has not reached decodes alone from its
+                // block and a proven look-back, exactly as preparation will
+                // write it; null while a block it needs cannot be read.
+                match crate::products::occupied_states::prepared::look_back_window(
+                    source, &context, branch, window, cancelled,
+                )? {
+                    Some(reply) => serde_json::to_value(reply)?,
+                    None => {
+                        let interval = source.block_windows(branch)[window];
+                        let mut data = serde_json::to_value(
+                            crate::products::occupied_states::OccupiedStatesReply {
+                                branch_id: branch.to_string(),
+                                window,
+                                interval,
+                                texts: Vec::new(),
+                                states: Vec::new(),
+                                observed: Vec::new(),
+                                warnings: Vec::new(),
+                                laws: None,
+                            },
+                        )?;
+                        super::prefix::read_or_empty(
+                            source,
+                            content,
+                            product,
+                            branch,
+                            Some(last_hour),
+                            cancelled,
+                        )?
+                        .mark(&mut data)?;
+                        data
+                    }
+                }
+            }
         }
         "unit-leaders" => {
             use crate::products::unit_leaders::{UnitLeaders, UnitLeadersParams};
-            let params: UnitLeadersParams = serde_json::from_value(request.params.clone())?;
+            let mut selection = request.params.clone();
+            let hour = selection
+                .as_object_mut()
+                .and_then(|params| params.remove("hour"))
+                .map(|hour| {
+                    hour.as_i64()
+                        .and_then(|hour| i32::try_from(hour).ok())
+                        .ok_or_else(|| crate::invalid("Invalid leader hour"))
+                })
+                .transpose()?;
+            let params: UnitLeadersParams = serde_json::from_value(selection)?;
             UnitLeaders::validate(&params).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
-                return Ok(Value::Null);
+            if let Some(hour) = hour {
+                let start = source
+                    .replay_ref()
+                    .branches
+                    .iter()
+                    .find(|start| start.id == branch)
+                    .expect("validated branch");
+                let bounds = crate::metadata::branch_bounds(source.replay_ref(), start);
+                if hour < bounds.0 || hour > bounds.1 {
+                    return Err(crate::invalid("Leader hour outside recording"));
+                }
             }
-            let history = if matches!(
+            let prefix =
+                super::prefix::read(source, content, &request.product, branch, hour, cancelled)?;
+            let countries = matches!(
                 params.selection,
                 crate::products::unit_leaders::LeaderSelection::Countries { .. }
-            ) {
+            );
+            let history = if countries {
                 crate::products::country_history::prepared_branch_histories(
                     source, branch, content, cancelled,
                 )?
             } else {
                 None
             };
-            if matches!(
-                params.selection,
-                crate::products::unit_leaders::LeaderSelection::Countries { .. }
-            ) && history.is_none()
-            {
+            if countries && history.is_none() {
                 return Ok(Value::Null);
             }
-            serde_json::to_value(crate::products::unit_leaders::prepared::query(
+            if params.view != crate::products::unit_leaders::LeaderView::Career
+                && hour.is_some_and(|hour| {
+                    prefix
+                        .as_ref()
+                        .is_none_or(|prefix| hour > prefix.coverage.last_hour)
+                })
+            {
+                let mut data = crate::products::unit_leaders::prepared::at_hour(
+                    source,
+                    &params,
+                    hour.unwrap(),
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    history.as_deref(),
+                    cancelled,
+                )?;
+                match prefix {
+                    Some(prefix) => prefix.mark(&mut data)?,
+                    None => super::prefix::mark_unprepared(source, branch, hour, &mut data)?,
+                }
+                return Ok(data);
+            }
+            let Some(prefix) = prefix else {
+                return Ok(Value::Null);
+            };
+            let mut data = serde_json::to_value(crate::products::unit_leaders::prepared::query(
                 &store,
                 &key,
                 &params,
                 history.as_deref(),
                 cancelled,
-            )?)?
+            )?)?;
+            prefix.mark(&mut data)?;
+            data
         }
         "special-projects" => {
             let params: crate::products::special_projects::SpecialProjectsParams =
@@ -895,52 +1133,114 @@ fn query_data(
             crate::products::special_projects::SpecialProjects::validate(&params)
                 .map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            crate::products::special_projects::prepared::query(
+            // The projects' pages are committed with their family's coverage:
+            // before it is complete they answer the prepared prefix, whose
+            // episodes end at its last hour, and name the hours after pending.
+            let prefix =
+                super::prefix::read(source, content, &request.product, branch, None, cancelled)?;
+            let mut data = crate::products::special_projects::prepared::query(
                 request.params.clone(),
                 &store,
                 &key,
                 cancelled,
-            )?
+            )?;
+            if let Some(hour) = params.hour
+                && prefix.as_ref().is_none_or(|prefix| {
+                    !prefix.coverage.complete && hour > prefix.coverage.last_hour
+                })
+            {
+                data["current"] = serde_json::to_value(
+                    crate::products::special_projects::prepared::frame_reply(
+                        source,
+                        &crate::products::LoadContext {
+                            content: content.cloned(),
+                        },
+                        &params,
+                        hour,
+                        cancelled,
+                    )?,
+                )?;
+            }
+            if let Some(prefix) = prefix {
+                prefix.mark(&mut data)?;
+            } else {
+                super::prefix::mark_unprepared(source, branch, None, &mut data)?;
+            }
+            data
         }
         "country-groups" => {
             let params: crate::products::country_groups::CountryGroupParams =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
             // The groups' own coverage: they are prepared before other families.
-            if !coverage(
+            // The scan is the family's continuation, saved with each commit of
+            // that coverage, so before completion it answers the prepared
+            // prefix, carried on by each later block's keyframe and marked
+            // approximate there; a block it does not sample stays pending.
+            let mut prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
                 branch,
                 None,
-                true,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
-            let Some(file) = store.read(&key, &format!("country-groups-{branch}"), 0)? else {
-                return Ok(Value::Null);
+            )?;
+            let mut scan = match store.read(&key, &format!("country-groups-{branch}"), 0)? {
+                Some(file) => {
+                    crate::products::country_groups::Scan::read(io::BufReader::new(file))?
+                }
+                None => crate::products::country_groups::Scan::new(source.replay_ref(), branch),
             };
-            let scan = crate::products::country_groups::Scan::read(io::BufReader::new(file))?;
             check_cancel(cancelled)?;
-            serde_json::to_value(scan.reply(
+            let approximate = if prefix.coverage.complete {
+                None
+            } else {
+                Some(scan.sample_tail(source, branch, prefix.coverage.last_hour, cancelled)?)
+            };
+            let mut reply = scan.reply(
                 source,
                 &params.branch_id,
                 &crate::products::LoadContext {
                     content: content.cloned(),
                 },
-            )?)?
+            )?;
+            let Some(approximate) = approximate else {
+                return Ok(serde_json::to_value(reply)?);
+            };
+            // Recorded gaps after the prefix are unobserved however far
+            // preparation has gone; the other hours there are sampled or pending.
+            let after = prefix.coverage.last_hour;
+            let mut gaps: Vec<_> = source
+                .replay_ref()
+                .gaps
+                .iter()
+                .filter(|gap| gap.branch == branch && gap.last_hour > after)
+                .collect();
+            gaps.sort_by_key(|gap| gap.first_hour);
+            for spans in [
+                &mut reply.unobserved.humans,
+                &mut reply.unobserved.factions,
+                &mut reply.unobserved.wars,
+            ] {
+                prefix.clip(spans);
+                for gap in &gaps {
+                    crate::products::country_groups::mark_unobserved(
+                        spans,
+                        gap.first_hour.max(after.saturating_add(1)),
+                        gap.last_hour,
+                    );
+                }
+            }
+            prefix.sampled(&approximate);
+            // Unlike identity changes, these events retain native dates. A
+            // later observation can add one anywhere in the accepted prefix.
+            reply.events_approximate = Some(prefix.revisable(source, branch));
+            let mut data = serde_json::to_value(reply)?;
+            prefix.mark(&mut data)?;
+            if let Some(fields) = data.as_object_mut() {
+                fields.insert("approximate".into(), serde_json::to_value(approximate)?);
+            }
+            data
         }
         "politics-ledger" => {
             let id = request
@@ -960,24 +1260,25 @@ fn query_data(
                         .ok_or_else(|| crate::invalid("Invalid politics ledger hour"))
                 })
                 .transpose()?;
-            if !coverage(
+            let prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
                 branch,
                 hour,
-                hour.is_none(),
                 cancelled,
-            )? {
-                return Ok(Value::Null);
+            )?;
+            let mut params = request.params.clone();
+            if let Some(through) = prefix.through(hour) {
+                params["hour"] = Value::from(through);
             }
-            crate::products::politics_ledger::prepared::query(
-                &request.params,
-                &store,
-                &key,
-                cancelled,
-            )?
+            let mut data = crate::products::politics_ledger::prepared::query(
+                &params, &store, &key, cancelled,
+            )?;
+            prefix.mark(&mut data)?;
+            data
         }
+
         "focus-static-text" => {
             let params: FocusStaticText = serde_json::from_value(request.params.clone())?;
             if params
@@ -1007,9 +1308,25 @@ fn query_data(
                 false,
                 cancelled,
             )? {
-                return Ok(Value::Null);
+                let prefix = super::prefix::read_or_empty(
+                    source,
+                    content,
+                    &request.product,
+                    branch,
+                    Some(params.hour),
+                    cancelled,
+                )?;
+                let mut data = serde_json::to_value(crate::prepared_focus::sampled_hour(
+                    source,
+                    branch,
+                    &params.tag,
+                    params.hour,
+                    cancelled,
+                )?)?;
+                prefix.mark(&mut data)?;
+                return Ok(data);
             }
-            serde_json::to_value(crate::prepared_focus::query_hour(
+            let mut data = serde_json::to_value(crate::prepared_focus::query_hour(
                 source,
                 &store,
                 &key,
@@ -1017,7 +1334,17 @@ fn query_data(
                 &params.tag,
                 params.hour,
                 cancelled,
-            )?)?
+            )?)?;
+            super::prefix::read_or_empty(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(params.hour),
+                cancelled,
+            )?
+            .mark(&mut data)?;
+            data
         }
         "focus-unavailable" => {
             let params: FocusUnavailable = serde_json::from_value(request.params.clone())?;
@@ -1045,21 +1372,31 @@ fn query_data(
             let params: FocusPage = serde_json::from_value(request.params.clone())?;
             crate::products::validate_tag(&params.tag).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                Some(params.hour),
-                false,
-                cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
             let page = params
                 .page
                 .parse::<u64>()
                 .map_err(|_| crate::invalid("Invalid focus page ordinal"))?;
+            if params.pages.sampled
+                || !coverage(
+                    source,
+                    content,
+                    &request.product,
+                    branch,
+                    Some(params.hour),
+                    false,
+                    cancelled,
+                )?
+            {
+                return crate::prepared_focus::sampled_page(
+                    source,
+                    branch,
+                    &params.tag,
+                    params.hour,
+                    &params.pages,
+                    page,
+                    cancelled,
+                );
+            }
             crate::prepared_focus::order_page(
                 &store,
                 &key,
@@ -1076,19 +1413,18 @@ fn query_data(
             crate::products::equipment_produced::EquipmentProduced::validate(&params.selection)
                 .map_err(crate::invalid)?;
             let branch = branch(source, &params.selection.branch_id)?;
-            // The reference joins Rocket knownness over a completed equipment
-            // read interval and resolves stable type facts over the branch.
-            if !coverage(
+            // Later tokens can reclassify earlier designs, and a Rocket join
+            // can be repaired throughout its still-open supplying interval.
+            // Neither has a fixed backdating limit: the prefix is provisional.
+            let prefix = super::prefix::read_or_empty(
                 source,
                 content,
                 &request.product,
                 branch,
                 Some(params.hour),
-                true,
                 cancelled,
-            )? {
-                return Ok(Value::Null);
-            }
+            )?;
+            let hour = prefix.through(Some(params.hour)).unwrap_or(params.hour);
             let offset = params
                 .offset
                 .parse::<usize>()
@@ -1097,7 +1433,7 @@ fn query_data(
                 crate::prepared_production::select_ranked_at(
                     &store,
                     &key,
-                    params.hour,
+                    hour,
                     &params.selection,
                     offset,
                     params.limit,
@@ -1107,14 +1443,27 @@ fn query_data(
                 crate::prepared_production::select_at(
                     &store,
                     &key,
-                    params.hour,
+                    hour,
                     &params.selection,
                     offset,
                     params.limit,
                     cancelled,
                 )?
             };
-            serde_json::to_value(value)?
+            let value = match value {
+                Some(value) => value,
+                None => crate::prepared_production::empty_selection(
+                    hour,
+                    &params.selection,
+                    offset,
+                    params.limit,
+                    params.ranked,
+                    cancelled,
+                )?,
+            };
+            let mut data = serde_json::to_value(value)?;
+            prefix.mark_revisable(source, branch, &mut data)?;
+            data
         }
         product @ ("series-state" | "series-summary" | "series-next-change")
             if request
@@ -1203,12 +1552,58 @@ fn query_data(
                 }
                 _ => {}
             }
+            if family == Some("research") && product == "series-state" {
+                return crate::products::research::prepared::state_query(
+                    source,
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    &request.params,
+                    &store,
+                    &key,
+                    cancelled,
+                );
+            }
+            if family == Some("research") && product == "events-page" {
+                let (hour, _) = series_coverage(product, &request.params)?;
+                let prefix = super::prefix::read_or_empty(
+                    source, content, "research", branch, hour, cancelled,
+                )?;
+                let mut data = crate::products::research::prepared::query(
+                    source,
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    product,
+                    request.params.clone(),
+                    &store,
+                    &key,
+                    cancelled,
+                )?;
+                prefix.mark(&mut data)?;
+                return Ok(data);
+            }
             let (hour, complete) = series_coverage(product, &request.params)?;
             let accepted =
                 match super::pipeline::product_coverage(source, content, branch, gate, cancelled) {
                     Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
                     other => other?,
                 };
+            // Banked experience is a daily read held until the next: its
+            // sampler carries its own scan from hour to hour, and a long tail
+            // samples each block at its first read. Gains and changes need
+            // every hour of a day, so only preparation answers them.
+            let experience = (family == Some("country-experience")
+                && banked_experience(&request.params))
+            .then(|| crate::products::country_experience::Sampler::new(source.replay_ref().format));
+            let experience_sample = |frame: &replay::frame::DecodedFrame,
+                                     requested: Option<&[(String, String)]>|
+             -> io::Result<progressive::Samples> {
+                experience
+                    .as_ref()
+                    .ok_or_else(|| crate::invalid("Experience sampler missing"))?
+                    .sample(frame, requested)
+            };
             // Families whose requests name one measure per tag register here; others
             // expand their own request shape and call `progressive::tail` themselves.
             let sampler: Option<(&[replay::rows::TableId], progressive::Sample<'_>)> = match family
@@ -1221,10 +1616,27 @@ fn query_data(
                     crate::prepared_stability::TABLES,
                     &crate::prepared_stability::sample,
                 )),
+                Some("country-experience") if experience.is_some() => Some((
+                    crate::products::country_experience::SAMPLE_TABLES,
+                    &experience_sample,
+                )),
                 _ => None,
             };
-            let partial_events =
-                matches!(product, "events-page" | "events-clusters") && accepted.is_some();
+            let partial_events = matches!(product, "events-page" | "events-clusters");
+            // Casualty totals sum lifetime counters through their hour, so no
+            // frame samples them: a state read past the prepared prefix answers
+            // at the prefix's last hour, as at any hour inside it, and names the
+            // requested hours after it pending.
+            let state_prefix = if family == Some("war-casualties") && product == "series-state" {
+                Some(super::prefix::Prefix::new(
+                    source,
+                    branch,
+                    super::prefix::extent(source, branch, accepted.clone())?,
+                    hour,
+                ))
+            } else {
+                None
+            };
             // Stability parts expand countries to parts and sample their own tail.
             let parts_tail = family == Some("stability-parts")
                 && matches!(
@@ -1232,13 +1644,18 @@ fn query_data(
                     "series-state" | "series-summary" | "series-next-change"
                 );
             if family != Some("territory")
+                && !matches!(family, Some("world-tension" | "occupation-trend"))
                 && sampler.is_none()
                 && !parts_tail
                 && !partial_events
+                && state_prefix.is_none()
                 && !matches!(
                     family,
                     Some("army-size" | "supply-health" | "air-force-size" | "navy-size")
                 )
+                // A faction-total state past coverage answers from its frames
+                // where it can, and waits otherwise (`faction_totals::prepared`).
+                && !(family == Some("faction-totals") && product == "series-state")
                 && !coverage(source, content, gate, branch, hour, complete, cancelled)?
             {
                 return Ok(Value::Null);
@@ -1329,16 +1746,32 @@ fn query_data(
                     crate::products::validate_tag(tag).map_err(crate::invalid)?;
                 }
                 sampled = if product == "series-state" {
-                    progressive::state_tail(
-                        source,
-                        branch,
-                        accepted.as_ref(),
-                        tables,
-                        &requested,
-                        &hours,
-                        sample,
-                        cancelled,
-                    )?
+                    if let Some(sampler) = &experience {
+                        progressive::state_tail_recorded(
+                            source,
+                            "country-experience:exact",
+                            branch,
+                            accepted.as_ref(),
+                            tables,
+                            replay::cadence::STAGGER_PERIOD,
+                            &requested,
+                            &crate::products::country_experience::Sampler::cache_keys(&requested),
+                            &hours,
+                            &|frame, _, requested| sampler.sample(frame, requested),
+                            cancelled,
+                        )?
+                    } else {
+                        progressive::state_tail(
+                            source,
+                            branch,
+                            accepted.as_ref(),
+                            tables,
+                            &requested,
+                            &hours,
+                            sample,
+                            cancelled,
+                        )?
+                    }
                 } else {
                     let (from, to) = if product == "series-summary" {
                         super::series::range(
@@ -1361,16 +1794,38 @@ fn query_data(
                             .ok_or_else(|| crate::invalid("Invalid series width"))?;
                         super::series::summary_budget(from, to, width, requested.len())?;
                     }
-                    progressive::tail(
-                        source,
-                        branch,
-                        accepted.as_ref(),
-                        tables,
-                        &requested,
-                        (from.floor() as i32, to.floor() as i32),
-                        sample,
-                        cancelled,
-                    )?
+                    let window = (from.floor() as i32, to.floor() as i32);
+                    if let Some(sampler) = &experience {
+                        progressive::tail_first_read(
+                            source,
+                            "country-experience:exact",
+                            branch,
+                            accepted.as_ref(),
+                            tables,
+                            replay::cadence::STAGGER_PERIOD,
+                            &requested,
+                            &crate::products::country_experience::Sampler::cache_keys(&requested),
+                            window,
+                            &|frame, _, requested| sampler.sample(frame, requested),
+                            &|block| {
+                                crate::products::country_experience::Sampler::first_block(
+                                    source, block, &requested, cancelled,
+                                )
+                            },
+                            cancelled,
+                        )?
+                    } else {
+                        progressive::tail(
+                            source,
+                            branch,
+                            accepted.as_ref(),
+                            tables,
+                            &requested,
+                            window,
+                            sample,
+                            cancelled,
+                        )?
+                    }
                 };
             }
             let tail_context = (sampler.is_some() && partial).then(|| {
@@ -1423,26 +1878,22 @@ fn query_data(
                 }
                 Some("war-casualties") => crate::products::war_casualties::prepared::query(
                     product,
-                    request.params.clone(),
+                    match &state_prefix {
+                        Some(prefix) => casualty_reads_through(&request.params, prefix),
+                        None => request.params.clone(),
+                    },
                     &store,
                     &key,
                     cancelled,
                 )?,
                 Some("world-tension") => {
-                    let Some(history) =
-                        crate::products::country_history::prepared_branch_histories(
-                            source, branch, content, cancelled,
-                        )?
-                    else {
-                        return Ok(Value::Null);
-                    };
-                    crate::products::world_tension::prepared::query(
+                    crate::products::world_tension::prepared::progressive_query(
                         source,
+                        content,
                         product,
                         &request.params,
                         &store,
                         &key,
-                        &history,
                         cancelled,
                     )?
                 }
@@ -1476,12 +1927,15 @@ fn query_data(
                     cancelled,
                 )?,
                 Some("peace-deals") => {
-                    // This adapter builds complete outcomes from earlier reads;
-                    // a partial event prefix cannot answer an unprepared span.
-                    if !coverage(source, content, gate, branch, hour, complete, cancelled)? {
+                    // This adapter builds complete outcomes from earlier reads,
+                    // so it samples no unprepared span. Its event lists answer
+                    // the prepared prefix and name the later hours pending.
+                    if !partial_events
+                        && !coverage(source, content, gate, branch, hour, complete, cancelled)?
+                    {
                         return Ok(Value::Null);
                     }
-                    crate::products::peace_deals::prepared::query(
+                    crate::products::peace_deals::prepared::query_through(
                         source,
                         &crate::products::LoadContext {
                             content: content.cloned(),
@@ -1489,13 +1943,22 @@ fn query_data(
                         request.params.clone(),
                         &store,
                         &key,
+                        (!accepted.as_ref().is_some_and(|coverage| coverage.complete))
+                            .then(|| {
+                                super::prefix::extent(source, branch, accepted.clone())
+                                    .map(|coverage| coverage.last_hour)
+                            })
+                            .transpose()?,
                         cancelled,
                     )?
                 }
                 Some("research") => {
-                    // Complete assignment history and carried slot state need
-                    // the scan, including when requested through events-page.
-                    if !coverage(source, content, gate, branch, hour, complete, cancelled)? {
+                    // Assignment history and carried slot state need the scan:
+                    // its event pages answer the prepared prefix and name the
+                    // later hours pending; its values wait for their hours.
+                    if !partial_events
+                        && !coverage(source, content, gate, branch, hour, complete, cancelled)?
+                    {
                         return Ok(Value::Null);
                     }
                     crate::products::research::prepared::query(
@@ -1600,8 +2063,46 @@ fn query_data(
                     }
                 }
             }
+            // An event list holds accepted events only: the requested hours
+            // after its prefix are pending, never sampled.
+            let pending = match state_prefix {
+                Some(prefix) => Some(prefix.pending),
+                None if partial_events => Some(
+                    super::prefix::Prefix::new(
+                        source,
+                        branch,
+                        super::prefix::extent(source, branch, accepted.clone())?,
+                        hour,
+                    )
+                    .pending,
+                ),
+                None => None,
+            };
             if let Some(reply) = data.as_object_mut() {
-                reply.insert("coverage".into(), serde_json::to_value(accepted)?);
+                if !matches!(family, Some("world-tension" | "occupation-trend"))
+                    || !reply.contains_key("coverage")
+                {
+                    reply.insert(
+                        "coverage".into(),
+                        serde_json::to_value(super::prefix::extent(
+                            source,
+                            branch,
+                            accepted.clone(),
+                        )?)?,
+                    );
+                }
+                if let Some(pending) = pending {
+                    reply.insert("pending".into(), serde_json::to_value(pending)?);
+                }
+            }
+            if family == Some("peace-deals") && partial_events {
+                super::prefix::Prefix::new(
+                    source,
+                    branch,
+                    super::prefix::extent(source, branch, accepted.clone())?,
+                    hour,
+                )
+                .mark_revisable(source, branch, &mut data)?;
             }
             data
         }
@@ -1638,6 +2139,11 @@ fn content_warning_paths(product: &str, name: &str) -> &'static [&'static [&'sta
             | "division-log-manifest",
             _,
         ) => &[&["contentWarnings"]],
+        ("air-aces", _) => &[
+            &["warnings"],
+            &["manifest", "warnings"],
+            &["roster", "warnings"],
+        ],
         ("ships-sunk-manifest", _) => &[&["contentWarnings"], &["classes", "warnings"]],
         ("ships-sunk" | "party-history" | "event-feed", _) | ("series-state", "game-score") => {
             &[&["reply", "warnings"]]
@@ -1731,8 +2237,23 @@ pub fn query(
     }
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
-    let mut data = query_data(source, request, content, cancelled)?;
+    let (data, short) =
+        super::coverage::waiting(|| query_data(source, request, content, cancelled));
+    let mut data = data?;
     check_cancel(cancelled)?;
+    // What a pending or partial reply waits for: the coverage it found short,
+    // or, when it consulted none, the coverage its product waits for.
+    let gate = waits(&data).then(|| {
+        if short.is_empty() {
+            super::pipeline::gate(name)
+        } else {
+            let mut gates = short;
+            if let Some(window) = super::pipeline::newest_gate(name) {
+                gates.insert(window);
+            }
+            gates.into_iter().collect()
+        }
+    });
     append_stack_warnings(source, &request.product, name, &mut data);
     bounded_json(
         &Reply {
@@ -1740,6 +2261,7 @@ pub fn query(
             revision: &request.revision,
             product: &request.product,
             data,
+            gate,
         },
         cancelled,
     )

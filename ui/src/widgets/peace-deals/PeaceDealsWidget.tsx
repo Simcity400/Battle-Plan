@@ -16,6 +16,7 @@ import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { peaceWarName } from '../../dashboard/peaceDealsData';
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { formatDateTime } from '../../dashboard/calendar';
 import { conferenceLabel, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowHeight, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData';
 import type { PeaceChip, PeaceRow } from './peaceData';
@@ -37,6 +38,8 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   const settings = logSettings(options);
   const actions = typeof options.actions === 'string' ? options.actions : '';
   const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
+  // Before preparation covers the branch, the deals of its prepared prefix.
+  const prefix = useMemo(() => preparedPrefix(data), [data]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const log = useMemo(() => data ? preparePeaceLog(data) : null, [data]);
@@ -107,7 +110,8 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
         <FittedList items={action.chips} className="peace-chips" moreClassName="peace-chip peace-more"
           itemKey={chipKey} label={chipLabel} describe={chipDescription} extraWidth={chipExtraWidth} renderItem={chip} />
       </div>)}</div>
-      {!card.actions.length && !derivedNote(deal) && <div className="peace-muted peace-observation">{deal.captured ? 'No actions recorded.' : 'Outcomes not recorded'}</div>}
+      {deal.preparing.includes('outcome') ? <div className="peace-muted peace-observation">Outcome still being prepared.</div>
+        : !card.actions.length && !derivedNote(deal) && <div className="peace-muted peace-observation">{deal.captured ? 'No actions recorded.' : 'Outcomes not recorded'}</div>}
       {derivedNote(deal) && <span className="peace-derived">{derivedNote(deal)}</span>}
     </article>;
   };
@@ -121,6 +125,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
       }} /></div>}
     {gapHint && <p className="peace-note" data-tooltip={gapHint}>Some conferences may be missing.</p>}
     <LogList key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} rows={rows} label="Peace conferences" layout="card" density={settings.density} months={settings.months}
+    preparedCoverage={prefix?.coverage}
     animate={live && settings.animate} rowHeight={peaceRowHeight} renderRow={renderRow} describe={peaceDescription} tooltip={tooltip}
     menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisible={setVisible} empty={empty} /></div>;
 }

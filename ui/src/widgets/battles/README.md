@@ -19,3 +19,9 @@
 **Files:** [BattleLogView.tsx](BattleLogView.tsx) owns requests/filtering/browsing; `BattleLog.tsx` composes LogList/Table; `BattleSides.tsx` renders sides; [battleRows.ts](battleRows.ts) validates rows/windows and re-exports generated types; `battleOptions.ts` and `battles.css` own settings/style. Adjacent tests cover the shared contract.
 
 Shared framework conventions: [widgets](../README.md).
+
+A manifest with pending hours keeps the log on its newest accepted window until
+a proven newest window is available. Cold empty manifests render Still being
+prepared. Committed provisional rows are labelled Approximate through the
+shared coverage note; exact newest dates are named there. Manifest and window
+requests keep polling their gates until complete, including empty windows.

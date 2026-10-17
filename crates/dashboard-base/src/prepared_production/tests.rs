@@ -944,6 +944,116 @@ fn cancelled_queries_refuse_before_returning_partial_selection() {
 }
 
 #[test]
+fn automatic_type_totals_include_off_page_countries_and_keep_type_order() {
+    let mut current = page(
+        0,
+        vec![amount(1, 10, true, false), amount(2, 7, true, false)],
+    );
+    let mut second = current.countries[0].clone();
+    second.tag = "B".into();
+    second.equipment.as_mut().unwrap().amounts =
+        vec![amount(1, 2, true, false), amount(2, 20, true, false)];
+    current.countries.push(second);
+    let mut input = params();
+    input.tags.push("B".into());
+    let selected = select(&current, None, None, &input, 0, 0, &AtomicBool::new(false)).unwrap();
+    assert!(selected.countries.is_empty());
+    assert_eq!(
+        selected.type_totals,
+        Some(vec![
+            ("mod_one".into(), "12".into()),
+            ("mod_two".into(), "27".into()),
+            (":unresolved".into(), "0".into())
+        ])
+    );
+}
+
+#[test]
+fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_approximate_prefix() {
+    use crate::prepared::{
+        coverage::{Coverage, SCHEMA},
+        prefix::Prefix,
+    };
+    let flag = AtomicBool::new(false);
+    let replay = replay::container::Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            (0..=9)
+                .map(|hour| crate::test_fixtures::source(1, hour, Some(1)))
+                .collect(),
+        )],
+    )
+    .unwrap();
+    let (recording, root) = crate::test_fixtures::file_source(replay);
+    let (store, key) = crate::prepared::files(&recording, None).unwrap();
+    let mut state = ProductionAccumulator::new(1, 1, 0);
+    let mut early = page(0, vec![amount(1, 4, true, false)]);
+    early.last_hour = 7;
+    let mut open = page(8, vec![amount(1, 5, true, false)]);
+    open.last_hour = 8;
+    state.classifications = open.classifications.clone();
+    let eq = open.countries[0].equipment.as_ref().unwrap();
+    assert!(
+        state
+            .joins
+            .bind_rocket("A", eq, open.countries[0].rocket.as_ref(), 8, &mut None)
+    );
+    let mut writer = store.replace(key.clone()).unwrap();
+    publish_endpoint(&mut writer, &mut state, &early).unwrap();
+    publish_endpoint(&mut writer, &mut state, &open).unwrap();
+    write_catalogue(&mut writer, &mut state, &flag).unwrap();
+    writer.commit().unwrap();
+    let before = select_at(&store, &key, 8, &params(), 0, 1, &flag)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.countries[0].total.as_deref(), Some("5"));
+    assert_eq!(before.keys[0].key, "mod_one");
+    let prefix = Prefix::new(
+        &recording,
+        1,
+        Coverage {
+            schema: SCHEMA,
+            first_hour: 0,
+            last_hour: 8,
+            complete: false,
+        },
+        Some(8),
+    );
+    let mut provisional = serde_json::to_value(before).unwrap();
+    prefix
+        .mark_revisable(&recording, 1, &mut provisional)
+        .unwrap();
+    assert!(provisional["pending"].as_array().unwrap().is_empty());
+    assert_eq!(
+        provisional["approximate"],
+        serde_json::json!([{"firstHour": 0, "lastHour": 8}])
+    );
+    assert!(!state.joins.bind_rocket("A", eq, None, 9, &mut None));
+    state.classifications.get_mut(&1).unwrap().key = "mod_reclassified".into();
+    let mut writer = store.extend(&key).unwrap();
+    write_catalogue(&mut writer, &mut state, &flag).unwrap();
+    writer.commit().unwrap();
+    let after = select_at(&store, &key, 8, &params(), 0, 1, &flag)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.countries[0].total, None,
+        "the next commit repairs the open supplying interval"
+    );
+    assert_eq!(
+        after.keys[0].key, "mod_reclassified",
+        "later classification revises the same earlier hour"
+    );
+    let unaffected = select_at(&store, &key, 0, &params(), 0, 1, &flag)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unaffected.countries[0].total.as_deref(), Some("4"));
+    drop(recording);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn persisted_pages_and_resume_states_isolate_overlapping_branch_hours() {
     let campaign = uuid::Uuid::new_v4();
     let scratch = std::env::temp_dir().join(format!("prepared-production-{campaign}"));

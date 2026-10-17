@@ -2,7 +2,7 @@
 
 **What it shows:** Army, navy and air experience per country as lines: banked amounts, gross daily gains or net changes per day.
 
-**Product(s) it reads:** Prepared series supply width-bounded chart geometry and exact reached raw amounts, scales, supplying-read dates and unknown reasons. [`country-experience`](../../../../crates/dashboard-base/src/products/country_experience.rs) supplies the history reference; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies groups and capitulations.
+**Product(s) it reads:** Prepared series supply width-bounded chart geometry and exact reached raw amounts, scales, supplying-read dates and unknown reasons. Before preparation covers the view, banked experience is sampled from the recording: each block of a long view at its first daily read, drawn faded and dashed under an **Approximate** key, and a short view exactly. All three banks share each block?s cached first-read observation. Reached hours and short exact windows reuse whole-block observations, clipped after preparation advances. Daily gain and change per day wait for preparation. [`country-experience`](../../../../crates/dashboard-base/src/products/country_experience.rs) supplies the history reference; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies groups and capitulations.
 
 **Settings:** Banked and all three branches by default; one country or comparisons/smart groups, end labels, playback window, Show after the playhead and value-axis controls; Campaign, Follow, Pin and Range. No aggregate view.
 

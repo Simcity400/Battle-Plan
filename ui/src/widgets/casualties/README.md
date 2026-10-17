@@ -23,8 +23,13 @@ uses the shared preparation polling and cancellation boundary. Pending playback
 retains that reply at its own hour. Parity builds expose "Casualties exact values".
 
 Cumulative totals retain disappeared relation lifetimes and unknown-loss recovery
-state. Unprepared hours stay pending behind accepted coverage; the widget uses
-the shared "still being prepared" note and keeps any earlier reply at its own hour.
-One-frame samples cannot supply these totals.
+state, so one-frame samples cannot supply them. Before preparation reaches the
+hour shown, the reply is the prepared prefix's totals at its last hour, exactly
+as a read there gives them, republished as the prefix grows: the widget draws
+them with the note "Casualties through <date>; the rest is still being
+prepared." A reply held while the next hour loads keeps its own hour.
 
 Shared framework conventions: [widgets](../README.md).
+
+A cold prefix without casualty observations renders Still being prepared; it
+supplies no zero total and does not assert a recording gap.

@@ -198,6 +198,13 @@ pub struct IdeaHistoryReply {
     pub branch_id: String,
     pub tag: String,
     pub spans: Vec<IdeaSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub approximate: Vec<HourSpan>,
+    /// Exact held set at a requested hour beyond the prepared prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub held: Option<HeldIdeas>,
     pub ideas: Vec<IdeaInfo>,
     pub artwork: Vec<Artwork>,
     /// Each recorded holder of an advisor idea with that character's own name
@@ -219,6 +226,16 @@ pub struct IdeaHistoryReply {
     /// (`<category>_research`), equipment names, and `YES` / `NO`.
     pub texts: Vec<LocalisedText>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldIdeas {
+    pub hour: i32,
+    pub slot: u32,
+    pub country_id: u32,
+    pub spans: Vec<IdeaSpan>,
+    pub preparing: Vec<String>,
 }
 
 /// The artwork of one character who held an advisor idea.
@@ -1939,6 +1956,8 @@ impl Product for IdeaHistory {
     fn types() -> Vec<String> {
         vec![
             IdeaSpan::decl(),
+            HeldIdeas::decl(),
+            progressive::IdeaHistoryQuery::decl(),
             IdeaCharacter::decl(),
             EffectLine::decl(),
             EffectGroup::decl(),
@@ -2154,6 +2173,8 @@ pub fn reply(
         branch_id: params.branch_id.clone(),
         tag: params.tag.clone(),
         spans: scanned.spans.clone(),
+        approximate: Vec::new(),
+        held: None,
         ideas,
         artwork,
         holders,
@@ -2167,6 +2188,7 @@ pub fn reply(
 }
 
 pub mod prepared;
+pub mod progressive;
 
 #[cfg(test)]
 mod tests;

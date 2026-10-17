@@ -40,7 +40,8 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
     if (!source) return;
     const controller = new AbortController();
     const ids = { sourceId: source.id, revision: source.revision };
-    Promise.all(source.metadata.branches.map(branch => loadCountryGroups(client, source, branch.id, controller.signal)))
+    // Campaign colours and founders follow each branch's complete history.
+    Promise.all(source.metadata.branches.map(branch => loadCountryGroups(client, source, branch.id, controller.signal, false, () => {})))
       .then(async replies => {
         if (controller.signal.aborted) return;
         const factions = latestFactionSummaries(replies);

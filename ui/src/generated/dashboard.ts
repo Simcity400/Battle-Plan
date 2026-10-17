@@ -145,6 +145,9 @@ baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type ResearchFolder = { key: string, name: string | null, };
 export type ResearchTechnologyFolder = { token: string, folder: string | null, };
+export type ResearchStateSlot = { index: number, available: boolean, state: ResearchSlotState | null, progress: ResearchProgress | null, readHour: number | null, };
+export type ResearchState = { tag: string, hour: number, slots: Array<ResearchStateSlot>, data: ResearchReply, preparing: Array<string>, };
+export type ResearchStateReply = { branchId: string, states: Array<ResearchState>, };
 export type MapAudio = {
 /**
  * `master_volume`.
@@ -369,12 +372,36 @@ export type PreparationState = "idle" | "queued" | "preparing" | "paused" | "rea
 export type PreparationPauseReason = "requested" | "newerRecording" | "diskSpace" | "game";
 export type PreparationAction = "status" | "start" | "cancel" | "clear";
 export type PreparationSection = { id: string, label: string, state: PreparationState, done: string, total: string | null, error: string | null, };
-export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>, coverage: { [key in string]?: PreparedCoverage }, bytes: string, error: string | null, pauseReason: PreparationPauseReason | null, };
+export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>,
+/**
+ * The hourly walk's coverage, by branch.
+ */
+coverage: { [key in string]?: PreparedCoverage },
+/**
+ * Each family prepared on its own's coverage, by family and branch. A
+ * prepared reply's `gate` names the entries it waits for: these
+ * families, or `walk` for `coverage`.
+ */
+families: { [key in string]?: { [key in string]?: PreparedCoverage } }, bytes: string, error: string | null, pauseReason: PreparationPauseReason | null, };
 export type PreparedCoverage = { schema: number, firstHour: number, lastHour: number, complete: boolean, };
+export type PreparedPrefix = {
+/**
+ * The gate's accepted coverage the reply reads through. A product's
+ * approximate spans identify accepted hours that later commits can revise.
+ * Before its first publication, the empty extent ends immediately before
+ * `firstHour`.
+ */
+coverage: PreparedCoverage,
+/**
+ * The requested recorded hours after `coverage.lastHour`, in order and
+ * without recorded gaps: still being prepared. Empty when the reply
+ * answers every requested hour.
+ */
+pending: Array<HourSpan>, };
 export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
-export type PreparedFocusPages = { first: string, count: string, rows: string, };
-export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
+export type PreparedFocusPages = { sampled?: boolean, first: string, count: string, rows: string, };
+export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, preparing?: Array<string>, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
 export type PreparedFocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
 export type PreparedFocusUnavailableHour = { schema: number, firstHour: number, lastHour: number, reasons: Array<PreparedFocusTableRefusal>, };
 export type ChartBucket = {
@@ -412,7 +439,12 @@ export type PreparedProductionSelection = { schema: number, branchId: string, fi
 /**
  * Logical first rank in this page; quantities remain exact until geometry.
  */
-offset: string, valueMin: string, valueMax: string, countries: Array<PreparedProductionCountry>, warnings: Array<string>, };
+offset: string, valueMin: string, valueMax: string, countries: Array<PreparedProductionCountry>,
+/**
+ * Totals by type before paging, for the automatic units choice. Only a
+ * total-by-type units selection supplies them; unknown amounts add nothing.
+ */
+typeTotals: Array<[string, string]> | null, warnings: Array<string>, };
 export type CountryParams = { branchId: string, tag: string, };
 export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>,
 /**
@@ -486,11 +518,12 @@ export type DivisionLogReply = { window: number, interval: BattleWindow, rows: A
 export type DivisionLogTemplate = { id: string, name: string | null, };
 export type DivisionLogManifestReply = { windows: Array<BattleWindow>, available: boolean, lossesAvailable: boolean, templates: Array<DivisionLogTemplate>, contentWarnings: Array<string>, };
 export type DivisionLogTotalsParams = { branchId: string, firstHour: number, lastHour: number, countries: LandBattleCountryFilter, templates: Array<string> | null, };
-export type DivisionLogTotalsReply = { created: number, lost: number, transferred: number, warnings: Array<string>, };
+export type DivisionLogTotalsReply = { created: number | null, lost: number | null, transferred: number | null, warnings: Array<string>, };
 export type LeaderSelection = { "kind": "all" } | { "kind": "countries", tags: Array<string>, } | { "kind": "leader", reference: string, };
 export type LeaderView = "leaderboard" | "career" | "choices";
 export type LeaderKinds = "all" | "land" | "navy";
 export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, view: LeaderView, leaders: LeaderKinds, };
+export type UnitLeadersAtHourParams = { branchId: string, selection: LeaderSelection, view: LeaderView, leaders: LeaderKinds, hour: number, };
 export type LeaderPerson = { characterId: number, token: string | null, name: string | null,
 /**
  * Stable recorded read used by the lazy artwork request.
@@ -549,7 +582,7 @@ export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: A
 /**
  * Owner/rank facts shared across runs and leaders; a transfer selects another role.
  */
-roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, warnings: Array<string>, };
+roles: Array<LeaderRole>, traits: Array<LeaderTraitInfo>, observed: Array<LeaderObservation>, resultsMissing: string, navyCommandsMissing: string, selectionTags?: Array<string>, preparing?: Array<string>, warnings: Array<string>, };
 export type UnitLeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type UnitLeaderPortrait = { reference: string, image: string | null, missing: string | null, };
 export type UnitLeaderPortraitsReply = { portraits: Array<UnitLeaderPortrait>, warnings: Array<string>, };
@@ -724,6 +757,11 @@ warStarts: Array<WarStart>,
  */
 capitulations: Array<Capitulation>,
 /**
+ * Native-dated war starts and capitulations can be learned later. These
+ * hours' event inventories are provisional while preparation continues.
+ */
+eventsApproximate?: Array<HourSpan>,
+/**
  * Every change of an id's tag between two consecutive recorded hours, in hour order.
  */
 identityChanges: Array<IdentityChange>,
@@ -778,6 +816,12 @@ viewpoints: Array<MembershipRun>,
  * All resolved historical names of participants and viewpoints, for label measurement only.
  */
 countryNames: Array<string>, wars: Array<WarTimeline>, unobserved: Array<HourSpan>, capitulationsUnobserved: Array<HourSpan>, warnings: Array<string>, };
+export type WarsAtHour = { hour: number,
+/**
+ * At least one overview operand table was recorded at the hour; false
+ * at an unrecorded hour.
+ */
+available: boolean, wars: Array<WarTimeline>, warnings: Array<string>, };
 export type CountryStabilityParams = { branchId: string, tags: Array<string>,
 /**
  * The hour whose breakdown to include; none for runs only.
@@ -1297,6 +1341,8 @@ disjoint: Array<HourSpan>, series: Array<FactionTotalSeries>, unit: string | nul
 export type AirAcesParams = { branchId: string, view: AirAcesView, window: number | null, };
 export type AirAcesView = "manifest" | "window" | "catalogue";
 export type AirAcesReply = AirAcesManifestReply | AirAcesWindowReply;
+export type AirAcesRosterReply = { manifest: AirAcesManifestReply, roster: AirAcesWindowReply, readHour: number | null, preparing: Array<string>, };
+export type AirAcesRosterParams = { branchId: string, view: "roster", hour: number, };
 export type AirAcesManifestReply = { branchId: string, firstHour: number, lastHour: number, available: boolean, unavailable: string | null, observed: Array<HourSpan>,
 /**
  * Successful roster reads across the branch.
@@ -1313,7 +1359,7 @@ export type AirAcesWindowReply = { branchId: string, window: number, firstHour: 
  */
 texts: Array<string>, warnings: Array<string>, };
 export type AirAceIdentity = { id: string, firstSeen: number, };
-export type AirAceEntry = { id: string, firstSeen: number, runs: Array<AirAceRun>, };
+export type AirAceEntry = { id: string, firstSeen: number | null, runs: Array<AirAceRun>, };
 export type AirAceRun = { firstHour: number, lastHour: number, tag: string | null, name: number | null, callsign: number | null, wing: string | null, wingName: number | null, aircraft: Array<string> | null, alive: boolean, death: AirAceDeath | null, };
 export type AirAceDeath = { lastAlive: number | null, byHour: number | null, killerAce: string | null, killerTag: string | null, };
 export type StockVariantName = {
@@ -1490,7 +1536,11 @@ export type AirTimelineRow = { region: number, name: string, cells: Array<[numbe
 export type AirMomentRegion = { id: number, name: string, active: Array<AirSpan>, runs: Array<[number, number, AirCell]>, wings: Array<[number, number, number]>, };
 export type AirRegionChoice = { id: number, name: string, };
 export type AirTheatreChoice = { id: string, name: string, };
-export type AirTimelineReply = { view: "timeline", branchId: string, available: boolean, firstHour: number, lastHour: number, days: Array<number | null>, sides: Array<AirSide>, segments: { [key in string]?: Array<AirSpan> }, anchorReads: { [key in string]?: [string, number] }, rows: Array<AirTimelineRow>, excluded: Array<[number, number, number]>, theatreReads: Array<[number, number, number]>, scale: number, dayHours: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
+export type AirTimelineReply = { view: "timeline", branchId: string, available: boolean, firstHour: number, lastHour: number, days: Array<number | null>,
+/**
+ * Supplying keyframe hours for approximate daily cells, None for exact cells.
+ */
+sampleHours?: Array<number | null>, approximate?: Array<AirSpan>, rowsApproximate?: boolean, sides: Array<AirSide>, segments: { [key in string]?: Array<AirSpan> }, anchorReads: { [key in string]?: [string, number] }, rows: Array<AirTimelineRow>, excluded: Array<[number, number, number]>, theatreReads: Array<[number, number, number]>, scale: number, dayHours: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
 export type AirMomentReply = { view: "moment", branchId: string, available: boolean, firstHour: number, lastHour: number, sides: Array<AirMomentSide>, segments: { [key in string]?: Array<AirSpan> }, anchorReads: { [key in string]?: [string, number] }, unknownSets?: Array<Array<number>>, regions: Array<AirMomentRegion>, fallback: Array<[number, number, AirCell]>, recorded: Array<AirSpan>, complete: Array<AirSpan>, wingsKnown: Array<AirSpan>, excluded: Array<[number, number, number]>, theatreReads: Array<[number, number, number]>, scale: number, dayHours: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
 export type AirMomentSide = [string, number] | AirSide;
 export type AirChoicesReply = { view: "choices", branchId: string, regions: Array<AirRegionChoice>, sides: Array<AirSide>, theatres: Array<AirTheatreChoice>, countries: Array<string>, windows: Array<AirSpan>, warnings: Array<string>, };
@@ -1597,7 +1647,14 @@ states: Array<OccupiedSeries>,
  * Includes known empty inventories, distinguishing them from gaps. Only one
  * starting at the window's first hour can hold an earlier read.
  */
-observed: Array<OccupiedObservation>, warnings: Array<string>, };
+observed: Array<OccupiedObservation>, warnings: Array<string>,
+/**
+ * The laws the window's states hold, when it is answered before its
+ * branch's preparation reaches it ([`prepared::look_back_window`]): the
+ * manifest published so far may not list them yet. None otherwise, when
+ * the manifest lists every law of the windows it covers.
+ */
+laws?: Array<OccupationLawInfo>, };
 export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
 export type OccupiedStatesManifestReply = { branchId: string, decimals: number,
 /**
@@ -1654,6 +1711,8 @@ export type ExperienceReply = { branchId: string,
  */
 scale: number, dayHours: number, series: Array<ExperienceSeries>, warnings: Array<string>, };
 export type IdeaSpan = { token: string, firstHour: number, lastHour: number, slot: string | null, character: IdeaCharacter | null, };
+export type HeldIdeas = { hour: number, slot: number, countryId: number, spans: Array<IdeaSpan>, preparing: Array<string>, };
+export type IdeaHistoryQuery = { branchId: string, tag: string, through: number | null, hour: number | null, preview: boolean | null, };
 export type IdeaCharacter = {
 /**
  * The recorded character id.
@@ -1800,7 +1859,11 @@ export type CategoryInfo = { token: string, name: string | null,
  * `type`, such as `national_spirit`.
  */
 kind: string | null, hidden: boolean, politicsTab: boolean, slots: Array<SlotInfo>, };
-export type IdeaHistoryReply = { branchId: string, tag: string, spans: Array<IdeaSpan>, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
+export type IdeaHistoryReply = { branchId: string, tag: string, spans: Array<IdeaSpan>, approximate?: Array<HourSpan>,
+/**
+ * Exact held set at a requested hour beyond the prepared prefix.
+ */
+held?: HeldIdeas, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
 /**
  * Each recorded holder of an advisor idea with that character's own name
  * and portrait, so a span shows its own holder; `artwork` has the latest.
@@ -2006,7 +2069,14 @@ captureUnavailableHour?: number, transfers: PeaceTransferGraph,
 /**
  * Missing inputs or an attribution limitation, not evidence of no actions.
  */
-limitations: Array<string>, };
+limitations: Array<string>,
+/**
+ * What still needs later observations, in a reply answered from a
+ * prepared prefix: `outcome` while the deal's conference is open or its
+ * settlement unread at the prefix's last hour. Never set once
+ * preparation has reached the branch's end.
+ */
+preparing: Array<string>, };
 export type PeaceObservation = "recordedConference" | "conferenceNotRecorded" | "conferenceUnknown";
 export type PeaceDates = { beforeHour: number, afterHour: number, };
 export type PeaceItem = { derived: boolean, dates: PeaceDates,
@@ -2185,7 +2255,7 @@ stateFlags: number, broken: boolean | null,
 /**
  * Start observation of the attempt current during this run, never a prior episode.
  */
-started: CipherObservation | null, };
+started: CipherObservation | null, preparing?: Array<string>, };
 export type DecryptionTagRun = { firstHour: number, lastHour: number,
 /**
  * None when native tag bytes cannot be represented by the JSON/name contract.
@@ -2699,7 +2769,7 @@ reads: Array<number>,
  */
 observations: Array<number>, warnings: Array<string>, };
 export type ProductionSpendingParams = { branchId: string, tag: string, refits: boolean, };
-export type ProductionSpendingUnknown = "notRecorded" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "observationMismatch" | "countryChanged" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "rocketDesignUnreadable";
+export type ProductionSpendingUnknown = "notRecorded" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "observationMismatch" | "countryChanged" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "rocketDesignUnreadable" | "preparing";
 export type ProductionSpendingRun = { firstHour: number, lastHour: number,
 /**
  * Decimal string of the fixed5 total; null is unknown, never a partial sum.
@@ -2806,7 +2876,11 @@ export type SpecialProjectsParams = { branchId: string, tag: string,
 /**
  * Original manual picks; a projected alias is never another selection root.
  */
-selectionTags: Array<string>, };
+selectionTags: Array<string>,
+/**
+ * Current cards at this hour, including before history preparation reaches it.
+ */
+hour: number | null, };
 export type ProjectDate = { hour: number,
 /**
  * False means the event occurred by this observation, not at this hour.
@@ -2841,7 +2915,12 @@ iterationTexts: { [key in number]?: string | null },
 /**
  * Why the data/content is unavailable, distinct from an empty country set.
  */
-unavailable: string | null, warnings: Array<string>, };
+unavailable: string | null, warnings: Array<string>,
+/**
+ * Running cards read at the requested hour. Episode starts and history
+ * remain pending; their starts are only bounded by this observation.
+ */
+current?: SpecialProjectsReply, };
 export type SubjectParams = { branchId: string, };
 export type SubjectLevel = {
 /**
@@ -2880,7 +2959,16 @@ runs: Array<SubjectRun>,
  * Hours inside the branch whose relations were not observed: a run that ends
  * or starts next to one of these is a gap, not an end or a start.
  */
-unobserved: Array<HourSpan>, warnings: Array<string>, };
+unobserved: Array<HourSpan>, warnings: Array<string>,
+/**
+ * While preparation has not reached the branch's end, the hours after its
+ * prefix whose relations and levels come from each block's keyframe
+ * ([`Scan::sample_tail`]): exact at the keyframe, approximate over the
+ * block, so a relation's end inside them is approximate (its start stays
+ * the game's recorded start). None once the branch is prepared, and from
+ * the recording product.
+ */
+approximate?: Array<HourSpan>, };
 export type EventFeedParams = { branchId: string,
 /**
  * Both null discovers the bounded, event-bearing windows of the branch.
@@ -2998,7 +3086,11 @@ sumRaw: string,
  * The part of `sum_raw` from country slots no recorded country row names,
  * in the same units; "0" when every contributing country is named.
  */
-unnamedRaw: string, };
+unnamedRaw: string | null,
+/**
+ * Fields needing earlier holder observations in a frame-only first view.
+ */
+preparing?: Array<string>, };
 export type TensionCountry = {
 /**
  * The tag the country held at these reads.
@@ -3020,6 +3112,7 @@ runs: Array<FixedRun>,
  * sampled within these recorded bounds, including after the holder vanished.
  */
 identities?: Array<CountryIdentityRun>, };
+export type PreparingContributor = { hour: number, slot: number, valueRaw: string, };
 export type TensionAdded = {
 /**
  * The read where the source first held this value.
@@ -3074,7 +3167,11 @@ countries: Array<TensionCountry>,
 /**
  * In hour order, then first read.
  */
-events: Array<TensionEvent>, warnings: Array<string>, };
+events: Array<TensionEvent>, warnings: Array<string>,
+/**
+ * Exact current amounts whose remembered contributor name is not prepared.
+ */
+preparingContributors?: Array<PreparingContributor>, };
 export type AutonomyParams = { branchId: string,
 /**
  * Every subject these countries had in the branch.
@@ -3201,7 +3298,7 @@ remaining: number,
  * (the engine's repair branch), else it builds its remaining new levels.
  */
 repairLevels: number, };
-export type SpendingGap = "notRecorded" | "readFailed" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown";
+export type SpendingGap = "notRecorded" | "readFailed" | "linkedOutput" | "inexactOutput" | "observationRestart" | "finalOutputMissing" | "ownerUnknown" | "preparing";
 export type ConstructionProject = {
 /**
  * The line's native handle, as a decimal string.
@@ -3330,6 +3427,10 @@ icon: string | null, };
 export type StateName = { id: number, name: string | null, };
 export type ConstructionLogReply = { window: number, interval: BattleWindow,
 /**
+ * A look-back numbers types locally; its projects index this dictionary.
+ */
+types?: Array<BuildingInfo>, exactFrom?: number,
+/**
  * Hours the output table was read from the last read before the window to
  * the next window, ascending.
  */
@@ -3357,6 +3458,10 @@ costScale: number,
  * The branch's blocks: the log's windows, in hour order.
  */
 windows: Array<BattleWindow>,
+/**
+ * A proven newest window, independent of the forward prefix.
+ */
+newest?: BattleWindow,
 /**
  * Either construction queue was read in the branch.
  */
@@ -3456,25 +3561,20 @@ destructionCountedFrom: number | null,
  * bounds the history a branch's first read can hold.
  */
 retainedMonths: number | null, warnings: Array<string>, };
-export type PreparedLossesReply = { preparedReads: Array<number>, preparedHeadHour: number, preparedDetailHour: number, preparedFrom: number, preparedTo: number, preparedWidth: number, branchId: string, tag: string, landSource: LandSource,
+export type PreparedLossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, landCoverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null, warnings: Array<string>, approximate: Array<HourSpan>, preparedReads: Array<number>, preparedHeadHour: number, preparedDetailHour: number, preparedFrom: number, preparedTo: number, preparedWidth: number,
 /**
- * Optional persistent content/capture exclusion; no exclusion with the full writer group.
+ * The gate's accepted coverage the reply reads through. A product's
+ * approximate spans identify accepted hours that later commits can revise.
+ * Before its first publication, the empty extent ends immediately before
+ * `firstHour`.
  */
-landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>,
+coverage: PreparedCoverage,
 /**
- * Combat Log land coverage; empty when destruction land is selected.
+ * The requested recorded hours after `coverage.lastHour`, in order and
+ * without recorded gaps: still being prepared. Empty when the reply
+ * answers every requested hour.
  */
-coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>,
-/**
- * The first complete drain on this branch. Startup hours before it
- * make no claim about hooked removals and are not unknown spans.
- */
-destructionCountedFrom: number | null,
-/**
- * Months the game keeps a Combat Log entry (the content's define), which
- * bounds the history a branch's first read can hold.
- */
-retainedMonths: number | null, warnings: Array<string>, };
+pending: Array<HourSpan>, };
 export type MilitaryAirParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
 /**
  * A range starts at native application time; publication still gates visibility.
@@ -3831,7 +3931,7 @@ joinedHour: number,
 /**
  * First complete read establishing absence or killed status; an upper bound.
  */
-departedHour: number | null, departedReason: string | null, runs: Array<OperativeRosterRun>, };
+departedHour: number | null, departedReason: string | null, preparing?: Array<string>, runs: Array<OperativeRosterRun>, };
 export type OperativeRosterObservation = { firstHour: number, lastHour: number, readHour: number, };
 export type OperativeRosterCountry = { tag: string, identities: Array<CountryIdentityRun>, observed: Array<OperativeRosterObservation>, operatives: Array<OperativeRosterEntry>, };
 export type OperativeRosterReply = { branchId: string, countries: Array<OperativeRosterCountry>, operations: Array<OperativeRosterObservation>, agencyAbsent: Array<HourSpan>, artwork: Array<string>, reasons: Array<string>, warnings: Array<string>, };

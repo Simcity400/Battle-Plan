@@ -5,7 +5,89 @@ use dashboard_base::prepared::{
     frame_changes::FrameChanges,
     series::{self, Accumulator, Reader},
 };
+use dashboard_base::products::country_groups;
 use dashboard_text::metadata::check_cancel;
+mod newest;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn first_view(
+    source: &Source,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    params: &EspionageLogParams,
+    covered: Option<i32>,
+    complete: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    EspionageLog::validate(params).map_err(dashboard_core::invalid)?;
+    let windows = source.block_windows(branch);
+    let first = windows
+        .first()
+        .ok_or_else(|| dashboard_core::invalid("Unknown espionage branch"))?
+        .first_hour;
+    let last = windows.last().expect("branch windows").last_hour;
+    let days = metadata_windows(first, last);
+    if let Some(index) = params.window {
+        let day = days
+            .get(index)
+            .ok_or_else(|| dashboard_core::invalid("Espionage day not in branch"))?;
+        if complete || covered.is_some_and(|hour| day.last_hour <= hour) {
+            return serde_json::to_value(query(
+                source, context, store, key, branch, params, cancelled,
+            )?)
+            .map_err(Into::into);
+        }
+        if index + 1 == days.len()
+            && let Some(reply) = newest::reply(source, branch, context, cancelled)?
+        {
+            let mut data = serde_json::to_value(reply)?;
+            data["warningsComplete"] = serde_json::Value::Bool(false);
+            data["exact"] = serde_json::Value::from(day.first_hour);
+            return Ok(data);
+        }
+        let raw = Builder::new(source.replay_ref()).reply(
+            branch.to_string(),
+            first,
+            last,
+            source.replay_ref().format.version(),
+        );
+        return serde_json::to_value(metadata_window(&raw, Some(index))?).map_err(Into::into);
+    }
+    let mut reply =
+        query(source, context, store, key, branch, params, cancelled)?.unwrap_or_else(|| {
+            Builder::new(source.replay_ref()).reply(
+                branch.to_string(),
+                first,
+                last,
+                source.replay_ref().format.version(),
+            )
+        });
+    reply.first_hour = first;
+    reply.last_hour = last;
+    reply.windows = days;
+    if !complete && let Some(newest) = newest::reply(source, branch, context, cancelled)? {
+        reply.available.extend(newest.available);
+        reply
+            .completions_available
+            .extend(newest.completions_available);
+        for spans in [&mut reply.available, &mut reply.completions_available] {
+            let mut ordered = std::mem::take(spans);
+            ordered.sort_unstable_by_key(|span| span.first_hour);
+            for span in ordered {
+                country_groups::mark_unobserved(spans, span.first_hour, span.last_hour);
+            }
+        }
+        for kind in newest.types {
+            if !reply.types.iter().any(|old| old.key == kind.key) {
+                reply.types.push(kind);
+            }
+        }
+        reply.unavailable = None;
+    }
+    serde_json::to_value(reply).map_err(Into::into)
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Header {

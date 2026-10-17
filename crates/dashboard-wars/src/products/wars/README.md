@@ -73,7 +73,15 @@ recorded WarRelations row order, so equal inputs publish equal catalogues. Four 
 counters in canonical endpoint order, with unknown spans preserved.
 
 The wars are prepared on their own ([block.rs](block.rs)), before the hourly
-walk, and their query waits only for their own coverage. A block is read at
+walk, and their query waits only for their own coverage. While that coverage
+is partial, the query answers the walk of the change inputs it holds, through
+its last hour: the walk's hours after its last input are `pending`, not
+unobserved, and a war open there has no end yet. App continuity needs every
+consecutive observed hour, so no later hour joins the lanes; a requested read
+past the prefix instead lists the groups at that hour, read from its frame
+alone (`current`, `WarsAtHour`, `prepared::current`): their sides, names and
+casualty counters are the hour's operands, their ids transient
+(`@<hour>:<index>`), every bound a "by" bound, and no capitulation listed. A block is read at
 the hours a field the observer compares changes: every field of the war
 relations (whose counters are published), the overview, goal, name-rule,
 membership, player, dictionary and reserved-naming tables, the campaign and

@@ -95,12 +95,16 @@ export function validatePeaceDealsReply(data: unknown): PeaceDealsReply {
       && ['firstObservedHour', 'lastObservedHour'].every(k => integer(d[k])) && ['currentTurn', 'firstFinalizedHour', 'endHour', 'firstAbsentHour'].every(k => nullable(d[k], integer))
       && nullable(d.finalized, bool) && bool(d.endIsBy) && bool(d.participantsDerived) && list(d.winners, text) && list(d.losers, text) && list(d.items, item)
       && nullable(d.captured, captured) && nullable(d.captureUnavailable, text)
-      && ['captureObservedHour', 'captureUnavailableHour'].every(key => !(key in d) || nullable(d[key], integer)) && graph(d.transfers) && list(d.limitations, text))
+      && ['captureObservedHour', 'captureUnavailableHour'].every(key => !(key in d) || nullable(d[key], integer)) && graph(d.transfers) && list(d.limitations, text) && (!('preparing' in d) || list(d.preparing, text)))
     && object(unobserved) && ['settlements', 'conferences', 'ownership', 'wars', 'subjects', 'governments', 'existence', 'victoryPoints'].every(k => list(unobserved[k], span));
   if (!ok) throw new Error('The peace deals reply is malformed.');
   const reply = data as PeaceDealsReply;
   const ids = new Set<string>();
-  for (const deal of reply.deals) { if (ids.has(deal.id)) throw new Error('The peace deals reply has duplicate conferences.'); ids.add(deal.id); }
+  for (const deal of reply.deals) {
+    if (ids.has(deal.id)) throw new Error('The peace deals reply has duplicate conferences.'); ids.add(deal.id);
+    // A reply from before prefix answers names nothing still being prepared.
+    deal.preparing ??= [];
+  }
   return reply;
 }
 

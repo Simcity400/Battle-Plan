@@ -23,6 +23,13 @@ test('native coalition anchors preserve independent dates when another holder re
   assert.equal(missing.sources.get(47)?.sides.has('w:1:101'), false);
 });
 
+test('sampled country colours use supplying reads rather than represented day endpoints', () => {
+  const sampled: AirTimeline = { ...reply, sides: [side('c:X', 'X')], anchorReads: {}, sampleHours: [10, 10] };
+  const plan = airColourPlan(sampled, undefined, 10, null, branch);
+  assert.deepEqual([...plan.sources.keys()], [10]);
+  assert.deepEqual(plan.wanted, [{ tag: 'X', hour: 10 }]);
+});
+
 test('no-majority faction colours use the established country read and stay unknown without it', () => {
   const faction = { ...side('f:7', 'Y'), faction: '7', leader: 'Y' };
   const known = airColourPlan({ ...reply, sides: [faction], anchorReads: { 'f:7': ['X', 10] } }, undefined, 47, null, branch);

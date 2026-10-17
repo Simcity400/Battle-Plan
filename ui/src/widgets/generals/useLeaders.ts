@@ -12,9 +12,9 @@ export function useLeaderCountries(widget: WidgetSpec, runtime: WidgetRuntime, h
   const requestSelection = useMemo(() => leaderRequestSelection(selected.requestTags), [selected.requestTags]);
   return { ...selected, requestSelection };
 }
-export function useLeaders(runtime: WidgetRuntime, trackId: string, selection: LeaderSelection | undefined, view: LeaderView, active: boolean, leaders: LeaderKinds = 'all') {
+export function useLeaders(runtime: WidgetRuntime, trackId: string, selection: LeaderSelection | undefined, view: LeaderView, active: boolean, leaders: LeaderKinds = 'all', hour?: number) {
   const track = runtime.tracks.find(t => t.id === trackId);
   const request = track && selection ? { sourceId: track.source.id, revision: track.source.revision, product: 'unit-leaders',
-    params: { branchId: track.branch.id, selection, view, leaders } } : null;
+    params: { branchId: track.branch.id, selection, view, leaders, ...(hour === undefined ? {} : { hour }) } } : null;
   return useProduct<UnitLeadersData>(runtime.client, request, active, validateUnitLeadersReply, track?.source);
 }

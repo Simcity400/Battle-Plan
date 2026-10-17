@@ -13,6 +13,10 @@ The [dashboard](../dashboard/README.md) re-exports it at the old
 `cargo test -p dashboard-peace-deals` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation, and the peace frames (`peace_deals::test_fixtures`) for the dashboard's tests.
 
+Before the first published continuation the event query has an empty deal and
+transfer inventory. Its caller marks the ordinary cold prefix and all requested
+recorded hours pending; an empty inventory proves no completed peace outcome.
+
 The block extract keeps countries, states, provinces and country counters
 reduced to the fields the observer reads. It builds each reduction only when
 the source view changes, reusing carried rows with their current supplying

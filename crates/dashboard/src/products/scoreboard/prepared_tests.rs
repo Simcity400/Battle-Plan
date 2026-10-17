@@ -468,7 +468,7 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
             ScoreboardColumnKey::PoliticalPower,
             true
         )
-        .is_null()
+        .is_object()
     );
     assert!(
         query(
@@ -480,8 +480,8 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
             ScoreboardColumnKey::Factories,
             true
         )
-        .is_null(),
-        "a page with every column needs every column's supplier"
+        .is_object(),
+        "a page keeps exact factory cells while other suppliers are preparing"
     );
     assert!(
         query(
@@ -1061,5 +1061,49 @@ fn scoreboard_cold_factory_moment_matches_the_scan_for_5000_countries() {
             .unwrap()
             .runs,
         0
+    );
+}
+
+#[test]
+fn default_scoreboard_cells_keep_exact_factories_and_mark_pending_suppliers() {
+    use ScoreboardColumnKey::*;
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![all_frame(100)])]).unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source();
+    let columns = vec![
+        Factories,
+        ArmySize,
+        Territory,
+        CasualtiesDealt,
+        CasualtiesTaken,
+        Planes,
+        Ships,
+    ];
+    let selected = request(columns, vec!["GER".into()], None);
+    let page = query(&source, &selected, 100, false, false, Factories, true);
+    assert_eq!(page["coverage"]["firstHour"], 100);
+    assert_eq!(page["coverage"]["lastHour"], 99);
+    assert_eq!(page["pending"], json!([{"firstHour":100,"lastHour":100}]));
+    let preparing = page["preparing"].as_array().unwrap();
+    assert!(preparing.contains(&json!("casualtiesTaken")));
+    assert!(!preparing.contains(&json!("factories")));
+    let factory = request(vec![Factories], vec!["GER".into()], None);
+    let exact = query(&source, &factory, 100, false, false, Factories, true);
+    assert_eq!(
+        at(&page["data"], 100)["GER"][2]["factories"],
+        at(&exact["data"], 100)["GER"][2]["factories"]
+    );
+    assert!(
+        page["data"]["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|column| column["key"] != "factories")
+                .all(|column| column["runs"].as_array().unwrap().is_empty()))
     );
 }

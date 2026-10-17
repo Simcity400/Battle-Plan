@@ -4,6 +4,7 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_text::metadata::check_cancel;
 
 mod block;
+mod newest;
 #[cfg(any(test, feature = "test-support"))]
 pub use block::kept_hours;
 pub use block::{FAMILY, fold, observe_block};
@@ -390,21 +391,29 @@ pub fn query(
     {
         return Err(dashboard_core::invalid("Branch is not in this recording"));
     }
-    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
+    if source.block_windows(branch).is_empty() {
+        return Err(dashboard_core::invalid("Empty raid branch"));
+    }
+    let mut prefix = dashboard_base::prepared::prefix::read_or_empty(
         source,
         context.content.as_ref(),
+        if params.view == RaidsView::Tally {
+            "raids-tally"
+        } else {
+            Raids::KEY
+        },
         branch,
-        Raids::KEY,
+        None,
         cancelled,
-    )?
-    else {
-        return Ok(serde_json::Value::Null);
-    };
-    if !coverage.complete {
-        return Ok(serde_json::Value::Null);
-    }
+    )?;
+    let accepted =
+        (prefix.coverage.first_hour <= prefix.coverage.last_hour).then(|| prefix.coverage.clone());
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let state = Prepared::read(&store, &key, None, branch)?;
+    let state = if accepted.is_some() {
+        Prepared::read(&store, &key, None, branch)?
+    } else {
+        Prepared::default()
+    };
     let (content, warnings) = prepared_content(source, context)?;
     let available = if state.present || content.as_ref().is_some_and(|c| !c.raids.types.is_empty())
     {
@@ -416,35 +425,88 @@ pub fn query(
             .map(|_| false)
     };
     let histories = if params.view == RaidsView::Tally {
-        let Some(histories) = country_history::prepared_branch_histories(
-            source,
+        let histories = dashboard_base::prepared::query::progressive::histories(
+            &store,
+            &key,
             branch,
-            context.content.as_ref(),
+            accepted.as_ref(),
+            &Default::default(),
+            &Default::default(),
+            source.replay_ref(),
+            &params.tags,
             cancelled,
-        )?
-        else {
-            return Ok(serde_json::Value::Null);
-        };
+        )?;
         Some(histories)
     } else {
         None
     };
-    let scanned = if params.view == RaidsView::Catalogue {
+    let mut scanned = if params.view == RaidsView::Catalogue {
         None
     } else {
         Some(state.scanned(&store, &key, branch, params.view, cancelled)?)
     };
+    let mut exact = None;
+    if params.view == RaidsView::Tally
+        && !prefix.coverage.complete
+        && let Some(scanned) = &mut scanned
+    {
+        let last = prefix.coverage.last_hour;
+        scanned.read_hours.retain(|hour| *hour <= last);
+        for runs in scanned.series.values_mut() {
+            runs.retain(|run| run.first_hour <= last);
+            for run in runs {
+                run.last_hour = run.last_hour.min(last);
+            }
+        }
+        for spans in scanned.segments.values_mut() {
+            spans.retain(|span| span.first_hour <= last);
+            for span in spans {
+                span.last_hour = span.last_hour.min(last);
+            }
+        }
+    }
+    if params.view == RaidsView::Log && !prefix.coverage.complete {
+        if let Some((newest, span)) =
+            newest::scan(source, branch, content.as_deref(), &key, cancelled)?
+        {
+            let base = scanned.get_or_insert_with(ScannedRaids::default);
+            let mut episodes: BTreeMap<_, _> = std::mem::take(&mut base.episodes)
+                .into_iter()
+                .map(|episode| (episode.id.clone(), episode))
+                .collect();
+            episodes.extend(
+                newest
+                    .episodes
+                    .into_iter()
+                    .map(|episode| (episode.id.clone(), episode)),
+            );
+            base.episodes = episodes.into_values().collect();
+            base.read_hours.extend(newest.read_hours);
+            base.read_hours.sort_unstable();
+            base.read_hours.dedup();
+            base.types.extend(newest.types);
+            base.recording_present |= newest.recording_present;
+            base.warnings.extend(newest.warnings);
+            exact = Some(span.first_hour);
+            prefix.sampled(&[span]);
+        }
+    }
     check_cancel(cancelled)?;
-    serde_json::to_value(reply(
+    let mut data = serde_json::to_value(reply(
         &params,
         content.as_deref(),
         available,
         warnings,
         scanned.as_ref(),
-        histories.as_deref(),
+        histories.as_ref(),
         cancelled,
-    )?)
-    .map_err(Into::into)
+    )?)?;
+    prefix.mark_coverage(&mut data, "coverage")?;
+    if let Some(exact) = exact {
+        data["warningsComplete"] = serde_json::Value::Bool(false);
+        data["exact"] = serde_json::Value::from(exact);
+    }
+    Ok(data)
 }
 
 #[cfg(test)]

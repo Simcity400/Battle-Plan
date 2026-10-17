@@ -4,6 +4,13 @@ use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
 use replay::frame::TableView;
 use replay::rows::{EquipmentDestructionRow, SunkShipEntry, SunkShipsRow, TableRows};
 
+#[test]
+fn prepared_loss_contract_names_land_coverage_separately_from_the_prefix() {
+    let declaration = <PreparedLossesReply as ts_rs::TS>::decl();
+    assert!(declaration.contains("landCoverage:"));
+    assert!(!declaration.contains("LossesReply &"));
+}
+
 impl Prepared {
     fn work(&self) -> dashboard_base::prepared::observer_tests::Work {
         self.work
@@ -690,6 +697,112 @@ fn prepared_loss_points_match_reference_after_commits_resume_append_and_backdate
             total_raw: AMOUNT_SCALE.to_string()
         }
     );
+}
+
+/// Before the family's coverage completes, a request answers its prepared
+/// prefix: each reached hour after the prefix, and the viewport, end at the
+/// prefix's last hour, and the prefix's pages answer that request as the
+/// complete pages do. Once complete, the request is answered as asked.
+#[test]
+fn a_request_past_the_prepared_prefix_answers_at_its_last_hour_as_complete_pages_do() {
+    use dashboard_base::{
+        prepared::coverage::{Coverage, SCHEMA},
+        products::country_groups::HourSpan,
+    };
+    let frames = vec![
+        frame(10, 2, 100_001, false),
+        frame(11, 2, -50_000, false),
+        frame(12, 2, 25_000, false),
+        frame(14, 2, 75_000, false),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let flag = AtomicBool::new(false);
+    let tag = String::from_utf8(scale_tag(0)).unwrap();
+    let selection = LossesParams {
+        branch_id: "1".into(),
+        tag,
+        land_source: LandSource::Destruction,
+        country: Some(LossCountry {
+            slot: 0,
+            country_id: 100_000,
+            origin_hour: 10,
+        }),
+    };
+    let asked = Params {
+        selection: selection.clone(),
+        from: Some(10.0),
+        to: Some(14.0),
+        width: Some(20),
+        reads: vec![10, 12, 14],
+        head_hour: 14,
+        detail_hour: 12,
+    };
+    let coverage = |last_hour, complete| Coverage {
+        schema: SCHEMA,
+        first_hour: 10,
+        last_hour,
+        complete,
+    };
+    let mut params = Params {
+        selection: selection.clone(),
+        reads: asked.reads.clone(),
+        ..asked
+    };
+    let prefix = Prefix {
+        coverage: coverage(11, false),
+        pending: vec![HourSpan {
+            first_hour: 12,
+            last_hour: 14,
+        }],
+    };
+    let (from, to) = through_prefix(&mut params, (10.0, 14.0), &prefix);
+    assert_eq!((from, to), (10.0, 11.0));
+    assert_eq!(params.reads, [10, 11]);
+    assert_eq!((params.head_hour, params.detail_hour), (11, 11));
+    let read = |fixture: &Fixture| {
+        let scanned = read_scanned(
+            &fixture.store,
+            &fixture.key,
+            1,
+            (0, 100_000),
+            (from, to, 20),
+            &params.reads,
+            replay.format,
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        serde_json::to_value(reply(&selection, &scanned, Content::default(), Vec::new())).unwrap()
+    };
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::new(&replay, 1, 10);
+    let mut cold = None;
+    for chunk in frames.chunks(2) {
+        for frame in chunk {
+            prepared.observe(frame, &replay, &flag).unwrap();
+        }
+        prepared.finish_block(chunk.last().unwrap().hour);
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        cold.get_or_insert_with(|| read(&fixture));
+    }
+    assert_eq!(cold.unwrap(), read(&fixture));
+    let mut whole = Params {
+        selection,
+        reads: asked.reads.clone(),
+        ..asked
+    };
+    let complete = Prefix {
+        coverage: coverage(14, true),
+        pending: Vec::new(),
+    };
+    assert_eq!(
+        through_prefix(&mut whole, (10.0, 14.0), &complete),
+        (10.0, 14.0)
+    );
+    assert_eq!(whole.reads, [10, 12, 14]);
+    assert_eq!((whole.head_hour, whole.detail_hour), (14, 12));
 }
 
 #[test]

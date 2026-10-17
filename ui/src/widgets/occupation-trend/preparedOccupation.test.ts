@@ -44,3 +44,14 @@ test('occupation labels use exact endpoint facts rather than extrema or an unrea
   const duplicate = mergeOccupationReads(exact, undefined, duplicateReply)!;
   assert.deepEqual(duplicate.series[0].runs, exact.series[0].runs);
 });
+
+test('exact reached identity evidence replaces sampled aliases while metadata still being prepared stays visible', () => {
+  const reached = { ...exact, preparing: ['identities', 'segments'], series: [{ ...exact.series[0],
+    identities: [{ firstHour: 100, lastHour: 100, slot: 7, countryId: 70 }] }] };
+  const sampled = { ...summary, pending: [{ firstHour: 150, lastHour: 200 }], series: [{ ...summary.series[0],
+    identities: [{ firstHour: 100, lastHour: 200, slot: 7, countryId: 71 }] }] };
+  const result = mergeOccupationReads(reached, undefined, sampled)!;
+  assert.equal(result.series[0].identities?.[0].countryId, 70);
+  assert.deepEqual(result.preparing, ['identities', 'segments']);
+  assert.deepEqual(result.pending, [{ firstHour: 150, lastHour: 200 }]);
+});

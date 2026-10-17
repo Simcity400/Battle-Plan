@@ -25,7 +25,7 @@ export type PreparedResourceReply = ResourceBalanceReply & {
   summaries?: { id: number; supply: ChartSummary; demand: ChartSummary; parts: ChartSummary[]; total: ChartSummary }[];
   campaignSizes?: Record<string, string>;
   exactHours?: number[];
-  coverage?: { firstHour: number; lastHour: number; complete: boolean } | null;
+  coverage?: { firstHour: number; lastHour: number; complete: boolean };
 };
 
 /** Reached facts join the same inventory while accepted viewport geometry stays. */

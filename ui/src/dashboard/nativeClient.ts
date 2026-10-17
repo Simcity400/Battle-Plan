@@ -1,5 +1,5 @@
 import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
-import { validateProductReply } from './client.ts';
+import { preparedReplyData, validateProductReply } from './client.ts';
 import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -7,7 +7,7 @@ import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
-import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 
 function cancelled(): DOMException {
@@ -94,10 +94,10 @@ export const nativeDashboardClient: DashboardClient = {
 
   preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>('dashboard_preparation_preferences', () => ({ enabled }), signal)),
   preparationStatus: (query, signal) => preparation('dashboard_preparation_status', query, signal),
-  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T> {
+  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };
     const reply = await request<ProductReply<T>>('dashboard_prepared_query', () => ({ query }), options.signal);
-    return validateProductReply(reply, query).data;
+    return preparedReplyData(validateProductReply(reply, query), options);
   },
   prepareSource: (query, signal) => preparation('dashboard_prepare_source', query, signal),
   cancelPreparation: (query, signal) => preparation('dashboard_cancel_preparation', query, signal),

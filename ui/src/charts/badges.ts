@@ -1,6 +1,7 @@
 import type { PlotFrame } from './frame.ts';
 import type { ChartTokens } from './tokens.ts';
 import type { TooltipRow } from './tooltip.ts';
+import { APPROXIMATE_ALPHA, APPROXIMATE_DASH } from './prepared.ts';
 
 /** Event badges: small glyphs along the top edge of a time chart (a war, a law, a
  * focus), each with a faint guide line down the plot, or small triangles pointing
@@ -17,6 +18,8 @@ export interface EventBadge {
   glyph: string;
   /** What happened, shown in the tooltip. */
   label: string;
+  /** An event inventory that later preparation can revise at this native date. */
+  approximate?: boolean;
   /** Tints the glyph, such as a country's colour; the theme's text colour otherwise. */
   color?: string;
   /** `triangle` draws a small triangle filled with `color` instead of the glyph, and no guide line. */
@@ -55,7 +58,8 @@ export function badgesAt(point: { x: number; y: number }, frame: PlotFrame, badg
 
 /** Tooltip rows naming the hovered events. */
 export function badgeRows(badges: readonly EventBadge[]): TooltipRow[] {
-  return badges.map((badge, index) => ({ label: `${badge.glyph} ${badge.label}`, swatch: badge.color, divider: index === 0 }));
+  return badges.map((badge, index) => ({ label: `${badge.glyph} ${badge.label}`, swatch: badge.color, divider: index === 0,
+    ...(badge.approximate ? { value: 'Approximate' } : {}) }));
 }
 
 export function drawBadges(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, badges: readonly EventBadge[], playhead: number | null): void {
@@ -67,6 +71,8 @@ export function drawBadges(ctx: CanvasRenderingContext2D, frame: PlotFrame, toke
   // Triangles point down at the plot, their tip just above it, in badge order (later on top).
   for (const badge of visible) {
     if (badge.shape !== 'triangle') continue;
+    ctx.globalAlpha = badge.approximate ? APPROXIMATE_ALPHA : 1;
+    ctx.setLineDash(badge.approximate ? [...APPROXIMATE_DASH] : []);
     const x = frame.toX(badge.hour);
     const tip = frame.plotTop - 3;
     ctx.beginPath(); ctx.moveTo(x, tip); ctx.lineTo(x - TRIANGLE.half, tip - TRIANGLE.height); ctx.lineTo(x + TRIANGLE.half, tip - TRIANGLE.height); ctx.closePath();
@@ -74,6 +80,7 @@ export function drawBadges(ctx: CanvasRenderingContext2D, frame: PlotFrame, toke
     ctx.lineWidth = 1; ctx.strokeStyle = tokens.surface; ctx.stroke();
   }
   ctx.lineWidth = 1;
+  ctx.setLineDash([]);
   ctx.strokeStyle = tokens.text;
   ctx.globalAlpha = 0.18;
   for (const badge of shown) {
@@ -86,6 +93,8 @@ export function drawBadges(ctx: CanvasRenderingContext2D, frame: PlotFrame, toke
   ctx.textBaseline = 'middle';
   for (const badge of shown) {
     const x = frame.toX(badge.hour);
+    ctx.globalAlpha = badge.approximate ? APPROXIMATE_ALPHA : 1;
+    ctx.setLineDash(badge.approximate ? [...APPROXIMATE_DASH] : []);
     ctx.beginPath(); ctx.arc(x, y, RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = tokens.raised; ctx.fill();
     ctx.strokeStyle = tokens.border; ctx.stroke();

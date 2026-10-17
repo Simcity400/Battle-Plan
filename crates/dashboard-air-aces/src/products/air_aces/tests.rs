@@ -120,7 +120,7 @@ fn air_aces_dates_are_bounds_and_first_seen_dead_stays_unknown() {
     scan.observe(&frame(148, vec![dead, ace(2, false), ace(3, true)]));
     finish(&mut scan);
     let reply = history(&scan);
-    assert_eq!(reply.aces[0].first_seen, 100);
+    assert_eq!(reply.aces[0].first_seen, Some(100));
     assert_eq!(
         info(&scan).observed,
         vec![

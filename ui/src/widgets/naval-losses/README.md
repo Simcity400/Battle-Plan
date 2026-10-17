@@ -11,11 +11,15 @@ Late identity bridges add sparse signed corrections to historical supplying
 dates. Hourly windows rerank corrected values; dense Top-N lines use the
 min-rank bucket mask with corrected candidates. Hover, picks and keyboard dates
 read exact values, with group and drill ranges bound to native holder intervals.
-Unprepared ranges use the shared pending widget state, labelled **This range is
+Manifests expose the naval prefix with coverage and pending hours; reached
+windows use that prefix's own recorded holder identities. Unprepared ranges use
+the shared pending widget state, labelled **This range is
 still being prepared.** Naval losses cannot sample a frame in isolation: retained
 ship occurrences, convoy differences, baselines and late attribution corrections
 depend on earlier observations. They remain pending rather than drawing a zero
 or a count of the current retained vector.
+Mounted windows follow coverage changes, replacing pending values and late
+identity corrections through the shared progressive window loader.
 
 **Settings:** Top-ten race of both kinds, Lost and Running total by default; ships/convoys/both, Sunk by, per-month counts, manual countries/smart groups, Show Breakdown and inline/pop-out drill; Campaign, Follow, Pin and Range plus shared race/line controls.
 

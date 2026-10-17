@@ -35,8 +35,11 @@ fn set(frame: &mut DecodedFrame, rows: TableRows) {
 
 /// Whether `hour` reads the template table, by its recorded cadence.
 fn template_read(hour: i32) -> bool {
-    replay::cadence::cadence_in(TableId::DivisionTemplates, replay::format::FormatVersion::CURRENT)
-        .is_refresh(hour)
+    replay::cadence::cadence_in(
+        TableId::DivisionTemplates,
+        replay::format::FormatVersion::CURRENT,
+    )
+    .is_refresh(hour)
 }
 
 /// The scenario's hours, from `base` (the hour after a template read): its
@@ -232,8 +235,8 @@ impl Scenario {
     fn replay(&self) -> Replay {
         let blocks = self.blocks();
         let frames = |hours: &[i32]| hours.iter().map(|&hour| self.frame(hour)).collect();
-        let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames(&blocks[0]))])
-            .unwrap();
+        let mut replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, frames(&blocks[0]))]).unwrap();
         for hours in &blocks[1..] {
             replay = replay
                 .append(&[continuation_records(&replay, 1, frames(hours))])
@@ -283,7 +286,10 @@ fn pages(fixture: &Fixture, blocks: usize) -> BTreeMap<(String, u64), Vec<u8>> {
         }
     }
     assert_eq!(
-        pages.keys().filter(|(name, _)| name == "division-log-1").count(),
+        pages
+            .keys()
+            .filter(|(name, _)| name == "division-log-1")
+            .count(),
         blocks,
         "a window per block"
     );
@@ -349,15 +355,8 @@ fn folded(source: &Source, fixture: &Fixture, commit: usize) -> (Vec<u8>, Vec<Op
                 .0,
             ),
             Err(_) => {
-                own.observe_hours(
-                    source,
-                    &context,
-                    replay,
-                    index,
-                    &mut observed,
-                    &mut check,
-                )
-                .unwrap();
+                own.observe_hours(source, &context, replay, index, &mut observed, &mut check)
+                    .unwrap();
                 None
             }
         });
@@ -478,4 +477,74 @@ fn division_block_folds_date_presentations_by_the_carried_template_read() {
             .filter(|event| scenario.blocks()[1].contains(&event.row.read_hour))
             .all(|event| event.row.template_hour == Some(read))
     );
+}
+
+#[test]
+fn newest_division_window_matches_hourly_rows_with_reappearing_handles_and_reuses_its_proof() {
+    let scenario = Scenario::new();
+    let (source, root) = dashboard_base::test_fixtures::file_source(scenario.replay());
+    let context = LoadContext { content: None };
+    let cancelled = AtomicBool::new(false);
+    let mut scan = Scan::new(source.replay_ref().format);
+    for block in &source.replay_ref().index {
+        source
+            .replay_ref()
+            .read_block_alone(
+                block,
+                &TABLES,
+                |_, frame| {
+                    scan.observe_with_changes(frame, None);
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+    }
+    let params = DivisionLogParams {
+        branch_id: "1".into(),
+        window: scenario.blocks().len() - 1,
+    };
+    let expected = scan.reply(&source, &params, &context, &cancelled).unwrap();
+    let (actual, _, _) = super::super::newest::query(&source, &params, &context, &cancelled)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    let neighbour = DivisionLogParams {
+        branch_id: "1".into(),
+        window: params.window - 1,
+    };
+    let _ = super::super::newest::query(&source, &neighbour, &context, &cancelled).unwrap();
+    let reads = dashboard_base::prepared::query::frames::reads(&source);
+    let (again, refused) =
+        dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+            super::super::newest::query(&source, &params, &context, &cancelled)
+        });
+    assert!(!refused);
+    assert!(again.unwrap().is_some());
+    assert_eq!(
+        dashboard_base::prepared::query::frames::reads(&source),
+        reads
+    );
+    for (product, params) in [
+        ("division-log-manifest", serde_json::json!({"branchId":"1"})),
+        (
+            "division-log",
+            serde_json::json!({"branchId":"1","window":params.window}),
+        ),
+    ] {
+        let reply =
+            super::super::prepared::first_view(&source, product, params, &context, &cancelled)
+                .unwrap();
+        assert!(reply.is_object());
+        if product == "division-log-manifest" {
+            assert!(!reply["pending"].as_array().unwrap().is_empty());
+        } else {
+            assert!(reply["pending"].as_array().unwrap().is_empty());
+            assert!(reply["exact"].is_number());
+        }
+    }
+    let _ = std::fs::remove_dir_all(root);
 }
