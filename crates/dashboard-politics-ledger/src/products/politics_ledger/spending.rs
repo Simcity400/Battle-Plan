@@ -159,6 +159,8 @@ pub(super) struct Scanned {
     /// Countries whose capture and holds an accepted read observed.
     #[cfg(test)]
     country_visits: usize,
+    #[cfg(test)]
+    accounting_visits: usize,
     /// Join every hour from the whole tables, never from changed rows.
     #[cfg(test)]
     whole_tables: bool,
@@ -795,7 +797,7 @@ fn publish_events(
 /// yet recorded and names a known country.
 fn dated_at(scan: &Scanned, native: &inputs::Inputs, hour: i32) -> bool {
     let power = (native.power_changed || native.identity_changed)
-        && native.power_rows().any(|row| {
+        && native.accounting_power().any(|row| {
             row.hour == hour
                 && !scan
                     .events
@@ -807,7 +809,7 @@ fn dated_at(scan: &Scanned, native: &inputs::Inputs, hour: i32) -> bool {
     let costs = native.costs_changed || native.identity_changed;
     power
         || costs
-            && native.cost_rows().any(|row| {
+            && native.accounting_cost().any(|row| {
                 row.day_hour == hour
                     && !scan.costs.contains(&(
                         row.country,
@@ -1007,10 +1009,17 @@ fn observe_accounting(
 ) -> io::Result<()> {
     let native = Arc::clone(&scan.inputs);
     let hour = frame.hour;
+    #[cfg(test)]
+    {
+        scan.accounting_visits += native.accounting_power().count()
+            + native.accounting_government().count()
+            + native.accounting_daily().count()
+            + native.accounting_cost().count();
+    }
     observe_presence(scan, frame)?;
     scan.refresh_modifier_formats(frame);
     let mut event_countries = BTreeSet::new();
-    for row in native.power_rows() {
+    for row in native.accounting_power() {
         if !scan
             .events
             .contains(&(row.country, row.instance, row.epoch, row.sequence))
@@ -1019,7 +1028,7 @@ fn observe_accounting(
             event_countries.extend(row.identity.target_country);
         }
     }
-    for row in native.cost_rows() {
+    for row in native.accounting_cost() {
         if !scan.costs.contains(&(
             row.country,
             row.instance,
@@ -1082,7 +1091,7 @@ fn observe_accounting(
     let applications = &native.applications;
     let mut unmatched = BTreeSet::new();
     if native.power_changed || native.identity_changed {
-        for event in native.power_rows() {
+        for event in native.accounting_power() {
             if event.cause == PowerCause::DailyGain
                 && event.currency == PowerCurrency::Political
                 && !scan.events.contains(&(
@@ -1313,7 +1322,7 @@ fn observe_accounting(
     let current_texts = FrameTexts::default();
     let previous_texts = FrameTexts::default();
     if native.power_changed || native.identity_changed {
-        for row in native.power_rows() {
+        for row in native.accounting_power() {
             // A row a later read publishes again is skipped before its tag.
             let key = (row.country, row.instance, row.epoch, row.sequence);
             if scan.events.contains(&key) {
@@ -1362,7 +1371,7 @@ fn observe_accounting(
         }
     }
     if native.governments_changed || native.identity_changed {
-        for row in native.government_rows() {
+        for row in native.accounting_government() {
             let key = (row.country, row.instance, row.epoch, row.sequence);
             if scan.events.contains(&key) {
                 continue;
@@ -1408,7 +1417,7 @@ fn observe_accounting(
         }
     }
     if native.daily_changed || native.identity_changed {
-        for row in native.daily_rows() {
+        for row in native.accounting_daily() {
             let Some(tag) = scan
                 .tag_at(row.country, row.instance, row.epoch, row.day_hour)
                 .map(str::to_owned)
@@ -1478,7 +1487,7 @@ fn observe_accounting(
         }
     }
     if native.costs_changed || native.identity_changed {
-        for row in native.cost_rows() {
+        for row in native.accounting_cost() {
             let key = (
                 row.country,
                 row.instance,

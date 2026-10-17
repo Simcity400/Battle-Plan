@@ -233,6 +233,12 @@ impl<K: Ord + Copy> ReadRuns<K> {
         self.changes.replace(BTreeSet::new())
     }
 
+    /// The pending interval changes, without consuming another publisher's
+    /// collection. None until collection starts, including after restore.
+    pub fn changed_keys(&self) -> Option<&BTreeSet<K>> {
+        self.changes.as_ref()
+    }
+
     /// Whether the current change collection contains an interval change;
     /// none before a consumer starts collecting, including after restore.
     pub fn has_changes(&self) -> Option<bool> {

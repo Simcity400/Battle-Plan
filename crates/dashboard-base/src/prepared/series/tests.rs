@@ -2367,6 +2367,242 @@ fn reused_numeric_payloads_keep_batch_bytes_and_restored_summaries() {
 }
 
 #[test]
+fn equal_observations_extend_once_and_keep_hourly_bytes() {
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut values = [Accumulator::default(), Accumulator::default()];
+    let flag = AtomicBool::new(false);
+    for (batch, (first, last)) in [(0, 15), (16, 31), (35, 50)].into_iter().enumerate() {
+        for (index, values) in values.iter_mut().enumerate() {
+            values.advance(first).unwrap();
+            values.observe(7, first, Some(19), batch == 0);
+            let before = OBSERVATION_WORK.with(std::cell::Cell::get);
+            values.advance_span(first + 1, first + 3).unwrap();
+            WHOLE_OBSERVATIONS.with(|whole| whole.set(index == 1));
+            values.observe(7, first + 3, Some(19), false);
+            WHOLE_OBSERVATIONS.with(|whole| whole.set(false));
+            assert_eq!(
+                OBSERVATION_WORK.with(std::cell::Cell::get) - before,
+                index + 1
+            );
+            // Supplying boundaries, unknowns, reactivation and repeated hours
+            // must retain the ordinary observation semantics.
+            for hour in first + 4..=last {
+                values.advance(hour).unwrap();
+                WHOLE_OBSERVATIONS.with(|whole| whole.set(index == 1));
+                values.observe_boundary(
+                    7,
+                    hour,
+                    (hour != first + 6).then_some(19),
+                    hour == first + 9,
+                    hour == first + 12,
+                );
+                if hour == first + 8 {
+                    values.observe(7, hour, Some(19), false);
+                }
+                WHOLE_OBSERVATIONS.with(|whole| whole.set(false));
+            }
+            let mut writer = fixtures[index].writer();
+            values.flush(&mut writer, "equal", 5, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        assert_eq!(
+            serde_json::to_vec(&values[0]).unwrap(),
+            serde_json::to_vec(&values[1]).unwrap()
+        );
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "equal observations",
+        );
+        for values in &mut values {
+            *values = serde_json::from_slice(&serde_json::to_vec(&*values).unwrap()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn compact_payload_operands_do_not_expand_constant_spans() {
+    let state = KeyState {
+        last: Some(Run::new(0, 6, 9, true)),
+        partial: LEVELS.map(|aligned| {
+            Some(Partial::Span {
+                aligned,
+                first: 0,
+                last: 6,
+                value: 9,
+                first_break: true,
+            })
+        }),
+        ..Default::default()
+    };
+    let rows = Rows {
+        state,
+        ..Default::default()
+    };
+    let before = SPAN_BUCKET_WORK.with(std::cell::Cell::get);
+    let mut identity = Vec::new();
+    let expected = payload_input(&rows, &mut identity);
+    for _ in 0..5_000 {
+        assert_eq!(payload_input(&rows, &mut identity), expected);
+    }
+    assert_eq!(SPAN_BUCKET_WORK.with(std::cell::Cell::get), before);
+}
+
+#[test]
+fn ordered_single_run_summaries_keep_tree_fold_bytes_through_resume_gaps_and_refusals() {
+    let mut fixtures = [Fixture::new(), Fixture::new()];
+    let mut values = [Accumulator::default(), Accumulator::default()];
+    let flag = AtomicBool::new(false);
+    for (batch, (first, last)) in [(-7, 6), (7, 18), (22, 40), (41, 67)]
+        .into_iter()
+        .enumerate()
+    {
+        for (index, values) in values.iter_mut().enumerate() {
+            values.advance(first).unwrap();
+            for key in 0..64 {
+                values.observe(
+                    key,
+                    first,
+                    (batch != 1).then_some(i128::from(key % 4) * -10_001),
+                    batch == 0,
+                );
+            }
+            values.advance_span(first + 1, last).unwrap();
+            // A mixed run exercises the merging fallback beside constant runs.
+            values.observe(1, last, Some(77), false);
+            values
+                .event(70, last, &serde_json::json!({"batch": batch}))
+                .unwrap();
+            let before = SUMMARY_MAP_WORK.with(std::cell::Cell::get);
+            WHOLE_SUMMARY_MAPS.with(|whole| whole.set(index == 1));
+            WHOLE_PAYLOADS.with(|whole| whole.set(index == 1));
+            let mut writer = if batch == 3 {
+                fixtures[index].append_writer()
+            } else {
+                fixtures[index].writer()
+            };
+            values.flush(&mut writer, "summary", 5, &flag).unwrap();
+            WHOLE_SUMMARY_MAPS.with(|whole| whole.set(false));
+            WHOLE_PAYLOADS.with(|whole| whole.set(false));
+            let maps = SUMMARY_MAP_WORK.with(std::cell::Cell::get) - before;
+            if index == 0 {
+                assert!(maps <= 4, "only the mixed key needs maps: {maps}");
+            } else {
+                assert!(maps >= 64 * 4, "the reference builds maps for every key");
+            }
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "single-run summaries",
+        );
+        assert_eq!(
+            serde_json::to_vec(&values[0]).unwrap(),
+            serde_json::to_vec(&values[1]).unwrap()
+        );
+        for values in &mut values {
+            *values = serde_json::from_slice(&serde_json::to_vec(&*values).unwrap()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn inactive_flush_keys_keep_their_bytes_without_registration_or_payload_encoding() {
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut values = [Accumulator::default(), Accumulator::default()];
+    let flag = AtomicBool::new(false);
+    for (batch, (first, last)) in [(0, 7), (8, 17), (21, 39), (40, 70)]
+        .into_iter()
+        .enumerate()
+    {
+        for (index, values) in values.iter_mut().enumerate() {
+            values.advance(first).unwrap();
+            if batch == 0 {
+                for key in 0..128 {
+                    values.event(key, first, &key).unwrap();
+                }
+            }
+            values.observe(500, first, (batch != 2).then_some(19), batch == 0);
+            values.advance_span(first + 1, last).unwrap();
+            let registered = REGISTER_WORK.with(std::cell::Cell::get);
+            let inputs = PAYLOAD_INPUT_WORK.with(std::cell::Cell::get);
+            WHOLE_REGISTRATION.with(|whole| whole.set(index == 1));
+            WHOLE_PAYLOADS.with(|whole| whole.set(index == 1));
+            let mut writer = fixtures[index].writer();
+            values.flush(&mut writer, "inactive", 5, &flag).unwrap();
+            WHOLE_REGISTRATION.with(|whole| whole.set(false));
+            WHOLE_PAYLOADS.with(|whole| whole.set(false));
+            assert_eq!(
+                REGISTER_WORK.with(std::cell::Cell::get) - registered,
+                if index == 1 { 129 } else { 0 }
+            );
+            if batch > 0 && index == 0 {
+                assert!(PAYLOAD_INPUT_WORK.with(std::cell::Cell::get) - inputs <= 1);
+            }
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "inactive keys",
+        );
+        assert_eq!(
+            serde_json::to_vec(&values[0]).unwrap(),
+            serde_json::to_vec(&values[1]).unwrap()
+        );
+        for values in &mut values {
+            *values = serde_json::from_slice(&serde_json::to_vec(&*values).unwrap()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn changed_projection_observations_carry_equal_values_without_visits_and_keep_bytes() {
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut values = [Accumulator::default(), Accumulator::default()];
+    let flag = AtomicBool::new(false);
+    for (batch, (first, last)) in [(0, 31), (32, 63), (67, 95)].into_iter().enumerate() {
+        for (index, values) in values.iter_mut().enumerate() {
+            for hour in first..=last {
+                values.advance(hour).unwrap();
+                let value = if (first + 8..=first + 10).contains(&hour) {
+                    None
+                } else {
+                    Some(7)
+                };
+                let starts = hour == first && batch == 0;
+                let boundary = hour == first + 15 || hour == first + 20;
+                let before = values.key_visits;
+                if index == 0 {
+                    values.observe_if_changed(1, hour, value, starts, boundary);
+                } else {
+                    values.observe_boundary(1, hour, value, starts, boundary);
+                }
+                if hour == first + 2 {
+                    assert_eq!(values.key_visits - before, index);
+                }
+            }
+            let mut writer = fixtures[index].writer();
+            values.flush(&mut writer, "projection", 5, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "changed projections",
+        );
+        assert_eq!(
+            serde_json::to_vec(&values[0]).unwrap(),
+            serde_json::to_vec(&values[1]).unwrap()
+        );
+        for values in &mut values {
+            *values = serde_json::from_slice(&serde_json::to_vec(&*values).unwrap()).unwrap();
+        }
+    }
+}
+
+#[test]
 fn explicit_payload_table_reuses_series_payloads_with_identical_bytes() {
     let run = |cached: bool| {
         let fixture = Fixture::new();

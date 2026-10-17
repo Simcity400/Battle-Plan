@@ -42,6 +42,24 @@ lookup holds each distinct payload's BLAKE3 digest and raw length and refers
 to compressed bytes already in the batch; raw buffers are released after
 each key.
 
+Change-only projections publish at most once per key and accepted hour. Equal
+authenticated values retain their active run without materializing its endpoint;
+unknowns, starts and supplying boundaries go through ordinary observation. Direct
+state readers seal those endpoints before inspecting them.
+
+Accumulator flushes merge their changed rows with the existing key-state map
+without copying every state into another batch map. Inactive keys with no pending
+rows or partial summaries reuse the empty payload directly. Every key keeps its
+ordinary directory entry and byte extent; active runs and pending summaries are
+encoded for the current batch bounds.
+
+Equal authenticated observations extend their held run in one step, keeping
+supplying boundaries, repeated-hour observations and unknown intervals separate.
+A single run's summary buckets are built in their existing order without an
+ordered map; multiple runs use the ordinary ordered merge. Payload reuse compares
+constant partial summaries in their compact span form before constructing buckets.
+Both paths write the same batch and continuation bytes.
+
 Numeric keys with equal runs, incoming summaries and canonical open run also
 reuse summary construction: their input digest finds the encoded payload and
 next partial summaries already produced in that batch. Event keys build their

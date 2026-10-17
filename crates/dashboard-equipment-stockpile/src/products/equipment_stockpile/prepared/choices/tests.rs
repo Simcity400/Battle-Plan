@@ -66,6 +66,7 @@ fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
         let mut reference: Prepared =
             serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
         reference.bind_content(&content);
+        reference.choices.whole_projection = true;
         frame.hour += 1;
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -79,10 +80,15 @@ fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
         let group = series::field_key("type", "mod_equipment");
         assert!(prepared.holders["GER"].groups.contains_key(&group));
         let projected = prepared.numbers.projected;
+        let groups = prepared.choices.work.history_visits;
         frame.hour += 1;
         prepared.observe(format, &frame).unwrap();
         reference.observe(format, &frame).unwrap();
         assert_eq!(prepared.numbers.projected, projected);
+        assert_eq!(
+            prepared.choices.work.history_visits, groups,
+            "equal supplying reads project no group"
+        );
         let flag = AtomicBool::new(false);
         let actual = dashboard_base::prepared::series::tests::Fixture::new();
         let expected = dashboard_base::prepared::series::tests::Fixture::new();
@@ -1184,6 +1190,110 @@ fn one_pass_group_totals_are_each_groups_own_evaluation() {
             )
             .unwrap();
             assert_eq!(*values, expected, "{group} in scenario {scenario}");
+        }
+    }
+}
+
+#[test]
+fn changed_stock_projects_only_its_type_and_domain_and_keeps_all_group_bytes() {
+    let fixtures = [
+        dashboard_base::prepared::series::tests::Fixture::new(),
+        dashboard_base::prepared::series::tests::Fixture::new(),
+    ];
+    let flag = AtomicBool::new(false);
+    let mut choices = [Choices::default(), Choices::default()];
+    choices[1].whole_projection = true;
+    let mut numbers = [Numbers::default(), Numbers::default()];
+    let mut holders = [Holder::default(), Holder::default()];
+    let mut scans = [ScannedStockpile::default(), ScannedStockpile::default()];
+    for choices in &mut choices {
+        for (id, key, domain) in [
+            (10, "synthetic_a", Domain::Land),
+            (20, "synthetic_b", Domain::Air),
+        ] {
+            let class = Classification {
+                token: key.into(),
+                kind: Some(Kind {
+                    key: key.into(),
+                    domain,
+                    requires_available: false,
+                }),
+            };
+            choices.variant_groups.insert(id, class.groups(Some(id)));
+            choices.metadata.current.insert(
+                id,
+                ClassifiedSpan {
+                    first: 0,
+                    last: 0,
+                    classification: class,
+                },
+            );
+        }
+    }
+    for hour in [0, 1, 2, 3, 4, 6] {
+        let mut work = [0; 2];
+        for index in 0..2 {
+            choices[index].advance(hour).unwrap();
+            numbers[index].advance(hour).unwrap();
+            holders[index].variants.extend([10, 20]);
+            if hour == 3 {
+                scans[index].stock.close();
+            } else {
+                scans[index].stock.read(
+                    hour,
+                    [
+                        (10, (hour != 4).then_some(if hour < 2 { 10 } else { 50 })),
+                        (20, Some(5)),
+                    ],
+                );
+            }
+            scans[index].daily.read(hour, []);
+            let before = choices[index].work.history_visits;
+            choices[index]
+                .observe(
+                    "mod/tag",
+                    &mut holders[index],
+                    &scans[index],
+                    &VariantCatalogue::default(),
+                    hour,
+                    &mut numbers[index],
+                )
+                .unwrap();
+            work[index] = choices[index].work.history_visits - before;
+            numbers[index]
+                .observe(
+                    "mod/tag",
+                    hour,
+                    &mut scans[index],
+                    &holders[index],
+                    &BTreeSet::new(),
+                    &BTreeSet::new(),
+                )
+                .unwrap();
+        }
+        if hour == 1 {
+            assert_eq!(work[0], 0);
+            assert!(work[1] > 0);
+        }
+        if hour == 2 {
+            assert_eq!(work, [2, 4], "only the changed stock's type and domain");
+        }
+        if [2, 6].contains(&hour) {
+            for index in 0..2 {
+                let mut writer = fixtures[index].writer();
+                choices[index].flush(&mut writer, 1, &flag).unwrap();
+                numbers[index].flush(&mut writer, 1, &flag).unwrap();
+                writer.commit().unwrap();
+            }
+            dashboard_base::prepared::series::tests::assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "changed stock groups",
+            );
+            assert_eq!(
+                serde_json::to_vec(&choices[0]).unwrap(),
+                serde_json::to_vec(&choices[1]).unwrap()
+            );
         }
     }
 }

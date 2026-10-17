@@ -32,6 +32,11 @@ first loss pages are available, the ordinary reply has no loss amounts and
 uses the shared cold prefix. Prefix, selection and origin reads reuse existing
 preparation and frame caches; no historical loss amount comes from a sample.
 
+The Combat Log supplying-date index follows changed SliceReads rows and selects
+only the owners dated at the accepted hour, including dates recorded ahead of it.
+A snapshot or unavailable read rebuilds that runtime index. Phase labels separate
+variant naming, joins, supplying dates, owner projection and series flush.
+
 The prepared observer selects Combat Log rows by their raw owner's recorded-key
 range, so changes and pruning of other owners' rows rebuild no log index.
 Amount-only destruction deltas with unchanged keys reuse the owner join and

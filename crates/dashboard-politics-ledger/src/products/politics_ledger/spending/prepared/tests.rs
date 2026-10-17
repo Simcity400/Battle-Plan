@@ -3429,3 +3429,135 @@ fn pending_rows_of_one_owner_do_not_scan_other_owners_refusals() {
         );
     }
 }
+
+/// Retained publications of one owner are not new observations when one row
+/// changes. Rebuilt reads, unresolved rows and identity rechecks still read
+/// everything they can affect, including after resume and unavailable tables.
+#[test]
+fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publication() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].scan.whole_tables = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, 2);
+    put(&mut input, command_power(2));
+    let mut power: Vec<_> = (1..=64).map(|sequence| payment(1, sequence, 24)).collect();
+    // This row keeps its missing identity until a later complete join.
+    power.push(payment(99, 1, 24));
+    for sequence in [70, 71] {
+        power.push(CountryPowerChangeRow {
+            cause: PowerCause::DailyGain,
+            currency: PowerCurrency::Political,
+            operation: PowerOperation::Add,
+            requested_delta_raw: Some(3),
+            ..payment(1, sequence, 24)
+        });
+    }
+    for sequence in [72, 73] {
+        power.push(CountryPowerChangeRow {
+            operation: PowerOperation::Add,
+            requested_delta_raw: None,
+            ..payment(1, sequence, 24)
+        });
+    }
+    let (_, cost, _) = daily_gain(1, 1, 24);
+    let mut costs: Vec<_> = (0..64)
+        .map(|ordinal| CountryPowerDailyCostRow {
+            ordinal,
+            ..cost.clone()
+        })
+        .collect();
+    for hour in (24..=38).filter(|hour| *hour != 34) {
+        input.hour = hour;
+        match hour {
+            25 | 29 | 33 | 38 => {
+                power.push(payment(1, 100 + hour as u64, hour));
+                costs.push(CountryPowerDailyCostRow {
+                    ordinal: hour as u32 + 100,
+                    ..cost.clone()
+                });
+            }
+            26 => power[0].requested_delta_raw = Some(-17),
+            27 => costs[0].cost_raw = 19,
+            28 => power.retain(|row| ![2, 70, 72].contains(&row.sequence)),
+            31 => power.retain(|row| ![71, 73].contains(&row.sequence)),
+            36 => {
+                let mut links = input.complete::<tables::CountryLinks>().unwrap().to_vec();
+                links.push(CountryLinkRow {
+                    id: 99,
+                    canonical_slot: 1,
+                });
+                links.sort_by_key(|row| row.id);
+                put(&mut input, TableRows::CountryLinks(links));
+            }
+            _ => {}
+        }
+        power.sort_by_key(RowCodec::key);
+        costs.sort_by_key(RowCodec::key);
+        put(&mut input, TableRows::CountryPowerChanges(power.clone()));
+        put(&mut input, TableRows::CountryPowerDailyCosts(costs.clone()));
+        if hour == 32 {
+            input.tables[TableId::CountryPowerChanges.index()] =
+                replay::frame::TableView::Unavailable {
+                    reason: "synthetic power read refused".into(),
+                }
+                .into();
+        }
+        extend_captures(&mut input);
+        let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 30);
+        let mut visits = [0; 2];
+        let mut aggregate = [0; 2];
+        for (index, (observer, tracker)) in observers.iter_mut().zip(&mut trackers).enumerate() {
+            let before = observer.scan.accounting_visits;
+            let joined = observer.scan.inputs.aggregate_visits;
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+            visits[index] = observer.scan.accounting_visits - before;
+            aggregate[index] = observer.scan.inputs.aggregate_visits - joined;
+        }
+        assert!(
+            observers[0]
+                .scan
+                .inputs
+                .same_join(&observers[1].scan.inputs),
+            "aggregates at {hour}"
+        );
+        if hour == 25 {
+            assert!(
+                aggregate[0] <= 6 && aggregate[1] >= 130,
+                "aggregate work follows rows: {aggregate:?}"
+            );
+            assert_eq!(
+                visits[0], 3,
+                "one power, one cost, one unresolved power row"
+            );
+            assert!(
+                visits[1] >= 130,
+                "reference reads each retained row: {visits:?}"
+            );
+        }
+        if [29, 33, 38].contains(&hour) {
+            for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                publish(observer, fixture);
+            }
+            assert_eq!(
+                sections(&fixtures[0]),
+                sections(&fixtures[1]),
+                "all bytes at {hour}"
+            );
+            if hour == 29 {
+                for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                    let whole = observer.scan.whole_tables;
+                    *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+                    observer.scan.whole_tables = whole;
+                    observer.resume(&decoded);
+                    tracker.invalidate();
+                }
+            }
+        }
+    }
+}

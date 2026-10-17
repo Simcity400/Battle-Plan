@@ -179,7 +179,11 @@ impl Partial {
                 value,
                 first_break,
                 ..
-            } => constant_bucket(value, first, last, first_break, decimals),
+            } => {
+                #[cfg(test)]
+                SPAN_BUCKET_WORK.with(|work| work.set(work.get() + 1));
+                constant_bucket(value, first, last, first_break, decimals)
+            }
             Self::Bucket { bucket, .. } => bucket,
         }
     }
@@ -529,6 +533,46 @@ impl Accumulator {
     pub fn observe(&mut self, key: u64, hour: i32, value: Option<i128>, starts: bool) {
         self.observe_boundary(key, hour, value, starts, false);
     }
+    /// Publish one projection per key at an authenticated hour. Equal held
+    /// values carry without materializing their endpoint; callers reading
+    /// `state` or pending runs directly must seal first. Initial unknowns,
+    /// boundaries and reactivation retain ordinary observation.
+    pub fn observe_if_changed(
+        &mut self,
+        key: u64,
+        hour: i32,
+        value: Option<i128>,
+        starts: bool,
+        boundary: bool,
+    ) -> bool {
+        if !starts
+            && !boundary
+            && self.frontier == Some(hour)
+            && let Some(state) = self.states.get(&key)
+        {
+            let equal = match value {
+                Some(value) => {
+                    self.active.contains(&key)
+                        && state.last.is_some_and(|last| {
+                            last.value == value
+                                && self.previous.is_some_and(|previous| {
+                                    last.last_hour <= previous
+                                        && previous.checked_add(1) == Some(hour)
+                                })
+                        })
+                }
+                None => !self.active.contains(&key),
+            };
+            if equal {
+                if self.batch.first.is_none() || self.batch.last != hour {
+                    self.through(hour);
+                }
+                return false;
+            }
+        }
+        self.observe_boundary(key, hour, value, starts, boundary);
+        true
+    }
     /// A supplying read can force a new canonical run without an identity break.
     /// Authenticated observations remain active through later accepted hours.
     pub fn observe_boundary(
@@ -554,10 +598,26 @@ impl Accumulator {
         }
         let state = self.states.entry(key).or_default();
         let authenticated = self.frontier == Some(hour);
-        if authenticated
-            && self.active.contains(&key)
-            && let Some(previous) = self.previous
+        let held = authenticated && self.active.contains(&key);
+        #[cfg(not(test))]
+        let coalesce = true;
+        #[cfg(test)]
+        let coalesce = !WHOLE_OBSERVATIONS.with(std::cell::Cell::get);
+        if coalesce
+            && held
+            && !starts
+            && !boundary
+            && let (Some(previous), Some(last), Some(value)) = (self.previous, state.last, value)
+            && previous.checked_add(1) == Some(hour)
+            && last.last_hour <= previous
+            && last.value == value
         {
+            // Extending through the predecessor and pushing this equal point
+            // is one extension, with identical canonical and pending runs.
+            Self::extend(&mut self.batch, key, state, hour);
+            return;
+        }
+        if held && let Some(previous) = self.previous {
             Self::extend(&mut self.batch, key, state, previous);
         }
         if !authenticated {
@@ -627,11 +687,26 @@ impl Accumulator {
         if self.batch.first.is_none() {
             return Ok(());
         }
-        for (&key, state) in &self.states {
-            self.batch.register(key, state);
+        #[cfg(not(test))]
+        let register = false;
+        #[cfg(test)]
+        let register = WHOLE_REGISTRATION.with(std::cell::Cell::get);
+        if register {
+            for (&key, state) in &self.states {
+                self.batch.register(key, state);
+            }
+            self.states = std::mem::take(&mut self.batch)
+                .write_inner(writer, section, decimals, cancelled, payloads)?;
+        } else {
+            self.states = std::mem::take(&mut self.batch).write_accumulated(
+                std::mem::take(&mut self.states),
+                writer,
+                section,
+                decimals,
+                cancelled,
+                payloads,
+            )?;
         }
-        self.states = std::mem::take(&mut self.batch)
-            .write_inner(writer, section, decimals, cancelled, payloads)?;
         Ok(())
     }
 }
@@ -1139,6 +1214,8 @@ impl Batch {
     }
     /// Register every known key at publication, including keys absent from this batch.
     pub fn register(&mut self, key: u64, state: &KeyState) {
+        #[cfg(test)]
+        REGISTER_WORK.with(|work| work.set(work.get() + 1));
         self.keys.entry(key).or_default().state = state.clone();
     }
     pub fn push(&mut self, key: u64, state: &mut KeyState, run: Run) {
@@ -1146,6 +1223,8 @@ impl Batch {
     }
     /// Keep supplying-read boundaries even when their amounts are equal.
     pub fn push_boundary(&mut self, key: u64, state: &mut KeyState, run: Run, boundary: bool) {
+        #[cfg(test)]
+        OBSERVATION_WORK.with(|work| work.set(work.get() + 1));
         let canonical = if let Some(previous) = state
             .last
             .filter(|previous| !boundary && previous.continues(run))
@@ -1210,6 +1289,28 @@ impl Batch {
         rows.state.events = state.events;
         Ok(())
     }
+    fn write_accumulated<W: super::pages::Pages + ?Sized>(
+        self,
+        states: BTreeMap<u64, KeyState>,
+        writer: &mut W,
+        section: &str,
+        decimals: u8,
+        cancelled: &AtomicBool,
+        shared: Option<&mut Payloads>,
+    ) -> io::Result<BTreeMap<u64, KeyState>> {
+        let Some(first) = self.first else {
+            return Ok(states);
+        };
+        let mut changed = self.keys;
+        let keys = states.into_iter().map(move |(key, state)| {
+            let mut rows = changed.remove(&key).unwrap_or_default();
+            rows.state = state;
+            (key, rows)
+        });
+        Self::write_keys(
+            first, self.last, keys, writer, section, decimals, cancelled, shared,
+        )
+    }
     pub fn write<W: super::pages::Pages + ?Sized>(
         self,
         writer: &mut W,
@@ -1225,20 +1326,42 @@ impl Batch {
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
-        mut shared: Option<&mut Payloads>,
+        shared: Option<&mut Payloads>,
     ) -> io::Result<BTreeMap<u64, KeyState>> {
         let Some(first) = self.first else {
             return Ok(BTreeMap::new());
         };
-        let mut bytes = vec![0; (HEADER + DIRECTORY * self.keys.len() as u64) as usize];
+        Self::write_keys(
+            first,
+            self.last,
+            self.keys.into_iter(),
+            writer,
+            section,
+            decimals,
+            cancelled,
+            shared,
+        )
+    }
+    fn write_keys<W: super::pages::Pages + ?Sized>(
+        first: i32,
+        last: i32,
+        keys: impl ExactSizeIterator<Item = (u64, Rows)>,
+        writer: &mut W,
+        section: &str,
+        decimals: u8,
+        cancelled: &AtomicBool,
+        mut shared: Option<&mut Payloads>,
+    ) -> io::Result<BTreeMap<u64, KeyState>> {
+        let mut bytes = vec![0; (HEADER + DIRECTORY * keys.len() as u64) as usize];
         put(&mut bytes, 0, &first.to_le_bytes());
-        put(&mut bytes, 4, &self.last.to_le_bytes());
-        put(&mut bytes, 8, &(self.keys.len() as u64).to_le_bytes());
+        put(&mut bytes, 4, &last.to_le_bytes());
+        put(&mut bytes, 8, &(keys.len() as u64).to_le_bytes());
         let mut states = BTreeMap::new();
         let mut blobs = HashMap::new();
         let mut payloads = HashMap::<[u8; 32], (usize, usize, [Option<Partial>; 4])>::new();
         let mut identity = Vec::new();
-        for (index, (key, mut rows)) in self.keys.into_iter().enumerate() {
+        let mut empty: Option<(usize, usize)> = None;
+        for (index, (key, mut rows)) in keys.enumerate() {
             check_cancel(cancelled)?;
             let at = HEADER as usize + index * DIRECTORY as usize;
             put(&mut bytes, at, &key.to_le_bytes());
@@ -1263,13 +1386,35 @@ impl Batch {
                     .map_or(first, |run| run.last_hour)
                     .to_le_bytes(),
             );
+            #[cfg(not(test))]
+            let inactive = true;
+            #[cfg(test)]
+            let inactive = !WHOLE_PAYLOADS.with(std::cell::Cell::get);
+            if inactive
+                && rows.runs.is_empty()
+                && rows.events.is_empty()
+                && rows.state.partial.iter().all(Option::is_none)
+            {
+                let offset = bytes.len();
+                if let Some((start, length)) = empty {
+                    bytes.extend_from_within(start..start + length);
+                    put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                    put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
+                } else {
+                    // Four levels, each with no numeric bucket and no events.
+                    blob(&mut bytes, at + 8, vec![0; LEVELS.len() * 2], &mut blobs)?;
+                    empty = Some((offset, bytes.len() - offset));
+                }
+                states.insert(key, rows.state);
+                continue;
+            }
             // Numeric keys often hold the same runs and incoming summaries.
             // Reuse their payload before building its buckets, keeping every
             // key's directory, canonical counters and separate byte extent.
             let input = rows
                 .events
                 .is_empty()
-                .then(|| payload_input(&rows, decimals, &mut identity));
+                .then(|| payload_input(&rows, &mut identity));
             #[cfg(test)]
             let input = input.filter(|_| !WHOLE_PAYLOADS.with(std::cell::Cell::get));
             if let Some((start, length, partial)) =
@@ -1283,7 +1428,7 @@ impl Batch {
                 states.insert(key, rows.state);
                 continue;
             }
-            let identity = input.map(|input| (first, self.last, decimals, input));
+            let identity = input.map(|input| (first, last, decimals, input));
             if let Some((payload, partial)) =
                 identity.and_then(|identity| shared.as_ref()?.encoded.get(&identity))
             {
@@ -1322,27 +1467,13 @@ impl Batch {
                 hour = i128::from(*date);
             }
             for (level, size) in LEVELS.into_iter().enumerate() {
-                let mut buckets = BTreeMap::new();
-                for &run in &rows.runs {
-                    let mut hour = i64::from(run.first_hour);
-                    while hour <= i64::from(run.last_hour) {
-                        check_cancel(cancelled)?;
-                        let aligned = hour.div_euclid(size) * size;
-                        let end = (aligned + size - 1).min(i64::from(run.last_hour));
-                        let bucket = run_bucket(run, hour as i32, end as i32, decimals);
-                        let previous = buckets.remove(&aligned).flatten();
-                        buckets.insert(
-                            aligned,
-                            Some(previous.map_or(bucket, |previous| {
-                                merge(Some(previous), Some(bucket)).unwrap()
-                            })),
-                        );
-                        hour = end + 1;
-                    }
-                }
-                if let Some(partial) = rows.state.partial[level] {
-                    buckets.entry(partial.aligned()).or_insert(None);
-                }
+                let buckets = summary_buckets(
+                    &rows.runs,
+                    rows.state.partial[level],
+                    size,
+                    decimals,
+                    cancelled,
+                )?;
                 var(&mut raw, buckets.len() as u128);
                 let mut pending = rows.state.partial[level]
                     .map(|partial| (partial.aligned(), partial.bucket(decimals)));
@@ -1352,7 +1483,7 @@ impl Batch {
                         bucket.has_break |= i64::from(bucket.first_hour)
                             > aligned.max(i64::from(first))
                             || i64::from(bucket.last_hour)
-                                < (aligned + size - 1).min(i64::from(self.last));
+                                < (aligned + size - 1).min(i64::from(last));
                     }
                     var(&mut raw, zig(i128::from(aligned - previous)));
                     previous = aligned;
@@ -1363,18 +1494,16 @@ impl Batch {
                             || bucket.unwrap(),
                             |(_, value)| merge(Some(value), bucket).unwrap(),
                         );
-                    prefix.has_break |= i64::from(prefix.last_hour)
-                        < (aligned + size - 1).min(i64::from(self.last));
+                    prefix.has_break |=
+                        i64::from(prefix.last_hour) < (aligned + size - 1).min(i64::from(last));
                     encode_bucket(&mut raw, Some(prefix), aligned);
                     pending = Some((aligned, prefix));
                 }
-                let tail = i64::from(self.last).div_euclid(size) * size;
-                let last = rows.state.last;
+                let tail = i64::from(last).div_euclid(size) * size;
+                let held = rows.state.last;
                 rows.state.partial[level] = pending
-                    .filter(|(aligned, _)| {
-                        *aligned == tail && i64::from(self.last) < tail + size - 1
-                    })
-                    .map(|(aligned, bucket)| Partial::of(aligned, bucket, last, decimals));
+                    .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
+                    .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
                 let mut counts = BTreeMap::<i64, u64>::new();
                 for (hour, _) in &rows.events {
                     *counts
@@ -1407,10 +1536,102 @@ impl Batch {
     }
 }
 
+/// One run already has its bucket order. Only overlapping or multiple runs
+/// need the ordered merge; the common carried value allocates one buffer.
+fn summary_buckets(
+    runs: &[Run],
+    partial: Option<Partial>,
+    size: i64,
+    decimals: u8,
+    cancelled: &AtomicBool,
+) -> io::Result<SummaryBuckets> {
+    #[cfg(not(test))]
+    let direct = true;
+    #[cfg(test)]
+    let direct = !WHOLE_SUMMARY_MAPS.with(std::cell::Cell::get);
+    if direct && runs.len() <= 1 {
+        let mut buckets = Vec::new();
+        if let Some(&run) = runs.first() {
+            let mut hour = i64::from(run.first_hour);
+            let last = i64::from(run.last_hour);
+            if hour <= last {
+                buckets.reserve((last.div_euclid(size) - hour.div_euclid(size) + 1) as usize);
+            }
+            while hour <= last {
+                check_cancel(cancelled)?;
+                let aligned = hour.div_euclid(size) * size;
+                let end = (aligned + size - 1).min(last);
+                buckets.push((
+                    aligned,
+                    Some(run_bucket(run, hour as i32, end as i32, decimals)),
+                ));
+                hour = end + 1;
+            }
+        }
+        if let Some(partial) = partial
+            && let Err(at) =
+                buckets.binary_search_by_key(&partial.aligned(), |(aligned, _)| *aligned)
+        {
+            buckets.insert(at, (partial.aligned(), None));
+        }
+        Ok(SummaryBuckets::Ordered(buckets.into_iter()))
+    } else {
+        #[cfg(test)]
+        SUMMARY_MAP_WORK.with(|work| work.set(work.get() + 1));
+        let mut buckets = BTreeMap::new();
+        for &run in runs {
+            let mut hour = i64::from(run.first_hour);
+            while hour <= i64::from(run.last_hour) {
+                check_cancel(cancelled)?;
+                let aligned = hour.div_euclid(size) * size;
+                let end = (aligned + size - 1).min(i64::from(run.last_hour));
+                let bucket = run_bucket(run, hour as i32, end as i32, decimals);
+                let previous = buckets.remove(&aligned).flatten();
+                buckets.insert(
+                    aligned,
+                    Some(previous.map_or(bucket, |previous| {
+                        merge(Some(previous), Some(bucket)).unwrap()
+                    })),
+                );
+                hour = end + 1;
+            }
+        }
+        if let Some(partial) = partial {
+            buckets.entry(partial.aligned()).or_insert(None);
+        }
+        Ok(SummaryBuckets::Merged(buckets.into_iter()))
+    }
+}
+
+/// Both constructions hand the encoder ordered buckets without copying the
+/// merged map into another buffer.
+enum SummaryBuckets {
+    Ordered(std::vec::IntoIter<(i64, Option<ChartBucket>)>),
+    Merged(std::collections::btree_map::IntoIter<i64, Option<ChartBucket>>),
+}
+impl Iterator for SummaryBuckets {
+    type Item = (i64, Option<ChartBucket>);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Ordered(buckets) => buckets.next(),
+            Self::Merged(buckets) => buckets.next(),
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Ordered(buckets) => buckets.size_hint(),
+            Self::Merged(buckets) => buckets.size_hint(),
+        }
+    }
+}
+impl ExactSizeIterator for SummaryBuckets {}
+
 /// Identity of the operands that produce a numeric key's payload and next
 /// partial summaries. Batch bounds and decimals are shared by every key.
 /// Canonical counters live only in the directory, not in the payload.
-fn payload_input(rows: &Rows, decimals: u8, bytes: &mut Vec<u8>) -> [u8; 32] {
+fn payload_input(rows: &Rows, bytes: &mut Vec<u8>) -> [u8; 32] {
+    #[cfg(test)]
+    PAYLOAD_INPUT_WORK.with(|work| work.set(work.get() + 1));
     bytes.clear();
     bytes.extend_from_slice(&(rows.runs.len() as u64).to_le_bytes());
     for run in rows.runs.iter().copied().chain(rows.state.last) {
@@ -1425,7 +1646,25 @@ fn payload_input(rows: &Rows, decimals: u8, bytes: &mut Vec<u8>) -> [u8; 32] {
         if let Some(partial) = partial {
             let aligned = partial.aligned();
             bytes.extend_from_slice(&aligned.to_le_bytes());
-            encode_bucket(bytes, Some(partial.bucket(decimals)), aligned);
+            match partial {
+                Partial::Span {
+                    first,
+                    last,
+                    value,
+                    first_break,
+                    ..
+                } => {
+                    bytes.push(0);
+                    bytes.extend_from_slice(&first.to_le_bytes());
+                    bytes.extend_from_slice(&last.to_le_bytes());
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                    bytes.push(u8::from(first_break));
+                }
+                Partial::Bucket { bucket, .. } => {
+                    bytes.push(1);
+                    encode_bucket(bytes, Some(bucket), aligned);
+                }
+            }
         }
     }
     *blake3::hash(bytes).as_bytes()
@@ -1435,6 +1674,14 @@ fn payload_input(rows: &Rows, decimals: u8, bytes: &mut Vec<u8>) -> [u8; 32] {
 thread_local! {
     /// Build every key's payload, including repeated numeric inputs.
     static WHOLE_PAYLOADS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static WHOLE_REGISTRATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static REGISTER_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PAYLOAD_INPUT_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WHOLE_OBSERVATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static OBSERVATION_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WHOLE_SUMMARY_MAPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SUMMARY_MAP_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SPAN_BUCKET_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Key payloads actually built, before compression reuse.
     static PAYLOAD_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

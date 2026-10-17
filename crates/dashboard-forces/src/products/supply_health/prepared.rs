@@ -127,15 +127,28 @@ impl Prepared {
         frame: &DecodedFrame,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("supply:series_observe");
         for values in &mut self.values {
             values.advance(frame.hour)?;
         }
         self.runs.advance(frame.hour)?;
+        drop(cpu);
         let Some(defines) = self.defines else {
             self.scan.available |= land_present(frame);
             return Ok(());
         };
-        if changes.rows_changed[TableId::Countries.index()] || self.scan.countries_from.is_none() {
+        if self.scan.countries_from.is_none()
+            || changes.rows_changed[TableId::Countries.index()]
+                && !frame.complete::<tables::Countries>().is_ok_and(|rows| {
+                    identity_rows_kept(
+                        changes,
+                        TableId::Countries,
+                        rows.len(),
+                        self.scan.country_rows.unwrap_or(usize::MAX),
+                        &COUNTRY_FIELDS,
+                    )
+                })
+        {
             let tags = frame
                 .complete::<tables::Countries>()
                 .ok()
@@ -155,7 +168,7 @@ impl Prepared {
         if !self.scan.observe_changes(frame, defines, Some(changes))? {
             return Ok(());
         }
-        let sampled = sample_indices(&self.scan, &self.scan.observed, None)?;
+        let _cpu = ::replay::cpu::scope_phase("supply:projection_series");
         let observed = self
             .scan
             .observed
@@ -166,15 +179,22 @@ impl Prepared {
         for index in observed {
             let series = &mut self.scan.series[index];
             let run = series.runs.last().filter(|run| run.last_hour == frame.hour);
+            let counts = self.scan.counts[index];
+            let total = counts.map(|counts| counts.into_iter().map(u64::from).sum::<u64>());
             for (bucket, values) in self.values.iter_mut().enumerate() {
-                let count = sampled
-                    .get(&(series.tag.clone(), bucket.to_string()))
-                    .and_then(|sample| sample.1);
-                values.observe(
+                let count =
+                    counts
+                        .zip(total)
+                        .filter(|(_, total)| *total != 0)
+                        .map(|(counts, total)| {
+                            i128::from(counts[bucket]) * SHARE_SCALE / i128::from(total)
+                        });
+                values.observe_if_changed(
                     index as u64,
                     frame.hour,
                     count,
                     run.is_some_and(|run| run.first_hour == frame.hour && run.starts_segment),
+                    false,
                 );
                 #[cfg(test)]
                 {
@@ -214,6 +234,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("supply:series_flush");
         self.scan.seal();
         self.runs
             .flush(writer, &format!("supply-runs-{branch}"), 0, cancelled)?;

@@ -378,8 +378,17 @@ fn share_summaries_preserve_denominator_peaks_and_exact_zero_counts() {
 }
 
 #[test]
+fn supply_progressive_sampler_matches_observer_every_key() {
+    check_supply_progressive_sampler_matches_observer(5);
+}
+
+#[test]
 #[cfg(feature = "slow-tests")]
 fn supply_progressive_sampler_matches_observer_every_key_at_5000_countries() {
+    check_supply_progressive_sampler_matches_observer(5000);
+}
+
+fn check_supply_progressive_sampler_matches_observer(countries: u32) {
     use crate::products::parts_race_prepared::test_fixtures::{Fixture, frame, tag};
     let fixture = Fixture::new();
     let mut prepared = Prepared::default();
@@ -393,7 +402,7 @@ fn supply_progressive_sampler_matches_observer_every_key_at_5000_countries() {
         "the recording's mod Defines supply the classifier"
     );
     for hour in [6, 7] {
-        let frame = frame(hour, 5000);
+        let frame = frame(hour, countries);
         prepared
             .observe(
                 &frame,
@@ -401,8 +410,12 @@ fn supply_progressive_sampler_matches_observer_every_key_at_5000_countries() {
             )
             .unwrap();
         let sampled = sample(&frame, None, Some(defines)).unwrap();
-        assert_eq!(sampled.len(), 5000 * 6);
+        assert_eq!(sampled.len(), countries as usize * 6);
         assert_eq!(sampled, sample_rows(&prepared.scan, None).unwrap());
+        // Equal projections defer their endpoints until a direct state read.
+        for values in &mut prepared.values {
+            values.seal();
+        }
         for ((tag, field), (identity, value)) in &sampled {
             assert!(identity.is_some());
             if let Ok(bucket) = field.parse::<usize>() {
@@ -533,4 +546,156 @@ fn phase_b_supply_one_status_row_does_not_visit_empty_countries_or_retired_holde
     observer_tests::assert_flat(
         observer_tests::scaled_work(8, |history| measure(history, 8)).unwrap(),
     );
+}
+
+fn assert_supply_counts_follow_changed_divisions(count: u64) {
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::tests::{Fixture, assert_payloads_equal},
+    };
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay::rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow};
+    let flag = AtomicBool::new(false);
+    let mut input = crate::products::supply_health::tests::frame(100);
+    *input.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+        (1..=count)
+            .map(|id| DivisionRow {
+                id,
+                roster_owner: 11,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    let land: Vec<_> = (1..=count)
+        .map(|division| DivisionLandInputsRow {
+            division,
+            ..Default::default()
+        })
+        .collect();
+    let mut status: Vec<_> = (1..=count)
+        .map(|division| DivisionStatusRow {
+            division,
+            supply_ratio: 100_000,
+            supply_grace_maximum: Recorded::Value(1_000_000),
+            supply_grace_remaining: Recorded::Value(1_000_000),
+            ..Default::default()
+        })
+        .collect();
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [Prepared::default(), Prepared::default()];
+    for state in &mut states {
+        state.defines = Some(Defines {
+            grace: 10,
+            low: 60_000,
+            very_low_icon: 15_000,
+            low_icon: 40_000,
+        });
+    }
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for hour in (100..=113).filter(|hour| *hour != 108) {
+        input.hour = hour;
+        match hour {
+            101 => {
+                status[0].supply_ratio = 0;
+                status[0].supply_grace_remaining = Recorded::Value(0);
+            }
+            102 => status[0].entrenchment = 5,
+            104 => {
+                status.remove(0);
+            }
+            105 => status.insert(
+                0,
+                DivisionStatusRow {
+                    division: 1,
+                    ..Default::default()
+                },
+            ),
+            106 => status[0].supply_grace_remaining = Recorded::Value(1_000_000),
+            _ => {}
+        }
+        let mut current_land = land.clone();
+        if hour == 103 {
+            current_land[0].naval_transfer = true;
+        }
+        *input.tables[TableId::DivisionLandInputs.index()] = if hour == 110 {
+            TableView::Unavailable {
+                reason: "synthetic supply land refusal".into(),
+            }
+        } else {
+            TableView::Complete(TableRows::DivisionLandInputs(current_land))
+        };
+        *input.tables[TableId::DivisionStatus.index()] =
+            TableView::Complete(TableRows::DivisionStatus(status.clone()));
+        for table in [
+            TableId::Countries,
+            TableId::CountryLinks,
+            TableId::Divisions,
+            TableId::DivisionLandInputs,
+            TableId::DivisionStatus,
+        ] {
+            input.metrics.table_ns[table.index()] = 1;
+        }
+        let wire = std::sync::Arc::new(
+            encoder
+                .encode(input.clone(), hour == 100 || hour == 107)
+                .unwrap(),
+        );
+        let decoded = decoder.advance(&wire).unwrap().clone();
+        let mut visits = [0; 2];
+        for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+            let changes = if index == 0 {
+                tracker.observe_updates(
+                    &decoded,
+                    std::sync::Arc::clone(&wire),
+                    replay::format::FormatVersion::CURRENT,
+                )
+            } else {
+                tracker.observe(&decoded, replay::format::FormatVersion::CURRENT)
+            };
+            let before = state.scan.division_visits;
+            state.observe(&decoded, &changes).unwrap();
+            visits[index] = state.scan.division_visits - before;
+        }
+        if hour == 101 {
+            assert_eq!(visits, [1, count as usize], "one changed division");
+        }
+        if hour == 102 {
+            assert_eq!(visits, [0, count as usize], "unrelated status fields");
+        }
+        if [106, 113].contains(&hour) {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                state.flush(&mut writer, 1, &flag).unwrap();
+                writer.commit().unwrap();
+            }
+            assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "delta supply counts",
+            );
+            assert_eq!(
+                serde_json::to_vec(&states[0]).unwrap(),
+                serde_json::to_vec(&states[1]).unwrap()
+            );
+            if hour == 106 {
+                for (state, tracker) in states.iter_mut().zip(&mut trackers) {
+                    *state = serde_json::from_slice(&serde_json::to_vec(&*state).unwrap()).unwrap();
+                    tracker.invalidate();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn supply_bucket_deltas_match_full_recounts_through_snapshots_resume_gaps_and_refusals() {
+    assert_supply_counts_follow_changed_divisions(64);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn supply_bucket_delta_work_is_one_division_among_5000() {
+    assert_supply_counts_follow_changed_divisions(5000);
 }

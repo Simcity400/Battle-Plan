@@ -1390,3 +1390,64 @@ fn prepared_leaders_battle_availability_changes_read_coverage_as_the_oracle() {
             .any(|leader| leader.partial_from == Some(103))
     );
 }
+
+#[test]
+fn battle_only_hours_do_not_materialize_unchanged_leader_careers() {
+    let frames: Vec<_> = (100..=170)
+        .filter(|hour| *hour != 155)
+        .map(|hour| {
+            let mut frame = super::test_fixtures::war_frame(1, hour, 24);
+            if hour == 143 {
+                *frame.tables[TableId::LandCombatDetails.index()] = TableView::Unavailable {
+                    reason: "synthetic battle refusal".into(),
+                };
+            }
+            frame
+        })
+        .collect();
+    let replay = replay(&frames);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [Prepared::new(&replay, 1), Prepared::new(&replay, 1)];
+    states[1].scan.eager_battles = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let flag = AtomicBool::new(false);
+    let mut encoder = replay::frame::FrameEncoder::new();
+    let mut decoder = replay::frame::FrameDecoder::new();
+    for (ordinal, input) in frames.iter().enumerate() {
+        let wire = std::sync::Arc::new(
+            encoder
+                .encode(input.clone(), ordinal == 0 || input.hour == 148)
+                .unwrap(),
+        );
+        let frame = decoder.advance(&wire).unwrap().clone();
+        let mut visits = [0; 2];
+        for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+            let changes =
+                tracker.observe_updates(&frame, std::sync::Arc::clone(&wire), replay.format);
+            let before = state.scan.work.history_visits;
+            state.observe(&frame, &replay, None, &changes).unwrap();
+            visits[index] = state.scan.work.history_visits - before;
+        }
+        if frame.hour == 120 {
+            assert_eq!(visits[0], 0, "battle step visits no career endpoint");
+            assert!(
+                visits[1] >= 24,
+                "reference materializes all careers: {visits:?}"
+            );
+        }
+        if [134, 170].contains(&frame.hour) {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                publish(state, fixture, &flag);
+            }
+            dashboard_base::prepared::series::tests::assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "battle endpoint carry",
+            );
+            for (index, (state, fixture)) in states.iter_mut().zip(&fixtures).enumerate() {
+                *state = resume(fixture);
+                state.scan.eager_battles = index == 1;
+            }
+        }
+    }
+}

@@ -31,8 +31,86 @@ struct CurrentJoins {
     /// Whether the last observed hour lacked complete Countries or CountryLinks.
     identities_incomplete: bool,
     drain_len: Option<usize>,
+    combat_dates: BTreeMap<u32, i32>,
+    combat_hours: BTreeMap<i32, BTreeSet<u32>>,
+    combat_ready: bool,
+    #[cfg(test)]
+    whole_combat_reads: bool,
     #[cfg(test)]
     read_serializations: usize,
+}
+
+impl CurrentJoins {
+    fn combat_date(&mut self, owner: u32, hour: Option<i32>) {
+        if self.combat_dates.get(&owner).copied() == hour {
+            return;
+        }
+        if let Some(old) = self.combat_dates.remove(&owner)
+            && let Some(owners) = self.combat_hours.get_mut(&old)
+        {
+            owners.remove(&owner);
+            if owners.is_empty() {
+                self.combat_hours.remove(&old);
+            }
+        }
+        if let Some(hour) = hour {
+            self.combat_dates.insert(owner, hour);
+            self.combat_hours.entry(hour).or_default().insert(owner);
+        }
+    }
+    fn combat_reads(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> (usize, Vec<u32>) {
+        let _cpu = ::replay::cpu::scope_phase("equipment_losses:combat_reads");
+        let table = TableId::CombatLogEquipment as u32;
+        let Ok(rows) = frame.complete::<tables::SliceReads>() else {
+            self.combat_dates.clear();
+            self.combat_hours.clear();
+            self.combat_ready = false;
+            return (0, Vec::new());
+        };
+        #[cfg(not(test))]
+        let incremental = true;
+        #[cfg(test)]
+        let incremental = !self.whole_combat_reads;
+        let mut visits = 0;
+        if incremental
+            && self.combat_ready
+            && let Some((changed, deleted)) = changes.rows(TableId::SliceReads)
+        {
+            for key in deleted.iter().filter(|&&key| (key >> 32) as u32 == table) {
+                visits += 1;
+                self.combat_date(*key as u32, None);
+            }
+            for change in changed
+                .iter()
+                .filter(|change| (change.key >> 32) as u32 == table)
+            {
+                visits += 1;
+                if let Ok(at) = rows.binary_search_by_key(&change.key, |row| {
+                    (u128::from(row.table) << 32) | u128::from(row.owner)
+                }) {
+                    self.combat_date(rows[at].owner, Some(rows[at].sample_hour));
+                }
+            }
+        } else {
+            self.combat_dates.clear();
+            self.combat_hours.clear();
+            let first = rows.partition_point(|row| row.table < table);
+            let last = rows.partition_point(|row| row.table <= table);
+            for row in &rows[first..last] {
+                visits += 1;
+                self.combat_date(row.owner, Some(row.sample_hour));
+            }
+            self.combat_ready = true;
+        }
+        let owners: Vec<_> = self
+            .combat_hours
+            .get(&frame.hour)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        (visits, owners)
+    }
 }
 
 static COUNTRY_SLOT_FIELD: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
@@ -223,6 +301,7 @@ impl Prepared {
             self.finish_block(frame.hour - 1);
         }
         self.values.advance(frame.hour)?;
+        let cpu = ::replay::cpu::scope_phase("equipment_losses:variant_names");
         self.joins.variants_pending |= VariantCatalogue::TABLES
             .iter()
             .any(|table| changes.rows_changed[table.index()]);
@@ -238,6 +317,8 @@ impl Prepared {
         } else {
             self.variants.advance(frame.hour);
         }
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("equipment_losses:joins");
         let links = frame.complete::<tables::CountryLinks>().ok();
         let census = frame.complete::<tables::Countries>().ok();
         let restoring = !self.joins.joined;
@@ -613,34 +694,27 @@ impl Prepared {
         let combat_log = combat_log(frame);
         let mut combat_unresolved = BTreeSet::new();
         let mut combat_owners: BTreeMap<Identity, BTreeSet<u32>> = BTreeMap::new();
-        if (mapping_changed
+        if mapping_changed
             || changes.rows_changed[TableId::SliceReads.index()]
-            || changes.table_read[TableId::SliceReads.index()])
-            && let Ok(slices) = frame.complete::<tables::SliceReads>()
+            || changes.table_read[TableId::SliceReads.index()]
         {
-            let table = TableId::CombatLogEquipment.index() as u32;
-            let first = slices.partition_point(|row| row.table < table);
-            let last = slices.partition_point(|row| row.table <= table);
-            for read in &slices[first..last] {
-                #[cfg(test)]
-                {
-                    self.work.row_visits += 1;
-                }
-                if read.sample_hour != frame.hour {
-                    continue;
-                }
-                if let Some(slot) = links.and_then(|links| link_slot(links, read.owner)) {
+            let (visits, owners) = self.joins.combat_reads(frame, changes);
+            #[cfg(test)]
+            {
+                self.work.row_visits += visits;
+            }
+            #[cfg(not(test))]
+            let _ = visits;
+            for owner in owners {
+                if let Some(slot) = links.and_then(|links| link_slot(links, owner)) {
                     if let Some(identities) = self.joins.by_slot.get(&slot) {
                         for &identity in identities {
                             affected.entry(identity).or_default()[3] = true;
-                            combat_owners
-                                .entry(identity)
-                                .or_default()
-                                .insert(read.owner);
+                            combat_owners.entry(identity).or_default().insert(owner);
                         }
                     }
-                } else if !combat_owner(combat_log, read.owner).is_empty() {
-                    combat_unresolved.insert(read.owner);
+                } else if !combat_owner(combat_log, owner).is_empty() {
+                    combat_unresolved.insert(owner);
                 }
             }
         }
@@ -675,6 +749,8 @@ impl Prepared {
         if reads[3] && changes.slot_read[TableId::LendLeaseEquipment.index()] {
             self.lend_read = Some(frame.hour);
         }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("equipment_losses:owner_projection");
         for (identity, records) in affected {
             #[cfg(test)]
             {
@@ -968,6 +1044,7 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("equipment_losses:series_flush");
         if let Ok(last) = i32::try_from(self.next - 1) {
             self.absent.advance(last);
             for country in self.countries.values_mut() {

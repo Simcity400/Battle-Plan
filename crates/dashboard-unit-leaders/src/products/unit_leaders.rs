@@ -1524,6 +1524,11 @@ pub(crate) struct Scan {
     frontier: Option<i32>,
     materialized: Option<i32>,
     #[serde(skip)]
+    battle_frontier: Option<i32>,
+    #[cfg(test)]
+    #[serde(skip)]
+    eager_battles: bool,
+    #[serde(skip)]
     read_mask: Option<u32>,
     #[serde(skip)]
     scoped_visibility: bool,
@@ -1906,8 +1911,9 @@ impl Scan {
                 *missing = through;
             }
         }
+        let battle_at = self.battle_frontier.take().unwrap_or(at);
         for (hour, _) in self.previous_combats.iter_mut().flatten() {
-            if *hour == at {
+            if *hour == battle_at {
                 *hour = through;
             }
         }
@@ -1995,6 +2001,7 @@ impl Scan {
             block::rejected("leaders.reject.check-mode");
             return Ok(false);
         }
+        let cpu = ::replay::cpu::scope_phase("leaders:carry_proof");
         let since = Since::hour_before(decoded, tables);
         let moved = |read: &TableRead| since.as_ref().is_none_or(|since| since.changed(read));
         let holders_changed = self.refresh_holders(decoded, &moved);
@@ -2059,6 +2066,7 @@ impl Scan {
                 }
             }
         }
+        drop(cpu);
         self.seal();
         self.frontier = Some(decoded.hour);
         self.materialized = Some(decoded.hour);
@@ -2090,8 +2098,24 @@ impl Scan {
         land: Option<&[LandCombatDetailsRow]>,
         navy: Option<&[NavalCombatDetailsRow]>,
     ) {
+        let _cpu = ::replay::cpu::scope_phase("leaders:battles");
         let hour = decoded.hour;
-        self.seal();
+        #[cfg(not(test))]
+        let eager = false;
+        #[cfg(test)]
+        let eager = self.eager_battles;
+        if eager {
+            self.seal();
+        }
+        let visible_at = self.materialized.unwrap_or(hour.saturating_sub(1));
+        // Only battle continuity dates are read here. Career endpoints and
+        // visibility witnesses still name the same unchanged leader walk.
+        let battle_at = self.battle_frontier.unwrap_or(visible_at);
+        for (at, _) in self.previous_combats.iter_mut().flatten() {
+            if *at == battle_at {
+                *at = hour.saturating_sub(1);
+            }
+        }
         let visits = record_results(
             replay.format,
             decoded,
@@ -2112,7 +2136,7 @@ impl Scan {
                 decoded,
                 land,
                 navy,
-                hour.saturating_sub(1),
+                visible_at,
                 &self.leaders,
                 &self.leader_indices,
                 &self.naval_sources,
@@ -2132,7 +2156,12 @@ impl Scan {
         // The careers, commands and coverage of the hour before go on
         // through this one; this hour's combat reads are already its own.
         self.frontier = Some(hour);
-        self.seal();
+        if self.walked {
+            self.battle_frontier = Some(hour);
+        }
+        if eager {
+            self.seal();
+        }
     }
 
     /// Carry the scan through the quiet hours `first..=last` that follow its
@@ -2337,6 +2366,7 @@ impl Scan {
         kept: Option<&Kept<'_>>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<bool> {
+        let _cpu = ::replay::cpu::scope_phase("leaders:rows");
         self.active_commands.clear();
         self.commands_continuous = true;
         self.evaluated.clear();

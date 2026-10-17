@@ -63,11 +63,20 @@ pub(super) struct Inputs {
     touched: [BTreeSet<u32>; 4],
     /// Each country's latest power row hour.
     latest_power: BTreeMap<u32, i32>,
+    power_hours: BTreeMap<u32, BTreeMap<i32, usize>>,
+    gain_counts: BTreeMap<u32, BTreeMap<i32, usize>>,
+    addition_counts: BTreeMap<u32, BTreeMap<(u32, u64), [usize; 2]>>,
+    sum_counts: BTreeMap<(u32, u32, u64, i32, u64), usize>,
+    #[cfg(test)]
+    pub aggregate_visits: usize,
     /// The countries with a daily political gain at each hour.
     mutation_hours: BTreeMap<i32, BTreeSet<u32>>,
     /// The countries whose [power, government] rows changed this hour, when
     /// it was joined from its changed rows; none when the whole tables were.
     pub changed_rows: Option<[BTreeSet<u32>; 2]>,
+    /// Rows the accounting can change: recorded edits, unresolved events and
+    /// the complete rows of identities observed again, in table order.
+    accounting: Option<[Vec<usize>; 4]>,
     /// How many [daily upkeep or gain power, government, daily] rows date at each
     /// native day: the newest is the newest native day they publish.
     days: [BTreeMap<i32, usize>; 3],
@@ -271,8 +280,13 @@ impl dashboard_base::prepared::prepass::Held for Inputs {
             .heap(&self.keys)
             .heap(&self.touched)
             .heap(&self.latest_power)
+            .heap(&self.power_hours)
+            .heap(&self.gain_counts)
+            .heap(&self.addition_counts)
+            .heap(&self.sum_counts)
             .heap(&self.mutation_hours)
             .heap(&self.changed_rows)
+            .heap(&self.accounting)
             .heap(&self.days)
             .heap(&self.advanced)
             .heap(&self.deferred);
@@ -369,6 +383,39 @@ impl Inputs {
             |row| row.country,
         )
     }
+    pub(super) fn accounting_power(&self) -> Box<dyn Iterator<Item = &CountryPowerChangeRow> + '_> {
+        let rows = self.power();
+        match &self.accounting {
+            Some(positions) => Box::new(positions[0].iter().map(move |&at| &rows[at])),
+            None => Box::new(self.power_rows()),
+        }
+    }
+    pub(super) fn accounting_government(
+        &self,
+    ) -> Box<dyn Iterator<Item = &GovernmentChangeRow> + '_> {
+        let rows = self.governments();
+        match &self.accounting {
+            Some(positions) => Box::new(positions[1].iter().map(move |&at| &rows[at])),
+            None => Box::new(self.government_rows()),
+        }
+    }
+    pub(super) fn accounting_daily(&self) -> Box<dyn Iterator<Item = &CountryPowerDailyRow> + '_> {
+        let rows = self.daily();
+        match &self.accounting {
+            Some(positions) => Box::new(positions[2].iter().map(move |&at| &rows[at])),
+            None => Box::new(self.daily_rows()),
+        }
+    }
+    pub(super) fn accounting_cost(
+        &self,
+    ) -> Box<dyn Iterator<Item = &CountryPowerDailyCostRow> + '_> {
+        let rows = self.costs();
+        match &self.accounting {
+            Some(positions) => Box::new(positions[3].iter().map(move |&at| &rows[at])),
+            None => Box::new(self.cost_rows()),
+        }
+    }
+
     pub(super) fn identity_rows(&self) -> impl Iterator<Item = &PoliticsCaptureCoverageRow> {
         self.identity_countries
             .iter()
@@ -416,6 +463,7 @@ impl Inputs {
         self.advanced.clear();
         self.narrow = false;
         self.changed_rows = None;
+        self.accounting = None;
         self.touched = Default::default();
         self.slots.clear();
         self.previous_tags.clear();
@@ -591,6 +639,8 @@ impl Inputs {
             self.daily_mutations.clear();
             self.mutation_hours.clear();
             self.latest_power.clear();
+            self.power_hours.clear();
+            self.gain_counts.clear();
             let countries: Vec<_> = self
                 .power_index
                 .iter()
@@ -682,7 +732,18 @@ impl Inputs {
                 })
                 .collect();
             self.sums.clear();
+            self.sum_counts.clear();
             for row in costs {
+                *self
+                    .sum_counts
+                    .entry((
+                        row.country,
+                        row.instance,
+                        row.epoch,
+                        row.day_hour,
+                        row.pp_sequence,
+                    ))
+                    .or_default() += 1;
                 let sum = self
                     .sums
                     .entry((
@@ -1004,28 +1065,36 @@ impl Inputs {
                 .chain(power.1.iter().copied())
                 .map(|key| (key >> 64) as u32)
                 .collect();
-            for &country in &touched {
-                let rows = country_rows(
-                    held::<tables::CountryPowerChanges>(&self.power),
-                    self.power_index.as_ref(),
-                    country,
-                    |row| row.country,
-                );
-                count_days(&mut self.days[0], rows, power_day, false);
+            let _cpu = ::replay::cpu::scope_phase("politics_ledger:join_power");
+            let old = self.power.clone();
+            for row in replaced_rows(
+                held::<tables::CountryPowerChanges>(&old),
+                self.power_index.as_ref(),
+                power,
+                |key| (key >> 64) as u32,
+            ) {
+                count_days(&mut self.days[0], [row], power_day, false);
+                self.index_power_row(row, false);
+                if !self.identity_countries.contains(&row.country) {
+                    self.index_addition(row, false);
+                }
             }
             self.power = Some(frame.tables[TableId::CountryPowerChanges.index()].clone());
             if !touched.is_empty() {
                 self.power_index = None;
-                for &country in &touched {
-                    let rows = country_rows(
-                        held::<tables::CountryPowerChanges>(&self.power),
-                        None,
-                        country,
-                        |row| row.country,
-                    );
-                    count_days(&mut self.days[0], rows, power_day, true);
+                let view = self.power.clone();
+                for row in replaced_rows(
+                    held::<tables::CountryPowerChanges>(&view),
+                    None,
+                    (power.0, &[]),
+                    |key| (key >> 64) as u32,
+                ) {
+                    count_days(&mut self.days[0], [row], power_day, true);
+                    self.index_power_row(row, true);
+                    if !self.identity_countries.contains(&row.country) {
+                        self.index_addition(row, true);
+                    }
                 }
-                self.index_power(touched.iter().copied());
                 self.slots.extend(
                     touched
                         .iter()
@@ -1045,26 +1114,25 @@ impl Inputs {
                 .chain(governments.1.iter().copied())
                 .map(|key| (key >> 64) as u32)
                 .collect();
-            for &country in &touched {
-                let rows = country_rows(
-                    held::<tables::GovernmentChanges>(&self.governments),
-                    self.government_index.as_ref(),
-                    country,
-                    |row| row.country,
-                );
-                count_days(&mut self.days[1], rows, government_day, false);
+            let old = self.governments.clone();
+            for row in replaced_rows(
+                held::<tables::GovernmentChanges>(&old),
+                self.government_index.as_ref(),
+                governments,
+                |key| (key >> 64) as u32,
+            ) {
+                count_days(&mut self.days[1], [row], government_day, false);
             }
             self.governments = Some(frame.tables[TableId::GovernmentChanges.index()].clone());
             if !touched.is_empty() {
                 self.government_index = None;
-                for &country in &touched {
-                    let rows = country_rows(
-                        held::<tables::GovernmentChanges>(&self.governments),
-                        None,
-                        country,
-                        |row| row.country,
-                    );
-                    count_days(&mut self.days[1], rows, government_day, true);
+                for row in replaced_rows(
+                    held::<tables::GovernmentChanges>(&self.governments),
+                    None,
+                    (governments.0, &[]),
+                    |key| (key >> 64) as u32,
+                ) {
+                    count_days(&mut self.days[1], [row], government_day, true);
                 }
                 self.slots.extend(
                     touched
@@ -1094,19 +1162,42 @@ impl Inputs {
             .chain(costs.1.iter().copied())
             .map(|key| (key >> 32) as u32)
             .collect();
+        let cpu = ::replay::cpu::scope_phase("politics_ledger:join_daily");
         if self.daily_changed {
-            for &raw in &daily_owners {
-                for row in country_rows(
+            let old = self.daily.clone();
+            for row in replaced_rows(
+                held::<tables::CountryPowerDaily>(&old),
+                self.daily_index.as_ref(),
+                daily,
+                |key| key as u32,
+            ) {
+                count_days(&mut self.days[2], [row], daily_day, false);
+                self.daily_keys
+                    .remove(&(row.country, row.instance, row.epoch, row.day_hour));
+                if let Some(sequence) = row.pp_sequence {
+                    self.applications.remove(&(
+                        row.country,
+                        row.instance,
+                        row.epoch,
+                        row.day_hour,
+                        sequence,
+                    ));
+                }
+            }
+            self.daily = Some(frame.tables[TableId::CountryPowerDaily.index()].clone());
+            if !daily_owners.is_empty() {
+                self.daily_index = None;
+                for row in replaced_rows(
                     held::<tables::CountryPowerDaily>(&self.daily),
-                    self.daily_index.as_ref(),
-                    raw,
-                    |row| row.country,
+                    None,
+                    (daily.0, &[]),
+                    |key| key as u32,
                 ) {
-                    count_days(&mut self.days[2], [row], daily_day, false);
+                    count_days(&mut self.days[2], [row], daily_day, true);
                     self.daily_keys
-                        .remove(&(row.country, row.instance, row.epoch, row.day_hour));
+                        .insert((row.country, row.instance, row.epoch, row.day_hour));
                     if let Some(sequence) = row.pp_sequence {
-                        self.applications.remove(&(
+                        self.applications.insert((
                             row.country,
                             row.instance,
                             row.epoch,
@@ -1116,92 +1207,34 @@ impl Inputs {
                     }
                 }
             }
-            self.daily = Some(frame.tables[TableId::CountryPowerDaily.index()].clone());
-            if !daily_owners.is_empty() {
-                self.daily_index = None;
-                for &raw in &daily_owners {
-                    for row in country_rows(
-                        held::<tables::CountryPowerDaily>(&self.daily),
-                        None,
-                        raw,
-                        |row| row.country,
-                    ) {
-                        count_days(&mut self.days[2], [row], daily_day, true);
-                        self.daily_keys.insert((
-                            row.country,
-                            row.instance,
-                            row.epoch,
-                            row.day_hour,
-                        ));
-                        if let Some(sequence) = row.pp_sequence {
-                            self.applications.insert((
-                                row.country,
-                                row.instance,
-                                row.epoch,
-                                row.day_hour,
-                                sequence,
-                            ));
-                        }
-                    }
-                }
-            }
         }
+        drop(cpu);
+        let cpu = ::replay::cpu::scope_phase("politics_ledger:join_costs");
         if self.costs_changed {
-            for &raw in &cost_owners {
-                for row in country_rows(
-                    held::<tables::CountryPowerDailyCosts>(&self.costs),
-                    self.cost_index.as_ref(),
-                    raw,
-                    |row| row.country,
-                ) {
-                    self.cost_keys.remove(&(
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.ordinal,
-                    ));
-                    self.sums.remove(&(
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.pp_sequence,
-                    ));
-                }
+            let old = self.costs.clone();
+            for row in replaced_rows(
+                held::<tables::CountryPowerDailyCosts>(&old),
+                self.cost_index.as_ref(),
+                costs,
+                |key| (key >> 32) as u32,
+            ) {
+                self.index_cost(row, false);
             }
             self.costs = Some(frame.tables[TableId::CountryPowerDailyCosts.index()].clone());
             if !cost_owners.is_empty() {
                 self.cost_index = None;
-                for &raw in &cost_owners {
-                    for row in country_rows(
-                        held::<tables::CountryPowerDailyCosts>(&self.costs),
-                        None,
-                        raw,
-                        |row| row.country,
-                    ) {
-                        self.cost_keys.insert((
-                            row.country,
-                            row.instance,
-                            row.epoch,
-                            row.day_hour,
-                            row.ordinal,
-                        ));
-                        let sum = self
-                            .sums
-                            .entry((
-                                row.country,
-                                row.instance,
-                                row.epoch,
-                                row.day_hour,
-                                row.pp_sequence,
-                            ))
-                            .or_default();
-                        *sum = sum.wrapping_add(row.cost_raw);
-                    }
+                let view = self.costs.clone();
+                for row in replaced_rows(
+                    held::<tables::CountryPowerDailyCosts>(&view),
+                    None,
+                    (costs.0, &[]),
+                    |key| (key >> 32) as u32,
+                ) {
+                    self.index_cost(row, true);
                 }
             }
         }
+        drop(cpu);
         let affected: BTreeSet<_> = daily_owners.union(&cost_owners).copied().collect();
         self.reconcile_daily(affected.iter().copied(), false);
         self.slots.extend(
@@ -1274,10 +1307,54 @@ impl Inputs {
                 self.slots.insert(key as u32);
             }
         }
-        if self.power_changed || coverage_read {
-            let owners = self.observed(0).copied().collect();
-            self.reread_additions(owners);
+        if !self.identity_countries.is_empty() {
+            self.reread_additions(self.identity_countries.clone());
         }
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_rows");
+        self.accounting = Some([
+            accounting_positions(
+                self.power(),
+                self.power_index.as_ref(),
+                &self.identity_countries,
+                power.0,
+                pending[0]
+                    .iter()
+                    .copied()
+                    .filter(|key| self.touched[0].contains(&((key >> 64) as u32))),
+                |row| row.country,
+                |key| (key >> 64) as u32,
+            ),
+            accounting_positions(
+                self.governments(),
+                self.government_index.as_ref(),
+                &self.identity_countries,
+                governments.0,
+                std::iter::empty(),
+                |row| row.country,
+                |key| (key >> 64) as u32,
+            ),
+            accounting_positions(
+                self.daily(),
+                self.daily_index.as_ref(),
+                &self.identity_countries,
+                daily.0,
+                std::iter::empty(),
+                |row| row.country,
+                |key| key as u32,
+            ),
+            accounting_positions(
+                self.costs(),
+                self.cost_index.as_ref(),
+                &self.identity_countries,
+                costs.0,
+                pending[1]
+                    .iter()
+                    .copied()
+                    .filter(|key| self.touched[3].contains(&((key >> 32) as u32))),
+                |row| row.country,
+                |key| (key >> 32) as u32,
+            ),
+        ]);
         self.changed = self.identity_changed
             || self.power_changed
             || self.governments_changed
@@ -1348,6 +1425,7 @@ impl Inputs {
             self.governments = Some(frame.tables[TableId::GovernmentChanges.index()].clone());
         }
         self.changed_rows = Some(Default::default());
+        self.accounting = Some(Default::default());
         if self.daily_changed {
             self.daily = Some(frame.tables[TableId::CountryPowerDaily.index()].clone());
         }
@@ -1491,36 +1569,100 @@ impl Inputs {
         );
     }
 
-    /// The countries' daily political gain hours and latest power row hour.
+    /// Rebuild a snapshot's power aggregates. Deltas update the same counts
+    /// one row at a time, including repeated gains at one hour.
     fn index_power(&mut self, countries: impl IntoIterator<Item = u32>) {
+        let view = self.power.clone();
+        // The helpers below update aggregates only; the index is restored after.
+        let index = self.power_index.take();
         for country in countries {
-            for hour in self.daily_mutations.remove(&country).into_iter().flatten() {
-                if let Some(raws) = self.mutation_hours.get_mut(&hour) {
-                    raws.remove(&country);
-                    if raws.is_empty() {
-                        self.mutation_hours.remove(&hour);
-                    }
-                }
-            }
+            self.power_hours.remove(&country);
+            self.gain_counts.remove(&country);
             self.latest_power.remove(&country);
-            for row in country_rows(
-                held::<tables::CountryPowerChanges>(&self.power),
-                self.power_index.as_ref(),
+            for hour in self.daily_mutations.remove(&country).into_iter().flatten() {
+                remove_member(&mut self.mutation_hours, hour, country);
+            }
+            let positions: Vec<_> = country_rows(
+                held::<tables::CountryPowerChanges>(&view),
+                index.as_ref(),
                 country,
                 |row| row.country,
-            ) {
-                let latest = self.latest_power.entry(country).or_insert(row.hour);
-                *latest = (*latest).max(row.hour);
-                if row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political {
-                    self.daily_mutations
-                        .entry(row.country)
-                        .or_default()
-                        .insert(row.hour);
-                    self.mutation_hours
-                        .entry(row.hour)
-                        .or_default()
-                        .insert(row.country);
-                }
+            )
+            .collect();
+            for row in positions {
+                self.index_power_row(row, true);
+            }
+        }
+        self.power_index = index;
+    }
+
+    fn index_power_row(&mut self, row: &CountryPowerChangeRow, add: bool) {
+        #[cfg(test)]
+        {
+            self.aggregate_visits += 1;
+        }
+        let hours = self.power_hours.entry(row.country).or_default();
+        change_count(hours, row.hour, add);
+        if let Some((&last, _)) = hours.last_key_value() {
+            self.latest_power.insert(row.country, last);
+        } else {
+            self.power_hours.remove(&row.country);
+            self.latest_power.remove(&row.country);
+        }
+        if row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political {
+            let hours = self.gain_counts.entry(row.country).or_default();
+            change_count(hours, row.hour, add);
+            if hours.contains_key(&row.hour) {
+                self.daily_mutations
+                    .entry(row.country)
+                    .or_default()
+                    .insert(row.hour);
+                self.mutation_hours
+                    .entry(row.hour)
+                    .or_default()
+                    .insert(row.country);
+            } else {
+                remove_member(&mut self.daily_mutations, row.country, row.hour);
+                remove_member(&mut self.mutation_hours, row.hour, row.country);
+            }
+            if hours.is_empty() {
+                self.gain_counts.remove(&row.country);
+            }
+        }
+    }
+
+    fn index_cost(&mut self, row: &CountryPowerDailyCostRow, add: bool) {
+        #[cfg(test)]
+        {
+            self.aggregate_visits += 1;
+        }
+        let key = (
+            row.country,
+            row.instance,
+            row.epoch,
+            row.day_hour,
+            row.ordinal,
+        );
+        let sum_key = (
+            row.country,
+            row.instance,
+            row.epoch,
+            row.day_hour,
+            row.pp_sequence,
+        );
+        if add {
+            self.cost_keys.insert(key);
+            *self.sum_counts.entry(sum_key).or_default() += 1;
+            let sum = self.sums.entry(sum_key).or_default();
+            *sum = sum.wrapping_add(row.cost_raw);
+        } else {
+            self.cost_keys.remove(&key);
+            change_count(&mut self.sum_counts, sum_key, false);
+            if self.sum_counts.contains_key(&sum_key) {
+                let sum = self.sums.get_mut(&sum_key).expect("retained cost sum");
+                *sum = sum.wrapping_sub(row.cost_raw);
+            } else {
+                self.sums.remove(&sum_key);
             }
         }
     }
@@ -1559,36 +1701,136 @@ impl Inputs {
         }
     }
 
-    /// The owners' additions without an evaluated operand within their capture.
+    /// Identity changes recheck the owner's additions against its new capture.
     fn reread_additions(&mut self, owners: BTreeSet<u32>) {
-        let mut next = BTreeMap::<u32, BTreeMap<(u32, u64), u8>>::new();
-        for row in self.power_rows() {
-            if row.operation == PowerOperation::Add
-                && row.requested_delta_raw.is_none()
-                && !(row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political)
-                && self.witnesses.get(&row.country).is_some_and(|witness| {
-                    witness.instance == row.instance
-                        && witness.epoch == row.epoch
-                        && row.hour >= witness.since_hour
-                        && row.hour <= witness.through_hour
-                })
-            {
-                *next
-                    .entry(row.country)
-                    .or_default()
-                    .entry((row.instance, row.epoch))
-                    .or_default() |= match row.currency {
-                    PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
-                    PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
-                };
-            }
-        }
+        let view = self.power.clone();
+        let index = self.power_index.take();
         for country in owners {
             self.unknown_additions.remove(&country);
-            if let Some(values) = next.remove(&country) {
-                self.unknown_additions.insert(country, values);
+            self.addition_counts.remove(&country);
+            let rows: Vec<_> = country_rows(
+                held::<tables::CountryPowerChanges>(&view),
+                index.as_ref(),
+                country,
+                |row| row.country,
+            )
+            .collect();
+            for row in rows {
+                self.index_addition(row, true);
             }
         }
+        self.power_index = index;
+    }
+
+    fn index_addition(&mut self, row: &CountryPowerChangeRow, add: bool) {
+        #[cfg(test)]
+        {
+            self.aggregate_visits += 1;
+        }
+        if row.operation != PowerOperation::Add
+            || row.requested_delta_raw.is_some()
+            || row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political
+            || !self.witnesses.get(&row.country).is_some_and(|witness| {
+                witness.instance == row.instance
+                    && witness.epoch == row.epoch
+                    && row.hour >= witness.since_hour
+                    && row.hour <= witness.through_hour
+            })
+        {
+            return;
+        }
+        let counts = self.addition_counts.entry(row.country).or_default();
+        let key = (row.instance, row.epoch);
+        let count = counts.entry(key).or_default();
+        let index = usize::from(row.currency == PowerCurrency::Command);
+        if add {
+            count[index] += 1;
+        } else {
+            count[index] -= 1;
+        }
+        let bits = (u8::from(count[0] != 0) * PoliticsCaptureCoverageRow::PP)
+            | (u8::from(count[1] != 0) * PoliticsCaptureCoverageRow::CP);
+        if bits != 0 {
+            self.unknown_additions
+                .entry(row.country)
+                .or_default()
+                .insert(key, bits);
+        } else {
+            counts.remove(&key);
+            if counts.is_empty() {
+                self.addition_counts.remove(&row.country);
+            }
+            if let Some(values) = self.unknown_additions.get_mut(&row.country) {
+                values.remove(&key);
+                if values.is_empty() {
+                    self.unknown_additions.remove(&row.country);
+                }
+            }
+        }
+    }
+}
+
+fn change_count<K: Ord>(counts: &mut BTreeMap<K, usize>, key: K, add: bool) {
+    if add {
+        *counts.entry(key).or_default() += 1;
+    } else if let Some(count) = counts.get_mut(&key) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(&key);
+        }
+    }
+}
+
+fn remove_member<K: Ord, V: Ord>(sets: &mut BTreeMap<K, BTreeSet<V>>, key: K, value: V) {
+    if let Some(set) = sets.get_mut(&key) {
+        set.remove(&value);
+        if set.is_empty() {
+            sets.remove(&key);
+        }
+    }
+}
+
+/// Old rows replaced or deleted by a delta, or its new changed rows. Snapshot
+/// indexes preserve arbitrary row order; delta tables are sorted by key.
+fn replaced_rows<'a, T: RowCodec>(
+    rows: &'a [T],
+    index: Option<&Index>,
+    delta: (&[DeltaRow], &[u128]),
+    owner: fn(u128) -> u32,
+) -> Vec<&'a T> {
+    let mut keys: Vec<_> = delta
+        .0
+        .iter()
+        .map(|row| row.key)
+        .chain(delta.1.iter().copied())
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if let Some(index) = index {
+        let mut selected = BTreeMap::<u32, BTreeSet<u128>>::new();
+        for key in keys {
+            selected.entry(owner(key)).or_default().insert(key);
+        }
+        selected
+            .into_iter()
+            .flat_map(|(raw, keys)| {
+                index
+                    .get(&raw)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(move |&at| keys.contains(&rows[at].key()))
+                    .map(move |at| &rows[at])
+            })
+            .collect()
+    } else {
+        keys.into_iter()
+            .filter_map(|key| {
+                rows.binary_search_by_key(&key, RowCodec::key)
+                    .ok()
+                    .map(|at| &rows[at])
+            })
+            .collect()
     }
 }
 
@@ -1651,6 +1893,74 @@ fn country_rows<'a, T>(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static ACCOUNTING_KEY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A delta's rows are key sorted; snapshots can retain an index instead.
+/// As the owner join, visit owners in order and each owner's rows in table
+/// order. A changed identity's row is observed once.
+fn accounting_positions<T: RowCodec>(
+    rows: &[T],
+    index: Option<&Index>,
+    identities: &BTreeSet<u32>,
+    changed: &[DeltaRow],
+    pending: impl Iterator<Item = u128>,
+    country: fn(&T) -> u32,
+    owner: fn(u128) -> u32,
+) -> Vec<usize> {
+    let mut positions = Vec::new();
+    for &raw in identities {
+        match index {
+            Some(index) => positions.extend(index.get(&raw).into_iter().flatten().copied()),
+            None => {
+                let first = rows.partition_point(|row| country(row) < raw);
+                let last = first + rows[first..].partition_point(|row| country(row) == raw);
+                positions.extend(first..last);
+            }
+        }
+    }
+    let key_of = |row: &T| {
+        #[cfg(test)]
+        ACCOUNTING_KEY_VISITS.with(|visits| visits.set(visits.get() + 1));
+        row.key()
+    };
+    let keys = changed.iter().map(|row| row.key).chain(pending);
+    if let Some(index) = index {
+        let mut selected = BTreeMap::<u32, BTreeSet<u128>>::new();
+        for key in keys {
+            let raw = owner(key);
+            if !identities.contains(&raw) {
+                selected.entry(raw).or_default().insert(key);
+            }
+        }
+        // Snapshot rows need not be key sorted. Scan each selected owner's
+        // positions once, including when every row remains unresolved.
+        for (raw, keys) in selected {
+            positions.extend(
+                index
+                    .get(&raw)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&at| keys.contains(&key_of(&rows[at]))),
+            );
+        }
+    } else {
+        for key in keys {
+            if !identities.contains(&owner(key))
+                && let Ok(at) = rows.binary_search_by_key(&key, key_of)
+            {
+                positions.push(at);
+            }
+        }
+    }
+    positions.sort_unstable_by_key(|&at| (country(&rows[at]), at));
+    positions.dedup();
+    positions
+}
+
 fn selected_rows<'a, T>(
     rows: &'a [T],
     index: Option<&'a Index>,
@@ -1670,6 +1980,86 @@ fn selected_rows<'a, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_accounting_selects_5000_pending_power_rows_in_one_pass_per_read() {
+        let rows = (0..5000)
+            .rev()
+            .map(|sequence| CountryPowerChangeRow {
+                country: 11,
+                sequence,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let index = index_rows(&rows, |row| row.country);
+        let pending = rows.iter().map(RowCodec::key).collect::<BTreeSet<_>>();
+        for _ in 0..2 {
+            let before = ACCOUNTING_KEY_VISITS.with(std::cell::Cell::get);
+            let positions = accounting_positions(
+                &rows,
+                Some(&index),
+                &BTreeSet::new(),
+                &[],
+                pending.iter().copied(),
+                |row| row.country,
+                |key| (key >> 64) as u32,
+            );
+            let visits = ACCOUNTING_KEY_VISITS.with(std::cell::Cell::get) - before;
+            assert_eq!(positions, (0..rows.len()).collect::<Vec<_>>());
+            assert_eq!(visits, rows.len(), "one owner scan per supplying read");
+        }
+    }
+
+    #[test]
+    fn accounting_rows_keep_owner_order_for_indexed_snapshots_and_sorted_deltas() {
+        let rows = vec![
+            CountryPowerChangeRow {
+                country: 3,
+                sequence: 2,
+                ..Default::default()
+            },
+            CountryPowerChangeRow {
+                country: 1,
+                sequence: 3,
+                ..Default::default()
+            },
+            CountryPowerChangeRow {
+                country: 3,
+                sequence: 1,
+                ..Default::default()
+            },
+            CountryPowerChangeRow {
+                country: 2,
+                sequence: 4,
+                ..Default::default()
+            },
+        ];
+        let index = index_rows(&rows, |row| row.country);
+        let identities = BTreeSet::from([3]);
+        let pending = [rows[1].key(), rows[2].key()];
+        let positions = accounting_positions(
+            &rows,
+            Some(&index),
+            &identities,
+            &[],
+            pending.into_iter(),
+            |row| row.country,
+            |key| (key >> 64) as u32,
+        );
+        assert_eq!(positions, [1, 0, 2]);
+        let mut sorted = rows;
+        sorted.sort_by_key(RowCodec::key);
+        let positions = accounting_positions(
+            &sorted,
+            None,
+            &identities,
+            &[],
+            pending.into_iter(),
+            |row| row.country,
+            |key| (key >> 64) as u32,
+        );
+        assert_eq!(positions, [0, 2, 3]);
+    }
 
     /// Each advancing capture's old hours unscheduled and its first hour and
     /// next expiry scheduled, one capture at a time.

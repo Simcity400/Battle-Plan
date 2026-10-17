@@ -121,6 +121,13 @@ pub(super) struct Choices {
     /// Each classified variant's two groups in the current content binding.
     #[serde(skip)]
     variant_groups: BTreeMap<u64, [String; 2]>,
+    /// Coverage and learned logistics names used by this holder's projection.
+    /// Holder spellings only accumulate; variant reclassification clears this map.
+    #[serde(skip)]
+    projections: BTreeMap<String, ([Option<i32>; 5], usize)>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) whole_projection: bool,
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -243,6 +250,29 @@ fn operand<K: Ord + Copy>(rows: &ReadRuns<K>, key: K, hour: i32) -> Operand {
             })
         },
     }
+}
+
+fn observe_projection(
+    changed_only: bool,
+    values: &mut Accumulator,
+    key: u64,
+    hour: i32,
+    value: Option<i128>,
+    starts: bool,
+    boundary: bool,
+) {
+    if changed_only {
+        values.observe_if_changed(key, hour, value, starts, boundary);
+    } else {
+        observe_numeric(values, key, hour, value, starts, boundary);
+    }
+}
+
+fn known_from<K: Ord + Copy>(rows: &ReadRuns<K>, hour: i32) -> Option<i32> {
+    rows.spans
+        .last()
+        .filter(|span| span.last_hour == hour)
+        .map(|span| span.first_hour)
 }
 
 fn group_key(group: &str, measure: &str) -> String {
@@ -594,6 +624,7 @@ impl Choices {
             || !same(&self.content.kinds, &content.kinds);
         if changed {
             self.variant_groups.clear();
+            self.projections.clear();
         }
         self.content = content.clone();
         changed
@@ -672,6 +703,7 @@ impl Choices {
         } else {
             current.last = hour;
         }
+        self.projections.clear();
         self.variant_groups
             .insert(id, current.classification.groups(Some(id)));
         Ok(())
@@ -692,6 +724,29 @@ impl Choices {
         hour: i32,
         numbers: &mut Numbers,
     ) -> io::Result<()> {
+        let cpu = ::replay::cpu::scope_phase("stockpile:group_inputs");
+        let coverage = [
+            known_from(&scanned.stock, hour),
+            known_from(&scanned.daily, hour),
+            known_from(&scanned.balance, hour),
+            known_from(&scanned.logistics_stock, hour),
+            known_from(&scanned.available, hour),
+        ];
+        let projection = (coverage, holder.tokens.len());
+        #[cfg(not(test))]
+        let incremental = true;
+        #[cfg(test)]
+        let incremental = !self.whole_projection;
+        if incremental
+            && self.projections.get(tag) == Some(&projection)
+            && scanned.stock.has_changes() == Some(false)
+            && scanned.daily.has_changes() == Some(false)
+            && scanned.balance.has_changes() == Some(false)
+            && scanned.logistics_stock.has_changes() == Some(false)
+            && scanned.available.has_changes() == Some(false)
+        {
+            return Ok(());
+        }
         for &id in scanned.stock.runs.keys().chain(scanned.daily.runs.keys()) {
             if !self.variant_groups.contains_key(&id) {
                 let classification = self.classification(names.token(id));
@@ -768,7 +823,8 @@ impl Choices {
                 classification.kind.is_some() || !value.present || value.value == Some(0)
             });
         let complete_keys = numbers.complete_keys(tag);
-        observe_numeric(
+        observe_projection(
+            incremental,
             &mut self.values[0],
             complete_keys[0],
             hour,
@@ -799,7 +855,8 @@ impl Choices {
             (1, complete_balance),
             (2, complete_balance && complete_need),
         ] {
-            observe_numeric(
+            observe_projection(
+                incremental,
                 &mut self.values[slot],
                 complete_keys[slot],
                 hour,
@@ -831,6 +888,54 @@ impl Choices {
         {
             groups.extend(holder.groups.keys().cloned());
         }
+        if incremental
+            && !completeness_changed
+            && self.projections.get(tag) == Some(&projection)
+            && let (Some(stock), Some(daily), Some(balance), Some(logistics_stock), Some(available)) = (
+                scanned.stock.changed_keys(),
+                scanned.daily.changed_keys(),
+                scanned.balance.changed_keys(),
+                scanned.logistics_stock.changed_keys(),
+                scanned.available.changed_keys(),
+            )
+        {
+            let mut dirty: BTreeSet<String> = retained.dirty.clone();
+            if let Some(active) = self.active_groups.get(tag) {
+                dirty.extend(
+                    active
+                        .iter()
+                        .filter(|group| !current_groups.contains(group.as_str()))
+                        .cloned(),
+                );
+                dirty.extend(
+                    current_groups
+                        .iter()
+                        .filter(|group| !active.contains(**group))
+                        .map(|group| (*group).to_owned()),
+                );
+            }
+            let mut all = false;
+            for id in stock.union(daily) {
+                if let Some(span) = self.metadata.current.get(id) {
+                    all |= span.classification.kind.is_none();
+                    dirty.extend(span.classification.groups(Some(*id)));
+                }
+            }
+            for id in balance.iter().chain(logistics_stock).chain(available) {
+                if let Some(group) = retained.by_id.get(id)
+                    && let Some(classification) =
+                        retained.witnesses.get(group).and_then(|rows| rows.get(id))
+                {
+                    all |= classification.kind.is_none();
+                    dirty.extend(classification.groups(None));
+                }
+            }
+            if !all {
+                groups.retain(|group| dirty.contains(group));
+            }
+        }
+        drop(cpu);
+        let _cpu = ::replay::cpu::scope_phase("stockpile:group_projection");
         let read = |field: usize, id: u64| match field {
             0 => operand(&scanned.stock, id, hour),
             5 => operand(&scanned.balance, id as u32, hour),
@@ -838,8 +943,8 @@ impl Choices {
             7 => operand(&scanned.available, id as u32, hour),
             _ => unreachable!(),
         };
-        // Coverage can change a group's totals while completeness stays the same.
-        // Every observed holder evaluates its groups, including nonsupplying hours.
+        // Coverage and unresolved members can affect several groups at once;
+        // otherwise only changed members' groups need their totals again.
         let measured = evaluate_groups(
             &groups,
             &variants,
@@ -884,7 +989,8 @@ impl Choices {
                 } else {
                     &scanned.balance.spans
                 };
-                observe_numeric(
+                observe_projection(
+                    incremental,
                     &mut self.values[measure],
                     keys[measure],
                     hour,
@@ -906,6 +1012,7 @@ impl Choices {
         for values in &mut self.values {
             values.through(hour);
         }
+        self.projections.insert(tag.to_owned(), projection);
         Ok(())
     }
     fn classify_logistics(&self, holder: &Holder, id: u32) -> Classification {

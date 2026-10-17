@@ -54,9 +54,21 @@ and governments. It does so only once the content's power diagnostics are
 reachable (`PoliticsContent::power_requested`), since a presentation reports
 them only from the first item that demanded the power content.
 
+Accounting selects recorded changed rows, unresolved power and cost rows that
+this read observes again, and every row of an identity it rechecks. Retained rows
+of the same owner otherwise keep their accounting. Selections retain the owner
+join's order, including indexed snapshots; indexed selections scan each selected
+owner's positions once, regardless of how many unresolved rows it retains.
+Native-day counts, latest power hours, daily-gain membership, unknown-addition
+counts and wrapping cost sums
+remove each replaced or deleted row and add its replacement. Duplicate gains and zero wrapping sums retain their multiplicities.
+Capture identity changes recheck their owner's additions; snapshots rebuild the
+same aggregates. Reconciliation and publication pruning retain their owner joins.
+The selection is rebuilt from each accepted read and is not saved.
+
 Daily gain and cost publications join from their changed owners when the
-recorded deltas are available: those owners' daily keys, applications, wrapping
-cost sums and reconciliation counts are replaced, and other owners retain
+recorded deltas are available: changed rows update their daily keys, applications
+and wrapping cost sums, and only their owners reconcile again. Other owners keep
 their indexes and deferred coverage. Daily key membership follows recorded key
 changes, and a counted native-day index supplies the newest daily settlement.
 Recorded cost keys are pruned only for owners whose occurrence identities may

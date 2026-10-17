@@ -27,10 +27,14 @@ compression helper.
 Within a continuing holder's coverage, numeric projection and pruning visit
 only the keys whose value interval started or stopped. Equal reads retain their
 dated read events and diagnostic counts without projecting unchanged numeric
-keys. Each observed holder evaluates its group totals from the current members,
-classifications and coverage, including hours without a supplying read. Runtime
-numeric change collections rebuild after restore and are not part of the saved
-state.
+keys. Group projection follows the pending interval changes shared with numeric
+publication. Equal members, coverage and classifications carry the previous
+projection without visiting its groups. Learned logistics spellings invalidate
+that carry, as do variant reclassification and content rebinding. A changed
+member selects its type and domain; unresolved operands, changed completeness, classifications or coverage
+select every group they can affect. Runtime coverage proofs clear on content
+rebinding and rebuild after restore. Numeric change collections also rebuild
+after restore; neither is part of the saved state.
 
 `cargo test -p dashboard-equipment-stockpile` builds and runs only this crate's
 tests.

@@ -27,6 +27,13 @@ watches countries' slots and tags, links, owned-state counts and original-tag
 buckets. Kept counter rows retain only their key and owned-state count.
 Unlisted inputs remain dropped and require whole-frame observation when read.
 
+Hours changing only battles keep career and command endpoints deferred. Battle
+continuity dates advance separately, and commander visibility uses the unchanged
+leader walk's witness. A relevant leader change or publication seals the endpoints
+through the accepted frontier. The saved continuation is the ordinary sealed
+state. Phase labels separate carry proofs, leader rows, battles, result restore,
+presentation and series flush.
+
 Measured CPU notes count each fold's fallback site as `leaders.fallback.whole`,
 `.kept`, `.built` or `.quiet`, and its rejected proof as `leaders.reject.*`.
 Kept visibility counts only the first rejection in an hour. Quiet proofs name

@@ -1394,6 +1394,7 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
             ..Default::default()
         },
     ];
+    observers[1].choices.whole_projection = true;
     let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
     let mut recorded = Recorded::new();
     for (input, keyframe) in &inputs {
@@ -1443,6 +1444,7 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
             let (whole_tables, row_hours) = (observer.whole_tables, observer.row_hours);
             *observer = serde_json::from_slice(&serde_json::to_vec(&*observer).unwrap()).unwrap();
             observer.whole_tables = whole_tables;
+            observer.choices.whole_projection = whole_tables;
             observer.row_hours = row_hours;
             tracker.invalidate();
         }

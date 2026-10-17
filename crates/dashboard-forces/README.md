@@ -32,6 +32,14 @@ The `test-support` feature compiles the army's synthetic frame and the force
 families' synthetic recording and prepared store for the dashboard's pipeline
 and query tests.
 
+Supply preparation keeps each division's current supply bucket and each owner's
+counts, including the number of divisions with missing operands. Recorded supply
+and naval-transfer deltas replace only those divisions' contributions. Unrelated
+status, land and ownership-table fields retain their projections. Snapshots,
+gaps, availability or ownership changes rebuild the counts. Numeric publication
+reads these counts directly; queries retain the shared sampler. These joins are
+runtime state and rebuild after restore.
+
 Supply health's reached-hour summary and history share a content-bound endpoint
 observation, including availability and warnings. Its request binding includes
 the content folders, cache folder and unverified-content choice, so tightened

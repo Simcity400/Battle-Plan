@@ -1283,3 +1283,90 @@ fn amount_only_drains_keep_their_owner_join_and_serialize_no_unchanged_read_key(
     );
     Ok(())
 }
+
+#[test]
+fn combat_read_date_deltas_keep_all_prepared_bytes_and_future_dates() -> io::Result<()> {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::{
+        frame::{FrameDecoder, FrameEncoder},
+        rows::SliceReadRow,
+    };
+    let mut first = frame(10, 24, 0, false);
+    empty_drain(&mut first);
+    let base: Vec<_> = (0..24)
+        .map(|index| SliceReadRow {
+            table: TableId::CombatLogEquipment as u32,
+            owner: 100_000 + index,
+            sample_hour: if index == 0 { 14 } else { 10 },
+        })
+        .collect();
+    let frames: Vec<_> = (10..=19)
+        .filter(|hour| *hour != 18)
+        .map(|hour| {
+            let mut input = first.clone();
+            input.hour = hour;
+            let mut reads = base.clone();
+            if hour >= 11 {
+                reads[1].sample_hour = 11;
+            }
+            if hour >= 13 {
+                reads.retain(|row| row.owner != 100_003);
+            }
+            *input.tables[TableId::SliceReads.index()] = if hour == 16 {
+                TableView::Unavailable {
+                    reason: "synthetic read-date refusal".into(),
+                }
+            } else {
+                TableView::Complete(TableRows::SliceReads(reads))
+            };
+            input.metrics.table_ns[TableId::SliceReads.index()] = 1;
+            input
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())])?;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut states = [Prepared::new(&replay, 1, 10), Prepared::new(&replay, 1, 10)];
+    states[1].joins.whole_combat_reads = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for input in frames {
+        let wire = Arc::new(encoder.encode(input.clone(), input.hour == 10 || input.hour == 15)?);
+        let decoded = decoder.advance(&wire)?.clone();
+        let mut work = [0; 2];
+        for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), replay.format);
+            let before = state.work.row_visits;
+            state.observe_changes(&decoded, &replay, &flag, &changes)?;
+            work[index] = state.work.row_visits - before;
+        }
+        if input.hour == 11 {
+            assert!(work[0] + 20 <= work[1], "one changed read date: {work:?}");
+        }
+        if [14, 19].contains(&input.hour) {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                state.flush(&mut writer, 1, &flag)?;
+                writer.commit()?;
+            }
+            dashboard_base::prepared::series::tests::assert_payloads_equal(
+                &fixtures[0].payloads(),
+                &fixtures[1].payloads(),
+                "combat read dates",
+            );
+            assert_eq!(
+                serde_json::to_vec(&states[0])?,
+                serde_json::to_vec(&states[1])?
+            );
+            if input.hour == 14 {
+                for (index, (state, tracker)) in states.iter_mut().zip(&mut trackers).enumerate() {
+                    *state = serde_json::from_slice(&serde_json::to_vec(&*state)?)?;
+                    state.joins.whole_combat_reads = index == 1;
+                    tracker.invalidate();
+                }
+            }
+        }
+    }
+    Ok(())
+}

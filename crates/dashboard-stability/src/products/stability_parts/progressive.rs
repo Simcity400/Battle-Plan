@@ -3,6 +3,11 @@ use super::*;
 use dashboard_base::prepared::query::progressive::Samples;
 use replay::frame::DecodedFrame;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static SAMPLE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 const TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
@@ -49,6 +54,8 @@ pub(super) fn sample(
         &Samples,
     ) -> io::Result<()>,
 ) -> io::Result<Samples> {
+    #[cfg(test)]
+    SAMPLE_CALLS.with(|calls| calls.set(calls.get() + 1));
     if requested.is_some_and(|keys| {
         keys.iter()
             .any(|(_, field)| !["stability", "warSupport"].contains(&field.as_str()))

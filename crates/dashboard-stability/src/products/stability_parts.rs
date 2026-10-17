@@ -12,6 +12,7 @@
 
 use super::country_stability::{self, BreakdownLine, FormulaBreakdown, StabilityBreakdown};
 
+use dashboard_base::prepared::query::progressive::Samples;
 use dashboard_base::{Source, products::country_measure::FixedRun};
 use dashboard_base::{
     products::CountryParams,
@@ -1132,6 +1133,9 @@ pub struct Prepared {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
+    #[cfg(test)]
+    #[serde(skip)]
+    sampled_projection: bool,
 }
 impl Prepared {
     /// The table rows its scan visited, counted in tests.
@@ -1164,51 +1168,56 @@ impl Prepared {
         self.batch.advance(frame.hour)?;
         drop(cpu);
         let cpu = ::replay::cpu::scope_phase("stability:parts_projection_series");
-        progressive::sample(
-            &mut self.scan,
-            frame,
-            None,
-            Some(changes),
-            |tag, identity, read, joined, index, values, naming, samples| {
-                let scanned = self.countries.entry(tag.into()).or_default();
-                let measure = &mut scanned.measures[index];
-                let field = ["stability", "warSupport"][index];
-                let open = self
-                    .open
-                    .entry(dashboard_base::prepared::series::field_key(tag, field))
-                    .or_default();
-                let next: BTreeSet<_> = values
-                    .into_iter()
-                    .flatten()
-                    .map(|value| value.id.clone())
-                    .chain(values.map(|_| String::new()))
-                    .collect();
-                for id in open.difference(&next) {
-                    let key = serde_json::to_string(&(tag, id))?;
-                    if let Some(actor) = self
-                        .actors
-                        .get_mut(&dashboard_base::prepared::series::field_key(&key, field))
-                    {
-                        self.batch.observe(actor.key, frame.hour, None, false);
-                        actor.holder = None;
-                    }
+        let mut project = |tag: &str,
+                           identity: (u32, u32),
+                           read: i32,
+                           joined: bool,
+                           index: usize,
+                           values: Option<&[Value]>,
+                           naming: &NamingCountry,
+                           _samples: Option<&Samples>| {
+            let scanned = self.countries.entry(tag.into()).or_default();
+            let measure = &mut scanned.measures[index];
+            let field = ["stability", "warSupport"][index];
+            let open = self
+                .open
+                .entry(dashboard_base::prepared::series::field_key(tag, field))
+                .or_default();
+            let next: BTreeSet<_> = values
+                .into_iter()
+                .flatten()
+                .map(|value| value.id.clone())
+                .chain(values.map(|_| String::new()))
+                .collect();
+            for id in open.difference(&next) {
+                let key = serde_json::to_string(&(tag, id))?;
+                if let Some(actor) = self
+                    .actors
+                    .get_mut(&dashboard_base::prepared::series::field_key(&key, field))
+                {
+                    self.batch.observe(actor.key, frame.hour, None, false);
+                    actor.holder = None;
                 }
-                *open = next;
-                if let Some(values) = values {
-                    for value in values {
-                        measure
-                            .parts
-                            .entry(value.id.clone())
-                            .or_default()
-                            .update(value, naming);
-                    }
-                    for (id, carried) in std::iter::once(("", None))
-                        .chain(values.iter().map(|value| (value.id.as_str(), Some(value))))
-                    {
-                        let key = serde_json::to_string(&(tag, id))?;
-                        // Character identities retain the supplying read's earlier naming
-                        // frame. All stateless part amounts come from the same sampler.
-                        let raw = if carried.is_some_and(|value| {
+            }
+            *open = next;
+            if let Some(values) = values {
+                for value in values {
+                    measure
+                        .parts
+                        .entry(value.id.clone())
+                        .or_default()
+                        .update(value, naming);
+                }
+                for (id, carried) in std::iter::once(("", None))
+                    .chain(values.iter().map(|value| (value.id.as_str(), Some(value))))
+                {
+                    let key = serde_json::to_string(&(tag, id))?;
+                    // The scan already resolved every raw part, including characters
+                    // named from the supplying read. The empty part dates that read.
+                    let raw = Some(carried.map_or(i128::from(read), |value| i128::from(value.raw)));
+                    #[cfg(test)]
+                    let raw = if let Some(samples) = _samples {
+                        if carried.is_some_and(|value| {
                             progressive::needs_earlier_names(value, read, frame.hour)
                         }) {
                             carried.map(|value| i128::from(value.raw))
@@ -1216,24 +1225,71 @@ impl Prepared {
                             samples
                                 .get(&(key.clone(), field.into()))
                                 .and_then(|sample| sample.1)
-                        };
-                        crate::prepared_stability::record(
-                            &mut self.actors,
-                            &mut self.batch,
-                            &key,
-                            field,
-                            frame.hour,
-                            raw,
+                        }
+                    } else {
+                        raw
+                    };
+                    crate::prepared_stability::record(
+                        &mut self.actors,
+                        &mut self.batch,
+                        &key,
+                        field,
+                        frame.hour,
+                        raw,
+                        joined,
+                        (identity.0, identity.1, read),
+                        false,
+                        None,
+                    )?;
+                }
+            }
+            Ok(())
+        };
+        #[cfg(not(test))]
+        let sampled = false;
+        #[cfg(test)]
+        let sampled = self.sampled_projection;
+        if sampled {
+            progressive::sample(
+                &mut self.scan,
+                frame,
+                None,
+                Some(changes),
+                |tag, identity, read, joined, index, values, naming, samples| {
+                    project(
+                        tag,
+                        identity,
+                        read,
+                        joined,
+                        index,
+                        values,
+                        naming,
+                        Some(samples),
+                    )
+                },
+            )?;
+        } else {
+            self.scan.step(
+                frame,
+                None,
+                Some(changes),
+                |tag, identity, read, joined, measures, naming| {
+                    for (index, values) in measures.iter().enumerate() {
+                        project(
+                            tag,
+                            identity,
+                            read,
                             joined,
-                            (identity.0, identity.1, read),
-                            false,
+                            index,
+                            values.as_deref(),
+                            naming,
                             None,
                         )?;
                     }
-                }
-                Ok(())
-            },
-        )?;
+                    Ok(())
+                },
+            )?;
+        }
         drop(cpu);
         let _cpu = ::replay::cpu::scope_phase("stability:pruning");
         for tag in &self.scan.removed {

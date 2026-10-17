@@ -10,6 +10,11 @@ at the crates that own it ([dashboard-base](../dashboard-base/README.md),
 The [dashboard](../dashboard/README.md) re-exports them at the old
 `dashboard::` paths, registers them, and prepares and queries them in its pipeline.
 
+Preparation projects the scan's resolved parts directly into series. The empty
+part dates the supplying read; other parts keep their exact raw value and the
+scan's supplying-read character names. Query samplers build their own selected
+sample map from the same scan.
+
 The parts observer updates its country naming projection from recorded appearance
 row changes. Only name, cosmetic tag and original-tag operands rename parts;
 other appearance fields retain that projection. Snapshots, availability changes

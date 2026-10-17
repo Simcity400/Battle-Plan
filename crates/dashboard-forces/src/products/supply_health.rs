@@ -239,6 +239,37 @@ impl Defines {
     }
 }
 
+use dashboard_base::prepared::frame_changes::{FrameChanges, field_mask};
+use std::sync::LazyLock;
+static COUNTRY_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
+static DIVISION_OWNER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Divisions, &["roster_owner", "expeditionary_owner"]));
+static TRANSFER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::DivisionLandInputs, &["naval_transfer"]));
+static SUPPLY_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::DivisionStatus,
+        &[
+            "supply_ratio",
+            "supply_grace_maximum",
+            "supply_grace_remaining",
+        ],
+    )
+});
+fn identity_rows_kept(
+    changes: &FrameChanges,
+    table: TableId,
+    count: usize,
+    previous: usize,
+    fields: &u64,
+) -> bool {
+    count == previous
+        && changes.rows(table).is_some_and(|(changed, deleted)| {
+            deleted.is_empty() && changed.iter().all(|row| row.mask & fields == 0)
+        })
+}
+
 fn owner(row: &DivisionRow) -> u32 {
     if (row.expeditionary_owner as i32) > 0 {
         row.expeditionary_owner
@@ -272,6 +303,8 @@ struct Scan {
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
     #[serde(skip)]
+    country_rows: Option<usize>,
+    #[serde(skip)]
     roster_from: Option<ViewIdentity>,
     #[serde(skip)]
     roster_keys: Vec<(u64, u32)>,
@@ -279,6 +312,17 @@ struct Scan {
     members: Vec<(u64, usize)>,
     #[serde(skip)]
     owners_known: bool,
+    #[serde(skip)]
+    member_owners: HashMap<u64, usize>,
+    #[serde(skip)]
+    buckets: HashMap<u64, Option<usize>>,
+    #[serde(skip)]
+    totals: BTreeMap<usize, ([u32; 3], usize)>,
+    #[serde(skip)]
+    buckets_ready: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    division_visits: usize,
     #[serde(skip)]
     transfers: HashMap<u64, bool>,
     #[serde(skip)]
@@ -329,6 +373,13 @@ impl Scan {
     }
 
     fn countries(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
+        self.country_changes(frame, None)
+    }
+    fn country_changes(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<bool> {
         let countries = frame.complete::<tables::Countries>()?;
         let links = frame.complete::<tables::CountryLinks>()?;
         let ids = [TableId::Countries, TableId::CountryLinks];
@@ -345,13 +396,21 @@ impl Scan {
             .countries_from
             .as_ref()
             .is_some_and(|previous| previous[1].is(&frame.tables[TableId::CountryLinks.index()]))
-            && self.country_keys.as_ref().is_some_and(|keys| {
+            && (changes.is_some_and(|changes| {
+                identity_rows_kept(
+                    changes,
+                    TableId::Countries,
+                    countries.len(),
+                    self.country_rows.unwrap_or(usize::MAX),
+                    &COUNTRY_FIELDS,
+                )
+            }) || self.country_keys.as_ref().is_some_and(|keys| {
                 #[cfg(test)]
                 {
                     self.work.row_visits += countries.len();
                 }
                 keys.same(countries)
-            })
+            }))
         {
             self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
             return Ok(false);
@@ -395,6 +454,7 @@ impl Scan {
             .map(|link| (link.id, slots.get(&link.canonical_slot).copied()))
             .collect();
         self.country_keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
+        self.country_rows = Some(countries.len());
         self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
         Ok(true)
     }
@@ -423,12 +483,154 @@ impl Scan {
         }
     }
 
+    fn count_divisions(
+        &mut self,
+        land: &[replay::rows::DivisionLandInputsRow],
+        status: &[DivisionStatusRow],
+        defines: Defines,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+        continuous_roster: bool,
+    ) -> io::Result<BTreeMap<usize, Option<[u32; 3]>>> {
+        let deltas = changes.and_then(|changes| {
+            Some((
+                changes.rows(TableId::DivisionLandInputs)?,
+                changes.rows(TableId::DivisionStatus)?,
+            ))
+        });
+        let partial =
+            continuous_roster && self.buckets_ready && self.owners_known && deltas.is_some();
+        let dirty: Vec<u64> = if partial {
+            let (land_delta, status_delta) = deltas.expect("delta counts");
+            let mut dirty = std::collections::BTreeSet::new();
+            for &key in land_delta.1 {
+                self.transfers.remove(&(key as u64));
+                dirty.insert(key as u64);
+            }
+            for change in land_delta.0 {
+                if change.mask & *TRANSFER_FIELDS == 0
+                    && self.transfers.contains_key(&(change.key as u64))
+                {
+                    continue;
+                }
+                let at = land
+                    .binary_search_by_key(&(change.key as u64), |row| row.division)
+                    .map_err(|_| dashboard_core::invalid("Missing changed supply land row"))?;
+                self.transfers
+                    .insert(land[at].division, land[at].naval_transfer);
+                dirty.insert(land[at].division);
+            }
+            for &key in status_delta.1 {
+                self.status_inputs.remove(&(key as u64));
+                dirty.insert(key as u64);
+            }
+            for change in status_delta.0 {
+                if change.mask & *SUPPLY_FIELDS == 0
+                    && self.status_inputs.contains_key(&(change.key as u64))
+                {
+                    continue;
+                }
+                let at = status
+                    .binary_search_by_key(&(change.key as u64), |row| row.division)
+                    .map_err(|_| dashboard_core::invalid("Missing changed supply status row"))?;
+                self.status_inputs
+                    .insert(status[at].division, Supply::parts(&status[at], false));
+                dirty.insert(status[at].division);
+            }
+            dirty.into_iter().collect()
+        } else {
+            if !self.buckets_ready
+                || changes
+                    .is_none_or(|changes| changes.rows_changed[TableId::DivisionLandInputs.index()])
+            {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += land.len();
+                }
+                self.transfers = land
+                    .iter()
+                    .map(|row| (row.division, row.naval_transfer))
+                    .collect();
+            }
+            if !self.buckets_ready
+                || changes
+                    .is_none_or(|changes| changes.rows_changed[TableId::DivisionStatus.index()])
+            {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += status.len();
+                }
+                self.status_inputs = status
+                    .iter()
+                    .map(|row| (row.division, Supply::parts(row, false)))
+                    .collect();
+            }
+            self.member_owners = self.members.iter().copied().collect();
+            self.totals.clear();
+            self.buckets.clear();
+            self.members.iter().map(|&(handle, _)| handle).collect()
+        };
+        if self.owners_known {
+            for handle in dirty {
+                let Some(&index) = self.member_owners.get(&handle) else {
+                    continue;
+                };
+                #[cfg(test)]
+                {
+                    self.division_visits += 1;
+                }
+                let total = self.totals.entry(index).or_default();
+                match self.buckets.get(&handle) {
+                    Some(Some(bucket)) => total.0[*bucket] -= 1,
+                    Some(None) => total.1 -= 1,
+                    None => {}
+                }
+                let bucket = self
+                    .status_inputs
+                    .get(&handle)
+                    .copied()
+                    .flatten()
+                    .zip(self.transfers.get(&handle))
+                    .map(|(mut row, transfer)| {
+                        row.naval_transfer = *transfer;
+                        match defines.frame(&row) {
+                            3 => 0,
+                            1 | 2 => 1,
+                            _ => 2,
+                        }
+                    });
+                if let Some(bucket) = bucket {
+                    total.0[bucket] = total.0[bucket].checked_add(1).ok_or_else(|| {
+                        dashboard_core::invalid("Supply health division count overflow")
+                    })?;
+                } else {
+                    total.1 += 1;
+                }
+                self.buckets.insert(handle, bucket);
+            }
+        }
+        self.buckets_ready = self.owners_known;
+        Ok(self
+            .totals
+            .iter()
+            .map(|(&index, &(counts, unknown))| {
+                (
+                    index,
+                    (unknown == 0)
+                        .then_some(self.identities[index])
+                        .flatten()
+                        .map(|_| counts),
+                )
+            })
+            .collect())
+    }
+
     fn observe_changes(
         &mut self,
         frame: &DecodedFrame,
         defines: Defines,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<bool> {
+        let cpu = ::replay::cpu::scope_phase("supply:observe_apply");
         let hour = frame.hour;
         self.identities.resize(self.series.len(), None);
         self.counts.resize(self.series.len(), None);
@@ -469,7 +671,7 @@ impl Scan {
         if !continuous {
             self.seal();
         }
-        let countries = self.countries(frame);
+        let countries = self.country_changes(frame, changes);
         relevant |= !matches!(countries, Ok(false));
         if countries.is_err() {
             self.seal();
@@ -517,6 +719,15 @@ impl Scan {
                     .roster_from
                     .as_ref()
                     .is_some_and(|view| view.is(&frame.tables[TableId::Divisions.index()]))
+                    || changes.is_some_and(|changes| {
+                        identity_rows_kept(
+                            changes,
+                            TableId::Divisions,
+                            divisions.len(),
+                            self.roster_keys.len(),
+                            &DIVISION_OWNER_FIELDS,
+                        )
+                    })
                     || divisions.len() == self.roster_keys.len()
                         && divisions
                             .iter()
@@ -543,59 +754,14 @@ impl Scan {
                 self.roster_keys = divisions.iter().map(|row| (row.id, owner(row))).collect();
             }
             self.roster_from = Some(frame.tables[TableId::Divisions.index()].identity());
-            if changes
-                .is_none_or(|changes| changes.rows_changed[TableId::DivisionLandInputs.index()])
-            {
-                self.transfers = land?
-                    .iter()
-                    .map(|row| {
-                        #[cfg(test)]
-                        {
-                            self.work.row_visits += 1;
-                        }
-                        (row.division, row.naval_transfer)
-                    })
-                    .collect();
-            }
-            if changes.is_none_or(|changes| changes.rows_changed[TableId::DivisionStatus.index()]) {
-                self.status_inputs = status?
-                    .iter()
-                    .map(|row| {
-                        #[cfg(test)]
-                        {
-                            self.work.row_visits += 1;
-                        }
-                        (row.division, Supply::parts(row, false))
-                    })
-                    .collect();
-            }
-            if self.owners_known {
-                for &(handle, index) in &self.members {
-                    let row = self
-                        .status_inputs
-                        .get(&handle)
-                        .copied()
-                        .flatten()
-                        .zip(self.transfers.get(&handle));
-                    let counts = next
-                        .entry(index)
-                        .or_insert_with(|| self.identities[index].map(|_| [0u32; 3]));
-                    if let (Some(counts), Some((mut row, transfer))) = (counts.as_mut(), row) {
-                        row.naval_transfer = *transfer;
-                        let bucket = match defines.frame(&row) {
-                            3 => 0,
-                            1 | 2 => 1,
-                            _ => 2,
-                        };
-                        counts[bucket] = counts[bucket].checked_add(1).ok_or_else(|| {
-                            dashboard_core::invalid("Supply health division count overflow")
-                        })?;
-                    } else {
-                        *counts = None;
-                    }
-                }
-            }
+            drop(cpu);
+            let _cpu = ::replay::cpu::scope_phase("supply:division_counts");
+            next = self.count_divisions(land?, status?, defines, changes, !full && same_roster)?;
+        } else {
+            self.buckets_ready = false;
+            drop(cpu);
         }
+        let _cpu = ::replay::cpu::scope_phase("supply:projection_series");
         let populated = next
             .keys()
             .copied()

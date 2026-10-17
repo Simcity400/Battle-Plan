@@ -521,7 +521,7 @@ impl Scanned {
             self.pending = Default::default();
         }
         let power: Box<dyn Iterator<Item = &CountryPowerChangeRow> + '_> = if narrow {
-            Box::new(inputs.power_rows())
+            inputs.accounting_power()
         } else {
             Box::new(inputs.power().iter())
         };
@@ -534,7 +534,7 @@ impl Scanned {
             }
         }
         let costs: Box<dyn Iterator<Item = &CountryPowerDailyCostRow> + '_> = if narrow {
-            Box::new(inputs.cost_rows())
+            inputs.accounting_cost()
         } else {
             Box::new(inputs.costs().iter())
         };

@@ -333,8 +333,20 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut prepared = Prepared::default();
+    let mut sampled = Prepared {
+        sampled_projection: true,
+        ..Default::default()
+    };
+    let mut sampled_fixture = Fixture::new();
     for (index, frame) in frames.iter().enumerate() {
+        let calls = progressive::SAMPLE_CALLS.with(std::cell::Cell::get);
         prepared.observe(frame).unwrap();
+        assert_eq!(
+            progressive::SAMPLE_CALLS.with(std::cell::Cell::get),
+            calls,
+            "preparation consumes parts directly"
+        );
+        sampled.observe(frame).unwrap();
         if [0, 3, 6].contains(&index) {
             let mut writer = if index == 6 {
                 fixture.append_writer()
@@ -343,7 +355,23 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
             };
             prepared.flush(&mut writer, 1, &flag).unwrap();
             writer.commit().unwrap();
-            prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+            let mut sampled_writer = if index == 6 {
+                sampled_fixture.append_writer()
+            } else {
+                sampled_fixture.writer()
+            };
+            sampled.flush(&mut sampled_writer, 1, &flag).unwrap();
+            sampled_writer.commit().unwrap();
+            dashboard_base::prepared::series::tests::assert_payloads_equal(
+                &fixture.payloads(),
+                &sampled_fixture.payloads(),
+                "direct parts projection",
+            );
+            let saved = serde_json::to_vec(&prepared).unwrap();
+            assert_eq!(saved, serde_json::to_vec(&sampled).unwrap());
+            prepared = serde_json::from_slice(&saved).unwrap();
+            sampled = serde_json::from_slice(&saved).unwrap();
+            sampled.sampled_projection = true;
         }
     }
     assert_eq!(prepared.calculated_reads(), 4);
