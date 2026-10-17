@@ -126,6 +126,7 @@ struct LeadersBranch {
 
 impl LeadersBranch {
     fn content(&mut self, block: &Block<'_>) -> Option<&Content> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         self.content
             .get_or_insert_with(|| LeaderContent::read(block))
             .content

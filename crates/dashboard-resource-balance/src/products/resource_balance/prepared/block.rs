@@ -388,10 +388,14 @@ impl Prepared {
         inject: &dyn Fn(i32, io::Result<()>) -> io::Result<()>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> Result<Folded, Failure> {
-        let facts = facts.downcast::<BlockFacts>().map_err(|_| Failure {
-            hour: index.first_hour,
-            error: io::Error::other("Pre-pass facts of another family"),
-        })?;
+        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let facts = {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            facts.downcast::<BlockFacts>().map_err(|_| Failure {
+                hour: index.first_hour,
+                error: io::Error::other("Pre-pass facts of another family"),
+            })?
+        };
         let BlockFacts {
             first,
             recording,
@@ -404,8 +408,11 @@ impl Prepared {
         let hour = first.frame.hour;
         // The first hour, where continuation differs from a fresh start.
         let changes = FrameChanges::alone(&first.frame, replay.format);
-        inject(hour, self.observe_changed(&first.frame, &changes))
-            .map_err(|error| Failure { hour, error })?;
+        inject(hour, {
+            let _cpu = ::replay::cpu::scope("fold observe", None);
+            self.observe_changed(&first.frame, &changes)
+        })
+        .map_err(|error| Failure { hour, error })?;
         #[cfg(test)]
         let unchecked = UNCHECKED.with(std::cell::Cell::get);
         #[cfg(not(test))]
@@ -433,11 +440,14 @@ impl Prepared {
                 memberships: memberships.into_iter().map(Some).collect(),
             })
             .map_err(failed)?;
-        for (name, maximum) in maxima {
-            let carried = self.maxima.entry(name).or_default();
-            *carried = (*carried).max(maximum);
+        {
+            let _cpu = ::replay::cpu::scope("fold observe", None);
+            for (name, maximum) in maxima {
+                let carried = self.maxima.entry(name).or_default();
+                *carried = (*carried).max(maximum);
+            }
+            self.carry(&first, scan).map_err(failed)?;
         }
-        self.carry(&first, scan).map_err(failed)?;
         Ok(Folded::Fast)
     }
 
@@ -566,17 +576,22 @@ impl Prepared {
         inject: &dyn Fn(i32, io::Result<()>) -> io::Result<()>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> Result<(), Failure> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         let mut tracker = FrameChangeTracker::new();
         let mut failure = None;
         let read = replay.read_block_alone(
             index,
             TABLES,
             |raw, frame| {
+                let _cpu = ::replay::cpu::scope("fold driver", None);
                 let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
                 if frame.hour == first {
                     return Ok(());
                 }
-                if let Err(error) = inject(frame.hour, self.observe_changed(frame, &changes)) {
+                if let Err(error) = inject(frame.hour, {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    self.observe_changed(frame, &changes)
+                }) {
                     failure = Some(Failure {
                         hour: frame.hour,
                         error,

@@ -154,6 +154,7 @@ struct RaidsBranch {
 
 impl RaidsBranch {
     fn content(&mut self, block: &Block<'_>) -> Option<Arc<raids::Content>> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         self.content
             .get_or_insert_with(|| {
                 raids::prepared_content(block.source, block.context)

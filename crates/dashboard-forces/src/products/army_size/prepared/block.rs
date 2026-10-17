@@ -254,10 +254,14 @@ impl Prepared {
         inject: &dyn Fn(i32, io::Result<()>) -> io::Result<()>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> Result<Folded, Failure> {
-        let facts = facts.downcast::<BlockFacts>().map_err(|_| Failure {
-            hour: index.first_hour,
-            error: io::Error::other("Pre-pass facts of another family"),
-        })?;
+        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let facts = {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            facts.downcast::<BlockFacts>().map_err(|_| Failure {
+                hour: index.first_hour,
+                error: io::Error::other("Pre-pass facts of another family"),
+            })?
+        };
         let BlockFacts {
             first,
             recording,
@@ -268,8 +272,11 @@ impl Prepared {
         } = *facts;
         let hour = first.frame.hour;
         let changes = FrameChanges::alone(&first.frame, replay.format);
-        inject(hour, self.observe(&first.frame, replay, &changes))
-            .map_err(|error| Failure { hour, error })?;
+        inject(hour, {
+            let _cpu = ::replay::cpu::scope("fold observe", None);
+            self.observe(&first.frame, replay, &changes)
+        })
+        .map_err(|error| Failure { hour, error })?;
         #[cfg(test)]
         let unchecked = UNCHECKED.with(std::cell::Cell::get);
         #[cfg(not(test))]
@@ -291,9 +298,12 @@ impl Prepared {
                 publications: publications.into_iter().map(Some).collect(),
             })
             .map_err(failed)?;
-        self.carry(&first, scan);
-        self.last = last;
-        self.forget_runtime();
+        {
+            let _cpu = ::replay::cpu::scope("fold observe", None);
+            self.carry(&first, scan);
+            self.last = last;
+            self.forget_runtime();
+        }
         Ok(Folded::Fast)
     }
 
@@ -420,17 +430,22 @@ impl Prepared {
         inject: &dyn Fn(i32, io::Result<()>) -> io::Result<()>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> Result<(), Failure> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         let mut tracker = FrameChangeTracker::new();
         let mut failure = None;
         let read = replay.read_block_alone(
             index,
             TABLES,
             |raw, frame| {
+                let _cpu = ::replay::cpu::scope("fold driver", None);
                 let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
                 if frame.hour == first {
                     return Ok(());
                 }
-                if let Err(error) = inject(frame.hour, self.observe(frame, replay, &changes)) {
+                if let Err(error) = inject(frame.hour, {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    self.observe(frame, replay, &changes)
+                }) {
                     failure = Some(Failure {
                         hour: frame.hour,
                         error,

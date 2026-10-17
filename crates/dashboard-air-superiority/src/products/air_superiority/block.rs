@@ -574,13 +574,18 @@ impl OwnBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let facts = facts
-            .downcast::<BlockFacts>()
-            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let facts = {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            facts
+                .downcast::<BlockFacts>()
+                .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+        };
         #[cfg(any(test, feature = "test-support"))]
         note_frames(FAMILY.name, facts.frames);
         let mut reached = None;
         for hour in facts.hours {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             check()?;
             match hour {
                 Hour::Observed {
@@ -591,22 +596,26 @@ impl OwnBranch {
                     reached = Some(frame.hour);
                     #[cfg(any(test, feature = "test-support"))]
                     note_observed(FAMILY.name);
-                    let live = self.observe(
-                        &frame,
-                        &changes,
-                        scored,
-                        replay,
-                        source,
-                        context,
-                        groups_outcome,
-                        observed,
-                    )?;
+                    let live = {
+                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        self.observe(
+                            &frame,
+                            &changes,
+                            scored,
+                            replay,
+                            source,
+                            context,
+                            groups_outcome,
+                            observed,
+                        )?
+                    };
                     if !live {
                         return Ok((Folded::Fast, reached));
                     }
                 }
                 Hour::Quiet { first, hours } => {
                     for (offset, quiet) in hours.into_iter().enumerate() {
+                        let _cpu = ::replay::cpu::scope("fold driver", None);
                         // The span's hours are consecutive i32 hours.
                         let hour = first + offset as i32;
                         if !self.prepared.quiet_follows(hour) {
@@ -623,20 +632,24 @@ impl OwnBranch {
                             return Ok((Folded::Fallback, reached));
                         }
                         reached = Some(hour);
-                        let started = self.prepared.clock();
-                        let groups = groups_outcome(
-                            hour,
-                            self.changes.advance_quiet(&mut self.groups, hour, hour),
-                        );
-                        let result = match groups {
-                            Ok(()) => self.prepared.quiet_hour(
+                        let result = {
+                            let _cpu = ::replay::cpu::scope("fold observe", None);
+                            let started = self.prepared.clock();
+                            let groups = groups_outcome(
                                 hour,
-                                quiet.theatres_read,
-                                quiet.choices_changed,
-                            ),
-                            Err(error) => Err(from_groups(error)),
+                                self.changes.advance_quiet(&mut self.groups, hour, hour),
+                            );
+                            let result = match groups {
+                                Ok(()) => self.prepared.quiet_hour(
+                                    hour,
+                                    quiet.theatres_read,
+                                    quiet.choices_changed,
+                                ),
+                                Err(error) => Err(from_groups(error)),
+                            };
+                            self.prepared.lap(started, "air_superiority.fold.quiet");
+                            result
                         };
-                        self.prepared.lap(started, "air_superiority.fold.quiet");
                         if !observed(hour, result)? {
                             return Ok((Folded::Fast, reached));
                         }
@@ -669,6 +682,7 @@ impl OwnBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         let mut live = true;
         let reached = {
             let mut followed = |hour: i32, result: io::Result<()>| -> io::Result<bool> {

@@ -1429,6 +1429,7 @@ fn built(
     metrics: Metrics,
     sampled: &[(TableId, Option<i32>)],
 ) -> DecodedFrame {
+    let _cpu = ::replay::cpu::scope("fold frame", None);
     let mut frame = rows.clone();
     frame.hour = hour;
     frame.metrics = metrics;
@@ -1450,9 +1451,13 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(any(test, feature = "test-support"))]
     {
         note_frames(FAMILY.name, facts.frames);
@@ -1476,18 +1481,22 @@ pub fn fold(
     // The last kept hour's frame, and whether it is reduced.
     let mut base: Option<(DecodedFrame, bool)> = None;
     for hour in hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Whole { frame, changes } => {
                 // A frame that lacks tables the read left out gives its
                 // verdicts as a kept frame does: only where they read none
                 // of them, else the block is observed with every table.
-                let result = if unread.0.is_empty() {
-                    prepared
-                        .observe(&frame, replay, content, &changes)
-                        .map(|()| true)
-                } else {
-                    prepared.observe_kept(&frame, replay, content, &changes, &changes, &unread)
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    if unread.0.is_empty() {
+                        prepared
+                            .observe(&frame, replay, content, &changes)
+                            .map(|()| true)
+                    } else {
+                        prepared.observe_kept(&frame, replay, content, &changes, &changes, &unread)
+                    }
                 };
                 if matches!(result, Ok(false)) {
                     rejected("leaders.fallback.whole");
@@ -1515,8 +1524,10 @@ pub fn fold(
                 changes,
                 since,
             } => {
-                let result =
-                    prepared.observe_kept(&frame, replay, content, &changes, &since, &reduction);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    prepared.observe_kept(&frame, replay, content, &changes, &since, &reduction)
+                };
                 if matches!(result, Ok(false)) {
                     rejected("leaders.fallback.kept");
                     let reached = observe_block(
@@ -1556,8 +1567,10 @@ pub fn fold(
                 // left out.
                 let mut differ = stale;
                 differ.merge(if *reduced { &reduction } else { &unread });
-                let result =
-                    prepared.observe_kept(&frame, replay, content, &changes, &since, &differ);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    prepared.observe_kept(&frame, replay, content, &changes, &since, &differ)
+                };
                 if matches!(result, Ok(false)) {
                     rejected("leaders.fallback.built");
                     let reached = observe_block(
@@ -1582,7 +1595,11 @@ pub fn fold(
                 let (rows, _) = base.as_ref().ok_or_else(|| {
                     io::Error::other("A leader hour came before its block's first")
                 })?;
-                match prepared.advance_quiet(first, last, &since, rows, content) {
+                let advanced = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    prepared.advance_quiet(first, last, &since, rows, content)
+                };
+                match advanced {
                     Ok(true) => {}
                     Ok(false) => {
                         rejected("leaders.fallback.quiet");
@@ -1604,6 +1621,7 @@ pub fn fold(
                     }
                 }
                 for hour in first..=last {
+                    let _cpu = ::replay::cpu::scope("fold driver", None);
                     reached = Some(hour);
                     if !observed(hour, Ok(()))? {
                         return Ok((Folded::Fast, reached));
@@ -1628,6 +1646,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,

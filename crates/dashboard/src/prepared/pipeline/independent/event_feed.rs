@@ -211,18 +211,26 @@ impl Branch for FeedBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let facts = facts
-            .downcast::<Facts>()
-            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let facts = {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            facts
+                .downcast::<Facts>()
+                .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+        };
         #[cfg(test)]
         dashboard_base::prepared::kept::note_frames(FAMILY.name, facts.hours.len());
         let mut reached = None;
         for (frame, changes) in facts.hours {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             check()?;
             reached = Some(frame.hour);
             #[cfg(test)]
             dashboard_base::prepared::kept::note_observed(FAMILY.name);
-            let result = self.observe(block.replay, &frame, &changes);
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                self.observe(block.replay, &frame, &changes)
+            };
             if !observed(frame.hour, result)? {
                 break;
             }
@@ -236,6 +244,7 @@ impl Branch for FeedBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         let replay = block.replay;
         observe_hours(
             replay,

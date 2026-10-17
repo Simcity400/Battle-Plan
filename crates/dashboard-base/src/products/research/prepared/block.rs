@@ -507,9 +507,13 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     let BlockFacts {
         first,
         hours,
@@ -519,7 +523,10 @@ pub fn fold(
     let first_hour = first.frame.hour;
     let changes = FrameChanges::alone(&first.frame, replay.format);
     prepass::note(OBSERVED);
-    let result = prepared.observe_changed(&first.frame, &changes);
+    let result = {
+        let _cpu = ::replay::cpu::scope("fold observe", None);
+        prepared.observe_changed(&first.frame, &changes)
+    };
     if !observed(first_hour, result)? {
         return Ok((Folded::Fast, Some(first_hour)));
     }
@@ -530,14 +537,21 @@ pub fn fold(
     }
     // The fold's own copy of the read hours, which the country step reads
     // beside its indexes; and the holders' slots.
-    let mut dates = prepared.scan.input_dates.clone();
-    let mut slots: Option<Arc<HashMap<u32, u32>>> = prepared
-        .scan
-        .country_reads
-        .as_ref()
-        .map(|reads| Arc::clone(reads.slots()));
+    let mut dates = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        prepared.scan.input_dates.clone()
+    };
+    let mut slots: Option<Arc<HashMap<u32, u32>>> = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        prepared
+            .scan
+            .country_reads
+            .as_ref()
+            .map(|reads| Arc::clone(reads.slots()))
+    };
     let mut reached = first_hour;
     for hour in hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         if !covered(&prepared.scan, &hour) || forced(hour.hour) {
             let after = observe_after(prepared, replay, index, Some(reached), observed, check)?;
@@ -549,20 +563,23 @@ pub fn fold(
             changes,
             fresh,
         } = hour;
-        prepared.scan.adopt(&changes);
-        if let Some((held, _)) = &changes.countries {
-            slots = Some(Arc::clone(held));
-        }
-        if let Some(whole) = &changes.dates {
-            dates = whole.clone();
-        }
-        for (slot, slot_dates) in &changes.slot_dates {
-            match slot_dates {
-                Some(slot_dates) => {
-                    dates.insert(*slot, slot_dates.clone());
-                }
-                None => {
-                    dates.remove(slot);
+        {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            prepared.scan.adopt(&changes);
+            if let Some((held, _)) = &changes.countries {
+                slots = Some(Arc::clone(held));
+            }
+            if let Some(whole) = &changes.dates {
+                dates = whole.clone();
+            }
+            for (slot, slot_dates) in &changes.slot_dates {
+                match slot_dates {
+                    Some(slot_dates) => {
+                        dates.insert(*slot, slot_dates.clone());
+                    }
+                    None => {
+                        dates.remove(slot);
+                    }
                 }
             }
         }
@@ -572,9 +589,12 @@ pub fn fold(
             dates: &dates,
             fresh: &fresh,
         };
-        let result = prepared.observe_with(hour, |scan| {
-            scan.observe_refreshed(hour, refreshed, slots.as_deref(), &reads)
-        });
+        let result = {
+            let _cpu = ::replay::cpu::scope("fold observe", None);
+            prepared.observe_with(hour, |scan| {
+                scan.observe_refreshed(hour, refreshed, slots.as_deref(), &reads)
+            })
+        };
         if !observed(hour, result)? {
             return Ok((Folded::Fast, Some(hour)));
         }
@@ -598,6 +618,7 @@ pub fn observe_after(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     if after.is_some() {
         prepared.scan.clear_index();
     }
@@ -609,6 +630,7 @@ pub fn observe_after(
         index,
         sorted_tables(),
         |raw, frame| {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped {
                 return Ok(());
@@ -619,7 +641,10 @@ pub fn observe_after(
             }
             reached = Some(frame.hour);
             prepass::note(OBSERVED);
-            let result = prepared.observe_changed(frame, &changes);
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                prepared.observe_changed(frame, &changes)
+            };
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;

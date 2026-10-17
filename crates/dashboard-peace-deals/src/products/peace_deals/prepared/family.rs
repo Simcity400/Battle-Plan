@@ -362,22 +362,30 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(any(test, feature = "test-support"))]
     dashboard_base::prepared::kept::note_frames(FAMILY.name, facts.frames);
     let mut reached = None;
     // The last observed hour's frame, whose rows the hours of a span hold.
     let mut last_frame: Option<DecodedFrame> = None;
     for hour in facts.hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
                 reached = Some(frame.hour);
                 #[cfg(any(test, feature = "test-support"))]
                 dashboard_base::prepared::kept::note_observed(FAMILY.name);
-                let result = prepared.observe_changed(&frame, &changes);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    prepared.observe_changed(&frame, &changes)
+                };
                 let live = observed(frame.hour, result)?;
                 last_frame = Some(frame);
                 if !live {
@@ -385,9 +393,12 @@ pub fn fold(
                 }
             }
             Hour::Quiet { first, last, reads } => {
-                let advanced = match &last_frame {
-                    Some(frame) => prepared.advance_quiet(frame, first, last, &reads),
-                    None => Ok(false),
+                let advanced = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    match &last_frame {
+                        Some(frame) => prepared.advance_quiet(frame, first, last, &reads),
+                        None => Ok(false),
+                    }
                 };
                 let advanced = match advanced {
                     Ok(advanced) => advanced,
@@ -423,6 +434,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,

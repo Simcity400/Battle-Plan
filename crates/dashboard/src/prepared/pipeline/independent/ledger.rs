@@ -194,6 +194,7 @@ impl LedgerBranch {
     /// resumes it, then bind the content and the recording, as the walk does
     /// at every block.
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         if std::mem::take(&mut self.resume)
             && let Some(frame) = before(block)?
         {
@@ -217,6 +218,7 @@ impl LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         self.prepare(block)?;
         let mut fold = facts.map(prepared::BlockFold::new);
         let format = block.replay.format;
@@ -231,6 +233,7 @@ impl LedgerBranch {
         let read = block.read_alone(
             tables(),
             |raw, frame| {
+                let _cpu = ::replay::cpu::scope("fold driver", None);
                 let changes = tracker.observe_updates(frame, raw, format);
                 if stopped {
                     return Ok(());
@@ -244,9 +247,12 @@ impl LedgerBranch {
                     ledger.certified_hours(),
                     ledger.parallel_hours(),
                 );
-                let result = match fold.as_mut() {
-                    Some(fold) => ledger.observe_folded(frame, &changes, &running, fold),
-                    None => ledger.observe(frame, &changes, &running),
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    match fold.as_mut() {
+                        Some(fold) => ledger.observe_folded(frame, &changes, &running, fold),
+                        None => ledger.observe(frame, &changes, &running),
+                    }
                 };
                 #[cfg(test)]
                 {
@@ -318,9 +324,13 @@ impl Branch for LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let facts = facts
-            .downcast::<prepared::BlockFacts>()
-            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let facts = {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            facts
+                .downcast::<prepared::BlockFacts>()
+                .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+        };
         let reached = self.observe_hours(block, Some(*facts), observed, check)?;
         Ok((Folded::Fast, reached))
     }
@@ -331,6 +341,7 @@ impl Branch for LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         self.observe_hours(block, None, observed, check)
     }
 

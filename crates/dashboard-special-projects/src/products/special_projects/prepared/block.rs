@@ -575,6 +575,7 @@ impl Extract for BlockExtract {
 /// The change facts of a quiet hour on the last kept frame: the tables its
 /// update rebuilt, and its projects slot read.
 fn quiet_changes(read: bool, rebuilt: &[TableId]) -> FrameChanges {
+    let _cpu = ::replay::cpu::scope("frame changes", None);
     let mut rows_changed = [false; TABLE_COUNT];
     for table in rebuilt {
         rows_changed[table.index()] = true;
@@ -644,9 +645,13 @@ pub fn fold(
     check: &mut dyn FnMut() -> io::Result<()>,
     hour: &mut dyn FnMut(),
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(any(test, feature = "test-support"))]
     dashboard_base::prepared::kept::note_frames(FAMILY.name, facts.frames);
     if facts.world {
@@ -674,14 +679,17 @@ pub fn fold(
             Held::Read => &[],
             Held::Whole | Held::Built => read,
         };
-        let result = prepared.observe_kept(
-            frame,
-            changes,
-            held == Held::Whole,
-            watched,
-            owners,
-            &running,
-        );
+        let result = {
+            let _cpu = ::replay::cpu::scope("fold observe", None);
+            prepared.observe_kept(
+                frame,
+                changes,
+                held == Held::Whole,
+                watched,
+                owners,
+                &running,
+            )
+        };
         if matches!(result, Ok(false)) {
             return Ok(None);
         }
@@ -689,6 +697,7 @@ pub fn fold(
         observed(frame.hour, result.map(drop)).map(Some)
     };
     for kept_hour in facts.hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         match kept_hour {
             Hour::Observed {
@@ -727,10 +736,14 @@ pub fn fold(
                     io::Error::other("A quiet hour came before the block's first")
                 })?;
                 for (offset, (read, rebuilt)) in hours.into_iter().enumerate() {
+                    let _cpu = ::replay::cpu::scope("fold driver", None);
                     check()?;
                     // The span's hours are consecutive i32 hours.
                     let at = first + offset as i32;
-                    let mut frame = base.clone();
+                    let mut frame = {
+                        let _cpu = ::replay::cpu::scope("fold frame", None);
+                        base.clone()
+                    };
                     frame.hour = at;
                     let changes = quiet_changes(read, &rebuilt);
                     match kept(
@@ -782,6 +795,7 @@ pub fn observe_block(
     check: &mut dyn FnMut() -> io::Result<()>,
     hour: &mut dyn FnMut(),
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     let running = AtomicBool::new(false);
     let world = prepared.reads_trigger_world();
     observe_hours(

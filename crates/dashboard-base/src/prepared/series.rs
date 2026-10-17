@@ -408,7 +408,8 @@ impl Accumulator {
     }
     /// [`Self::advance`] at every hour `first..=last` in order, in constant time.
     pub fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
-        self.advance(first)?;
+        let _cpu = ::replay::cpu::scope("series advance", None);
+        self.advance_inner(first)?;
         if last > first {
             if let Some(series) = self.recorded {
                 RECORDING.with(|recording| {
@@ -450,6 +451,10 @@ impl Accumulator {
     /// Authenticate one accepted frame before applying its changed keys. Repeated
     /// hours are idempotent; a gap closes held values at the old frontier.
     pub fn advance(&mut self, hour: i32) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("series advance", None);
+        self.advance_inner(hour)
+    }
+    fn advance_inner(&mut self, hour: i32) -> io::Result<()> {
         if let Some(frontier) = self.frontier {
             if hour < frontier {
                 return Err(invalid("Series authenticated hours reversed"));
@@ -477,6 +482,7 @@ impl Accumulator {
     /// Materialize held values only through accepted hours. Explicit spans and
     /// events never become held values. Checkpoints flush before serializing.
     pub fn seal(&mut self) {
+        let _cpu = ::replay::cpu::scope("series seal", None);
         let Some(frontier) = self.frontier else {
             return;
         };
@@ -683,6 +689,7 @@ impl Accumulator {
         cancelled: &AtomicBool,
         payloads: Option<&mut Payloads>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("series flush", None);
         self.seal();
         if self.batch.first.is_none() {
             return Ok(());
@@ -842,6 +849,7 @@ impl Recording {
     }
     /// Make every recorded call again, in order, on `target`'s accumulators.
     pub fn replay(self, target: &mut impl ReplayTarget) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("series replay", None);
         for call in self.calls {
             match call {
                 Call::Advance {
@@ -959,6 +967,7 @@ pub fn catalogue_names(keys: &BTreeMap<String, u64>) -> io::Result<Vec<String>> 
 /// catalogue: a known name keeps its key and a new one takes the next, as
 /// the calls that first saw them would have.
 pub fn number_names(keys: &mut BTreeMap<String, u64>, names: &[String]) -> Vec<u64> {
+    let _cpu = ::replay::cpu::scope("fold facts", None);
     names
         .iter()
         .map(|name| {

@@ -3717,3 +3717,27 @@ the newest blocks through the source's bounded observation LRU. Only that overla
 is retained, sized by its live block count and observed allocation capacities;
 the whole scan still folds every hour in order from its own start. Different
 countries, native holders and selected tables have distinct entries.
+
+## Fold CPU measurements
+
+When `replay::cpu` is enabled, independent family workers split their CPU into
+`fold driver`, `fold binds`, `fold facts`, `fold frame` and `fold observe`.
+Driver scopes cover a block, each kept hour, and each quiet hour or span the
+family consumes. Existing family phases retain their names inside observation.
+`frame changes` measures construction and tracker observations. Shared series
+use `series advance`, `series seal`, `series replay` and `series flush`; replay
+includes key remapping, observations, pushes, events and family callbacks under
+one block scope. Direct per-key publication remains in its family's
+observer/projection phase, avoiding a timer around each key.
+
+Block publication is `fold block flush`; batch publication, flushing, saved
+output and continuation are `fold publish`, `fold flush`, `fold save` and
+`fold continuation`, inside the existing `commit` scope. `fold load` covers
+branch restoration. `save serialize` separates the pipeline's JSON/compressed-JSON
+continuation writes. Per-key reply serialization stays inside its enclosing
+block/batch publication scope. The `fold-facts`,
+`fold-own`, `fold-sequential` and `fold-fallback` notes remain inclusive block
+measurements; they are not added
+to exclusive phase CPU. Shared helpers also run in extracts and queries, so
+fold breakdowns select the `family thread` role. Accounting is disabled
+unless a measurement harness enables it; scopes use its ordinary enabled check.

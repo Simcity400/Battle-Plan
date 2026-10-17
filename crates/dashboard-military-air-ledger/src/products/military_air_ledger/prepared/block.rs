@@ -502,9 +502,13 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     let BlockFacts {
         first,
         recording,
@@ -521,7 +525,10 @@ pub fn fold(
     let changes = FrameChanges::alone(&first.frame, replay.format);
     #[cfg(any(test, feature = "test-support"))]
     count_observed(1);
-    let result = prepared.observe_changed(&first.frame, &changes);
+    let result = {
+        let _cpu = ::replay::cpu::scope("fold observe", None);
+        prepared.observe_changed(&first.frame, &changes)
+    };
     if !observed(hour, result)? {
         return Ok((Folded::Fast, Some(hour)));
     }
@@ -544,16 +551,19 @@ pub fn fold(
     if !observed(last, result)? {
         return Ok((Folded::Fast, Some(last)));
     }
-    prepared
-        .scan
-        .air
-        .carry(air.scan, &first.air, hour, air_entry);
-    prepared
-        .scan
-        .bombing
-        .carry(bombing.scan, &first.bombing, hour, bombing_entry);
-    prepared.air.leaves.extend(air.leaves);
-    prepared.bombing.leaves.extend(bombing.leaves);
+    {
+        let _cpu = ::replay::cpu::scope("fold observe", None);
+        prepared
+            .scan
+            .air
+            .carry(air.scan, &first.air, hour, air_entry);
+        prepared
+            .scan
+            .bombing
+            .carry(bombing.scan, &first.bombing, hour, bombing_entry);
+        prepared.air.leaves.extend(air.leaves);
+        prepared.bombing.leaves.extend(bombing.leaves);
+    }
     Ok((Folded::Fast, Some(last)))
 }
 
@@ -568,6 +578,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -576,6 +587,7 @@ pub fn observe_block(
         index,
         TABLES,
         |raw, frame| {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || after.is_some_and(|after| frame.hour <= after) {
                 return Ok(());
@@ -583,7 +595,10 @@ pub fn observe_block(
             reached = Some(frame.hour);
             #[cfg(any(test, feature = "test-support"))]
             count_observed(1);
-            let result = prepared.observe_changed(frame, &changes);
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                prepared.observe_changed(frame, &changes)
+            };
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;

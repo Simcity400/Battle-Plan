@@ -193,15 +193,19 @@ impl Observer {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.roster.note_rebuilt(rebuilt);
-        let mut changes = FrameChanges {
-            rows_changed: [false; TABLE_COUNT],
-            table_read: [false; TABLE_COUNT],
-            slot_read: [false; TABLE_COUNT],
-            updates: None,
+        let changes = {
+            let _cpu = ::replay::cpu::scope("frame changes", None);
+            let mut changes = FrameChanges {
+                rows_changed: [false; TABLE_COUNT],
+                table_read: [false; TABLE_COUNT],
+                slot_read: [false; TABLE_COUNT],
+                updates: None,
+            };
+            for &table in QUIET_REBUILDS {
+                changes.rows_changed[table.index()] = rebuilt(table);
+            }
+            changes
         };
-        for &table in QUIET_REBUILDS {
-            changes.rows_changed[table.index()] = rebuilt(table);
-        }
         self.observe(source, content, frame, &changes, store, key, cancelled)
     }
 
@@ -658,6 +662,7 @@ impl State {
 
     /// The content hourly preparation binds before its first frame.
     fn bind(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         if self.content.is_none() {
             self.content = Some(Content::load(source, context)?);
         }
@@ -678,9 +683,13 @@ impl State {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        let facts = facts
-            .downcast::<BlockFacts>()
-            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+        let _cpu = ::replay::cpu::scope("fold driver", None);
+        let facts = {
+            let _cpu = ::replay::cpu::scope("fold facts", None);
+            facts
+                .downcast::<BlockFacts>()
+                .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+        };
         self.bind(source, context)?;
         // The espionage log reads its own committed series during
         // observation: the family commits where hourly preparation does, so
@@ -696,26 +705,36 @@ impl State {
         let mut last: Option<DecodedFrame> = None;
         let mut reached = None;
         for hour in facts.hours {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             check()?;
             match hour {
                 Hour::Kept { frame, changes } => {
                     prepass::note(KEPT_HOURS);
                     reached = Some(frame.hour);
-                    let result = observer
-                        .observe(source, content, &frame, &changes, &store, &key, &cancelled);
+                    let result = {
+                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        observer
+                            .observe(source, content, &frame, &changes, &store, &key, &cancelled)
+                    };
                     if !observed(frame.hour, result)? {
                         return Ok((Folded::Fast, reached));
                     }
                     last = Some(frame);
                 }
                 Hour::Quiet { first, rebuilt } => {
-                    let mut frame = last.clone().ok_or_else(|| {
-                        io::Error::other("Intelligence hours were quiet before the block's first")
-                    })?;
+                    let mut frame = {
+                        let _cpu = ::replay::cpu::scope("fold frame", None);
+                        last.clone().ok_or_else(|| {
+                            io::Error::other(
+                                "Intelligence hours were quiet before the block's first",
+                            )
+                        })?
+                    };
                     // No table was read: a read of a table watched when read
                     // keeps its hour.
                     frame.metrics.table_ns = [0; TABLE_COUNT];
                     for (offset, bits) in rebuilt.into_iter().enumerate() {
+                        let _cpu = ::replay::cpu::scope("fold driver", None);
                         check()?;
                         let hour = i32::try_from(offset)
                             .ok()
@@ -730,9 +749,12 @@ impl State {
                                 .position(|&watched| watched == table)
                                 .is_some_and(|bit| bits & (1 << bit) != 0)
                         };
-                        let result = observer.observe_quiet(
-                            source, content, &frame, &rebuilt, &store, &key, &cancelled,
-                        );
+                        let result = {
+                            let _cpu = ::replay::cpu::scope("fold observe", None);
+                            observer.observe_quiet(
+                                source, content, &frame, &rebuilt, &store, &key, &cancelled,
+                            )
+                        };
                         if !observed(hour, result)? {
                             return Ok((Folded::Fast, reached));
                         }
@@ -767,6 +789,7 @@ impl State {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         self.bind(source, context)?;
         let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
         let cancelled = AtomicBool::new(false);
@@ -784,13 +807,16 @@ impl State {
             index,
             TABLES,
             |raw, frame| {
+                let _cpu = ::replay::cpu::scope("fold driver", None);
                 let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
                 if stopped {
                     return Ok(());
                 }
                 reached = Some(frame.hour);
-                let result =
-                    observer.observe(source, content, frame, &facts, &store, &key, &cancelled);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    observer.observe(source, content, frame, &facts, &store, &key, &cancelled)
+                };
                 match observed(frame.hour, result) {
                     Ok(live) => {
                         stopped = !live;

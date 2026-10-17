@@ -105,15 +105,22 @@ pub(crate) fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<Facts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<Facts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(test)]
     FRAMES.with(|count| count.set(count.get() + facts.frames));
     let Some(last) = facts.last_hour() else {
         return Ok((Folded::Fast, None));
     };
-    let result = index.fold_block(block.branch, *facts, check);
+    let result = {
+        let _cpu = ::replay::cpu::scope("fold observe", None);
+        index.fold_block(block.branch, *facts, check)
+    };
     observed(last, result)?;
     Ok((Folded::Fast, Some(last)))
 }
@@ -127,6 +134,7 @@ pub(crate) fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     let mut reached = None;
     let mut stopped = false;
     let mut failure = None;
@@ -141,7 +149,10 @@ pub(crate) fn observe_block(
             reached = Some(frame.hour);
             #[cfg(test)]
             FRAMES.with(|count| count.set(count.get() + 1));
-            let result = index.observe_hour(block.branch, bounds, frame, &mut || Ok(()));
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                index.observe_hour(block.branch, bounds, frame, &mut || Ok(()))
+            };
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;

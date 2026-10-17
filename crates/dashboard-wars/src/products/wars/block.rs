@@ -263,7 +263,11 @@ impl Extract for BlockExtract {
         for step in &self.steps {
             held.add(
                 step.inputs.capacity() * size_of::<(i32, Vec<u8>)>()
-                    + step.inputs.iter().map(|(_, input)| input.capacity()).sum::<usize>(),
+                    + step
+                        .inputs
+                        .iter()
+                        .map(|(_, input)| input.capacity())
+                        .sum::<usize>(),
             );
         }
         if let Some(frame) = &self.observer.frame {
@@ -541,18 +545,25 @@ fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(any(test, feature = "test-support"))]
     FRAMES.with(|count| count.set(count.get() + facts.frames));
     check()?;
     let hour = facts.first.frame.hour;
     #[cfg(any(test, feature = "test-support"))]
     OBSERVED.with(|count| count.set(count.get() + 1));
-    let result = observer
-        .observe_changed(&facts.first.frame, &facts.first.changes)
-        .and_then(|()| walk(published, observer, hour));
+    let result = {
+        let _cpu = ::replay::cpu::scope("fold observe", None);
+        observer
+            .observe_changed(&facts.first.frame, &facts.first.changes)
+            .and_then(|()| walk(published, observer, hour))
+    };
     if !observed(hour, result)? {
         return Ok((Folded::Fast, Some(hour)));
     }
@@ -570,7 +581,10 @@ fn fold(
     }
     check()?;
     let last = facts.last;
-    let result = carry(observer, published, *facts);
+    let result = {
+        let _cpu = ::replay::cpu::scope("fold observe", None);
+        carry(observer, published, *facts)
+    };
     observed(last, result)?;
     Ok((Folded::Fast, Some(last)))
 }
@@ -587,6 +601,7 @@ fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -595,6 +610,7 @@ fn observe_block(
         index,
         INPUTS,
         |raw, frame| {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || after.is_some_and(|after| frame.hour <= after) {
                 return Ok(());
@@ -602,9 +618,12 @@ fn observe_block(
             reached = Some(frame.hour);
             #[cfg(any(test, feature = "test-support"))]
             OBSERVED.with(|count| count.set(count.get() + 1));
-            let result = observer
-                .observe_changed(frame, &facts)
-                .and_then(|()| walk(published, observer, frame.hour));
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                observer
+                    .observe_changed(frame, &facts)
+                    .and_then(|()| walk(published, observer, frame.hour))
+            };
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;
@@ -683,6 +702,7 @@ impl OwnBranch {
         source: &Source,
         context: &LoadContext,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         let Some(start) = self.start.take() else {
             return Ok(());
         };

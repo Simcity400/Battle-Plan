@@ -234,6 +234,7 @@ pub fn observe_hours(
     check: &mut dyn FnMut() -> io::Result<()>,
     mut observe: impl FnMut(&DecodedFrame, &FrameChanges) -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     let mut tracker = FrameChangeTracker::new();
     let mut reached = None;
     let mut stopped = false;
@@ -242,12 +243,16 @@ pub fn observe_hours(
         index,
         tables,
         |raw, frame| {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
             if stopped || from.is_some_and(|from| frame.hour < from) {
                 return Ok(());
             }
             reached = Some(frame.hour);
-            let result = observe(frame, &facts);
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                observe(frame, &facts)
+            };
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;

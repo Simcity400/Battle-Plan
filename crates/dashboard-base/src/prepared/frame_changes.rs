@@ -57,6 +57,11 @@ impl FrameChanges {
     /// The facts of an hour observed with no hour before it, as preparation
     /// observes the first hour of every block: any row may have changed.
     pub fn alone(frame: &DecodedFrame, format: FormatVersion) -> Self {
+        let _cpu = ::replay::cpu::scope("frame changes", None);
+        Self::alone_inner(frame, format)
+    }
+
+    fn alone_inner(frame: &DecodedFrame, format: FormatVersion) -> Self {
         Self {
             rows_changed: [true; TABLE_COUNT],
             table_read: std::array::from_fn(|index| frame.metrics.table_ns[index] != 0),
@@ -78,7 +83,8 @@ impl FrameChanges {
         continues: bool,
         rebuilt: impl Fn(TableId) -> bool,
     ) -> Self {
-        let mut changes = Self::alone(frame, format);
+        let _cpu = ::replay::cpu::scope("frame changes", None);
+        let mut changes = Self::alone_inner(frame, format);
         if continues {
             changes.rows_changed = TableId::ALL.map(rebuilt);
         }
@@ -161,9 +167,10 @@ impl FrameChangeTracker {
         updates: impl IntoRecordedFrame,
         format: FormatVersion,
     ) -> FrameChanges {
+        let _cpu = ::replay::cpu::scope("frame changes", None);
         let updates = updates.into_recorded();
         let continuous = self.continues(frame);
-        let mut changes = self.observe(frame, format);
+        let mut changes = self.observe_inner(frame, format);
         if continuous && updates.branch == frame.branch && updates.hour == frame.hour {
             // The decoder applies a delta to the previous hour's rows; a
             // failed one leaves the table unavailable instead.
@@ -186,6 +193,11 @@ impl FrameChangeTracker {
     }
 
     pub fn observe(&mut self, frame: &DecodedFrame, format: FormatVersion) -> FrameChanges {
+        let _cpu = ::replay::cpu::scope("frame changes", None);
+        self.observe_inner(frame, format)
+    }
+
+    fn observe_inner(&mut self, frame: &DecodedFrame, format: FormatVersion) -> FrameChanges {
         #[cfg(any(test, feature = "test-support"))]
         OBSERVATIONS.with(|count| count.set(count.get() + 1));
         let continuous = self.previous.as_ref().filter(|previous| {

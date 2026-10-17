@@ -978,6 +978,7 @@ fn save_branch(writer: &mut store::Writer, branch: u64, state: &BranchState) -> 
 }
 /// The JSON encoding shared by hourly branch and independent family continuations.
 fn compressed_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
+    let _cpu = ::replay::cpu::scope("save serialize", None);
     let mut encoded =
         io::BufWriter::with_capacity(1 << 20, zstd::stream::Encoder::new(Vec::new(), 1)?);
     serde_json::to_writer(&mut encoded, value)?;
@@ -987,6 +988,7 @@ fn compressed_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
         .finish()
 }
 fn json<T: Serialize>(writer: &mut store::Writer, section: &str, value: &T) -> io::Result<()> {
+    let _cpu = ::replay::cpu::scope("save serialize", None);
     writer.write_at(section, 0, serde_json::to_vec(value)?.as_slice())
 }
 fn header(replay: &Replay) -> io::Result<Vec<u8>> {

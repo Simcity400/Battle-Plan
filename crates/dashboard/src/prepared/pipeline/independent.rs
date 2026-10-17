@@ -751,6 +751,7 @@ impl Branch for crate::products::wars::block::OwnBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         self.observe_hours(
             block.replay,
             block.index,
@@ -843,6 +844,7 @@ impl Branch for crate::products::war_casualties::prepared::block::OwnBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         self.observe_hours(
             block.replay,
             block.index,
@@ -1670,14 +1672,18 @@ fn prepare_family(
         mut progress,
     } = run;
     let _retire = Retire(pool, lane);
-    let laned = own.laned();
-    if laned && own.binds() {
-        pool.bind(lane, own.bound(phase));
-    }
     let family = own.family();
     let replay = phase.replay;
     let name = family.name;
     let _cpu = ::replay::cpu::scope("fold", Some(name));
+    let laned = {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
+        let laned = own.laned();
+        if laned && own.binds() {
+            pool.bind(lane, own.bound(phase));
+        }
+        laned
+    };
     let started = super::start_timing(timings);
     let mut held: Option<(u64, Box<dyn Branch>)> = None;
     // The pages its blocks published since its last commit.
@@ -1705,7 +1711,10 @@ fn prepare_family(
                 saved: saved.as_ref().filter(|_| refused.open(name)),
                 replay,
             };
-            let mut state = own.load(&load, branch)?;
+            let mut state = {
+                let _cpu = ::replay::cpu::scope("fold load", None);
+                own.load(&load, branch)?
+            };
             if timings.is_some() {
                 state.measure();
             }
@@ -1741,6 +1750,7 @@ fn prepare_family(
                     .as_ref()
                     .map(|member| shared::Lease { member, block }),
             };
+            let cpu_driver = ::replay::cpu::scope("fold driver", None);
             reached = match outcome {
                 Some(Outcome::Facts(facts)) => {
                     let cpu_started = ::replay::cpu::thread_cycles();
@@ -1768,7 +1778,9 @@ fn prepare_family(
                     reached
                 }
             };
+            drop(cpu_driver);
             if refused.open(name) {
+                let _cpu = ::replay::cpu::scope("fold block flush", None);
                 state.end_block(replay, branch);
                 let saved = lock(commits).saved.clone();
                 let mut view = pages.view(Committed {
@@ -1810,18 +1822,28 @@ fn prepare_family(
             let refused = progress.refused.entry(branch).or_default();
             // The pages of the blocks it went through, refused since or
             // not: those each block published, then those it holds.
-            pages.write(writer)?;
-            let result = state.publish(writer, branch, phase.cancelled);
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold publish", None);
+                pages.write(writer)?;
+                state.publish(writer, branch, phase.cancelled)
+            };
             refused.check(name, hour, result)?;
             if refused.open(name) {
-                let result = state.flush(writer, replay, branch, phase.cancelled);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold flush", None);
+                    state.flush(writer, replay, branch, phase.cancelled)
+                };
                 refused.check(name, hour, result)?;
             }
             if refused.open(name) {
-                let result = state.save(writer, branch)?;
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold save", None);
+                    state.save(writer, branch)?
+                };
                 refused.check(name, hour, result)?;
             }
             if refused.open(name) {
+                let _cpu = ::replay::cpu::scope("fold continuation", None);
                 state.save_state(writer, branch)?;
             }
             progress.next_block = block + 1;

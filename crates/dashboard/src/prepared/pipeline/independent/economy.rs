@@ -282,15 +282,20 @@ fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<Facts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<Facts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(test)]
     count(family.name, |counts| counts.frames += facts.frames);
     ledger.prepare(block)?;
     let mut reached = None;
     let mut last: Option<DecodedFrame> = None;
     for hour in facts.hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed {
@@ -301,16 +306,22 @@ fn fold(
                 reached = Some(frame.hour);
                 #[cfg(test)]
                 count(family.name, |counts| counts.observed += 1);
-                let result = ledger.observe_demand(&frame, &changes, demand.as_ref());
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    ledger.observe_demand(&frame, &changes, demand.as_ref())
+                };
                 if !observed(frame.hour, result)? {
                     return Ok((Folded::Fast, reached));
                 }
                 last = Some(frame);
             }
             Hour::Quiet { first, last: end } => {
-                let advanced = match &last {
-                    Some(frame) => ledger.quiet(first, end, frame),
-                    None => Ok(false),
+                let advanced = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    match &last {
+                        Some(frame) => ledger.quiet(first, end, frame),
+                        None => Ok(false),
+                    }
                 };
                 match advanced {
                     Ok(true) => {
@@ -356,6 +367,7 @@ fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     ledger.prepare(block)?;
     let format = block.replay.format;
     let mut tracker = FrameChangeTracker::new();
@@ -368,6 +380,7 @@ fn observe_block(
         block.index,
         family.tables,
         |raw, frame| {
+            let _cpu = ::replay::cpu::scope("fold driver", None);
             let facts = tracker.observe_updates(frame, raw, format);
             if stopped {
                 return Ok(());
@@ -387,7 +400,10 @@ fn observe_block(
             reached = Some(frame.hour);
             #[cfg(test)]
             count(family.name, |counts| counts.observed += 1);
-            let result = ledger.observe(frame, &facts);
+            let result = {
+                let _cpu = ::replay::cpu::scope("fold observe", None);
+                ledger.observe(frame, &facts)
+            };
             match observed(frame.hour, result) {
                 Ok(live) => {
                     stopped = !live;
@@ -561,6 +577,7 @@ impl ConstructionBranch {
 
 impl Ledger for ConstructionBranch {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         if self.names.is_none() {
             self.names = Some(NameSource::of(block.source, block.context));
         }
@@ -746,6 +763,7 @@ struct StockpileBranch {
 
 impl Ledger for StockpileBranch {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         if !self.bound {
             self.prepared
                 .bind_content(&equipment_stockpile::prepared::Prepared::content(
@@ -930,6 +948,7 @@ impl ProductionBranch {
 
 impl Ledger for ProductionBranch {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         if self.naming.is_none() {
             self.naming = Some(ProductionNaming::load(block.source, block.context));
         }
@@ -1110,6 +1129,7 @@ struct ExperienceBranch {
 
 impl Ledger for ExperienceBranch {
     fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         Ok(())
     }
 
@@ -1264,6 +1284,7 @@ impl FuelBranch {
 
 impl Ledger for FuelBranch {
     fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope("fold binds", None);
         self.prepared();
         Ok(())
     }

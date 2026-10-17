@@ -266,13 +266,18 @@ pub fn fold(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<BlockFacts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<BlockFacts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(any(test, feature = "test-support"))]
     crate::prepared::kept::note_frames(FAMILY.name, facts.frames);
     let mut reached = None;
     for hour in facts.hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed {
@@ -282,13 +287,20 @@ pub fn fold(
                 reached = Some(frame.hour);
                 #[cfg(any(test, feature = "test-support"))]
                 crate::prepared::kept::note_observed(FAMILY.name);
-                let result = scan.prepare_changes_in(&frame, &facts, changes, content);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    scan.prepare_changes_in(&frame, &facts, changes, content)
+                };
                 if !observed(frame.hour, result)? {
                     return Ok((Folded::Fast, reached));
                 }
             }
             Hour::Quiet { first, last } => {
-                if !scan.advance_quiet(first, last, changes) {
+                let advanced = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    scan.advance_quiet(first, last, changes)
+                };
+                if !advanced {
                     let reached = observe_block(
                         scan,
                         changes,
@@ -325,6 +337,7 @@ pub fn observe_block(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     observe_hours(
         replay,
         index,

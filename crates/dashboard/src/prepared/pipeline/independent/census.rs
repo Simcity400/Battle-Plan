@@ -367,29 +367,42 @@ fn fold<C: Census>(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Folded, Option<i32>)> {
-    let facts = facts
-        .downcast::<Facts>()
-        .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
+    let _cpu = ::replay::cpu::scope("fold driver", None);
+    let facts = {
+        let _cpu = ::replay::cpu::scope("fold facts", None);
+        facts
+            .downcast::<Facts>()
+            .map_err(|_| io::Error::other("Pre-pass facts of another family"))?
+    };
     #[cfg(test)]
     dashboard_base::prepared::kept::note_frames(C::family().name, facts.frames);
     let mut reached = None;
     for hour in facts.hours {
+        let _cpu = ::replay::cpu::scope("fold driver", None);
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
                 reached = Some(frame.hour);
                 #[cfg(test)]
                 dashboard_base::prepared::kept::note_observed(C::family().name);
-                let result = census.observe(&frame, block.replay, &changes);
+                let result = {
+                    let _cpu = ::replay::cpu::scope("fold observe", None);
+                    census.observe(&frame, block.replay, &changes)
+                };
                 if !observed(frame.hour, result)? {
                     return Ok((Folded::Fast, reached));
                 }
             }
             Hour::Quiet { first, reads } => {
                 for (offset, read) in reads.into_iter().enumerate() {
+                    let _cpu = ::replay::cpu::scope("fold driver", None);
                     // The span's hours are consecutive i32 hours.
                     let hour = first + offset as i32;
-                    match census.advance_quiet(hour, read) {
+                    let advanced = {
+                        let _cpu = ::replay::cpu::scope("fold observe", None);
+                        census.advance_quiet(hour, read)
+                    };
+                    match advanced {
                         Ok(true) => {
                             reached = Some(hour);
                             if !observed(hour, Ok(()))? {
@@ -425,6 +438,7 @@ fn observe_block<C: Census>(
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Option<i32>> {
+    let _cpu = ::replay::cpu::scope("fold driver", None);
     let family = C::family();
     observe_hours(
         block.replay,
