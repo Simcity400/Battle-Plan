@@ -2220,3 +2220,390 @@ fn writer_range_id_tracks_current_slots_and_fork_dependencies_without_payload_re
     assert_ne!(writer.range_id("page", 0).unwrap(), Some(first));
     assert!(writer.adopt_all(fork.into_staged().unwrap()).is_err());
 }
+
+/// A detached batch crosses successive family publications, preserving its
+/// snapshot and nested flushes while keeping the single writer lock held.
+#[test]
+fn detached_batch_joins_a_later_commit_with_its_nested_forks_and_exact_pages() {
+    let fixture = Fixture::new();
+    let key = forked_prefix(&fixture);
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer.write("parent", &b"parent pending"[..]).unwrap();
+    let mut walk = writer.stage().unwrap();
+    let first = walk.range_id("old", 0).unwrap().unwrap();
+    assert_eq!(
+        bytes(walk.read_at("parent", 0).unwrap().unwrap()),
+        b"parent pending"
+    );
+    let mut nested = walk.fork().unwrap();
+    nested.write_at("old", 0, &b"walk replacement"[..]).unwrap();
+    nested.end_batch();
+    nested.write("walk-new", &b"nested page"[..]).unwrap();
+    for batch in nested.into_staged().unwrap() {
+        walk.adopt(batch).unwrap();
+    }
+    let mut nested = walk.fork().unwrap();
+    nested
+        .write_at("walk-new", 0, &b"nested revised"[..])
+        .unwrap();
+    walk.adopt_all(nested.into_staged().unwrap()).unwrap();
+    assert_eq!(
+        bytes(walk.read_at("old", 0).unwrap().unwrap()),
+        b"walk replacement"
+    );
+    walk.write("walk-new", &b"walk page"[..]).unwrap();
+    let unlisted = walk.pack.as_ref().unwrap().id;
+    assert!(staging(&fixture.store.directory));
+    // These changes would otherwise compact the old pack, moving the identity
+    // the walk read. Both family commits remain visible before walk adoption.
+    writer
+        .write_at("old", 1, &b"family changed old 1"[..])
+        .unwrap();
+    writer
+        .write_at("other", 0, &b"family changed other"[..])
+        .unwrap();
+    writer.write("family", &b"first"[..]).unwrap();
+    writer = writer.commit_continue().unwrap();
+    assert_eq!(writer.range_id("old", 0).unwrap(), Some(first));
+    assert!(fixture.store.directory.join(pack_name(unlisted)).is_file());
+    assert!(fixture.store.read(&key, "walk-new", 0).unwrap().is_none());
+    assert_eq!(
+        bytes(fixture.store.read(&key, "family", 0).unwrap().unwrap()),
+        b"first"
+    );
+    writer.write("family", &b"second"[..]).unwrap();
+    writer = writer.commit_continue().unwrap();
+    assert_eq!(writer.range_id("old", 0).unwrap(), Some(first));
+    assert_eq!(fixture.store.range_count(&key, "family").unwrap(), Some(2));
+    assert!(
+        fixture.store.clear().is_err(),
+        "the exclusive lock never opened a gap"
+    );
+    writer.adopt_all(walk.into_staged().unwrap()).unwrap();
+    assert!(!staging(&fixture.store.directory));
+    writer.commit().unwrap();
+    let model: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::from([
+        (
+            "old".into(),
+            vec![
+                b"walk replacement".to_vec(),
+                b"family changed old 1".to_vec(),
+            ],
+        ),
+        ("other".into(), vec![b"family changed other".to_vec()]),
+        ("parent".into(), vec![b"parent pending".to_vec()]),
+        ("family".into(), vec![b"first".to_vec(), b"second".to_vec()]),
+        (
+            "walk-new".into(),
+            vec![b"nested revised".to_vec(), b"walk page".to_vec()],
+        ),
+    ]);
+    assert_eq!(by_name(&published(&fixture, &key)), model);
+}
+
+#[test]
+fn detached_reads_and_replacements_refuse_overlap_without_partial_adoption() {
+    for read in [false, true] {
+        let fixture = Fixture::new();
+        let key = forked_prefix(&fixture);
+        let mut writer = fixture.store.extend(&key).unwrap();
+        let mut walk = writer.stage().unwrap();
+        walk.write("walk-first", &b"must roll back"[..]).unwrap();
+        walk.end_batch();
+        if read {
+            assert_eq!(bytes(walk.read_at("old", 0).unwrap().unwrap()), b"old 0");
+        } else {
+            walk.write_at("old", 0, &b"walk replacement"[..]).unwrap();
+        }
+        writer
+            .write_at("old", 0, &b"family replacement"[..])
+            .unwrap();
+        writer = writer.commit_continue().unwrap();
+        let before = (writer.bytes_written(), writer.payload_bytes_change());
+        let error = writer.adopt_all(walk.into_staged().unwrap()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            (writer.bytes_written(), writer.payload_bytes_change()),
+            before
+        );
+        assert!(writer.read_at("walk-first", 0).unwrap().is_none());
+        assert_eq!(
+            bytes(writer.read_at("old", 0).unwrap().unwrap()),
+            b"family replacement"
+        );
+        assert!(!staging(&fixture.store.directory));
+        writer.commit().unwrap();
+    }
+}
+
+#[test]
+fn detached_batches_cannot_join_a_different_store_or_source_key() {
+    for different_store in [false, true] {
+        let fixture = Fixture::new();
+        let other = Fixture::new();
+        let key = forked_prefix(&fixture);
+        let mut writer = fixture.store.extend(&key).unwrap();
+        let mut walk = writer.stage().unwrap();
+        walk.write("private", &b"private"[..]).unwrap();
+        let staged = walk.into_staged().unwrap();
+        if different_store {
+            let mut target = other.store.replace(other.key()).unwrap();
+            assert_eq!(
+                target.adopt_all(staged).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert!(target.read_at("private", 0).unwrap().is_none());
+            target.commit().unwrap();
+        } else {
+            // A changed binding is rejected before any operation is applied.
+            writer.key = other.key();
+            assert_eq!(
+                writer.adopt_all(staged).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert!(writer.read_at("private", 0).unwrap().is_none());
+            writer.key = key;
+        }
+        assert!(!staging(&fixture.store.directory));
+        writer.commit().unwrap();
+    }
+}
+
+#[test]
+fn detached_batches_sharing_a_pack_keep_earlier_publications_live() {
+    for atomic in [false, true] {
+        let fixture = Fixture::new();
+        let key = fixture.key();
+        let mut writer = fixture.store.replace(key.clone()).unwrap();
+        let mut stage = writer.stage().unwrap();
+        stage.write("pages", b"one".as_slice()).unwrap();
+        stage.end_batch();
+        stage.write("pages", b"two".as_slice()).unwrap();
+        let mut batches = stage.into_staged().unwrap().into_iter();
+        let first = batches.next().unwrap();
+        let pack = first.pack.as_ref().unwrap().0;
+        let adopt = |writer: &mut Writer, batch| {
+            if atomic {
+                writer.adopt_all(vec![batch]).unwrap();
+            } else {
+                writer.adopt(batch).unwrap();
+            }
+        };
+        adopt(&mut writer, first);
+        writer = writer.commit_continue().unwrap();
+        assert_eq!(fixture.packs()[0].live, 3);
+        adopt(&mut writer, batches.next().unwrap());
+        assert!(batches.next().is_none());
+        drop(batches);
+        writer.commit().unwrap();
+        let packs = fixture.packs();
+        assert_eq!(packs.len(), 1);
+        assert_eq!((packs[0].id, packs[0].live, packs[0].size), (pack, 6, 6));
+        let mut writer = fixture.store.extend(&key).unwrap();
+        writer.write_at("pages", 0, b"new".as_slice()).unwrap();
+        writer.commit().unwrap();
+        // Reopen performs cleanup. The other half of the shared pack must
+        // remain listed and readable even after its first range was replaced.
+        drop(fixture.store.extend(&key).unwrap());
+        assert!(fixture.store.directory.join(pack_name(pack)).is_file());
+        assert_eq!(
+            bytes(fixture.store.read(&key, "pages", 0).unwrap().unwrap()),
+            b"new"
+        );
+        assert_eq!(
+            bytes(fixture.store.read(&key, "pages", 1).unwrap().unwrap()),
+            b"two"
+        );
+        assert_eq!(fixture.packs().iter().map(|pack| pack.live).sum::<u64>(), 6);
+    }
+}
+
+#[test]
+fn compacting_a_reintroduced_stage_pack_moves_its_published_ranges() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    let mut stage = writer.stage().unwrap();
+    stage.write("pages", b"one".as_slice()).unwrap();
+    stage.end_batch();
+    stage
+        .write("pages", b"discarded long range".as_slice())
+        .unwrap();
+    stage.write_at("pages", 1, b"two".as_slice()).unwrap();
+    let mut batches = stage.into_staged().unwrap();
+    let second = batches.pop().unwrap();
+    let pack = second.pack.as_ref().unwrap().0;
+    writer.adopt_all(batches).unwrap();
+    writer = writer.commit_continue().unwrap();
+    writer.adopt_all(vec![second]).unwrap();
+    assert!(!staging(&fixture.store.directory));
+    writer.commit().unwrap();
+    drop(fixture.store.extend(&key).unwrap());
+    assert!(!fixture.store.directory.join(pack_name(pack)).exists());
+    assert_eq!(
+        bytes(fixture.store.read(&key, "pages", 0).unwrap().unwrap()),
+        b"one"
+    );
+    assert_eq!(
+        bytes(fixture.store.read(&key, "pages", 1).unwrap().unwrap()),
+        b"two"
+    );
+    assert_eq!(fixture.packs().iter().map(|pack| pack.live).sum::<u64>(), 6);
+}
+
+#[test]
+fn a_live_stage_keeps_its_snapshot_without_retaining_unrelated_garbage() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let page = vec![0; 1024 * 1024];
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("page", page.as_slice()).unwrap();
+    writer.commit().unwrap();
+    let snapshot = fixture.store.catalog().unwrap().unwrap();
+    let snapshot_pack = snapshot.packs[0].id;
+    let snapshot_log = snapshot.logs[0].id;
+    let mut writer = fixture.store.extend(&key).unwrap();
+    let mut stage = writer.stage().unwrap();
+    stage.write("staged", b"one".as_slice()).unwrap();
+    let mut nested = stage.fork().unwrap();
+    nested.write("nested", b"two".as_slice()).unwrap();
+    let nested = nested.into_staged().unwrap();
+    for revision in 1..=12u8 {
+        let page = vec![revision; page.len()];
+        // Even revisions leave two replacements dead before publication,
+        // also requiring compaction of packs unrelated to the snapshot.
+        for _ in 0..if revision % 2 == 0 { 3 } else { 1 } {
+            writer.write_at("page", 0, page.as_slice()).unwrap();
+        }
+        writer = writer.commit_continue().unwrap();
+        let mut pack_bytes = 0;
+        let mut all_bytes = 0;
+        for entry in fs::read_dir(&fixture.store.directory).unwrap() {
+            let entry = entry.unwrap();
+            let size = entry.metadata().unwrap().len();
+            all_bytes += size;
+            if entry.file_name().to_str().and_then(parse_pack).is_some() {
+                pack_bytes += size;
+            }
+        }
+        // One snapshot page, one live page, and the two pending three-byte
+        // ranges. Neither the revision count nor superseded writes add space.
+        let payload_bound = 2 * page.len() as u64 + 6;
+        assert!(
+            pack_bytes <= payload_bound,
+            "revision {revision}: {pack_bytes}"
+        );
+        assert!(
+            all_bytes <= payload_bound + 64 * 1024,
+            "revision {revision}: {all_bytes}"
+        );
+        assert_eq!(
+            bytes(fixture.store.read(&key, "page", 0).unwrap().unwrap()),
+            page
+        );
+    }
+    // The stage has not opened its old entry log or pack yet. Cleanup must
+    // preserve those names, including when neither is in the current root.
+    assert!(
+        fixture
+            .store
+            .directory
+            .join(log_name(snapshot_log))
+            .is_file()
+    );
+    assert!(
+        fixture
+            .store
+            .directory
+            .join(pack_name(snapshot_pack))
+            .is_file()
+    );
+    assert_eq!(bytes(stage.read_at("page", 0).unwrap().unwrap()), page);
+    stage.adopt_all(nested).unwrap();
+    // Drop the read dependency on the superseded page by abandoning this
+    // stage; its ranges and snapshot files are now reclaimable as well.
+    drop(stage);
+    writer = writer.commit_continue().unwrap();
+    assert!(
+        !fixture
+            .store
+            .directory
+            .join(pack_name(snapshot_pack))
+            .exists()
+    );
+    assert!(
+        !fixture
+            .store
+            .directory
+            .join(log_name(snapshot_log))
+            .exists()
+    );
+    assert_eq!(
+        fixture
+            .names()
+            .iter()
+            .filter(|name| parse_pack(name).is_some())
+            .count(),
+        1
+    );
+    assert!(writer.read_at("staged", 0).unwrap().is_none());
+}
+
+#[test]
+fn snapshot_packs_do_not_delay_compaction_of_unrelated_published_packs() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("snapshot", &[0; 1024][..]).unwrap();
+    writer.commit().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    let mut stage = writer.stage().unwrap();
+    for value in [b"one", b"two", b"tri"] {
+        writer.write("unrelated", value.as_slice()).unwrap();
+    }
+    let pack = writer.range_id("unrelated", 2).unwrap().unwrap().pack;
+    writer = writer.commit_continue().unwrap();
+    writer.write_at("unrelated", 0, io::empty()).unwrap();
+    writer.write_at("unrelated", 1, io::empty()).unwrap();
+    writer = writer.commit_continue().unwrap();
+    assert!(!fixture.store.directory.join(pack_name(pack)).exists());
+    assert_eq!(
+        bytes(writer.read_at("unrelated", 2).unwrap().unwrap()),
+        b"tri"
+    );
+    assert_eq!(
+        bytes(stage.read_at("snapshot", 0).unwrap().unwrap()),
+        vec![0; 1024]
+    );
+    assert_eq!(
+        fixture.packs().iter().map(|pack| pack.size).sum::<u64>(),
+        1024 + 3
+    );
+}
+
+#[test]
+fn ordinary_batches_cannot_cross_a_stage_boundary() {
+    let fixture = Fixture::new();
+    let key = forked_prefix(&fixture);
+    let mut writer = fixture.store.extend(&key).unwrap();
+    let mut stage = writer.stage().unwrap();
+    let mut nested = stage.fork().unwrap();
+    nested.write("nested", b"unpublished".as_slice()).unwrap();
+    assert_eq!(
+        writer
+            .adopt_all(nested.into_staged().unwrap())
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    let mut sibling = writer.fork().unwrap();
+    sibling.write("sibling", b"unpublished".as_slice()).unwrap();
+    let sibling = sibling.into_staged().unwrap();
+    writer = writer.commit_continue().unwrap();
+    assert_eq!(
+        stage.adopt_all(sibling).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    drop(stage);
+    writer.commit().unwrap();
+}

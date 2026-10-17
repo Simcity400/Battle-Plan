@@ -45,7 +45,6 @@ impl Runner {
             let receive = Arc::clone(&receive);
             let revision = Arc::clone(&revision);
             match worker_thread(format!("replay preparation {index}")).spawn(move || {
-                background_priority();
                 loop {
                     let job = receive
                         .lock()
@@ -153,20 +152,56 @@ impl Drop for Runner {
     }
 }
 
-fn background_priority() {
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
-        };
-        SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{sync::mpsc, time::Duration};
+
+    #[test]
+    #[cfg(windows)]
+    fn persistent_workers_use_the_same_job_level_as_family_threads() {
+        use dashboard_base::prepared::priority::{JobPriority, Level};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            THREAD_PRIORITY_NORMAL,
+        };
+        let runner = Runner::new().unwrap();
+        let (send, receive) = mpsc::channel();
+        for background in [false, true] {
+            let send = send.clone();
+            runner
+                .submit(Arc::new(AtomicBool::new(false)), move |_| {
+                    JobPriority::run(Arc::new(AtomicBool::new(background)), || {
+                        let walk = unsafe { GetThreadPriority(GetCurrentThread()) };
+                        let priority = JobPriority::current();
+                        let family = std::thread::spawn(move || {
+                            priority.enter(Level::Normal);
+                            unsafe { GetThreadPriority(GetCurrentThread()) }
+                        })
+                        .join()
+                        .unwrap();
+                        send.send((background, walk, family)).unwrap();
+                    });
+                })
+                .unwrap();
+        }
+        for _ in 0..2 {
+            let (background, walk, family) = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(
+                walk, family,
+                "walk must not remain in runner background mode"
+            );
+            assert_eq!(
+                walk,
+                if background {
+                    THREAD_PRIORITY_BELOW_NORMAL
+                } else {
+                    THREAD_PRIORITY_NORMAL
+                }
+            );
+        }
+        runner.shutdown();
+    }
 
     #[test]
     fn worker_completion_wakes_admission_once_without_polling_jobs() {

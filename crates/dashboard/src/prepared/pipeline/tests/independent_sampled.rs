@@ -732,7 +732,10 @@ fn sampled_families_observing_every_block_have_no_prepass_lane() {
             prepass::noted(&format!("{}.sequential", family.name)),
         );
         prepass::with_test_prepass(2, None, || {
-            lanes::with_test_lanes(4, None, || family.own(|| plain(&source)))
+            // Isolate this family's lack of a lane from the walk's own lanes.
+            independent::with_test_one_after_another(|| {
+                lanes::with_test_lanes(4, None, || family.own(|| plain(&source)))
+            })
         });
         assert_eq!(
             prepass::noted(prepass::PREPASS_READ),

@@ -13,10 +13,12 @@
 //! them.
 //!
 //! [`PrePass`] serves the hourly walk: every block once, for all its families
-//! together. [`Pool`] serves families prepared on their own: one set of
-//! workers reads each block once for every family whose next block it is and
-//! within reach, from each family's own first block, and each family takes
-//! its blocks in order on its own.
+//! together in standalone preparation. During concurrent preparation it takes
+//! those outcomes from [`Pool`], alongside the families prepared on their own.
+//! One set of workers reads each block for every family whose next block it is
+//! and within reach, from each publisher's own first block. The walk's extracts
+//! share one measured downstream chain in the longest-first order and stay
+//! parked until first-view jobs release it.
 
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 pub(crate) use dashboard_base::prepared::prepass::{Bound, Extract, Family, Folded};
@@ -228,11 +230,13 @@ impl Drop for Alive {
 /// finished, and blocks claimed and not taken stay within [`AHEAD_BYTES`] of
 /// recorded raw bytes, so memory holds the selected tables of that many
 /// blocks and their facts. Dropping it stops the workers within an hour of
-/// work and joins them.
+/// work and joins them. A view of the shared pool retires only its walk lanes;
+/// the phase stops and joins that pool after all publishers have finished.
 pub(crate) struct PrePass {
-    shared: Arc<Shared>,
+    shared: Option<Arc<Shared>>,
     families: Vec<&'static Family>,
     workers: Vec<JoinHandle<()>>,
+    pooled: Option<(Arc<PoolShared>, std::ops::Range<usize>)>,
 }
 
 impl PrePass {
@@ -284,9 +288,10 @@ impl PrePass {
             }
         }
         Self {
-            shared,
+            shared: Some(shared),
             families,
             workers,
+            pooled: None,
         }
     }
 
@@ -302,8 +307,15 @@ impl PrePass {
         position: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<Vec<Extracted>> {
-        self.shared.section_consumer.at(position);
-        let mut state = self.shared.lock();
+        if let Some((shared, lanes)) = &self.pooled {
+            return lanes
+                .clone()
+                .map(|lane| take_pool(shared, lane, position, cancelled))
+                .collect();
+        }
+        let shared = self.shared.as_ref().expect("standalone pre-pass");
+        shared.section_consumer.at(position);
+        let mut state = shared.lock();
         if position != state.handed {
             return Err(io::Error::other("Pre-pass blocks taken out of order"));
         }
@@ -329,12 +341,11 @@ impl PrePass {
                 state.in_flight = state.in_flight.saturating_sub(held.saturating_add(bytes));
                 state.handed += 1;
                 drop(state);
-                self.shared.changed.notify_all();
+                shared.changed.notify_all();
                 return Ok(outcomes);
             }
             // Workers do not see cancellation; look again shortly.
-            state = self
-                .shared
+            state = shared
                 .changed
                 .wait_timeout(state, Duration::from_millis(25))
                 .map_or_else(|error| error.into_inner().0, |(state, _)| state);
@@ -344,17 +355,28 @@ impl PrePass {
     /// The most blocks claimed and not yet taken at any time.
     #[cfg(test)]
     pub(crate) fn peak(&self) -> usize {
-        self.shared.lock().peak
+        self.shared
+            .as_ref()
+            .expect("standalone pre-pass")
+            .lock()
+            .peak
     }
 }
 
 impl Drop for PrePass {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Release);
+        if let Some((shared, lanes)) = &self.pooled {
+            for lane in lanes.clone() {
+                retire_pool(shared, lane);
+            }
+            return;
+        }
+        let shared = self.shared.as_ref().expect("standalone pre-pass");
+        shared.stop.store(true, Ordering::Release);
         {
             // Under the lock, so no worker checks the flag and then waits unwoken.
-            let _state = self.shared.lock();
-            self.shared.changed.notify_all();
+            let _state = shared.lock();
+            shared.changed.notify_all();
         }
         for worker in self.workers.drain(..) {
             let _ = worker.join();
@@ -456,6 +478,8 @@ struct Task {
 
 struct PoolState {
     lanes: Vec<Lane>,
+    /// The walk's extracts share one serial downstream chain.
+    walk: Option<std::ops::Range<usize>>,
     /// Each lane's blocks are claimed at most this far beyond the one it
     /// takes next.
     ahead: usize,
@@ -524,9 +548,17 @@ impl PoolState {
             .and_then(|count| known.iter().sum::<Duration>().checked_div(count))
             .unwrap_or(Duration::from_millis(1))
             .max(Duration::from_micros(1));
-        let cost = |lane: &Lane| {
-            lane.cost()
-                .unwrap_or(unknown)
+        let cost = |position: usize| {
+            let lane = &self.lanes[position];
+            let mean = |lane: &Lane| lane.cost().unwrap_or(unknown);
+            let per_block = match &self.walk {
+                Some(walk) if walk.contains(&position) => walk
+                    .clone()
+                    .map(|lane| mean(&self.lanes[lane]))
+                    .sum::<Duration>(),
+                _ => mean(lane),
+            };
+            per_block
                 .max(Duration::from_micros(1))
                 .as_nanos()
                 .saturating_mul(lane.end.saturating_sub(lane.handed) as u128)
@@ -536,7 +568,9 @@ impl PoolState {
             .iter()
             .enumerate()
             .filter(|(_, lane)| self.reaches(lane))
-            .min_by_key(|(position, lane)| (std::cmp::Reverse(cost(lane)), lane.next, *position))?
+            .min_by_key(|(position, lane)| {
+                (std::cmp::Reverse(cost(*position)), lane.next, *position)
+            })?
             .1
             .next;
         let mut wanting: Vec<usize> = (0..self.lanes.len())
@@ -548,11 +582,11 @@ impl PoolState {
                     && lane.next < lane.handed + self.ahead
             })
             .collect();
-        wanting.sort_by_key(|&position| std::cmp::Reverse(cost(&self.lanes[position])));
+        wanting.sort_by_key(|&position| std::cmp::Reverse(cost(position)));
         let parts = self.parts();
         let share = wanting
             .iter()
-            .map(|&position| cost(&self.lanes[position]))
+            .map(|&position| cost(position))
             .fold(0u128, u128::saturating_add)
             / parts as u128;
         let mut members = Vec::new();
@@ -567,7 +601,7 @@ impl PoolState {
                 break;
             }
             held += lane.expected();
-            taken = taken.saturating_add(cost(lane));
+            taken = taken.saturating_add(cost(position));
             members.push(position);
         }
         (!members.is_empty()).then_some((block, members))
@@ -683,8 +717,9 @@ impl Drop for PoolAlive {
 }
 
 /// Several families' upcoming blocks, each family's from its own first
-/// block, extracted on one set of workers below normal priority: no more
-/// workers however many families there are. A worker reads a block once for
+/// block, extracted on one set of workers: no more workers however many
+/// families there are. Tasks supplying the walk run at its coordinator level;
+/// other tasks yield one level below it. A worker reads a block once for
 /// every family whose next block it is and that it is within reach of
 /// ([`Replay::read_block_watched`]), and runs their extracts one after
 /// another on it, each family handed exactly what its own read of the block
@@ -713,10 +748,29 @@ impl Pool {
         knobs: Knobs,
         depot: Option<Arc<dyn Depot>>,
     ) -> Self {
+        Self::start_with_walk(replay, lanes, workers, knobs, depot, None)
+    }
+
+    /// Register the walk before any worker can claim work. Its extracts stay
+    /// bound until the first-view gate releases it.
+    pub(crate) fn start_with_walk(
+        replay: Arc<Replay>,
+        mut lanes: Vec<(&'static Family, usize, bool)>,
+        workers: usize,
+        knobs: Knobs,
+        depot: Option<Arc<dyn Depot>>,
+        walk_from: Option<usize>,
+    ) -> Self {
+        let walk = walk_from.map(|from| {
+            let first = lanes.len();
+            lanes.extend(families().into_iter().map(|family| (family, from, true)));
+            first..lanes.len()
+        });
         let count = workers.max(1);
         let end = replay.index.len();
         let shared = Arc::new(PoolShared {
             state: Mutex::new(PoolState {
+                walk,
                 lanes: lanes
                     .into_iter()
                     .map(|(family, from, binding)| Lane {
@@ -781,44 +835,36 @@ impl Pool {
         position: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<Extracted> {
+        take_pool(&self.shared, lane, position, cancelled)
+    }
+
+    pub(crate) fn walk(&self) -> Option<PrePass> {
         let mut state = self.shared.lock();
-        if let Some(consumer) = &state.lanes[lane].section_consumer {
-            consumer.at(position);
+        let lanes = state.walk.clone()?;
+        for lane in lanes.clone() {
+            state.lanes[lane].binding = false;
         }
-        if position != state.lanes[lane].handed {
-            return Err(io::Error::other("Pre-pass blocks taken out of order"));
+        drop(state);
+        self.shared.changed.notify_all();
+        Some(PrePass {
+            shared: None,
+            families: families(),
+            workers: Vec::new(),
+            pooled: Some((Arc::clone(&self.shared), lanes)),
+        })
+    }
+
+    pub(crate) fn walk_folded(&self, took: Duration) {
+        let first = self.shared.lock().walk.as_ref().map(|lanes| lanes.start);
+        if let Some(lane) = first {
+            self.folded(lane, took);
         }
-        loop {
-            crate::metadata::check_cancel(cancelled)?;
-            let alive = state.alive;
-            let (extracted, claimed) = {
-                let lane = &mut state.lanes[lane];
-                let extracted = match lane.done.remove(&position) {
-                    Some(extracted) => Some(extracted),
-                    None if alive == 0 => Some(((Outcome::Sequential, Duration::ZERO), 0)),
-                    None => None,
-                };
-                let claimed = position < lane.next;
-                if extracted.is_some() {
-                    lane.handed += 1;
-                }
-                (extracted, claimed)
-            };
-            if let Some((extracted, bytes)) = extracted {
-                if claimed {
-                    state.release(position);
-                }
-                state.in_flight = state.in_flight.saturating_sub(bytes);
-                drop(state);
-                self.shared.changed.notify_all();
-                return Ok(extracted);
-            }
-            // Workers do not see cancellation; look again shortly.
-            state = self
-                .shared
-                .changed
-                .wait_timeout(state, Duration::from_millis(25))
-                .map_or_else(|error| error.into_inner().0, |(state, _)| state);
+    }
+
+    pub(crate) fn walk_published(&self, took: Duration) {
+        let first = self.shared.lock().walk.as_ref().map(|lanes| lanes.start);
+        if let Some(lane) = first {
+            self.published(lane, took);
         }
     }
 
@@ -857,24 +903,7 @@ impl Pool {
     /// Lane `lane`'s family takes no more blocks: nothing more of it is
     /// claimed, and what it left extracted is released.
     pub(crate) fn retire(&self, lane: usize) {
-        let mut state = self.shared.lock();
-        let left: Vec<(usize, u64)> = {
-            let lane = &mut state.lanes[lane];
-            lane.retired = true;
-            lane.section_consumer = None;
-            lane.binding = false;
-            lane.end = lane.next;
-            std::mem::take(&mut lane.done)
-                .into_iter()
-                .map(|(block, (_, bytes))| (block, bytes))
-                .collect()
-        };
-        for (block, bytes) in left {
-            state.release(block);
-            state.in_flight = state.in_flight.saturating_sub(bytes);
-        }
-        drop(state);
-        self.shared.changed.notify_all();
+        retire_pool(&self.shared, lane);
     }
 
     /// The worker time the blocks' reads took beside their extracts, and the
@@ -899,9 +928,86 @@ impl Drop for Pool {
     }
 }
 
+fn take_pool(
+    shared: &PoolShared,
+    lane: usize,
+    position: usize,
+    cancelled: &AtomicBool,
+) -> io::Result<Extracted> {
+    let mut state = shared.lock();
+    if let Some(consumer) = &state.lanes[lane].section_consumer {
+        consumer.at(position);
+    }
+    if position != state.lanes[lane].handed {
+        return Err(io::Error::other("Pre-pass blocks taken out of order"));
+    }
+    loop {
+        crate::metadata::check_cancel(cancelled)?;
+        let alive = state.alive;
+        let (extracted, claimed) = {
+            let lane = &mut state.lanes[lane];
+            let extracted = match lane.done.remove(&position) {
+                Some(extracted) => Some(extracted),
+                None if alive == 0 => Some(((Outcome::Sequential, Duration::ZERO), 0)),
+                None => None,
+            };
+            let claimed = position < lane.next;
+            if extracted.is_some() {
+                lane.handed += 1;
+            }
+            (extracted, claimed)
+        };
+        if let Some((extracted, bytes)) = extracted {
+            if claimed {
+                state.release(position);
+            }
+            state.in_flight = state.in_flight.saturating_sub(bytes);
+            drop(state);
+            shared.changed.notify_all();
+            return Ok(extracted);
+        }
+        // Workers do not see cancellation; look again shortly.
+        state = shared
+            .changed
+            .wait_timeout(state, Duration::from_millis(25))
+            .map_or_else(|error| error.into_inner().0, |(state, _)| state);
+    }
+}
+
+fn retire_pool(shared: &PoolShared, lane: usize) {
+    let mut state = shared.lock();
+    let left: Vec<(usize, u64)> = {
+        let lane = &mut state.lanes[lane];
+        lane.retired = true;
+        lane.section_consumer = None;
+        lane.binding = false;
+        lane.end = lane.next;
+        std::mem::take(&mut lane.done)
+            .into_iter()
+            .map(|(block, (_, bytes))| (block, bytes))
+            .collect()
+    };
+    for (block, bytes) in left {
+        state.release(block);
+        state.in_flight = state.in_flight.saturating_sub(bytes);
+    }
+    drop(state);
+    shared.changed.notify_all();
+}
+
 fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
     let shared = &alive.0;
     while let Some(task) = shared.claim() {
+        let supplies_walk = shared
+            .lock()
+            .walk
+            .as_ref()
+            .is_some_and(|walk| task.members.iter().any(|(lane, ..)| walk.contains(lane)));
+        JobPriority::current().enter(if supplies_walk {
+            Level::Normal
+        } else {
+            Level::BelowNormal
+        });
         let index = &replay.index[task.block];
         let readings: Vec<Reading<'_>> = task
             .members

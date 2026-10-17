@@ -13,7 +13,7 @@ use std::{
         fs::{FileExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant, SystemTime},
 };
 use uuid::Uuid;
@@ -617,7 +617,15 @@ impl Store {
     }
 
     fn continue_from(&self, previous: &SourceKey, key: SourceKey) -> io::Result<Writer> {
-        let lock = self.lock()?;
+        self.continue_locked(previous, key, self.lock()?)
+    }
+
+    fn continue_locked(
+        &self,
+        previous: &SourceKey,
+        key: SourceKey,
+        lock: File,
+    ) -> io::Result<Writer> {
         let base = self
             .catalog()?
             .ok_or_else(|| invalid("no prepared prefix"))?;
@@ -678,16 +686,31 @@ impl Store {
     }
 
     /// Keeps the lock, the manifest, its source stamps, its names file and the
-    /// packs and entry logs its tables list; removes every other name in one
-    /// directory pass.
+    /// packs and entry logs its tables list, plus live stages' files; removes
+    /// every other name in one directory pass.
     fn cleanup(&self, catalog: Option<&Catalog>) -> io::Result<()> {
-        let (listed, logs): (HashSet<u64>, HashSet<u64>) = match catalog {
+        // Creation and registration of a stage's packs use this same lock, so
+        // the directory pass cannot remove a pack before its pin is visible.
+        let mut registry = STAGING.lock().unwrap_or_else(|error| error.into_inner());
+        let stages = active_stages(&mut registry, &self.directory);
+        let (mut listed, mut logs): (HashSet<u64>, HashSet<u64>) = match catalog {
             Some(catalog) => (
                 catalog.packs.iter().map(|pack| pack.id).collect(),
                 catalog.logs.iter().map(|log| log.id).collect(),
             ),
             None => Default::default(),
         };
+        for stage in stages {
+            listed.extend(
+                stage
+                    .packs
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .iter()
+                    .copied(),
+            );
+            logs.extend(&stage.logs);
+        }
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -1581,6 +1604,11 @@ struct Pack {
 
 impl Pack {
     fn create(directory: &Path) -> io::Result<Self> {
+        Self::create_pinned(directory, None)
+    }
+
+    fn create_pinned(directory: &Path, pins: Option<&StageFiles>) -> io::Result<Self> {
+        let _registry = pins.map(|_| STAGING.lock().unwrap_or_else(|error| error.into_inner()));
         loop {
             let id = Uuid::new_v4().as_u64_pair().0;
             if id == RangeId::EMPTY.pack {
@@ -1594,6 +1622,12 @@ impl Pack {
                 .open(directory.join(pack_name(id)))
             {
                 Ok(file) => {
+                    if let Some(pins) = pins {
+                        pins.packs
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(id);
+                    }
                     #[cfg(test)]
                     tests::CREATED.set(tests::CREATED.get() + 1);
                     return Ok(Self {
@@ -1830,14 +1864,14 @@ enum Slot {
 
 /// A section a fork used: by index when its parent already held it (indices
 /// never change within a transaction), otherwise by name.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum SectionRef {
     Parent(usize),
     Named(String),
 }
 
 /// One step of a fork, replayed and re-checked against its parent by `adopt`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Operation {
     /// The fork created a section its parent did not hold.
     Create(String),
@@ -1866,12 +1900,62 @@ struct Fork {
     open: Vec<Operation>,
 }
 
+// A detached batch keeps its snapshot's files and range identities until it
+// joins a later transaction. Ordinary forks retain their transaction-only rules.
+static STAGING: Mutex<Vec<Weak<StageFiles>>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn staging(directory: &Path) -> bool {
+    let mut registry = STAGING.lock().unwrap_or_else(|error| error.into_inner());
+    !active_stages(&mut registry, directory).is_empty()
+}
+
+fn active_stages(registry: &mut Vec<Weak<StageFiles>>, directory: &Path) -> Vec<Arc<StageFiles>> {
+    let mut active = Vec::new();
+    registry.retain(|weak| {
+        let Some(stage) = weak.upgrade() else {
+            return false;
+        };
+        if stage.directory == directory {
+            active.push(stage);
+        }
+        true
+    });
+    active
+}
+
+#[derive(Debug)]
+struct StageFiles {
+    directory: PathBuf,
+    // Snapshot packs keep their identities; later packs belong only to this
+    // stage and its nested forks. Unrelated publications stay reclaimable.
+    packs: Mutex<HashSet<u64>>,
+    logs: HashSet<u64>,
+}
+
+#[derive(Debug)]
+struct StageLease {
+    _lock: File,
+    directory: PathBuf,
+    key: SourceKey,
+    inherited: HashSet<u64>,
+}
+
+#[derive(Debug)]
+struct Detached {
+    lease: Arc<StageLease>,
+    packs: HashMap<u64, Shared>,
+}
+
 /// One batch of a forked writer's work, for [`Writer::adopt`] into its parent.
 /// Dropping it leaves its ranges unlisted; the next writer open removes a pack
 /// that holds no listed range.
 #[derive(Debug)]
 pub struct Staged {
     transaction: Uuid,
+    detached: Option<Arc<Detached>>,
+    // Ordinary nested batches also retain the stage's files until adopted.
+    _pins: Option<Arc<StageFiles>>,
     operations: Vec<Operation>,
     /// The fork's pack, finished when the fork closed.
     pack: Option<(u64, Shared)>,
@@ -1895,6 +1979,8 @@ pub struct Writer {
     /// parent's as they stood when forked.
     packs: HashMap<u64, Shared>,
     fork: Option<Fork>,
+    detached: Option<Arc<StageLease>>,
+    pins: Option<Arc<StageFiles>>,
     /// An adoption failed partway, so the transaction must not be published.
     incomplete: bool,
 }
@@ -1921,6 +2007,8 @@ impl Writer {
             pack: None,
             packs: HashMap::new(),
             fork: None,
+            detached: None,
+            pins: None,
             incomplete: false,
         }
     }
@@ -1943,7 +2031,7 @@ impl Writer {
     /// handle. Forks must use disjoint sections: adoption refuses a batch whose
     /// reads or writes another adoption changed.
     pub fn fork(&mut self) -> io::Result<Writer> {
-        if self.fork.is_some() {
+        if self.fork.is_some() && self.detached.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "a forked prepared writer cannot fork",
@@ -1970,8 +2058,43 @@ impl Writer {
                 batches: Vec::new(),
                 open: Vec::new(),
             }),
+            detached: None,
+            pins: self.pins.clone(),
             incomplete: false,
         })
+    }
+
+    /// Stage a long batch without holding up this writer's commits. Its ranges
+    /// may be adopted into a later transaction of this directory and source key;
+    /// every read and replacement is checked by immutable range identity.
+    /// Nested ordinary forks support parallel writes into this batch.
+    pub fn stage(&mut self) -> io::Result<Writer> {
+        let lock = self._lock.try_clone()?;
+        let mut writer = self.fork()?;
+        let mut packs: HashSet<_> = writer.packs.keys().copied().collect();
+        let mut logs = HashSet::new();
+        if let Some(base) = &writer.base {
+            packs.extend(base.packs.iter().map(|pack| pack.id));
+            logs.extend(base.logs.iter().map(|log| log.id));
+        }
+        let pins = Arc::new(StageFiles {
+            directory: self.directory.clone(),
+            packs: Mutex::new(packs),
+            logs,
+        });
+        {
+            let mut registry = STAGING.lock().unwrap_or_else(|error| error.into_inner());
+            registry.retain(|stage| stage.strong_count() != 0);
+            registry.push(Arc::downgrade(&pins));
+        }
+        writer.pins = Some(pins);
+        writer.detached = Some(Arc::new(StageLease {
+            _lock: lock,
+            directory: self.directory.clone(),
+            key: self.key.clone(),
+            inherited: writer.packs.keys().copied().collect(),
+        }));
+        Ok(writer)
     }
 
     /// Closes a fork's current batch, even if it is empty; later work forms the
@@ -1981,6 +2104,8 @@ impl Writer {
             let operations = std::mem::take(&mut fork.open);
             fork.batches.push(Staged {
                 transaction: self.transaction,
+                detached: None,
+                _pins: self.pins.clone(),
                 operations,
                 pack: None,
             });
@@ -1991,14 +2116,13 @@ impl Writer {
     /// Writes out and flushes the fork's pack, on the calling thread: a flush
     /// failure is this fork's, and forks flush at once rather than in their
     /// parent's commit.
-    pub fn into_staged(self) -> io::Result<Vec<Staged>> {
-        let Writer {
-            fork,
-            pack,
-            transaction,
-            ..
-        } = self;
-        let Some(mut fork) = fork else {
+    pub fn into_staged(mut self) -> io::Result<Vec<Staged>> {
+        if self.incomplete {
+            return Err(invalid(
+                "a refused adoption left this prepared transaction incomplete",
+            ));
+        }
+        let Some(mut fork) = self.fork.take() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "only a forked prepared writer has staged batches",
@@ -2006,12 +2130,21 @@ impl Writer {
         };
         if !fork.open.is_empty() {
             fork.batches.push(Staged {
-                transaction,
+                transaction: self.transaction,
+                detached: None,
+                _pins: self.pins.clone(),
                 operations: fork.open,
                 pack: None,
             });
         }
-        if let Some(mut pack) = pack {
+        if self.detached.is_some() {
+            for batch in &mut fork.batches {
+                for operation in &mut batch.operations {
+                    self.identify(operation)?;
+                }
+            }
+        }
+        if let Some(mut pack) = self.pack.take() {
             let mut shared = pack.finish()?;
             sync_packs(std::slice::from_ref(&shared.file))?;
             shared.durable = true;
@@ -2019,7 +2152,100 @@ impl Writer {
                 batch.pack = Some((pack.id, shared.clone()));
             }
         }
+        if let Some(lease) = self.detached.take() {
+            self.packs.retain(|id, _| !lease.inherited.contains(id));
+            let detached = Arc::new(Detached {
+                lease,
+                packs: self.packs,
+            });
+            for batch in &mut fork.batches {
+                batch.detached = Some(Arc::clone(&detached));
+            }
+        }
         Ok(fork.batches)
+    }
+
+    fn identify(&self, operation: &mut Operation) -> io::Result<()> {
+        let (section, range, slot) = match operation {
+            Operation::Create(_) => return Ok(()),
+            Operation::Read {
+                section,
+                range,
+                slot,
+            } => (section, *range, slot),
+            Operation::Write {
+                section,
+                range,
+                old,
+                ..
+            } => (section, *range, old),
+        };
+        let name = self.section_name(section).to_owned();
+        if *slot == Slot::Published {
+            let index = self.position(&name).ok_or_else(|| overlap(&name))?;
+            *slot = self
+                .slot_id(index, range, *slot)?
+                .map_or(Slot::Missing, Slot::Staged);
+        }
+        *section = SectionRef::Named(name);
+        Ok(())
+    }
+
+    fn accepts(&self, staged: &Staged) -> bool {
+        match &staged.detached {
+            Some(detached) => {
+                detached.lease.directory == self.directory && detached.lease.key == self.key
+            }
+            None => {
+                // Nested ordinary forks belong to their stage's snapshot,
+                // even when its original publishing transaction has ended.
+                staged.transaction == self.transaction
+                    && match (&self.pins, &staged._pins) {
+                        (None, None) => true,
+                        (Some(parent), Some(child)) => Arc::ptr_eq(parent, child),
+                        _ => false,
+                    }
+            }
+        }
+    }
+
+    // Nested flushes' operations become part of the detached parent's journal.
+    fn journal(&self, operations: &[Operation]) -> Vec<Operation> {
+        if self.detached.is_none() {
+            return Vec::new();
+        }
+        operations
+            .iter()
+            .cloned()
+            .map(|mut operation| {
+                let section = match &mut operation {
+                    Operation::Create(_) => return operation,
+                    Operation::Read { section, .. } | Operation::Write { section, .. } => section,
+                };
+                if let SectionRef::Parent(index) = section {
+                    *section = self.reference(Some(*index), &self.sections[*index].name);
+                }
+                operation
+            })
+            .collect()
+    }
+
+    fn pin_adoption(&self, staged: &Staged, added: &mut Vec<u64>) {
+        if let Some(pins) = &self.pins {
+            let mut packs = pins.packs.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some(detached) = &staged.detached {
+                for &id in detached.packs.keys() {
+                    if packs.insert(id) {
+                        added.push(id);
+                    }
+                }
+            }
+            if let Some((id, _)) = &staged.pack
+                && packs.insert(*id)
+            {
+                added.push(*id);
+            }
+        }
     }
 
     /// Lists a fork's batch in this transaction exactly as if its operations had
@@ -2028,17 +2254,31 @@ impl Writer {
     /// fork saw; otherwise the batch is refused (`ErrorKind::Other`), and so
     /// is a later commit of this transaction.
     pub fn adopt(&mut self, staged: Staged) -> io::Result<()> {
-        if self.fork.is_some() || staged.transaction != self.transaction {
+        if (self.fork.is_some() && self.detached.is_none()) || !self.accepts(&staged) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "staged prepared ranges belong to another transaction",
+                "staged prepared ranges belong to another transaction or stage",
             ));
+        }
+        let journal = self.journal(&staged.operations);
+        self.pin_adoption(&staged, &mut Vec::new());
+        if let Some(detached) = &staged.detached {
+            self.packs.extend(detached.packs.clone());
         }
         if let Some((id, shared)) = staged.pack {
             self.packs.insert(id, shared);
         }
-        let result = self.replay(staged.operations, &mut Vec::new());
+        let result = self.replay(
+            staged.operations,
+            &mut Vec::new(),
+            staged.detached.is_some(),
+        );
         self.incomplete |= result.is_err();
+        if result.is_ok()
+            && let Some(fork) = &mut self.fork
+        {
+            fork.open.extend(journal);
+        }
         result
     }
 
@@ -2048,27 +2288,40 @@ impl Writer {
     /// producer's batches thus join a transaction other producers' batches
     /// share whole or not at all, and a refusal stays that producer's.
     pub fn adopt_all(&mut self, batches: Vec<Staged>) -> io::Result<()> {
-        if self.fork.is_some()
-            || batches
-                .iter()
-                .any(|staged| staged.transaction != self.transaction)
+        if (self.fork.is_some() && self.detached.is_none())
+            || batches.iter().any(|staged| !self.accepts(staged))
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "staged prepared ranges belong to another transaction",
+                "staged prepared ranges belong to another transaction or stage",
             ));
         }
         let before = (self.bytes_written, self.bytes_replaced, self.sections.len());
         let mut undo = Vec::new();
         let mut packs = Vec::new();
+        let mut pinned = Vec::new();
+        let journal: Vec<_> = batches
+            .iter()
+            .flat_map(|staged| self.journal(&staged.operations))
+            .collect();
         for staged in batches {
+            self.pin_adoption(&staged, &mut pinned);
+            if let Some(detached) = &staged.detached {
+                for (&id, shared) in &detached.packs {
+                    if let std::collections::hash_map::Entry::Vacant(entry) = self.packs.entry(id) {
+                        entry.insert(shared.clone());
+                        packs.push(id);
+                    }
+                }
+            }
             if let Some((id, shared)) = staged.pack
                 && let std::collections::hash_map::Entry::Vacant(entry) = self.packs.entry(id)
             {
                 entry.insert(shared);
                 packs.push(id);
             }
-            if let Err(error) = self.replay(staged.operations, &mut undo) {
+            if let Err(error) = self.replay(staged.operations, &mut undo, staged.detached.is_some())
+            {
                 for step in undo.into_iter().rev() {
                     match step {
                         Undo::Created => {
@@ -2084,15 +2337,29 @@ impl Writer {
                 for id in packs {
                     self.packs.remove(&id);
                 }
+                if let Some(pins) = &self.pins {
+                    let mut packs = pins.packs.lock().unwrap_or_else(|error| error.into_inner());
+                    for id in pinned {
+                        packs.remove(&id);
+                    }
+                }
                 return Err(error);
             }
+        }
+        if let Some(fork) = &mut self.fork {
+            fork.open.extend(journal);
         }
         Ok(())
     }
 
     /// Replays a batch's operations, noting in `undo` how to take back each
     /// step it made.
-    fn replay(&mut self, operations: Vec<Operation>, undo: &mut Vec<Undo>) -> io::Result<()> {
+    fn replay(
+        &mut self,
+        operations: Vec<Operation>,
+        undo: &mut Vec<Undo>,
+        detached: bool,
+    ) -> io::Result<()> {
         for operation in operations {
             match operation {
                 Operation::Create(name) => {
@@ -2107,9 +2374,10 @@ impl Writer {
                     range,
                     slot,
                 } => {
-                    let current = self
-                        .resolve(&section)
-                        .map_or(Slot::Missing, |index| self.sections[index].slot(range));
+                    let current = match self.resolve(&section) {
+                        Some(index) => self.checked_slot(index, range, detached)?,
+                        None => Slot::Missing,
+                    };
                     if current != slot {
                         return Err(overlap(self.section_name(&section)));
                     }
@@ -2126,7 +2394,7 @@ impl Writer {
                         .resolve(&section)
                         .ok_or_else(|| overlap(self.section_name(&section)))?;
                     let entry = &self.sections[index];
-                    if entry.slot(range) != old
+                    if self.checked_slot(index, range, detached)? != old
                         || (old == Slot::Missing && range != entry.count()?)
                     {
                         return Err(overlap(&entry.name));
@@ -2144,6 +2412,17 @@ impl Writer {
             }
         }
         Ok(())
+    }
+
+    fn checked_slot(&self, index: usize, range: u64, detached: bool) -> io::Result<Slot> {
+        let slot = self.sections[index].slot(range);
+        if detached {
+            Ok(self
+                .slot_id(index, range, slot)?
+                .map_or(Slot::Missing, Slot::Staged))
+        } else {
+            Ok(slot)
+        }
     }
 
     fn position(&self, section: &str) -> Option<usize> {
@@ -2199,7 +2478,7 @@ impl Writer {
     fn append(&mut self, data: &mut impl Read) -> io::Result<RangeId> {
         let pack = match &mut self.pack {
             Some(pack) => pack,
-            pack => pack.insert(Pack::create(&self.directory)?),
+            pack => pack.insert(Pack::create_pinned(&self.directory, self.pins.as_deref())?),
         };
         let id = pack.append(data)?;
         Ok(if id.len == 0 { RangeId::EMPTY } else { id })
@@ -2318,6 +2597,21 @@ impl Writer {
         Ok(range)
     }
 
+    /// Publish and reopen under the same exclusive lock. Detached staging
+    /// writers keep duplicate handles, so reopening must not acquire a new lock.
+    pub fn commit_continue(self) -> io::Result<Writer> {
+        let lock = self._lock.try_clone()?;
+        let key = self.key.clone();
+        let store = Store {
+            directory: self.directory.clone(),
+        };
+        self.commit()?;
+        if !key.recording_current()? {
+            return Err(invalid("sources changed before preparation resumed"));
+        }
+        store.continue_locked(&key, key.clone(), lock)
+    }
+
     /// Publishes the root last. The commit's new, replaced and moved entries
     /// go to one new entry log; every section keeps the runs of its unchanged
     /// entries where they are, so the root, the log and the names it appends
@@ -2354,28 +2648,50 @@ impl Writer {
         }
         let mut table = self.pack_table(&fresh)?;
         // Packs under half live are emptied into one new pack, so the listed
-        // packs hold at least as many listed bytes as dead ones. Only this
-        // commit's entries name its own packs, so those are emptied at once;
-        // finding the entries that name a published pack reads every entry,
+        // unpinned packs hold at least as many listed bytes as dead ones.
+        // Packs supplied by this commit are emptied at once; finding the
+        // entries that name another published pack reads every entry,
         // so published packs are emptied together, once the listed packs
         // hold more than a quarter dead bytes.
         let under = |live: u64, size: u64| u128::from(live) * 2 < u128::from(size);
-        let (live, size) =
-            table
-                .values()
-                .fold((0u128, 0u128), |(all_live, all_size), &(live, size)| {
-                    (all_live + u128::from(live), all_size + u128::from(size))
-                });
+        let pinned: HashSet<u64> = {
+            let mut registry = STAGING.lock().unwrap_or_else(|error| error.into_inner());
+            active_stages(&mut registry, &self.directory)
+                .iter()
+                .flat_map(|stage| {
+                    stage
+                        .packs
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        let (live, size) = table.iter().filter(|(id, _)| !pinned.contains(*id)).fold(
+            (0u128, 0u128),
+            |(all_live, all_size), (_, &(live, size))| {
+                (all_live + u128::from(live), all_size + u128::from(size))
+            },
+        );
         let published_too = size.saturating_sub(live) * 4 > live;
         let compact: HashSet<u64> = table
             .iter()
             .filter(|(id, (live, size))| {
-                under(*live, *size) && (published_too || fresh.contains_key(*id))
+                !pinned.contains(*id)
+                    && under(*live, *size)
+                    && (published_too || fresh.contains_key(*id))
             })
             .map(|(&id, _)| id)
             .collect();
         table.retain(|id, _| !compact.contains(id));
-        let scan = compact.iter().any(|id| !fresh.contains_key(id));
+        // A later batch can supply a pack that an earlier batch already
+        // published. Its unchanged published ranges must move as well.
+        let scan = self
+            .base
+            .as_ref()
+            .is_some_and(|base| base.packs.iter().any(|pack| compact.contains(&pack.id)));
         let mut mover = Mover {
             directory: &self.directory,
             compact,
@@ -2642,7 +2958,9 @@ impl Writer {
             }
         }
         for (&id, shared) in fresh {
-            table.insert(id, (0, shared.size));
+            // Separate batches of one stage can publish this pack in separate
+            // commits. Its earlier ranges are still live in the base.
+            table.entry(id).or_insert((0, shared.size));
         }
         let accounting = || invalid("prepared pack accounting does not match its ranges");
         for (index, section) in self.sections.iter().enumerate() {

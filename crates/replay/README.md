@@ -188,8 +188,9 @@ baseline rows traversed and cycles converted to nanoseconds, by table.
 `decodeFamilyTables` reports section decodes and their CPU by both family
 and table, alongside the aggregate `decodeTables` and `decodeFamilies`.
 
-Preparation reads each block on one below-normal-priority worker, decoding a
-grouped block's selected tables in parallel, and sends its frames in source order
+Preparation reads each block on one worker at the observing caller's priority
+(`job_priority::Caller`), decoding a grouped block's selected tables in parallel
+at that same priority, and sends its frames in source order
 through a channel retaining one queued frame. The observing thread reconstructs
 each hour only after observers released the previous one, so a delta applies in
 place to rows no observer holds. The channel waits without polling. Selected

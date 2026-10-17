@@ -1092,7 +1092,7 @@ struct Commits<'s> {
     /// group that publishes the transaction.
     forked: usize,
     /// Family publications waiting to stage their batch get the next writer
-    /// before the walk borrows it again.
+    /// before the walk starts another batch.
     waiting: usize,
     /// The open transaction takes no more forks: a group is collecting or
     /// publishing it.
@@ -1111,6 +1111,8 @@ struct Commits<'s> {
     startup: BTreeSet<usize>,
     #[cfg(test)]
     newest_first: bool,
+    #[cfg(test)]
+    on_publish: OnPublish,
     /// Store commits holding a family's batch, and the family commits they
     /// held.
     published: (usize, usize),
@@ -1271,14 +1273,14 @@ fn ready(group: &Group<'_>, lane: usize) {
     group.changed.notify_all();
 }
 
-/// The hourly walk borrows the open writer for one batch while families
-/// keep folding. Its checkpoint joins theirs in the next group commit.
+/// The hourly walk stages a batch without holding up family publications.
+/// Once ready, its fork and checkpoint join the next group commit.
 /// The independent newest views publish before its first batch.
 pub(super) struct Walk<'m, 's> {
     group: &'m Group<'s>,
     phase: &'m Phase<'m>,
     lane: usize,
-    forked: Option<Forked<'m, 's>>,
+    pool: Option<&'m Pool>,
 }
 
 impl Walk<'_, '_> {
@@ -1292,14 +1294,8 @@ impl Walk<'_, '_> {
             if guard.lost {
                 return Err(lost_to(self.phase));
             }
-            if guard.startup.is_empty() && guard.waiting == 0 && guard.admits() {
-                let writer = guard.writer.take().ok_or_else(lost)?;
-                guard.forked += 1;
-                self.forked = Some(Forked {
-                    group: self.group,
-                    armed: true,
-                });
-                return Ok(writer);
+            if guard.startup.is_empty() && guard.admits() {
+                return guard.writer.as_mut().ok_or_else(lost)?.stage();
             }
             let next = accepted_now(&guard, self.phase);
             guard = self
@@ -1314,14 +1310,51 @@ impl Walk<'_, '_> {
         }
     }
 
+    /// Release the walk's registered lanes only after its first-view gate.
+    pub(super) fn prepass(&self) -> Option<prepass::PrePass> {
+        self.pool.and_then(Pool::walk)
+    }
+
+    pub(super) fn folded(&self, took: std::time::Duration) {
+        if let Some(pool) = self.pool {
+            pool.walk_folded(took);
+        }
+    }
+
+    pub(super) fn published(&self, took: std::time::Duration) {
+        if let Some(pool) = self.pool {
+            pool.walk_published(took);
+        }
+    }
+
     pub(super) fn commit(
         &mut self,
         writer: store::Writer,
         state: &Checkpoint,
         workers: &mut Timings,
     ) -> io::Result<(Checkpoint, Accepted)> {
-        lock(self.group).writer = Some(writer);
-        let forked = self.forked.take().expect("the walk's open batch");
+        // Writing and flushing the detached batch never closes the family's
+        // transaction. Only the ready batch joins the group that adopts it.
+        let staged = writer.into_staged()?;
+        let forked;
+        {
+            let mut guard = lock(self.group);
+            guard.waiting += 1;
+            while !guard.admits() {
+                if guard.lost {
+                    guard.waiting -= 1;
+                    self.group.changed.notify_all();
+                    return Err(lost_to(self.phase));
+                }
+                guard = self.group.wait(guard);
+            }
+            guard.waiting -= 1;
+            guard.forked += 1;
+            forked = Forked {
+                group: self.group,
+                armed: true,
+            };
+        }
         queued(
             self.group,
             self.phase,
@@ -1332,23 +1365,11 @@ impl Walk<'_, '_> {
                 lane: self.lane,
                 name: "walk",
                 publication: Publication::Walk(Box::new(state.clone())),
-                staged: Vec::new(),
+                staged,
             },
         )?;
         let guard = lock(self.group);
         Ok((guard.snapshot.clone(), accepted_now(&guard, self.phase)))
-    }
-}
-
-impl Drop for Walk<'_, '_> {
-    fn drop(&mut self) {
-        if self.forked.is_some() {
-            // The walk failed while owning the writer; no later batch can
-            // publish its partially observed pages.
-            lock(self.group).lost = true;
-            self.forked.take();
-            self.group.changed.notify_all();
-        }
     }
 }
 
@@ -1447,25 +1468,37 @@ pub(super) fn prepare(
     };
     // Every family's blocks from its own first one, on one set of workers,
     // which read the shared reader's blocks with theirs.
-    let pool = (!runs.is_empty()).then(|| {
-        Pool::start(
-            phase.source.replay(),
-            runs.iter()
-                .map(|run| {
-                    // A family without a lane claims nothing: its lane
-                    // starts at the recording's end.
-                    let from = if run.own.laned() {
-                        run.progress.next_block
-                    } else {
-                        replay.index.len()
-                    };
-                    (run.own.family(), from, run.own.binds())
-                })
-                .collect(),
-            prepass::workers(lanes::parallelism()),
-            knobs,
-            shared.as_ref().map(shared::Shared::depot),
-        )
+    let walk_from = (at_once && prepass::enabled() && state.cursor.next_block < replay.index.len())
+        .then_some(state.cursor.next_block);
+    let pool = (!runs.is_empty() || walk_from.is_some()).then(|| {
+        let lanes = runs
+            .iter()
+            .map(|run| {
+                let from = if run.own.laned() {
+                    run.progress.next_block
+                } else {
+                    replay.index.len()
+                };
+                (run.own.family(), from, run.own.binds())
+            })
+            .collect();
+        match walk_from {
+            Some(from) => Pool::start_with_walk(
+                phase.source.replay(),
+                lanes,
+                prepass::workers(lanes::parallelism()),
+                knobs,
+                shared.as_ref().map(shared::Shared::depot),
+                Some(from),
+            ),
+            None => Pool::start(
+                phase.source.replay(),
+                lanes,
+                prepass::workers(lanes::parallelism()),
+                knobs,
+                shared.as_ref().map(shared::Shared::depot),
+            ),
+        }
     });
     let families = runs.len();
     let walk_lane = families + beside.len();
@@ -1497,6 +1530,8 @@ pub(super) fn prepare(
                 .collect(),
             #[cfg(test)]
             newest_first: TEST_NEWEST_FIRST.with(std::cell::Cell::get),
+            #[cfg(test)]
+            on_publish: TEST_ON_PUBLISH.with(|hook| hook.borrow().clone()),
             published: (0, 0),
         }),
         changed: Condvar::new(),
@@ -1616,7 +1651,7 @@ pub(super) fn prepare(
                     group: &commits,
                     phase,
                     lane: walk_lane,
-                    forked: None,
+                    pool: pool.as_ref(),
                 },
                 &mut |_| {
                     for _ in receiver.try_iter() {}
@@ -1684,7 +1719,7 @@ pub(super) fn prepare(
                     group: &commits,
                     phase,
                     lane: walk_lane,
-                    forked: None,
+                    pool: pool.as_ref(),
                 },
                 &mut |_| {
                     for _ in receiver.try_iter() {}
@@ -2288,21 +2323,28 @@ fn publish<'m, 's>(
     // Families keep folding meanwhile: they read the published store, and
     // those reaching their commits wait for the next transaction.
     drop(guard);
-    let committed = writer.commit();
-    let next = committed
-        .as_ref()
-        .ok()
-        .map(|()| phase.store.extend(phase.key));
+    let next = writer.commit_continue();
     let mut guard = lock(group);
     let commits = &mut *guard;
-    if let Err(error) = committed {
-        commits.lost = true;
-        return (guard, Err(error));
-    }
+    let writer = match next {
+        Ok(writer) => writer,
+        Err(error) => {
+            commits.lost = true;
+            return (guard, Err(error));
+        }
+    };
     commits.committed = true;
     *commits.saved = Some(phase.key.clone());
     *commits.bytes = bytes;
     commits.snapshot = commits.state.clone();
+    #[cfg(test)]
+    if let Some(hook) = &commits.on_publish {
+        for (name, publication) in members {
+            if let Publication::Family(progress) = publication {
+                hook(name, progress.next_block);
+            }
+        }
+    }
     let families = members
         .iter()
         .filter(|(_, publication)| matches!(publication, Publication::Family(_)))
@@ -2311,16 +2353,8 @@ fn publish<'m, 's>(
         commits.published.0 += 1;
         commits.published.1 += families;
     }
-    match next.expect("the next transaction after a commit") {
-        Ok(writer) => {
-            commits.writer = Some(writer);
-            (guard, Ok(()))
-        }
-        Err(error) => {
-            commits.lost = true;
-            (guard, Err(error))
-        }
-    }
+    commits.writer = Some(writer);
+    (guard, Ok(()))
 }
 
 /// What every family has accepted, as the last commit published it.
@@ -2583,6 +2617,9 @@ pub(super) fn take_test_publications() -> (usize, usize) {
 }
 
 #[cfg(test)]
+type OnPublish = Option<Arc<dyn Fn(&str, usize) + Send + Sync>>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_GROUPING: std::cell::Cell<Grouping> = const { std::cell::Cell::new(Grouping::Natural) };
     static TEST_PUBLISHED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
@@ -2591,6 +2628,7 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static TEST_ONE_AFTER_ANOTHER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_NEWEST_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_ON_PUBLISH: std::cell::RefCell<OnPublish> = const { std::cell::RefCell::new(None) };
 }
 
 /// Run `run` with every family prepared hour by hour, as before.
@@ -2660,5 +2698,21 @@ pub(super) fn with_test_newest_first<T>(run: impl FnOnce() -> T) -> T {
         }
     }
     let _reset = Reset(TEST_NEWEST_FIRST.with(|value| value.replace(true)));
+    run()
+}
+
+/// Observe actual accepted family publications, on the group leader's thread.
+#[cfg(test)]
+pub(super) fn with_test_on_publish<T>(
+    hook: impl Fn(&str, usize) + Send + Sync + 'static,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Reset(OnPublish);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_ON_PUBLISH.with(|hook| *hook.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(TEST_ON_PUBLISH.with(|value| value.replace(Some(Arc::new(hook)))));
     run()
 }

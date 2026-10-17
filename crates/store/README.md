@@ -85,6 +85,27 @@ adopted stay unlisted, and a pack that holds no listed range is removed at the
 next writer open. Entries are read at their offsets, so a writer and its forks
 share one catalog of the published manifest.
 
+`Writer::stage` detaches a long batch from transaction publication. It reads the
+snapshot at creation and its own writes, including ordinary forks adopted into
+it for parallel flushing. The batch's reads and replaced ranges record immutable
+range identities and its sections are resolved by name. `into_staged` returns
+batches that `adopt_all` can join to a later transaction of the same directory
+and source key, checking every dependency and taking back the whole batch on a
+conflict. Other producers can commit meanwhile. The stage and its returned
+batches retain the exclusive lock, and pin snapshot files and range identities:
+cleanup retains its snapshot's entry logs and packs and the packs written by
+the stage and its nested forks. Those packs keep their range identities;
+unrelated packs and logs are cleaned up and compacted normally. Names and source
+stamps are already loaded in the snapshot. Ordinary nested batches can join
+only their own stage; ordinary sibling batches stay in their publishing
+transaction. A stage's batches may join separate commits: each
+commit adds its ranges' live bytes to any earlier publication of the same pack.
+Compacting such a pack moves both earlier and newly adopted ranges. No payload
+is copied to rebase a batch. `commit_continue` publishes and opens the next
+transaction under a duplicate of the same lock handle, so detached stages do
+not prevent continuation or leave an ownership gap. Ordinary forks remain tied
+to their original transaction.
+
 `extend(key)` adds more accepted ranges for the same unchanged recording, so
 cancelled preparation can resume from its saved accumulators. `range_count`
 reads a section's published count from the root, without scanning its ranges.
@@ -170,7 +191,9 @@ leave the complete new root visible. Unsupported POSIX volumes are refused. The
 dashboard's tests enable it through their dev-dependency.
 One exclusive-open `writer.lock` serializes writers and Clear. Writer opening
 deletes every name other than the lock, the manifest, its stamps, its names
-file and the packs and logs its tables list, in one directory pass.
+file, the packs and logs its tables list, and live stages' pinned files, in one
+directory pass. Pack creation registers a stage's pin under the same lock as
+cleanup, so a concurrent directory pass cannot remove a new stage pack.
 
 Garbage is bounded. The pack table records each pack's listed bytes, and a
 commit subtracts the bytes of the ranges it replaces from their packs. A pack
@@ -181,8 +204,8 @@ half live are emptied together, at a commit after which the listed packs would
 hold more than a quarter dead bytes. An emptied pack's listed ranges are copied,
 in manifest order, into one new pack, their entries are rewritten in the
 commit's log, and the old pack is no longer listed (nor flushed). A pack no
-range lists leaves the table. So after every commit the listed packs total at
-most twice the listed range bytes, and packs of earlier transactions that no
+range lists leaves the table. Unpinned listed packs
+total after each commit at most twice their listed range bytes, and packs of earlier transactions that no
 manifest lists remain only until the next writer open. Every copied byte was
 preceded by at least as many bytes made dead, so copying costs at most the
 bytes written. Readers never see the move: held ranges keep their old pack, and
@@ -199,7 +222,14 @@ metadata changes, immutable append, writer exclusion, forks adopted in order
 against the same writes made directly, refused overlapping forks, producers
 adopted into one commit against each committing alone (the same sections and
 bytes, with one root, log and flush set instead of one each), a refused
-producer taken back whole while the others commit, an older layout read as
+producer taken back whole while the others commit, detached batches crossing
+successive publications with nested flushes, their snapshot identities and lock
+retained, rejected cross-source batches and atomic rollback of conflicting
+reads or replacements, shared stage packs adopted across separate commits and
+kept readable through later replacement and cleanup, compaction of their earlier
+published ranges, bounded disk use during repeated page replacements beside a
+live stage and its nested batch, rejected ordinary batches crossing stage
+boundaries, an older layout read as
 absent, failed ranges, range bounds and seeking, emptied packs under held
 readers, and opening a root with 1,756,800 hourly entries representing two
 sections over 100 years, which reads the root and one log entry. Reads after

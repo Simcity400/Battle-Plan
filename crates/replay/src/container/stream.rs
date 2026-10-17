@@ -172,9 +172,9 @@ impl ReplayStream {
             // The receiver belongs to the scope body: unwinding drops it before
             // joining a producer blocked on a full frame channel.
             let (sender, receiver) = mpsc::sync_channel(1);
-            let priority = job_priority::JobPriority::current();
+            let priority = job_priority::Caller::current();
             let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
-                priority.enter(job_priority::Level::BelowNormal);
+                priority.enter();
                 let check = || {
                     if worker_stopped.load(Ordering::Acquire) {
                         Err(io::Error::from(io::ErrorKind::Interrupted))
@@ -189,12 +189,13 @@ impl ReplayStream {
                     replay.grouped_block(index)?.is_some()
                 };
                 let frames = if grouped {
-                    // Below-normal workers, as this thread, leave observers their cores.
-                    let job = job_priority::JobPriority::current();
-                    let lower = move || job.clone().enter(job_priority::Level::BelowNormal);
+                    // The observer synchronously waits for these reads: its
+                    // decoder and table helpers run at the observer's job level.
+                    let caller = job_priority::Caller::current();
+                    let enter = move || caller.clone().enter();
                     let parallel = Parallel {
                         workers: super::pack::workers(),
-                        on_worker: &lower,
+                        on_worker: &enter,
                     };
                     Some(replay.read_block_recorded_selected_parallel(index, tables, &parallel)?)
                 } else {
@@ -558,6 +559,27 @@ mod tests {
             {
                 return;
             }
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn parallel_stream_reads_at_the_observers_job_priority() {
+        use job_priority::JobPriority;
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority};
+        for background in [false, true] {
+            JobPriority::run(Arc::new(AtomicBool::new(background)), || {
+                let expected = unsafe { GetThreadPriority(GetCurrentThread()) };
+                let replay = Arc::new(recording());
+                let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
+                stream.on_read = Some(Arc::new(move |_| {
+                    assert_eq!(unsafe { GetThreadPriority(GetCurrentThread()) }, expected);
+                }));
+                while stream
+                    .next_block_parallel_with(&replay, |_, _| Ok(()), || Ok(()))
+                    .unwrap()
+                {}
+            });
         }
     }
 

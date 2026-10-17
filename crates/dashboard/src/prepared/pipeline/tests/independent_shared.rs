@@ -474,7 +474,9 @@ fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
             .collect();
         let reads = prepass::noted(shared::SHARED_READ);
         let apart = prepass::noted(shared::SHARED_ALONE);
-        prepass::with_test_prepass(workers, None, || families(|| plain(&source)));
+        prepass::with_test_prepass(workers, None, || {
+            prepass::with_test_sequential(|| families(|| plain(&source)))
+        });
         let own = payloads(&source, None);
         for (family, _) in FAMILIES {
             for branch in [1, 2] {
@@ -537,15 +539,17 @@ fn shared_reads_hold_to_their_budget_and_are_timed_apart() {
     assert_payloads_equal(&together, &reference, "no read-ahead budget");
     let source = fixture.source("shared-timed");
     let (_, timings) = prepass::with_test_prepass(2, None, || {
-        families(|| {
-            run_measured(
-                &source,
-                None,
-                &AtomicBool::new(false),
-                false,
-                Duration::ZERO,
-                |_| {},
-            )
+        prepass::with_test_sequential(|| {
+            families(|| {
+                run_measured(
+                    &source,
+                    None,
+                    &AtomicBool::new(false),
+                    false,
+                    Duration::ZERO,
+                    |_| {},
+                )
+            })
         })
     })
     .unwrap();

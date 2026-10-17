@@ -11,15 +11,15 @@ spawning and calls `enter(level)` first. Covered spawn sites are:
 
 - `replay::container::parallel_map`: scoped frame and table decode workers
   (`Normal`); the stream producer and its grouped-table decode setup use
-  `BelowNormal`.
+  `Caller` to match the observer they synchronously supply.
 - `replay::container::pack`: scoped block pack workers and the pack writer's
   table/section helpers (`Normal`).
 - `store`: scoped content-stamp and flush helpers (`Normal`).
 - `dashboard-core::blocks::scan_blocks_by`: scoped block read-ahead workers
   (`Normal`), including production-lines block decoding and newest-window scans.
 - `dashboard::prepared::prepass`: hourly pre-pass workers and the shared pool's
-  block-task workers (`BelowNormal`), including per-member watches and deposits
-  for the shared reader.
+  block-task workers (`BelowNormal`, or the coordinator's `Normal` level while
+  supplying the walk), including per-member watches and shared-reader deposits.
 - `dashboard::prepared::pipeline::independent::shared`: the fixed shared-reader
   threads (`BelowNormal`).
 - `dashboard::prepared::pipeline::independent`: family workers and every
@@ -40,7 +40,10 @@ is shared with its progress: a job the user joins starts its later threads at
 their usual levels.
 
 The preparation queue's persistent runner threads start before a job is chosen;
-each queued preparation installs its own flag with `JobPriority::run`. Service
+each queued preparation installs its own flag and enters the coordinator's
+`Normal` level with `JobPriority::run`, restoring its job and priority afterward.
+The runner does not enter Windows background mode. `enter` also resets reused
+threads to the requested level, including normal after below normal. Service
 loader lanes and the response pump serve queries and stay at normal priority,
 without a preparation job. A block scan serving a query likewise starts its
 read-ahead workers at normal priority; production scans started by preparation

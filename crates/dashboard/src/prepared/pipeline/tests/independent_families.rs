@@ -1333,3 +1333,241 @@ fn a_family_ahead_of_the_walk_resumes_only_its_own_tail() {
 fn append_resumes_a_family_ahead_of_the_walk_from_its_own_prefix() {
     resume_separate_prefixes(true, true);
 }
+
+#[derive(Default)]
+struct BatchOverlap {
+    enabled: bool,
+    walk_started: bool,
+    publications: Vec<usize>,
+}
+
+static BATCH_OVERLAP: (Mutex<BatchOverlap>, std::sync::Condvar) = (
+    Mutex::new(BatchOverlap {
+        enabled: false,
+        walk_started: false,
+        publications: Vec::new(),
+    }),
+    std::sync::Condvar::new(),
+);
+
+fn wait_for_walk_batch(_: i32) {
+    let (state, changed) = &BATCH_OVERLAP;
+    let state = state.lock().unwrap();
+    if !state.enabled {
+        return;
+    }
+    let (state, _) = changed
+        .wait_timeout_while(state, Duration::from_secs(2), |state| !state.walk_started)
+        .unwrap();
+    assert!(state.walk_started, "walk batch never started");
+}
+
+static PUBLISHING_ALPHA: Hours = Hours {
+    on_fold: Some(wait_for_walk_batch),
+    ..hours(
+        &ALPHA,
+        "independent.alpha",
+        &["alpha-product"],
+        "publishing-alpha",
+    )
+};
+
+/// Hold the first walk batch inside its first hour. Two complete family
+/// publications must reach the manifest before that batch can continue.
+/// An owned writer (or a fork counted throughout preparation) cannot pass.
+#[test]
+fn families_publish_multiple_batches_while_one_walk_batch_is_in_progress() {
+    let _test = OVERLAP_TEST.lock().unwrap();
+    let replay = recording(3, false);
+    let mut fixture = Fixture::new(&replay);
+    let families = registered(&[&PUBLISHING_ALPHA]);
+    independent::with_test_families(&families, || {
+        let source = fixture.source("walk-batch-publications");
+        *BATCH_OVERLAP.0.lock().unwrap() = BatchOverlap::default();
+        independent::with_test_one_after_another(|| measured(&source)).unwrap();
+        let without_checkpoint = |pages: Payloads| {
+            pages
+                .into_iter()
+                .filter(|((name, _), _)| name != CHECKPOINT)
+                .collect::<Payloads>()
+        };
+        let expected = without_checkpoint(payloads(&source, None));
+        clear(source);
+        for cancel in [false, true] {
+            let source = fixture.source("walk-batch-publications");
+            *BATCH_OVERLAP.0.lock().unwrap() = BatchOverlap {
+                enabled: true,
+                ..Default::default()
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&cancelled);
+            let hook: lanes::Hook = Arc::new(move |family, frame, _| {
+                if family != "coordinator" || frame.hour != 100 {
+                    return lanes::Fault::Continue;
+                }
+                let (state, changed) = &BATCH_OVERLAP;
+                let mut state = state.lock().unwrap();
+                state.walk_started = true;
+                changed.notify_all();
+                let (state, _) = changed
+                    .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                        state.publications.len() < 2
+                    })
+                    .unwrap();
+                assert!(
+                    state.publications.len() >= 2,
+                    "families could not publish during the open walk batch: {:?}",
+                    state.publications
+                );
+                if cancel {
+                    flag.store(true, Ordering::Release);
+                }
+                lanes::Fault::Continue
+            });
+            let result = independent::with_test_on_publish(
+                |family, next| {
+                    if family != "alpha" {
+                        return;
+                    }
+                    let (state, changed) = &BATCH_OVERLAP;
+                    let mut state = state.lock().unwrap();
+                    assert!(state.walk_started);
+                    state.publications.push(next);
+                    changed.notify_all();
+                },
+                || {
+                    super::super::with_test_batch_blocks(1, || {
+                        lanes::with_test_lanes(4, Some(hook), || {
+                            run(&source, None, &cancelled, |_| {})
+                        })
+                    })
+                },
+            );
+            assert!(
+                BATCH_OVERLAP
+                    .0
+                    .lock()
+                    .unwrap()
+                    .publications
+                    .starts_with(&[1, 2])
+            );
+            BATCH_OVERLAP.0.lock().unwrap().enabled = false;
+            if cancel {
+                assert_eq!(
+                    result.err().map(|error| error.kind()),
+                    Some(io::ErrorKind::Interrupted)
+                );
+                let (store, key) = super::super::super::files(&source, None).unwrap();
+                let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
+                assert_eq!(
+                    saved.cursor.next_block, 0,
+                    "unaccepted walk pages stayed private"
+                );
+                assert!(saved.independent["alpha"].next_block >= 2);
+                assert!(store.read(&key, &branch_section(1), 0).unwrap().is_none());
+                cancelled.store(false, Ordering::Release);
+                measured(&source).unwrap();
+            } else {
+                result.unwrap();
+            }
+            let (store, key) = super::super::super::files(&source, None).unwrap();
+            let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
+            assert!(
+                saved.forward_complete(replay.index.len()),
+                "walk and family cursors both retained"
+            );
+            assert!(
+                restore(&source, None, &AtomicBool::new(false))
+                    .unwrap()
+                    .is_some(),
+                "side publications finished with the forward publishers"
+            );
+            assert_payloads_equal(
+                &without_checkpoint(payloads(&source, None)),
+                &expected,
+                "family commits during walk batch, with cancellation and resume",
+            );
+            clear(source);
+        }
+    });
+}
+
+/// Exercise the real persistent runner, rather than a normal-priority test
+/// thread. A walk acceptance must release a family still folding its second
+/// block, and the walk must run at the same job level as that family.
+#[test]
+#[cfg(windows)]
+fn runner_walk_progresses_at_family_priority_while_a_family_is_still_running() {
+    use dashboard_base::prepared::priority::JobPriority;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_NORMAL,
+    };
+    let _test = OVERLAP_TEST.lock().unwrap();
+    *OVERLAP.0.lock().unwrap() = Overlap {
+        enabled: true,
+        at: 104,
+        ..Default::default()
+    };
+    let replay = recording(3, false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("runner-walk-overlap");
+    let worker_source = Arc::clone(&source);
+    let runner = crate::prepared::runner::Runner::new().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    runner
+        .submit(Arc::new(AtomicBool::new(false)), move |cancelled| {
+            let result = JobPriority::run(Arc::new(AtomicBool::new(false)), || {
+                independent::with_test_families(&registered(&[&OVERLAPPING_ALPHA]), || {
+                    let mut counted = 0;
+                    let result = run_measured_through(
+                        &worker_source,
+                        None,
+                        cancelled,
+                        true,
+                        Duration::ZERO,
+                        Some(u64::MAX),
+                        |_| Ok(()),
+                        |accepted| {
+                            assert_eq!(
+                                unsafe { GetThreadPriority(GetCurrentThread()) },
+                                THREAD_PRIORITY_NORMAL,
+                                "walk must not inherit persistent runner background mode"
+                            );
+                            if accepted.next_block == 0 {
+                                return;
+                            }
+                            let (state, changed) = &OVERLAP;
+                            let state = state.lock().unwrap();
+                            if state.walk_commits > 0 {
+                                return;
+                            }
+                            let (mut state, _) = changed
+                                .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                                    !state.waiting
+                                })
+                                .unwrap();
+                            assert!(state.waiting && state.folds == 2);
+                            counted += 1;
+                            state.walk_commits += 1;
+                            changed.notify_all();
+                        },
+                    );
+                    result.map(|_| counted)
+                })
+            });
+            let _ = send.send(result);
+        })
+        .unwrap();
+    let counted = receive
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    runner.shutdown();
+    assert_eq!(
+        counted, 1,
+        "accepted walk progress while the second family fold was held"
+    );
+    assert_eq!(OVERLAP.0.lock().unwrap().folds, 3);
+    OVERLAP.0.lock().unwrap().enabled = false;
+    clear(source);
+}

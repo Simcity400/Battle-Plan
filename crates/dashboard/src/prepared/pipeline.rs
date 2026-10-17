@@ -2753,19 +2753,21 @@ fn run_inner(
         let mut writer = walk.open(accepted)?;
         // First views publish before this walk and its pre-pass compete for CPU.
         let prepass = prepass::enabled().then(|| {
-            #[allow(unused_mut)]
-            let mut knobs = prepass::Knobs::current();
-            #[cfg(test)]
-            {
-                knobs.refusals = lanes::test_refusals();
-            }
-            PrePass::start(
-                source.replay(),
-                stream.cursor().next_block,
-                prepass::families(),
-                prepass::workers(lanes::parallelism()),
-                knobs,
-            )
+            walk.prepass().unwrap_or_else(|| {
+                #[allow(unused_mut)]
+                let mut knobs = prepass::Knobs::current();
+                #[cfg(test)]
+                {
+                    knobs.refusals = lanes::test_refusals();
+                }
+                PrePass::start(
+                    source.replay(),
+                    stream.cursor().next_block,
+                    prepass::families(),
+                    prepass::workers(lanes::parallelism()),
+                    knobs,
+                )
+            })
         });
         loop {
             let block_started = start_timing(&family_timings);
@@ -2911,6 +2913,9 @@ fn run_inner(
                 }
                 lanes::merge(&mut lane_timings, extract_timings);
             }
+            // The walk is one downstream chain: decoder, map/land observation,
+            // folds and block-end pages. Pre-pass waits are not its measured cost.
+            let walk_work_started = Instant::now();
             let hourly = |name: &str| !folds.iter().any(|(family, _)| family.name == name);
             let (resources_hourly, army_hourly) = (hourly("resources"), hourly("army"));
             let block_tables = block_selected(resources_hourly, army_hourly);
@@ -4147,6 +4152,7 @@ fn run_inner(
                     })
                 );
             }
+            walk.folded(walk_work_started.elapsed());
             check_cancel(cancelled)?;
             let same_branch = replay
                 .index
@@ -4210,6 +4216,7 @@ fn run_inner(
                 finish_timing(&mut family_timings, block_started, "block.overhead", false);
                 continue;
             }
+            let walk_flush_started = Instant::now();
             if got {
                 let flush_started = start_timing(&family_timings);
                 let frame = stream
@@ -4941,6 +4948,7 @@ fn run_inner(
                 writer.write_at("land-owners", 0, land_owners.saved_bytes()?.as_slice())
             )?;
             state.map = map.progress().clone();
+            walk.published(walk_flush_started.elapsed());
             time_family!(
                 family_timings,
                 "progress.before-commit",

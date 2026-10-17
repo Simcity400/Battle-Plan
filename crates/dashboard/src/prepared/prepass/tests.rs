@@ -220,6 +220,7 @@ fn pool_state(
 ) -> PoolShared {
     PoolShared {
         state: Mutex::new(PoolState {
+            walk: None,
             lanes,
             ahead: 8,
             sizes: vec![1; 100],
@@ -1269,4 +1270,85 @@ fn longest_chain_does_not_claim_past_binding_read_ahead_or_byte_limits() {
         locked.budget = 0;
     }
     assert_eq!(state.lock().pick(), Some((8, vec![0])));
+}
+
+/// The two walk extracts feed one carried decoder/map/land chain. Its measured
+/// fold and batch serialization must move both prerequisites ahead of shorter
+/// family chains, while a more expensive family can still lead it.
+#[test]
+fn walk_chain_competes_with_families_by_its_live_combined_cost() {
+    let pool = Pool {
+        shared: Arc::new(pool_state(
+            vec![
+                lane(8, 8, 100, 10),
+                lane(10, 10, 10, 10),
+                lane(10, 10, 20, 10),
+            ],
+            1,
+            0,
+            &[],
+            u64::MAX,
+        )),
+        workers: Vec::new(),
+    };
+    pool.shared.lock().walk = Some(1..3);
+    assert_eq!(pool.shared.lock().pick(), Some((8, vec![0])));
+    pool.walk_folded(Duration::from_millis(8));
+    pool.walk_published(Duration::from_millis(4));
+    assert_eq!(pool.shared.lock().pick(), Some((10, vec![1, 2])));
+    {
+        let mut state = pool.shared.lock();
+        state.lanes[0].next = 10;
+        state.lanes[0].handed = 10;
+        assert_eq!(state.pick(), Some((10, vec![1, 2, 0])));
+        // Only measured remaining work decides: no privileged fixed family list.
+        state.lanes[0].folded = Duration::from_millis(30);
+        state.lanes[0].folds = 1;
+        assert_eq!(state.pick(), Some((10, vec![0, 1, 2])));
+        for lane in &mut state.lanes[1..3] {
+            lane.binding = true;
+        }
+        assert_eq!(state.pick(), Some((10, vec![0])));
+    }
+}
+
+#[test]
+fn walk_prepass_uses_the_registered_pool_and_keeps_extract_outputs_exact() {
+    let replay = recording(3);
+    let flag = AtomicBool::new(false);
+    let pool = Pool::start_with_walk(
+        Arc::clone(&replay),
+        vec![(&HOURS, 0, false)],
+        2,
+        Knobs::default(),
+        None,
+        Some(0),
+    );
+    {
+        let state = pool.shared.lock();
+        assert!(state.lanes[1..].iter().all(|lane| lane.binding));
+    }
+    let walk = pool.walk().unwrap();
+    assert!(Arc::ptr_eq(&walk.pooled.as_ref().unwrap().0, &pool.shared));
+    let standalone = PrePass::start(Arc::clone(&replay), 0, families(), 1, Knobs::default());
+    for block in 0..replay.index.len() {
+        facts(pool.take(0, block, &flag).unwrap().0);
+        // These synthetic frames do not supply army/resource facts: both paths
+        // must make the same fallback decision for each independently read block.
+        let pooled = walk.take(block, &flag).unwrap();
+        let own = standalone.take(block, &flag).unwrap();
+        for ((left, _), (right, _)) in pooled.iter().zip(&own) {
+            assert_eq!(
+                matches!(left, Outcome::Sequential),
+                matches!(right, Outcome::Sequential)
+            );
+        }
+        pool.walk_folded(Duration::from_millis(1));
+    }
+    drop(walk);
+    assert!(
+        pool.shared.lock().lanes[1..]
+            .iter()
+            .all(|lane| lane.retired)
+    );
 }

@@ -40,7 +40,8 @@ impl JobPriority {
         JOB.with(|job| Self(job.borrow().clone()))
     }
 
-    /// Run `work` on this thread for the job whose flag is `background`.
+    /// Run `work` at the coordinator level for the job whose flag is
+    /// `background`, restoring the previous job and thread priority afterward.
     pub fn run<T>(background: Arc<AtomicBool>, work: impl FnOnce() -> T) -> T {
         struct Restore(Option<Option<Arc<AtomicBool>>>);
         impl Drop for Restore {
@@ -50,7 +51,18 @@ impl JobPriority {
                 }
             }
         }
+        let caller = Caller::current();
+        struct Priority(Option<Caller>);
+        impl Drop for Priority {
+            fn drop(&mut self) {
+                if let Some(caller) = self.0.take() {
+                    caller.enter();
+                }
+            }
+        }
+        let _priority = Priority(Some(caller));
         let _restore = Restore(Some(JOB.with(|job| job.replace(Some(background)))));
+        JobPriority::current().enter(Level::Normal);
         work()
     }
 
@@ -61,7 +73,7 @@ impl JobPriority {
             .is_some_and(|background| background.load(Ordering::Acquire))
     }
 
-    /// Enter the job on a newly started thread, which runs at `level`, one
+    /// Enter the job on a new or reused thread, which runs at `level`, one
     /// step lower while the job is ahead of the user.
     pub fn enter(self, level: Level) {
         let lowered = self.background();
@@ -109,11 +121,10 @@ fn set_thread_priority(level: Level, lowered: bool) {
     unsafe {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-            THREAD_PRIORITY_LOWEST,
+            THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
         };
         let priority = match (level, lowered) {
-            // A new thread starts at normal priority.
-            (Level::Normal, false) => return,
+            (Level::Normal, false) => THREAD_PRIORITY_NORMAL,
             (Level::Normal, true) | (Level::BelowNormal, false) => THREAD_PRIORITY_BELOW_NORMAL,
             (Level::BelowNormal, true) => THREAD_PRIORITY_LOWEST,
         };
@@ -138,6 +149,49 @@ mod tests {
         })
         .join()
         .unwrap()
+    }
+
+    /// Existing runner threads and reused helpers must enter the requested
+    /// level just as freshly spawned family threads do, and restore on return.
+    #[test]
+    #[cfg(windows)]
+    fn jobs_set_and_restore_the_calling_threads_priority() {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            THREAD_PRIORITY_NORMAL,
+        };
+        std::thread::spawn(|| {
+            let current = || unsafe { GetThreadPriority(GetCurrentThread()) };
+            JobPriority::default().enter(Level::BelowNormal);
+            let previous = current();
+            for background in [false, true] {
+                JobPriority::run(Arc::new(AtomicBool::new(background)), || {
+                    assert_eq!(
+                        current(),
+                        if background {
+                            THREAD_PRIORITY_BELOW_NORMAL
+                        } else {
+                            THREAD_PRIORITY_NORMAL
+                        }
+                    );
+                    // Switching a reused helper back from BelowNormal matters.
+                    JobPriority::current().enter(Level::BelowNormal);
+                    JobPriority::current().enter(Level::Normal);
+                    assert_eq!(
+                        current(),
+                        if background {
+                            THREAD_PRIORITY_BELOW_NORMAL
+                        } else {
+                            THREAD_PRIORITY_NORMAL
+                        }
+                    );
+                });
+                assert_eq!(current(), previous);
+                assert!(!JobPriority::current().background());
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

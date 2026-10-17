@@ -247,10 +247,12 @@ library jobs of other recordings pause. Library admission waits while any
 preparation the user asked for is queued or running, then resumes. A full queue is
 retried once, after the paused jobs leave it. Library jobs run each
 preparation thread one step below its level in a job the user waits for
-(dashboard-base `prepared::priority`): the hourly walk's coordinator runs in
-background mode for every job, family threads and flush helpers drop from normal to
-below normal, and pre-pass, shared-read and lane workers from below normal to
-lowest. A job the user joins starts its later threads at their usual levels.
+(dashboard-base `prepared::priority`): the hourly walk's coordinator, its
+synchronous stream decoder, family threads and flush helpers drop from normal
+to below normal; other pre-pass, shared-read and lane workers drop from below
+normal to lowest. Persistent runners enter each job's coordinator level while
+it runs and restore their previous level afterward; they use no separate
+Windows background mode. A job the user joins starts its later threads at their usual levels.
 Unchanged and busy replies end admission retries. Recording revisions, completed
 workers, changed preferences/content bindings, game transitions and crossing the
 free-space floor permit a new attempt; timer ticks alone do not submit further
@@ -358,8 +360,10 @@ Cancelled frames never move the accepted cursor or decoder resume state.
 
 Resource balance and army size are prepared from blocks rather than observed
 hour by hour. Pre-pass workers (`prepared/prepass.rs`: available parallelism
-minus the decoder and coordinator, at least one, below normal priority) claim
-upcoming blocks in order, at most one more than the workers ahead of the block
+minus the decoder and coordinator, at least one) share the family pool and
+its measured longest-chain order. Tasks supplying the walk run at its
+coordinator level; other tasks yield one level below it. They claim upcoming
+blocks in order, at most one more than the workers ahead of the block
 the coordinator takes next and, beyond that block, within 512 MiB of claimed
 blocks' recorded raw bytes and the bytes the facts of those extracted hold
 (`Extract::bytes`: each kept frame's views once, recorded calls, and every
@@ -380,11 +384,14 @@ hour as a lane job, so its refusals and errors are the ordinary ones, in the
 ordinary order. Otherwise, once the block's ordinary observation succeeded and
 before its batch decision, the coordinator folds the family's facts into the
 branch state, in block order. Cancellation ends the coordinator's wait; dropping
-the pre-pass stops its workers within an hour of work and joins them. Facts
+the walk's pool view retires its lanes, and the phase stops and joins the shared
+workers. A standalone pre-pass stops and joins its own workers. Facts
 depend on neither the number of workers nor timing. Measured runs time folds
 under the family and extracts as worker time (`<family>.extract`), and count
 blocks observed hourly (`<family>.sequential`) and folds that observed their
-block again (`<family>.fallback`).
+block again (`<family>.fallback`). Shared-pool block reads, including the walk's
+prerequisites, are timed once under `prepass.read`; resource and army extracts
+retain their family timing rows.
 
 A series family adopts the pre-pass through shared recording
 ([prepared series](../dashboard-base/README.md#prepared-series)): its fold
@@ -419,14 +426,15 @@ the block hour by hour, publishing the pages it held from each block it went
 through, flushing, saving its pages and its continuation) and the sections the
 hourly walk keeps for families that read its state in the same hour, with those
 readers. Every registered family starts at once on one pool of pre-pass workers
-(`prepass::Pool`, sized as the hourly walk's pre-pass and serving every family's
-blocks) over the source's one opened recording, so each block's checksums are
-verified once. A worker serves the longest remaining measured family chain
-first, claiming its next block for every family whose next block it is and
+(`prepass::Pool`, also serving the hourly walk's resource and army extracts) over the source's one opened recording, so each block's checksums are
+verified once. A worker serves the longest remaining measured chain
+first, including the walk, claiming its next block for every family whose next block it is and
 within reach (the same read-ahead window per family). The cost is the live mean
 extract time plus its own thread's mean fold and block-publication time and
-amortized batch serialization, multiplied by its remaining blocks. Pre-pass and
-group-commit waits are excluded. Unknown costs use the live mean; equal costs
+amortized batch serialization, multiplied by its remaining blocks. The walk's
+two extracts count together with its decoder, map and land observation, folds
+and block-end publications as one downstream chain. Pre-pass and group-commit
+waits are excluded. Unknown costs use the live mean; equal costs
 prefer the earlier block and registry order. The worker reads the block once
 for those families and runs their extracts costliest first. When fewer blocks
 are coming within reach than workers wait (a session's newest block), a block
@@ -460,16 +468,19 @@ commits, waits included, as `independent.commit`, and each store commit, by the
 family that led it, as `independent.publish`. The hourly walk starts after
 the first-view jobs beside the families (`Beside::first_view`, the newest
 battle windows) have each published once or finished without a view; its block
-pre-pass starts then too. Family completion is
-no gate. The walk borrows the open writer for one unchanged publication batch
-while the families continue folding, then returns it to their group commit.
-Families reaching publication during that batch wait for its end and stage
-their queued writes before the walk borrows again; their first views retain
-their existing query lanes and priorities. Each walk commit merges
+registered pre-pass lanes are released then too. Family completion is
+no gate. The walk stages each unchanged publication batch in a detached fork
+(`store::Writer::stage`), including its parallel flushes, while families continue
+folding and committing. Its batch joins the group only once its writes and
+flushes are ready: adoption holds the writer briefly, validates the ranges the
+walk read or replaced, and publishes all its pages with its checkpoint. Family
+commits do not wait for a walk batch in preparation. Dropping an unfinished walk
+batch leaves its pages private. First views retain their existing query lanes
+and priorities. Each walk commit merges
 its cursor, map and refusals with the latest accepted family and newest-window
 progress, so neither publisher can overwrite another's progress. Status reads
 a snapshot of the last successful store commit, including while another group
-publishes without the lock or the walk waits to borrow the writer. Each publisher
+publishes without the lock or the walk prepares its detached batch. Each publisher
 resumes its own committed prefix on reopen and recording growth: a family may
 lead or trail the walk, and every cursor must stay within the unchanged saved
 index prefix. Completed-store restoration requires every publisher to finish,
