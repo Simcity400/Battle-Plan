@@ -9,6 +9,10 @@ It preserves the input save and restores the isolated user
 profile selection/settings after normal exit. Explicit actions remain available. Baseline verifies the pinned game build,
 then reads only its clock; it sends no input and does not inject.
 The script does not modify settings or certify that a save finished loading.
+Launch and Smoke require a physical user directory without subst drives, junction or
+symbolic-link ancestors or hyphens in its path. ContinueLastSave requires ExpectedSave;
+the driver writes a complete ASCII-safe, BOM-free UTF-8 continue_game.json for that
+local save before launching. Smoke restores the original selection bytes after exit.
 
 Screenshot, Click and Move coordinates are relative to the outer game window.
 Move positions the cursor without clicking or pressing a key. Wheel positions the
@@ -26,6 +30,11 @@ Path to the supported installed hoi4.exe, or set BATTLE_PLAN_GAME_DIR.
 User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
 .PARAMETER GameLock
 Shared lock directory used to prevent concurrent full smoke runs.
+.PARAMETER ContinueLastSave
+Launch directly into ExpectedSave, writing the game's continuation selection first.
+.PARAMETER ExpectedSave
+Existing local .hoi4 filename in the user directory's save games folder.
+Required with ContinueLastSave and for Smoke.
 .PARAMETER UiConfig
 JSON containing width/height, expected_hour/expected_seed and calibrated two-element
 pixel coordinates for menu, speed_up, speed_down, pause, save_menu, save_name,
@@ -62,7 +71,7 @@ receipt and do not repeat the workspace checks.
 .EXAMPLE
 powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt "$env:LOCALAPPDATA\HOI4Replay\captures\checkpoint\build-receipt.json" -BinaryDirectory "$env:LOCALAPPDATA\HOI4Replay\captures\checkpoint\bin" -ExpectedSave save.hoi4 -UiConfig "$env:LOCALAPPDATA\HOI4Replay\captures\smoke_config\ui.json" -Out "$env:LOCALAPPDATA\HOI4Replay\captures\smoke_new" -WaitForUiReview
 .EXAMPLE
-powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave
+powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave -ExpectedSave baseline.hoi4
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Screenshot -Out "$env:LOCALAPPDATA\HOI4Replay\captures\probe\menu.png"
 .EXAMPLE
@@ -209,6 +218,45 @@ function Install-InputShim([int]$processId) {
     finally { $ErrorActionPreference = $previous }
     if ($LASTEXITCODE -ne 0) { return "failed: $output" }
     'attached'
+}
+
+function Get-SubstDriveNames {
+    & (Join-Path $env:SystemRoot 'System32\subst.exe') | ForEach-Object {
+        if ($_ -match '^([A-Za-z]:)\\:') { $Matches[1] }
+    }
+}
+
+function Resolve-LaunchUserDirectory([string]$path) {
+    $resolved = (Resolve-Path -LiteralPath $path).ProviderPath
+    $drive = [IO.Path]::GetPathRoot($resolved).TrimEnd('\')
+    if (@(Get-SubstDriveNames) -contains $drive) {
+        throw "UserDirectory is on subst drive ${drive}. Copy the profile into a physical directory and use that same path for the game and recorder."
+    }
+    $directory = Get-Item -LiteralPath $resolved -Force
+    if (-not $directory.PSIsContainer) { throw 'UserDirectory must be a directory.' }
+    for ($entry = $directory; $null -ne $entry; $entry = $entry.Parent) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "UserDirectory traverses a junction or symbolic link: $($entry.FullName). Copy the profile into a physical directory and use that same path for the game and recorder."
+        }
+    }
+    if ($resolved.Contains('"')) { throw 'The user directory contains an invalid quote.' }
+    # The game splits command-line values at hyphens, including directory paths.
+    if ($resolved.Contains('-')) { throw 'This game build splits command-line values at hyphens. Use a user directory whose entire path contains no hyphen.' }
+    $resolved
+}
+
+function Write-LaunchSelection([string]$userPath, [string]$saveName) {
+    if ([string]::IsNullOrWhiteSpace($saveName) -or $saveName.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $saveName -notlike '*.hoi4') {
+        throw 'ExpectedSave must be a local .hoi4 save filename.'
+    }
+    $savePath = Join-Path (Join-Path $userPath 'save games') $saveName
+    if (-not (Test-Path -LiteralPath $savePath -PathType Leaf)) { throw "ExpectedSave is missing: $saveName" }
+    $modified = (Get-Item -LiteralPath $savePath).LastWriteTime
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $date = $modified.ToString('ddd MMM', $culture) + (' {0,2} ' -f $modified.Day) + $modified.ToString('HH:mm:ss yyyy', $culture) + "`n"
+    $json = [ordered]@{ title=$saveName; desc=''; date=$date; filename=$saveName; is_remote=$false } | ConvertTo-Json -Compress
+    $json = [regex]::Replace($json, '[^\x00-\x7F]', { param($match) '\u{0:x4}' -f [int][char]$match.Value })
+    [IO.File]::WriteAllText((Join-Path $userPath 'continue_game.json'), $json, [Text.UTF8Encoding]::new($false))
 }
 
 function Set-ShimFlags($shim, [int]$flags) { $shim.View.Write($script:ShimFlagsOffset, [uint32]$flags) }
@@ -361,7 +409,7 @@ function Invoke-FullSmoke {
     }
     $repo = Split-Path -Parent $PSScriptRoot
     $driver = $PSCommandPath
-    $userPath = (Resolve-Path -LiteralPath $UserDirectory).ProviderPath
+    $userPath = Resolve-LaunchUserDirectory $UserDirectory
     $gamePath = (Resolve-Path -LiteralPath $GameExe).ProviderPath
     if ($ExpectedSave.IndexOfAny([char[]]'\/:"') -ge 0 -or $ExpectedSave -notlike '*.hoi4') { throw 'ExpectedSave must be a local save filename.' }
     $sourceSave = Join-Path (Join-Path $userPath 'save games') $ExpectedSave
@@ -370,9 +418,7 @@ function Invoke-FullSmoke {
     $settingsBytes = [IO.File]::ReadAllBytes($settingsPath)
     $settings = [IO.File]::ReadAllText($settingsPath)
     if ($settings -notmatch '(?m)^\s*save_as_binary\s*=\s*no\s*$') { throw 'Smoke requires save_as_binary=no; settings were not changed.' }
-    $selection = [IO.File]::ReadAllBytes($selectionPath)
-    $selected = [Text.Encoding]::UTF8.GetString($selection) | ConvertFrom-Json
-    if ($selected.filename -cne $ExpectedSave -or $selected.is_remote) { throw 'The existing local continue selection must match ExpectedSave.' }
+    $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
     if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
     if ((Get-Item -LiteralPath $gamePath).Length -ne 55680632 -or
@@ -397,6 +443,7 @@ function Invoke-FullSmoke {
     $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true }
     $game = $null; $reader = $null; $recorderRun = $null; $previousForeground = [IntPtr]::Zero
     $statusPath = $null; $failure = $null; $cleaned = $false
+    $selectionWritten = $false
     function Write-Report { [IO.File]::WriteAllText((Join-Path $output 'smoke-result.json'), ($report | ConvertTo-Json -Depth 14), $utf8) }
     function Stage([string]$name) { $report.phase=$name; Write-Report; Write-Host ("SMOKE {0}: {1:n1}s" -f $name,$started.Elapsed.TotalSeconds) }
     function Launch-Tool([string]$exe, [string[]]$arguments, [string]$name) {
@@ -591,7 +638,7 @@ function Invoke-FullSmoke {
         $sourceBinaries=@(Read-Binaries $binarySource $expectedBinaries)
         foreach ($file in $sourceBinaries) { Copy-Item -LiteralPath (Join-Path $binarySource $file.name) -Destination (Join-Path $bin $file.name) }
         $report.binaries=@(Read-Binaries $bin $sourceBinaries)
-        [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection)
+        if ($null -ne $selection) { [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection) }
         [IO.File]::WriteAllBytes((Join-Path $output 'settings-before.txt'),$settingsBytes)
         Copy-Item -LiteralPath $UiConfig -Destination (Join-Path $output 'ui.json')
         Copy-Item -LiteralPath $driver -Destination (Join-Path $output 'smoke-driver.ps1')
@@ -600,6 +647,8 @@ function Invoke-FullSmoke {
             (@{source_commit=$report.source_commit;binaries=$report.binaries} | ConvertTo-Json -Depth 8),$utf8)
         $report.map_mode='controller'; $report.perspective=$Perspective
         $recorder=Join-Path $bin 'recorder.exe'; $viewer=Join-Path $bin 'viewer.exe'
+        Write-LaunchSelection $userPath $ExpectedSave
+        $selectionWritten = $true
         Stage 'launch-and-attach'
         $script:smokeStatusPath=$null
         $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
@@ -814,11 +863,12 @@ function Invoke-FullSmoke {
         $ownedRecorderStopped=$null -eq $recorderRun -or $recorderRun.Process.HasExited
         if ($ownedGameStopped -and $ownedRecorderStopped) {
             try {
-                [IO.File]::WriteAllBytes($selectionPath,$selection)
+                if ($null -ne $selection) { [IO.File]::WriteAllBytes($selectionPath,$selection) }
+                elseif ($selectionWritten) { [IO.File]::Delete($selectionPath) }
                 [IO.File]::WriteAllBytes($settingsPath,$settingsBytes)
                 if ([IO.File]::ReadAllText((Join-Path $lock 'owner')) -ceq $ownerToken) { Remove-Item -LiteralPath (Join-Path $lock 'owner'); Remove-Item -LiteralPath $lock }
                 $report.cleanup_complete=$true
-            } catch { $report.passed=$false; $report.cleanup_error=$_.Exception.Message; if (-not $failure) { $failure=$_ } }
+            } catch { $report.passed=$false; $report.cleanup_complete=$false; $report.cleanup_error=$_.Exception.Message; if (-not $failure) { $failure=$_ } }
         } else {
             $report.cleanup_complete=$false; $report.retained_game_pid=if ($game) { $game.Id } else { $null }; $report.retained_lock=$lock
         }
@@ -850,32 +900,16 @@ if ($gameProcesses.Count -gt 1) {
 
 if ($Action -eq 'Launch') {
     if ($gameProcesses.Count -ne 0) { throw 'the game is already running.' }
-    $userPath = (Resolve-Path -LiteralPath $UserDirectory).ProviderPath
-    if ($userPath.Contains('"')) { throw 'The user directory contains an invalid quote.' }
-    # This build joins argv then splits on every hyphen.
-    # A split path can fail PHYSFS setup and silently fall back to the owner's Documents directory.
-    if ($userPath.Contains('-')) { throw 'This game build splits command-line values at hyphens. Use a user directory whose entire path contains no hyphen.' }
+    $userPath = Resolve-LaunchUserDirectory $UserDirectory
     if ($ExpectedSave -and -not $ContinueLastSave) {
         throw 'ExpectedSave requires ContinueLastSave.'
     }
+    if ($ContinueLastSave -and -not $ExpectedSave) { throw 'ContinueLastSave requires ExpectedSave.' }
     $arguments = @('--gdpr-compliant', ('"-userdir=' + $userPath + '"'))
     if ($ContinueLastSave) {
-        $selection = Get-Content -LiteralPath (Join-Path $userPath 'continue_game.json') -Raw | ConvertFrom-Json
-        $saveName = [string]$selection.filename
-        if ([string]::IsNullOrWhiteSpace($saveName) -or $saveName.IndexOfAny([char[]]'\/:') -ge 0) {
-            throw 'continue_game.json must identify a save filename without directory components.'
-        }
-        if ($ExpectedSave -and $ExpectedSave -cne $saveName) {
-            throw "The launcher selected '$saveName', not the requested '$ExpectedSave'. Select the save in the game first."
-        }
-        if ([bool]$selection.is_remote) {
-            throw 'This local probe driver requires a local save; select it in the game first.'
-        }
-        if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $userPath 'save games') $saveName) -PathType Leaf)) {
-            throw "The launcher-selected save is missing: $saveName"
-        }
+        Write-LaunchSelection $userPath $ExpectedSave
         $arguments += '--continuelastsave'
-        Write-Host "Launching the existing continue selection: $saveName"
+        Write-Host "Launching the requested save: $ExpectedSave"
     }
     foreach ($extra in $ExtraArgs) { if ($extra -match '["\s]') { throw 'ExtraArgs entries must be single tokens without quotes.' }; $arguments += $extra }
     if (-not ('Hoi4ProbeInput' -as [type])) {
