@@ -703,12 +703,19 @@ impl VariantCatalogue {
     /// read's rows: whether the variant table was read, and which of its tables
     /// were complete.
     pub fn hour_of(format: replay::format::FormatVersion, frame: &DecodedFrame) -> VariantHour {
-        if !slot_read(
-            format,
-            &frame.metrics,
-            TableId::VariantDefinitions,
-            frame.hour,
-        ) {
+        Self::hour_read(
+            frame,
+            slot_read(
+                format,
+                &frame.metrics,
+                TableId::VariantDefinitions,
+                frame.hour,
+            ),
+        )
+    }
+
+    pub(crate) fn hour_read(frame: &DecodedFrame, read: bool) -> VariantHour {
+        if !read {
             VariantHour::Carried {
                 complete: frame.complete::<tables::VariantDefinitions>().is_ok(),
             }

@@ -3,6 +3,8 @@
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 
+type ValueKey = (std::any::TypeId, Vec<[u64; 3]>, Vec<u8>);
+
 thread_local! {
     static SCOPES: RefCell<Vec<Rc<RefCell<State>>>> = const { RefCell::new(Vec::new()) };
     #[cfg(test)]
@@ -17,6 +19,12 @@ pub struct SummaryCache {
     blobs: BTreeMap<([u64; 3], u64), Arc<Cached>>,
     texts: BTreeMap<(TextKind, Vec<[u64; 3]>), Arc<Vec<u8>>>,
     events: BTreeMap<([u64; 3], u64, u64), Arc<Value>>,
+    values: BTreeMap<ValueKey, Arc<Retained>>,
+}
+
+struct Retained {
+    value: Arc<dyn std::any::Any + Send + Sync>,
+    bytes: usize,
 }
 
 impl SummaryCache {
@@ -30,6 +38,18 @@ impl SummaryCache {
                         + key.capacity()
                         + 2 * std::mem::size_of::<usize>()
                         + fold.bytes()
+                })
+                .sum::<usize>()
+            + self
+                .values
+                .iter()
+                .map(|((_, ids, params), value)| {
+                    2 * std::mem::size_of::<(ValueKey, Arc<Retained>)>()
+                        + ids.capacity() * std::mem::size_of::<[u64; 3]>()
+                        + params.capacity()
+                        + std::mem::size_of::<Retained>()
+                        + 4 * std::mem::size_of::<usize>()
+                        + value.bytes
                 })
                 .sum::<usize>()
             + self
@@ -101,6 +121,39 @@ impl Drop for CacheScope {
 /// than batch ordinals: a rewritten prefix must never reuse its former bytes.
 fn current() -> Option<Rc<RefCell<State>>> {
     SCOPES.with(|scopes| scopes.borrow().last().cloned())
+}
+
+/// A projected immutable page value retained with this request. The caller
+/// names every supplying page and projection input and charges owned capacity.
+pub fn reuse_value<T: Send + Sync + 'static>(
+    pages: Vec<[u64; 3]>,
+    params: &impl serde::Serialize,
+    bytes: impl FnOnce(&T) -> usize,
+    read: impl FnOnce() -> io::Result<T>,
+) -> io::Result<Arc<T>> {
+    let Some(scope) = current() else {
+        return read().map(Arc::new);
+    };
+    let id = (
+        std::any::TypeId::of::<T>(),
+        pages,
+        serde_json::to_vec(params)?,
+    );
+    let retained = reuse(
+        Some(scope),
+        id,
+        |cache| &mut cache.values,
+        || {
+            let value = read()?;
+            Ok(Retained {
+                bytes: bytes(&value),
+                value: Arc::new(value),
+            })
+        },
+    )?;
+    Arc::clone(&retained.value)
+        .downcast()
+        .map_err(|_| invalid("Prepared query value type changed"))
 }
 fn reuse<K: Ord, T>(
     scope: Option<Rc<RefCell<State>>>,

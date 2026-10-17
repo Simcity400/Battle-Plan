@@ -15,3 +15,9 @@ The [dashboard](../dashboard/README.md) re-exports it at the old
 
 `cargo test -p dashboard-game-score` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation for the dashboard's tests.
+
+An unprepared state projects only the requested hour and its immediate
+predecessor through the shared sparse state reader. The predecessor supplies
+the ordinary value-break evidence; presentation still reads the requested frame.
+Campaign identity and cancellation are checked at every visited hour before
+numeric projection can be skipped.

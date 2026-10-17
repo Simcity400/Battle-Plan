@@ -32,7 +32,9 @@
 //! where the table changed; the hour's icon operands are built only at a read with
 //! variants to picture. Each block is read and decoded on a spare core
 //! (`extract_block`), and the fold takes its hours in order, holding a decoded
-//! frame only at the hours whose rows it reads.
+//! frame only at the hours whose rows it reads. Each extracted hour computes
+//! its supplying-read flags together and carries the modifier-read decision
+//! into the fold.
 //!
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
@@ -83,7 +85,7 @@ use super::{
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{TaggedCountry, link_slot, slot_read, tagged_country, validate_campaign},
+    metadata::{TaggedCountry, link_slot, slot_reads, tagged_country, validate_campaign},
 };
 use replay::{
     container::{BlockIndex, Replay},
@@ -740,6 +742,7 @@ struct ScanHour {
     organisations_complete: bool,
     /// Both modifier tables are complete.
     modifiers_complete: bool,
+    modifiers_read: bool,
     /// The frame, kept at a complete variant read, a read of the variant
     /// table, and a read of this country's lines.
     frame: Option<DecodedFrame>,
@@ -818,7 +821,8 @@ fn scan_hour(
                 TaggedCountry::Found(country, slot) => Country::Found(slot, country.id),
             }
         });
-    let read = |table: TableId| slot_read(format, &decoded.metrics, table, decoded.hour);
+    let reads = slot_reads(format, &decoded.metrics, decoded.hour);
+    let read = |table: TableId| reads[table.index()];
     let lines_complete = decoded.complete::<tables::ProductionLines>().is_ok();
     let lines_read = read(TableId::ProductionLines);
     let output_complete = decoded.complete::<tables::ProductionLineOutput>().is_ok();
@@ -827,7 +831,7 @@ fn scan_hour(
         Some(Country::Found(..)) => lines_read && lines_complete && output_complete,
         Some(Country::Unresolved) | None => false,
     });
-    let variants = VariantCatalogue::hour_of(format, decoded);
+    let variants = VariantCatalogue::hour_read(decoded, read(TableId::VariantDefinitions));
     let definitions_read = read(TableId::VariantDefinitions)
         && decoded.complete::<tables::VariantDefinitions>().is_ok();
     let lines_of_country =
@@ -851,6 +855,8 @@ fn scan_hour(
             && decoded
                 .complete::<tables::ProductionLineModifiers>()
                 .is_ok(),
+        modifiers_read: read(TableId::CountryProductionModifiers)
+            && read(TableId::ProductionLineModifiers),
         frame: keep.then(|| decoded.clone()),
     }
 }
@@ -1205,24 +1211,15 @@ fn scan_blocks_cached(
                         links,
                         decoded.complete::<tables::CountryAppearance>().ok(),
                     );
-                    let modifier_inputs = (slot_read(
-                        replay.format,
-                        &decoded.metrics,
-                        TableId::CountryProductionModifiers,
-                        hour,
-                    ) && slot_read(
-                        replay.format,
-                        &decoded.metrics,
-                        TableId::ProductionLineModifiers,
-                        hour,
-                    ))
-                    .then(|| {
-                        decoded
-                            .complete::<tables::CountryProductionModifiers>()
-                            .ok()
-                            .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
-                    })
-                    .flatten();
+                    let modifier_inputs = scan_hour
+                        .modifiers_read
+                        .then(|| {
+                            decoded
+                                .complete::<tables::CountryProductionModifiers>()
+                                .ok()
+                                .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
+                        })
+                        .flatten();
                     let modifier_inputs =
                         modifier_inputs.filter(|_| match replay::fixed_layout::validate_recording(
                             decoded,

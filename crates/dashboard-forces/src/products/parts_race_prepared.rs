@@ -53,7 +53,7 @@ pub type Holder = (Vec<u8>, Option<(u32, u32)>);
 pub trait Family {
     type Scan: Default + Serialize + DeserializeOwned + Held;
     type Raw: Clone + Serialize + DeserializeOwned + Held;
-    type Scanned: Serialize + DeserializeOwned + Held;
+    type Scanned: Clone + Send + Sync + Serialize + DeserializeOwned + Held + 'static;
     type Part: Clone + Serialize + DeserializeOwned;
     type Reply: Serialize + dashboard_base::products::ReplyWarnings;
     type PointContent;
@@ -1425,6 +1425,8 @@ fn progressive_query<F: Family>(
         Ok(samples)
     };
     let mut tail = if product == "series-state" {
+        // Native censuses can refuse during projection, including at an hour
+        // before the requested point. Keep those per-hour refusals observable.
         progressive::state_tail(
             source,
             branch,
@@ -1433,6 +1435,30 @@ fn progressive_query<F: Family>(
             &requested,
             &reads.iter().map(|read| read.hour).collect::<Vec<_>>(),
             &sampler,
+            cancelled,
+        )?
+    } else if point_content.is_none() {
+        progressive::tail_projected(
+            source,
+            F::PRODUCT,
+            branch,
+            coverage,
+            F::SAMPLE_TABLES,
+            &requested,
+            (from.floor() as i32, to.floor() as i32),
+            &(selection.channel, selection.group),
+            &sampler,
+            || point_metadata.borrow_mut().take(),
+            |metadata: &Option<F::Scanned>| {
+                if let Some(metadata) = metadata {
+                    *point_metadata.borrow_mut() = Some(metadata.clone());
+                }
+            },
+            |metadata| {
+                let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
+                bytes.value(metadata);
+                bytes.total() as usize
+            },
             cancelled,
         )?
     } else {

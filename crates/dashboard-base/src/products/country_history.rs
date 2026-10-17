@@ -138,6 +138,88 @@ pub struct RecordedHistories {
     territory_loaded: bool,
 }
 
+impl RecordedHistories {
+    pub fn bytes(&self) -> usize {
+        use crate::prepared::prepass::HeldBytes;
+        let mut bytes = HeldBytes::default();
+        bytes
+            .add(std::mem::size_of::<Self>())
+            .tree::<String, RecordedCountry>(self.countries.len());
+        bytes
+            .heap(&self.identity_reads)
+            .tree::<Measure, ()>(self.measures.len());
+        for (tag, country) in &self.countries {
+            bytes.heap(tag);
+            for (pointer, capacity, size) in [
+                (
+                    Arc::as_ptr(&country.identities) as *const (),
+                    country.identities.capacity(),
+                    std::mem::size_of::<CountryIdentityRun>(),
+                ),
+                (
+                    Arc::as_ptr(&country.segments) as *const (),
+                    country.segments.capacity(),
+                    std::mem::size_of::<HourSpan>(),
+                ),
+                (
+                    Arc::as_ptr(&country.territory) as *const (),
+                    country.territory.capacity(),
+                    std::mem::size_of::<NumericRun>(),
+                ),
+            ] {
+                bytes.shared(
+                    pointer,
+                    2 * std::mem::size_of::<usize>()
+                        + std::mem::size_of::<Vec<()>>()
+                        + capacity * size,
+                );
+            }
+            for balance in [&country.political_power, &country.command_power] {
+                bytes.shared(
+                    Arc::as_ptr(balance),
+                    2 * std::mem::size_of::<usize>()
+                        + std::mem::size_of::<BalanceHistory>()
+                        + balance.runs.capacity() * std::mem::size_of::<NumericRun>()
+                        + balance.drops.capacity() * std::mem::size_of::<NumericBalanceDrop>(),
+                );
+            }
+        }
+        bytes.total() as usize
+    }
+}
+
+/// Decode and seal the published identity page once per page and clipping bound.
+/// The retained result belongs to the current query's bounded observation entry.
+pub(crate) fn read_prepared_histories(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    through: Option<i32>,
+) -> io::Result<Option<Arc<RecordedHistories>>> {
+    let Some(file) = store.read(key, &format!("country-identities-{branch}"), 0)? else {
+        return Ok(None);
+    };
+    let pages = vec![file.id().cache_key()];
+    let history = crate::prepared::series::reuse_value(
+        pages.clone(),
+        &None::<i32>,
+        RecordedHistories::bytes,
+        || {
+            let scan: HistoryScan = serde_json::from_reader(io::BufReader::new(file))?;
+            Ok(scan.finish())
+        },
+    )?;
+    match through {
+        None => Ok(Some(history)),
+        Some(last) => {
+            crate::prepared::series::reuse_value(pages, &through, RecordedHistories::bytes, || {
+                Ok((*history).clone().through(last))
+            })
+            .map(Some)
+        }
+    }
+}
+
 #[derive(Default)]
 struct HistoriesCache {
     entries: BTreeMap<u64, Arc<RecordedHistories>>,
@@ -940,7 +1022,14 @@ impl HistoryScan {
     /// further: runs, segments and reads end there, and tags first held
     /// later are left out. Counts of unreadable rows remain every observed
     /// hour's.
-    pub(crate) fn finish_through(self, last_hour: i32) -> RecordedHistories {
+    #[cfg(test)]
+    fn finish_through(self, last_hour: i32) -> RecordedHistories {
+        self.finish().through(last_hour)
+    }
+}
+
+impl RecordedHistories {
+    fn through(mut self, last_hour: i32) -> Self {
         fn clip<T>(runs: &mut Vec<T>, last_hour: i32, span: impl Fn(&mut T) -> (i32, &mut i32)) {
             runs.retain_mut(|run| span(run).0 <= last_hour);
             if let Some(run) = runs.last_mut() {
@@ -948,21 +1037,50 @@ impl HistoryScan {
                 *last = (*last).min(last_hour);
             }
         }
-        let mut out = self.finish();
+        let out = &mut self;
         clip(&mut out.identity_reads, last_hour, |span| {
             (span.first_hour, &mut span.last_hour)
         });
         out.countries.retain(|_, country| {
-            clip(Arc::make_mut(&mut country.identities), last_hour, |run| {
-                (run.first_hour, &mut run.last_hour)
-            });
-            clip(Arc::make_mut(&mut country.segments), last_hour, |span| {
-                (span.first_hour, &mut span.last_hour)
-            });
-            clip(Arc::make_mut(&mut country.territory), last_hour, |run| {
-                (run.first_hour, &mut run.last_hour)
-            });
+            if country
+                .identities
+                .last()
+                .is_some_and(|run| run.last_hour > last_hour)
+            {
+                clip(Arc::make_mut(&mut country.identities), last_hour, |run| {
+                    (run.first_hour, &mut run.last_hour)
+                });
+            }
+            if country
+                .segments
+                .last()
+                .is_some_and(|span| span.last_hour > last_hour)
+            {
+                clip(Arc::make_mut(&mut country.segments), last_hour, |span| {
+                    (span.first_hour, &mut span.last_hour)
+                });
+            }
+            if country
+                .territory
+                .last()
+                .is_some_and(|run| run.last_hour > last_hour)
+            {
+                clip(Arc::make_mut(&mut country.territory), last_hour, |run| {
+                    (run.first_hour, &mut run.last_hour)
+                });
+            }
             for balance in [&mut country.political_power, &mut country.command_power] {
+                if balance
+                    .runs
+                    .last()
+                    .is_none_or(|run| run.last_hour <= last_hour)
+                    && balance
+                        .drops
+                        .last()
+                        .is_none_or(|drop| drop.hour <= last_hour)
+                {
+                    continue;
+                }
                 let balance = Arc::make_mut(balance);
                 clip(&mut balance.runs, last_hour, |run| {
                     (run.first_hour, &mut run.last_hour)
@@ -971,9 +1089,11 @@ impl HistoryScan {
             }
             !country.identities.is_empty()
         });
-        out
+        self
     }
+}
 
+impl HistoryScan {
     /// What an unchanged hour's observation depends on besides the hour's
     /// read evidence: two scans with equal inputs advance alike over the same
     /// quiet hours ([`Self::advance_quiet`]).
@@ -1095,12 +1215,9 @@ pub fn prepared_branch_histories(
         return Ok(None);
     }
     let (store, key) = crate::prepared::files(source, content)?;
-    let Some(file) = store.read(&key, &format!("country-identities-{branch}"), 0)? else {
-        return Ok(None);
-    };
-    let scan: HistoryScan = serde_json::from_reader(io::BufReader::new(file))?;
+    let history = read_prepared_histories(&store, &key, branch, None)?;
     crate::metadata::check_cancel(cancelled)?;
-    Ok(Some(Arc::new(scan.finish())))
+    Ok(history)
 }
 
 fn append_fixed(
@@ -1231,6 +1348,62 @@ pub fn observe_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn published_identity_projection_reuses_the_full_page_across_clipping_bounds() {
+        let fixture = crate::prepared::series::tests::Fixture::new();
+        let mut scan = HistoryScan::new(false, &[]);
+        for hour in 0..=6 {
+            scan.observe(&crate::test_fixtures::scale_frame(1, hour, 3));
+        }
+        let encoded = serde_json::to_vec(&scan).unwrap();
+        let mut writer = fixture.writer();
+        writer
+            .write_at("country-identities-1", 0, encoded.as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let scope = crate::prepared::series::cache_scope(None);
+        let whole = read_prepared_histories(&fixture.store, &fixture.key, 1, None)
+            .unwrap()
+            .unwrap();
+        let held = scope.finish();
+        for last in [1, 3, 5] {
+            let scope = crate::prepared::series::cache_scope(Some(&held));
+            let clipped = read_prepared_histories(&fixture.store, &fixture.key, 1, Some(last))
+                .unwrap()
+                .unwrap();
+            let again = read_prepared_histories(&fixture.store, &fixture.key, 1, None)
+                .unwrap()
+                .unwrap();
+            assert!(
+                Arc::ptr_eq(&whole, &again),
+                "the full history was decoded again"
+            );
+            let expected: HistoryScan = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&*clipped).unwrap(),
+                serde_json::to_vec(&expected.finish_through(last)).unwrap()
+            );
+            assert!(scope.finish().bytes() >= whole.bytes());
+        }
+        scan.observe(&crate::test_fixtures::scale_frame(1, 7, 3));
+        let mut writer = fixture.writer();
+        let replacement = serde_json::to_vec(&scan).unwrap();
+        writer
+            .write_at("country-identities-1", 0, replacement.as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let scope = crate::prepared::series::cache_scope(Some(&held));
+        let changed = read_prepared_histories(&fixture.store, &fixture.key, 1, None)
+            .unwrap()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&whole, &changed));
+        assert_eq!(
+            serde_json::to_vec(&*changed).unwrap(),
+            serde_json::to_vec(&scan.finish()).unwrap()
+        );
+        drop(scope);
+    }
     use crate::test_fixtures::{CAMPAIGN, records, source};
     use replay::frame::{DecodedFrame, TableView};
     use replay::rows::{CountryCounterInputRow, TableRows};

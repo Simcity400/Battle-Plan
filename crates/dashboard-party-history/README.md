@@ -12,3 +12,8 @@ The [dashboard](../dashboard/README.md) re-exports it at the old
 
 `cargo test -p dashboard-party-history` builds and runs only these tests. The `test-support`
 feature compiles the test oracles and instrumentation for the dashboard's tests.
+
+Progressive popularity summaries retain each block's sampled fold with its
+earliest duplicate-popularity evidence. Re-asks restore that evidence with the
+fold, preserving the existing overlap refusal. State and navigation samplers
+keep their ordinary walks and diagnostics.

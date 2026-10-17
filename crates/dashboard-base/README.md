@@ -126,6 +126,11 @@ LRU. Each reply still performs its current coverage, membership, run-boundary an
 sampled-tail joins, so reuse does not enlarge exact spans or change a first view's
 class. Failed and cancelled asks publish no cache entry.
 
+Projected page values also retain their type, supplying page identities and
+projection parameters in that entry, with their owned capacity charged to it.
+Country identity reads seal a page once, then clip its finished history for
+the current family coverage. Unchanged portions keep their shared runs.
+
 Every family's catalogue (`{family}-{branch}-catalogue`, the JSON text of its
 keys and metadata) goes through the shared writer in
 [prepared/series/catalogue.rs](src/prepared/series/catalogue.rs).
@@ -169,8 +174,14 @@ comes without them.
 Stateless country measure, stability and fuel queries use `tail_cached` and
 `state_tail_cached`. Related measures share a selection of countries and channels:
 one keyframe observation per block for wide tails, one exact fold per block for
-state hours and short windows. Re-asks clip these immutable facts to their
+short windows. Stateless state reads reuse a whole fold already held by a
+summary; otherwise they project only requested points and their immediate
+predecessors, retaining the point fold per block. Predecessors preserve the
+ordinary identity and value break flags. Re-asks clip these immutable facts to their
 viewport and moving prefix; blocks covered by the prefix are not sampled.
+These cached point samplers have no frame-dependent refusals outside the
+requested points. `state_tail_sparse` runs a separate per-hour check before
+skipping projection; callers whose refusals require projection use `state_tail`.
 Crossing the exact-zoom threshold replaces keyframe approximations with hourly
 folds, including the preceding hour's identity/value continuity.
 Factory summaries over a range use `tail_all_cached`, and territory censuses use
@@ -204,6 +215,13 @@ visited in hour order with the block's hours after the prefix, without recorded
 gaps. The extractor can return no observation, leaving those hours pending; the
 hours of those sampled are the reply's approximate spans. An unreadable keyframe
 or one inside a gap samples nothing.
+
+Stateless samplers with presentation operands use `tail_projected`: each
+block retains its numeric fold together with the operands captured after its
+last observation. Hits restore those operands in block order. The extraction
+selection, requested block extent and exact or keyframe mode name each entry;
+a moving prefix invalidates only its cut block, while crossing the exact zoom
+threshold replaces the approximate folds.
 
 Compact observations also live in a shared per-source cache
 ([prepared/query/observations.rs](src/prepared/query/observations.rs)). Keys contain

@@ -714,14 +714,31 @@ pub fn query(
         match params.mode.as_str() {
             "summary" => {
                 let (from, to, _) = series::viewport(params.from, params.to, params.width)?;
-                progressive::tail(
+                progressive::tail_projected(
                     source,
+                    "party-history:popularity",
                     branch,
                     accepted,
                     TABLES,
                     &requested,
                     (from.floor() as i32, to.floor() as i32),
+                    &(),
                     &native,
+                    || std::mem::take(&mut *duplicates.borrow_mut()),
+                    |held: &BTreeMap<(String, String), (i32, i128)>| {
+                        let mut duplicates = duplicates.borrow_mut();
+                        for (key, &(hour, value)) in held {
+                            let row = duplicates.entry(key.clone()).or_insert((hour, value));
+                            if hour < row.0 {
+                                *row = (hour, value);
+                            }
+                        }
+                    },
+                    |held| {
+                        let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
+                        bytes.value(held);
+                        bytes.total() as usize
+                    },
                     cancelled,
                 )?
             }
@@ -2508,16 +2525,19 @@ mod tests {
             complete: false,
         };
         for mode in ["summary", "state"] {
-            let reply = super::query(
-                &source,
-                params("GER", mode, json!({"from":2,"to":3,"width":10,"hours":[3]})),
-                &LoadContext { content: None },
-                &fixture.store,
-                &fixture.key,
-                Some(&coverage),
-                &AtomicBool::new(false),
-            )
-            .unwrap();
+            let ask = || {
+                super::query(
+                    &source,
+                    params("GER", mode, json!({"from":2,"to":3,"width":10,"hours":[3]})),
+                    &LoadContext { content: None },
+                    &fixture.store,
+                    &fixture.key,
+                    Some(&coverage),
+                    &AtomicBool::new(false),
+                )
+                .unwrap()
+            };
+            let reply = ask();
             let runs = reply["reply"]["parties"]
                 .as_array()
                 .unwrap()
@@ -2532,6 +2552,25 @@ mod tests {
                         >= rows[1]["firstHour"].as_i64().unwrap()),
                 "the existing UI validator must refuse a tail-only duplicate, never display a collapsed value"
             );
+            if mode == "summary" {
+                let before = dashboard_base::prepared::query::observations::usage(
+                    &source,
+                    "party-history:popularity",
+                );
+                assert_eq!(before.2, 1, "one sampled block fold");
+                let (again, refused) = progressive::without_block_decodes(ask);
+                assert!(!refused);
+                assert_eq!(
+                    serde_json::to_vec(&again).unwrap(),
+                    serde_json::to_vec(&reply).unwrap()
+                );
+                let after = dashboard_base::prepared::query::observations::usage(
+                    &source,
+                    "party-history:popularity",
+                );
+                assert_eq!(after.2, before.2, "the duplicate block was folded again");
+                assert!(after.0 > 0 && after.0 <= after.1);
+            }
         }
     }
 

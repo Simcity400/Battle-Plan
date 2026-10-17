@@ -155,20 +155,17 @@ pub fn histories(
     requested: &[String],
     cancelled: &AtomicBool,
 ) -> io::Result<crate::products::country_history::RecordedHistories> {
-    use crate::products::country_history::{CountryIdentityRun, HistoryScan, RecordedHistories};
+    use crate::products::country_history::{
+        CountryIdentityRun, RecordedHistories, read_prepared_histories,
+    };
     use std::{collections::BTreeSet, sync::Arc};
 
     check_cancel(cancelled)?;
     // The identities may be prepared on their own beyond this coverage; the
     // accepted prefix is their history through its last hour.
     let mut history = if let Some(coverage) = coverage {
-        store
-            .read(key, &format!("country-identities-{branch}"), 0)?
-            .map(|file| serde_json::from_reader::<_, HistoryScan>(io::BufReader::new(file)))
-            .transpose()?
-            .map_or_else(RecordedHistories::default, |scan| {
-                scan.finish_through(coverage.last_hour)
-            })
+        read_prepared_histories(store, key, branch, Some(coverage.last_hour))?
+            .map_or_else(RecordedHistories::default, |history| (*history).clone())
     } else {
         RecordedHistories::default()
     };
@@ -888,6 +885,8 @@ fn tail_cached_selected(
 }
 
 /// State hours use the same immutable exact folds as short summary windows.
+/// Samplers may reject request fields, but must have no frame-dependent refusals
+/// outside their requested points; use a checked sparse or full state walk otherwise.
 #[allow(clippy::too_many_arguments)]
 pub fn state_tail_cached(
     source: &Source,
@@ -1023,7 +1022,129 @@ pub fn tail(
     )
 }
 
-/// Exact state hours for the same full census as `tail_all_cached`.
+/// A stateless sampler with presentation operands captured after its last
+/// observation. Re-asks retain each block's fold and those operands together,
+/// then replay the operands in block order even when the fold was already held.
+/// `finish` takes and clears the sampler's presentation operands; `restore`
+/// applies them to the reply. `params` names every input either reads.
+#[allow(clippy::too_many_arguments)]
+pub fn tail_projected<T: Send + Sync + 'static>(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    window: (i32, i32),
+    params: &impl serde::Serialize,
+    sample: Sample<'_>,
+    finish: impl Fn() -> T,
+    restore: impl Fn(&T),
+    bytes: impl Fn(&T) -> usize,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    check_cancel(cancelled)?;
+    if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
+        return Ok(TailData::default());
+    }
+    let first = coverage.map_or(i64::from(window.0), |coverage| {
+        i64::from(window.0).max(i64::from(coverage.last_hour) + 1)
+    });
+    let blocks: Vec<_> = source
+        .replay_ref()
+        .index
+        .iter()
+        .filter(|block| {
+            block.branch == branch
+                && i64::from(block.last_hour) >= first
+                && block.first_hour <= window.1
+        })
+        .collect();
+    let exact = blocks.len() <= EXACT_ZOOM_BLOCKS;
+    let cache = super::observations::scope(source, product, None).working_set(blocks.len());
+    let selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
+    let mut result = TailData::default();
+    for block in blocks {
+        let extent = (
+            i64::from(block.first_hour).max(first),
+            block.last_hour.min(window.1),
+        );
+        let observed = cache.get(
+            block,
+            &(&selected, requested, extent, exact, params),
+            cancelled,
+            |observed: &(TailData, Option<T>)| {
+                tail_bytes(&observed.0)
+                    + observed.1.as_ref().map_or(0, &bytes)
+                    + std::mem::size_of::<(TailData, Option<T>)>()
+            },
+            || {
+                let previous = finish();
+                let sampled = Cell::new(false);
+                let tail = sample_blocks_recorded(
+                    source,
+                    branch,
+                    tables,
+                    requested,
+                    extent,
+                    vec![block],
+                    &|frame, _, keys| {
+                        sampled.set(true);
+                        sample(frame, keys)
+                    },
+                    None,
+                    exact,
+                    cancelled,
+                )?;
+                let presentation = sampled.get().then(&finish);
+                restore(&previous);
+                Ok((tail, presentation))
+            },
+        )?;
+        if let Some(metadata) = &observed.1 {
+            restore(metadata);
+        }
+        for (key, runs) in &observed.0.0 {
+            let rows = result.0.entry(key.clone()).or_default();
+            for run in runs {
+                if let Some(previous) = rows.last_mut().filter(|previous| {
+                    exact
+                        && !run.break_before
+                        && previous.value == run.value
+                        && previous.last_hour.checked_add(1) == Some(run.first_hour)
+                }) {
+                    previous.last_hour = run.last_hour;
+                } else {
+                    rows.push(*run);
+                }
+            }
+        }
+        for (key, spans) in &observed.0.2 {
+            let rows = result.2.entry(key.clone()).or_default();
+            for &(start, end, slot, id) in spans {
+                if let Some(previous) = rows.last_mut().filter(|previous| {
+                    previous.1.checked_add(1) == Some(start)
+                        && (previous.2, previous.3) == (slot, id)
+                }) {
+                    previous.1 = end;
+                } else {
+                    rows.push((start, end, slot, id));
+                }
+            }
+        }
+        for span in &observed.0.1 {
+            crate::products::country_groups::mark_unobserved(
+                &mut result.1,
+                span.first_hour,
+                span.last_hour,
+            );
+        }
+    }
+    Ok(result)
+}
+
+/// Exact state hours for the same full census as `tail_all_cached`, with the
+/// same request-only refusal contract as `state_tail_cached`.
 #[allow(clippy::too_many_arguments)]
 pub fn state_tail_all_cached(
     source: &Source,
@@ -1151,6 +1272,48 @@ pub fn state_tail(
         Some(&hours),
         cancelled,
     )
+}
+
+/// Stateless state values whose projection has no observable effects at
+/// unrequested hours. The preceding hour still supplies each value's break flag.
+/// `check` performs every per-hour refusal of the full sampler before any
+/// projection is skipped. Projection-dependent refusals need the full state walk.
+#[allow(clippy::too_many_arguments)]
+pub fn state_tail_sparse(
+    source: &Source,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    hours: &[i32],
+    check: &dyn Fn(&DecodedFrame) -> io::Result<()>,
+    sample: Sample<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    state_tail(
+        source,
+        branch,
+        coverage,
+        tables,
+        requested,
+        hours,
+        &|frame, keys| {
+            check(frame)?;
+            if state_point(hours, frame.hour) {
+                sample(frame, keys)
+            } else {
+                Ok(Samples::new())
+            }
+        },
+        cancelled,
+    )
+}
+
+fn state_point(hours: &[i32], hour: i32) -> bool {
+    hours.contains(&hour)
+        || hour
+            .checked_add(1)
+            .is_some_and(|next| hours.contains(&next))
 }
 
 /// [`state_tail`] with a sampler that carries its own state from hour to hour
@@ -1519,13 +1682,57 @@ fn cached_recorded_blocks(
             .filter(|&(first, last)| {
                 first != i64::from(block.first_hour) || last != block.last_hour
             });
-        let held = if extent.is_some() {
+        let mut held = if extent.is_some() || (bounded && state_hours.is_some()) {
             cache.get_cached::<BlockSamples>(block, &whole, cancelled)?
         } else {
             None
         };
+        if held.is_none() && bounded && state_hours.is_some() && extent.is_some() {
+            held = cache.get_cached::<BlockSamples>(
+                block,
+                &(&selected, &keys, cadence, all, extent),
+                cancelled,
+            )?;
+        }
         let observed = match held {
             Some(observed) => observed,
+            None if bounded && state_hours.is_some() => {
+                // Stateless state reads need only their points and the hour
+                // before each point, which supplies the ordinary break flag.
+                // A whole fold already held by a summary still takes precedence.
+                let hours: Vec<_> = state_hours
+                    .unwrap()
+                    .iter()
+                    .copied()
+                    .filter(|&hour| block.first_hour <= hour && hour <= block.last_hour)
+                    .collect();
+                cache.get(
+                    block,
+                    &("points", &selected, &keys, all, &hours),
+                    cancelled,
+                    block_sample_bytes,
+                    || {
+                        sample_blocks(
+                            source,
+                            branch,
+                            tables,
+                            cached_requested,
+                            (i64::from(block.first_hour), *hours.last().unwrap()),
+                            vec![block],
+                            &|frame, requested| {
+                                if state_point(&hours, frame.hour) {
+                                    sample(frame, None, requested)
+                                } else {
+                                    Ok(Samples::new())
+                                }
+                            },
+                            Some(&hours),
+                            cancelled,
+                        )
+                        .map(BlockSamples)
+                    },
+                )?
+            }
             None => cache.get(
                 block,
                 &(&selected, &keys, cadence, all, extent),
@@ -2957,6 +3164,266 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn stateless_state_projects_only_points_and_predecessors_and_retains_them() {
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let tables = crate::prepared_measure::TABLES;
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, keys: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            crate::prepared_measure::sample(frame, keys)
+        };
+        let key = [("GER".to_owned(), "politicalPower".to_owned())];
+        let hours = [3, 7, 14, 19];
+        let expected = sample_blocks_serial(
+            &source,
+            1,
+            tables,
+            &key,
+            (i64::from(i32::MIN), 19),
+            source
+                .replay_ref()
+                .index
+                .iter()
+                .filter(|block| {
+                    hours
+                        .iter()
+                        .any(|hour| block.first_hour <= *hour && *hour <= block.last_hour)
+                })
+                .collect(),
+            &crate::prepared_measure::sample,
+            Some(&hours),
+            &flag,
+        )
+        .unwrap();
+        let checked = Cell::new(0);
+        let sparse = state_tail_sparse(
+            &source,
+            1,
+            None,
+            tables,
+            &key,
+            &hours,
+            &|_| {
+                checked.set(checked.get() + 1);
+                Ok(())
+            },
+            &sample,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(checked.get(), 15, "all visited non-gap hours were checked");
+        assert_eq!(sparse, expected);
+        assert_eq!(
+            calls.get(),
+            7,
+            "only requested points and non-gap predecessors"
+        );
+        calls.set(0);
+        let actual = state_tail_cached(
+            &source,
+            "test-sparse-state",
+            1,
+            None,
+            tables,
+            &key,
+            &key,
+            &hours,
+            &sample,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(calls.get(), 7, "four points, three non-gap predecessors");
+        let before = calls.get();
+        let coverage = Coverage {
+            schema: 0,
+            first_hour: 0,
+            last_hour: 1,
+            complete: false,
+        };
+        let (again, refused) = without_block_decodes(|| {
+            state_tail_cached(
+                &source,
+                "test-sparse-state",
+                1,
+                Some(&coverage),
+                tables,
+                &key,
+                &key,
+                &hours,
+                &sample,
+                &flag,
+            )
+        });
+        assert!(!refused);
+        assert_eq!(again.unwrap(), expected);
+        assert_eq!(calls.get(), before);
+        let (bytes, bound, _) = super::super::observations::usage(&source, "test-sparse-state");
+        assert!(bytes > 0 && bytes <= bound);
+    }
+
+    #[test]
+    fn sparse_state_returns_a_check_refusal_before_any_requested_projection() {
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, keys: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            crate::prepared_measure::sample(frame, keys)
+        };
+        let error = state_tail_sparse(
+            &source,
+            1,
+            None,
+            crate::prepared_measure::TABLES,
+            &[],
+            &[3],
+            &|frame| {
+                if frame.hour == 1 {
+                    Err(io::Error::other("intermediate sampler refusal"))
+                } else {
+                    Ok(())
+                }
+            },
+            &sample,
+            &flag,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "intermediate sampler refusal");
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn projected_tails_reuse_unchanged_blocks_and_restore_metadata_with_byte_parity() {
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let tables = crate::prepared_measure::TABLES;
+        let calls = Cell::new(0);
+        let metadata = Cell::new(None);
+        let sample = |frame: &DecodedFrame, keys: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            metadata.set(Some(frame.hour));
+            crate::prepared_measure::sample(frame, keys)
+        };
+        let key = [("GER".to_owned(), "politicalPower".to_owned())];
+        let ask = |coverage: Option<&Coverage>| {
+            tail_projected(
+                &source,
+                "test-projected-tail",
+                1,
+                coverage,
+                tables,
+                &key,
+                (0, 19),
+                &(),
+                &sample,
+                || metadata.take(),
+                |held| metadata.set(*held),
+                |_| std::mem::size_of::<Option<i32>>(),
+                &flag,
+            )
+            .unwrap()
+        };
+        for through in [None, Some(1), Some(3), Some(5), Some(12)] {
+            let coverage = through.map(|last_hour| Coverage {
+                schema: 0,
+                first_hour: 0,
+                last_hour,
+                complete: false,
+            });
+            let actual = ask(coverage.as_ref());
+            assert_eq!(metadata.get(), Some(19));
+            let expected = tail(
+                &source,
+                1,
+                coverage.as_ref(),
+                tables,
+                &key,
+                (0, 19),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "prefix {through:?}");
+            let encode = |tail: &TailData| {
+                serde_json::to_vec(&(
+                    tail.0.iter().collect::<Vec<_>>(),
+                    &tail.1,
+                    tail.2.iter().collect::<Vec<_>>(),
+                ))
+                .unwrap()
+            };
+            assert_eq!(encode(&actual), encode(&expected));
+            let before = calls.get();
+            metadata.set(None);
+            let (again, refused) = without_block_decodes(|| ask(coverage.as_ref()));
+            assert!(!refused);
+            assert_eq!(again, expected);
+            assert_eq!(metadata.get(), Some(19));
+            assert_eq!(calls.get(), before, "held folds were sampled again");
+        }
+        let (bytes, bound, computations) =
+            super::super::observations::usage(&source, "test-projected-tail");
+        assert!(bytes > 0 && bytes <= bound);
+        assert_eq!(
+            computations, 8,
+            "five initial blocks and three clipped boundary blocks"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "fourteen-block exact-zoom transition"
+    )]
+    fn projected_tails_keep_the_original_keyframe_to_exact_transition() {
+        let source = source(14);
+        let flag = AtomicBool::new(false);
+        let tables = crate::prepared_measure::TABLES;
+        let key = [("GER".to_owned(), "politicalPower".to_owned())];
+        for through in [None, Some(1)] {
+            let coverage = through.map(|last_hour| Coverage {
+                schema: 0,
+                first_hour: 0,
+                last_hour,
+                complete: false,
+            });
+            let actual = tail_projected(
+                &source,
+                "test-projected-transition",
+                1,
+                coverage.as_ref(),
+                tables,
+                &key,
+                (0, 27),
+                &(),
+                &crate::prepared_measure::sample,
+                || (),
+                |_: &()| {},
+                |_| 0,
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                tail(
+                    &source,
+                    1,
+                    coverage.as_ref(),
+                    tables,
+                    &key,
+                    (0, 27),
+                    &crate::prepared_measure::sample,
+                    &flag,
+                )
+                .unwrap()
+            );
+            assert_eq!(actual.1.is_empty(), through.is_some());
+        }
     }
     #[allow(clippy::type_complexity)]
     fn read(

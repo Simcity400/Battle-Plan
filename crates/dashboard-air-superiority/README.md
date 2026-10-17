@@ -38,3 +38,8 @@ reconstructing each field's original run bounds.
 Moment windows read their accepted prefix too. Its observation/side projection
 is marked approximate while later history can revise side classification;
 requested hours outside that prefix stay pending, with no invented scores.
+
+Queries deserialize only the continuation's choice history, catalogue operands
+and reached hour. They read numeric values and auxiliary history from the series
+pages; preparation alone restores its accumulators, open score joins and
+continuation dictionaries.

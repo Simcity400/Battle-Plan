@@ -664,9 +664,11 @@ fn tail_state(
     let old_multipliers = OnceCell::new();
     // Retain only the requested frame, never an intervening block or history.
     let target = RefCell::new(None);
-    let sample = |frame: &DecodedFrame, _requested: Option<&[(String, String)]>| {
+    let check = |frame: &DecodedFrame| {
         metadata::check_cancel(cancelled)?;
-        metadata::validate_campaign(frame, replay)?;
+        metadata::validate_campaign(frame, replay)
+    };
+    let sample = |frame: &DecodedFrame, _requested: Option<&[(String, String)]>| {
         let samples = super::sample(frame, replay.format, &mut || {
             old_multipliers
                 .get_or_init(|| read_content_multipliers(source, context))
@@ -678,7 +680,7 @@ fn tail_state(
         }
         Ok(values)
     };
-    let (values, _, _) = dashboard_base::prepared::query::progressive::state_tail(
+    let (values, _, _) = dashboard_base::prepared::query::progressive::state_tail_sparse(
         source,
         params
             .branch_id
@@ -688,6 +690,7 @@ fn tail_state(
         SCORE_TABLES,
         &[],
         &[hour],
+        &check,
         &sample,
         cancelled,
     )?;
@@ -984,4 +987,80 @@ fn values_at(
         budget,
     )?;
     Ok((facts, scores))
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use dashboard_base::test_fixtures::{CAMPAIGN, records, source as frame};
+    use replay::{
+        frame::TableView,
+        rows::{CampaignRow, TableRows},
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn cold_score_state_refuses_an_intermediate_campaign_switch_that_returns_before_the_point() {
+        let flag = AtomicBool::new(false);
+        let params: Params = serde_json::from_value(json!({
+            "branchId": "1", "family": {"kind": "game-score"}, "reads": [{"hour": 10}]
+        }))
+        .unwrap();
+        let naming = Naming {
+            localisation: Err("synthetic localisation unavailable".into()),
+            templates: Err("synthetic faction templates unavailable".into()),
+            fallback: Localisation::default(),
+            warnings: Vec::new(),
+        };
+        for switches in [false, true] {
+            let frames = (0..=10)
+                .map(|hour| {
+                    let mut frame = frame(1, hour, Some(1));
+                    if switches && hour == 2 {
+                        *frame.tables[TableId::Campaign.index()] =
+                            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                                id: b"another-synthetic-campaign".to_vec(),
+                            }]));
+                    }
+                    frame
+                })
+                .collect();
+            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+            assert_eq!(replay.index.len(), 1);
+            assert_eq!(
+                (replay.index[0].first_hour, replay.index[0].last_hour),
+                (0, 10)
+            );
+            let source = Source::from_replay(
+                dashboard_base::SourceKey {
+                    source_id: "score-campaign-check".into(),
+                    revision: "1".into(),
+                },
+                "memory.battleplan".into(),
+                Arc::new(replay),
+                &flag,
+            )
+            .unwrap();
+            let result = tail_state(
+                &source,
+                &params,
+                None,
+                &naming,
+                &LoadContext { content: None },
+                &flag,
+            );
+            if switches {
+                let Err(error) = result else {
+                    panic!("intermediate campaign switch must refuse");
+                };
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(
+                    error.to_string(),
+                    "frame campaign identity differs from replay header"
+                );
+            } else {
+                assert_eq!(result.unwrap().reply.reads, [10]);
+            }
+        }
+    }
 }

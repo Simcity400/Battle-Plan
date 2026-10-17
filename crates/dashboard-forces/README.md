@@ -73,3 +73,10 @@ can retain it. The shared publication rules are in
 
 Factories and army share a sorted rank-boundary plan across their channels;
 army borrows the native run operands while clipping only their rank intervals.
+
+Air and navy summary tails retain each block's numeric fold with its final
+availability metadata through the shared `tail_projected` helper. Unchanged
+blocks reuse both as preparation advances; exact-zoom and keyframe folds have
+distinct entries. Content-dependent point parts keep their ordinary projection.
+State reads project every visited hour, including hours before the requested
+point, so native count and class-index overflow refusals remain observable.

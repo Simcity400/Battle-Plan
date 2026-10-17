@@ -1,6 +1,42 @@
 use super::*;
 use crate::prepared::series::tests::Fixture;
 
+#[test]
+fn projected_values_reuse_only_matching_pages_types_and_parameters() {
+    let calls = std::cell::Cell::new(0);
+    let read = |page, through| {
+        reuse_value(
+            vec![[page, 2, 3]],
+            &through,
+            |value: &Vec<u8>| std::mem::size_of::<Vec<u8>>() + value.capacity(),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(vec![page as u8; through])
+            },
+        )
+        .unwrap()
+    };
+    let scope = cache_scope(None);
+    let first = read(1, 8);
+    let held = scope.finish();
+    let scope = cache_scope(Some(&held));
+    assert!(Arc::ptr_eq(&first, &read(1, 8)));
+    assert_eq!(calls.get(), 1);
+    assert_eq!(*read(2, 8), vec![2; 8]);
+    assert_eq!(*read(1, 4), vec![1; 4]);
+    assert_eq!(calls.get(), 3);
+    let current = scope.finish();
+    assert_eq!(current.values.len(), 3);
+    assert!(current.bytes() >= held.bytes());
+    let scope = cache_scope(Some(&current));
+    assert!(Arc::ptr_eq(&first, &read(1, 8)));
+    assert_eq!(
+        scope.finish().values.len(),
+        1,
+        "unused projections survived"
+    );
+}
+
 fn amount(hour: i32) -> Option<i128> {
     (hour % 29 != 7).then_some(i128::from(hour / 9 - 4))
 }

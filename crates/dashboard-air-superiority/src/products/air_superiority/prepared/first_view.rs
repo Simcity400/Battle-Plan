@@ -148,7 +148,7 @@ pub(super) fn moment(
     reached.last_hour = prefix.through(params.last_hour);
     let (first, _) = hours(params)?;
     let samples = if coverage.is_some() && first <= reached.last_hour.unwrap_or(first) {
-        Prepared::read(&store, &key, None, branch)?.samples(
+        Prepared::read_query(&store, &key, branch)?.samples(
             source, &store, &key, branch, &reached, &groups, &anchors, &mut sides, cancelled,
         )?
     } else {
@@ -184,7 +184,7 @@ pub(super) fn query(
         .map_or(i32::MIN, |coverage| coverage.last_hour);
     let state = coverage
         .as_ref()
-        .map(|_| Prepared::read(&store, &key, None, branch))
+        .map(|_| Prepared::read_query(&store, &key, branch))
         .transpose()?;
     let groups = if state.is_some() {
         read_groups(&store, &key, branch)?

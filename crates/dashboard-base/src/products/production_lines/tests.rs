@@ -10,6 +10,42 @@ use replay::{
 };
 
 #[test]
+fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() {
+    let format = replay::format::FormatVersion::CURRENT;
+    for at in 0..48 {
+        let mut frame = production_frame(
+            FIRST + at,
+            at % 24 == 0,
+            true,
+            9001,
+            &[(5, 70, 8, 3276800)],
+            None,
+        );
+        // A peer read dates the entire cadence group, including off-slot reads.
+        frame.metrics.table_ns[TableId::ProductionLineModifiers.index()] = u64::from(at == 7);
+        let before = crate::metadata::slot_read_batches();
+        let actual = scan_hour(format, frame.hour, &frame, "GER", None);
+        assert_eq!(crate::metadata::slot_read_batches() - before, 1);
+        let read = |table| crate::metadata::slot_read(format, &frame.metrics, table, frame.hour);
+        assert_eq!(actual.lines_read, read(TableId::ProductionLines));
+        assert_eq!(
+            actual.definitions_read,
+            read(TableId::VariantDefinitions)
+                && frame.complete::<tables::VariantDefinitions>().is_ok()
+        );
+        assert_eq!(
+            actual.output_due.is_some(),
+            read(TableId::ProductionLineOutput)
+        );
+        assert_eq!(
+            actual.modifiers_read,
+            read(TableId::CountryProductionModifiers) && read(TableId::ProductionLineModifiers)
+        );
+        assert_eq!(actual.variants, VariantCatalogue::hour_of(format, &frame));
+    }
+}
+
+#[test]
 fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps() {
     use replay::rows::{CountryRow, ProductionLineRow};
     let frames = (FIRST..=FIRST + 50)

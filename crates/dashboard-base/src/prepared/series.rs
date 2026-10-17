@@ -13,7 +13,7 @@ use std::{
 };
 use ts_rs::TS;
 mod query;
-pub use query::{SummaryCache, cache_scope};
+pub use query::{SummaryCache, cache_scope, reuse_value};
 
 const LEVELS: [i64; 4] = [16, 256, 4096, 65536];
 const HEADER: u64 = 16;

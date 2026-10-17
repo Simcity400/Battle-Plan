@@ -26,6 +26,19 @@ struct ChoiceRead {
     first_hour: i32,
     last_hour: i32,
 }
+
+/// Query operands from the continuation. The fold's accumulators, open joins
+/// and score dictionaries are not read by a page query.
+#[derive(Deserialize)]
+struct QueryState {
+    previous_hour: Option<i32>,
+    choices: Vec<ChoiceRead>,
+    pending_choice: Option<ChoiceRead>,
+    countries: BTreeSet<String>,
+    regions: BTreeSet<u32>,
+    theatres: BTreeMap<String, Vec<u8>>,
+    available: bool,
+}
 /// The tables whose change chooses the day's sides again: any change of
 /// their rows (a new decoding of them) marks the day's choice for a new read.
 pub(super) const CHOICE_TABLES: [TableId; 6] = [
@@ -877,6 +890,27 @@ impl Prepared {
             .0;
         Ok(state)
     }
+
+    fn read_query(store: &store::Store, key: &store::SourceKey, branch: u64) -> io::Result<Self> {
+        let file = store
+            .read(key, &format!("air-superiority-{branch}"), 0)?
+            .ok_or_else(|| invalid("Prepared air-superiority continuation is missing"))?;
+        let state: QueryState = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
+        let keys = series::read_catalogue::<()>(store, key, "air-superiority", branch)?
+            .ok_or_else(|| invalid("Prepared air-superiority catalogue is missing"))?
+            .0;
+        Ok(Self {
+            previous_hour: state.previous_hour,
+            choices: state.choices,
+            pending_choice: state.pending_choice,
+            countries: state.countries,
+            regions: state.regions,
+            theatres: state.theatres,
+            available: state.available,
+            keys,
+            ..Default::default()
+        })
+    }
     #[allow(clippy::too_many_arguments)]
     fn samples(
         &self,
@@ -1050,7 +1084,7 @@ pub fn query(
         return first_view::query(source, &params, context, coverage, cancelled);
     }
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let state = Prepared::read(&store, &key, None, branch)?;
+    let state = Prepared::read_query(&store, &key, branch)?;
     let groups = read_groups(&store, &key, branch)?;
     let mut cache = state.catalogue(&groups);
     let naming_hour = params
@@ -1480,7 +1514,18 @@ mod tests {
         .unwrap();
         let groups = groups(&replay);
         let flag = AtomicBool::new(false);
-        let state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
+        let full = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
+        let state = Prepared::read_query(&fixture.store, &fixture.key, 1).unwrap();
+        assert_eq!(state.current_keys.len(), 0, "a query hydrated fold joins");
+        assert_eq!(state.values.bytes(), Accumulator::default().bytes());
+        assert_eq!(state.events.bytes(), Accumulator::default().bytes());
+        assert_eq!(state.hours.bytes(), Accumulator::default().bytes());
+        assert_eq!(state.keys, full.keys);
+        assert_eq!(state.previous_hour, full.previous_hour);
+        assert_eq!(
+            serde_json::to_vec(&(&state.choices, &state.pending_choice)).unwrap(),
+            serde_json::to_vec(&(&full.choices, &full.pending_choice)).unwrap()
+        );
         let expected = scan::scan_days(&replay, 1, &groups, None, &flag).unwrap();
         let cache = state.catalogue(&groups);
         let choices = |sides: &[AirSide]| {
