@@ -23,7 +23,6 @@ use installed_content::scripted_map_modes::{Layer, LayerType};
 use replay::rows::tables;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::io;
 use std::rc::Rc;
 use viewer_foundation::map::tables::core;
 

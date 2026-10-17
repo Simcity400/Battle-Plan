@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn state_categories_name_the_buildings_they_cap_across_bodies() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let database = parse(
             b"state_categories={isle={buildings_max_level={naval_base=8}} town={} ISLE={buildings_max_level={Roads=2}} coast={buildings_max_level={roads=1 air_base=2}}}",

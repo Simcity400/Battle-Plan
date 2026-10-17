@@ -701,7 +701,7 @@ fn nonpositive_caps_use_the_exact_signed_default() {
 
 #[test]
 fn infrastructure_is_the_first_flagged_type_and_reads_its_level_cap_forms() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         br#"buildings={

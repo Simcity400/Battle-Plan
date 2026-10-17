@@ -207,7 +207,7 @@ impl ReplayStream {
                     None
                 };
                 check()?;
-                let mut send = |frame: RecordedFrame| {
+                let send = |frame: RecordedFrame| {
                     check()?;
                     #[cfg(test)]
                     if let Some(hook) = &on_read {

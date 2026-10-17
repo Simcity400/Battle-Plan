@@ -874,8 +874,10 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
         routes[0].source_state = None;
         routes[1].destination_state = None;
         let tables = Tables {
+            origins: &[],
+            clients: &clients,
             routes: &routes,
-            ..tables
+            regional: &[],
         };
         let mut report = TradeRouteReport::default();
         assert_eq!(lines(&tables, &countries, &mut report).len(), 2);

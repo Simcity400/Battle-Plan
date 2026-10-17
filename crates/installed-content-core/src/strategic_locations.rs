@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn locations_list_the_buildings_they_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let locations = parse(
             b"natural_harbor={naval_base=2} high_pass={Roads=1 bunker=-2} quiet={}",

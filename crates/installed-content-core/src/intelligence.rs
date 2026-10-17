@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn operation_phase_map_sprite_falls_back_to_its_icon_and_keeps_the_first_definition() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, _) = parse_operation_phases(
             b"steal = { icon = GFX_steal map_icon = GFX_steal_map outcome = { a = b } }
