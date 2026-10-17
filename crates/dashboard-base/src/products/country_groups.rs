@@ -1401,11 +1401,18 @@ impl Scan {
                     recorded_language,
                     refused,
                 );
-                let latest = names.last().expect("a scanned faction has a name read");
+                let (name, name_reason) = match names.last() {
+                    Some(latest) => (latest.name.clone(), latest.reason.clone()),
+                    None => {
+                        let reason = "Faction has no recorded name read";
+                        refused.note(reason, format!("faction {id}"));
+                        (None, Some(reason.to_owned()))
+                    }
+                };
                 FactionGroupView {
                     id: id.to_string(),
-                    name: latest.name.clone(),
-                    name_reason: latest.reason.clone(),
+                    name,
+                    name_reason,
                     names,
                     recorded_name: &faction.name,
                     first_hour: faction.first_hour,
@@ -1658,9 +1665,7 @@ impl Scan {
                 history[index].tokens = dictionary(history[index].dictionary)?;
             }
         }
-        for (id, faction) in &mut state.factions {
-            faction.names = state.continuation.names[id].clone();
-        }
+        state.sync_faction_names();
         let rosters = &mut state.continuation.rosters;
         let last = rosters
             .faction_reads
@@ -1966,12 +1971,12 @@ impl Scan {
         self.seal_selected(Updates::ALL);
         self.continuation.deferred = false;
         self.unobserved = self.continuation.unobserved.clone();
-        for id in &self.continuation.live_factions {
-            if let Some(faction) = self.factions.get_mut(id)
-                && let Some(names) = self.continuation.names.get(id)
-            {
-                faction.names = names.clone();
-            }
+        self.sync_faction_names();
+    }
+    fn sync_faction_names(&mut self) {
+        // A reply includes dissolved factions too; a missing read stays unknown.
+        for (id, faction) in &mut self.factions {
+            faction.names = self.continuation.names.get(id).cloned().unwrap_or_default();
         }
     }
     fn seal_name(&mut self, id: u64, hour: i32) {
@@ -2754,14 +2759,6 @@ impl Scan {
             "{unattributed} war starts or capitulations were first seen after an unrecorded hour or a change of country; which countries they were is not known, so they are left out."
         ));
         }
-        for (id, faction) in &mut self.factions {
-            faction.names = self
-                .continuation
-                .names
-                .get(id)
-                .expect("a roster-known faction has a name read")
-                .clone();
-        }
         self.warnings = warnings;
         self.capitulation_unread_hours = self.continuation.capitulations_unread;
         self.history = Arc::default();
@@ -2819,7 +2816,12 @@ impl Scan {
             |spans, frame| {
                 self.carry(carried);
                 self.begin_block();
-                self.observe(frame)?;
+                // Quiet carries and replies need preparation's live histories.
+                let changes = crate::prepared::frame_changes::FrameChanges::alone(
+                    frame,
+                    source.replay_ref().format,
+                );
+                self.advance_changed(frame, &changes)?;
                 carried = spans.last().map(|span| span.last_hour);
                 Ok(())
             },

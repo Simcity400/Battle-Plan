@@ -750,6 +750,92 @@ fn country_groups_read_by_their_changes_keep_a_built_dictionary_until_it_rebuild
     clear(source);
 }
 
+#[test]
+fn country_groups_cold_single_hour_query_keeps_the_sampled_name_read() {
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![groups_frame(1, 100)])]).unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("groups-single-sample");
+    let data = query(&source, "country-groups", "1").unwrap();
+    assert_eq!(data["coverage"]["lastHour"], 99);
+    assert_eq!(data["factions"][0]["name"], "Axis");
+    assert_eq!(data["factions"][0]["names"][0]["firstHour"], 100);
+    assert_eq!(data["factions"][0]["names"][0]["lastHour"], 100);
+    assert_eq!(
+        data["approximate"],
+        serde_json::json!([{"firstHour":100,"lastHour":100}])
+    );
+}
+
+#[test]
+fn prepared_country_groups_query_refuses_missing_and_empty_name_histories() {
+    use crate::products::country_groups::Scan;
+    use serde_json::json;
+
+    independent::with_test_hourly(|| {
+        for empty_entry in [false, true] {
+            let frame = groups_frame(1, 100);
+            let replay =
+                Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap();
+            let mut scan = Scan::new(&replay, 1);
+            scan.observe(&frame).unwrap();
+            scan.finish(&replay, 1);
+            let saved = scan.saved_bytes().unwrap();
+            let mut state: serde_json::Value =
+                serde_json::from_reader(zstd::stream::Decoder::new(saved.as_slice()).unwrap())
+                    .unwrap();
+            // Keep the recorded roster and literal, but remove its supplying read.
+            state["continuation"]["names"] = if empty_entry {
+                json!({"5":[]})
+            } else {
+                json!({})
+            };
+            let saved = crate::prepared::series::compress(
+                serde_json::to_vec(&state).unwrap().as_slice(),
+                3,
+            )
+            .unwrap();
+            let mut fixture = Fixture::new(&replay);
+            let source = fixture.source("groups-missing-name");
+            let (store, key) = super::super::super::files(&source, None).unwrap();
+            let mut writer = store.replace(key).unwrap();
+            writer
+                .write_at("country-groups-1", 0, saved.as_slice())
+                .unwrap();
+            super::super::json(
+                &mut writer,
+                &coverage_section(1),
+                &Coverage {
+                    schema: SCHEMA,
+                    first_hour: 100,
+                    last_hour: 100,
+                    complete: true,
+                },
+            )
+            .unwrap();
+            writer.commit().unwrap();
+
+            let data = query(&source, "country-groups", "1").unwrap();
+            assert!(data["factions"][0]["name"].is_null());
+            assert_eq!(
+                data["factions"][0]["nameReason"],
+                "Faction has no recorded name read"
+            );
+            assert_eq!(data["factions"][0]["names"], json!([]));
+            assert_eq!(data["factions"][0]["recordedName"], "Axis");
+            assert!(
+                !data["factions"][0]["members"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(data["warnings"].as_array().unwrap().iter().any(|warning|
+                warning == "1 faction names are not shown: Faction has no recorded name read; faction 5"
+            ));
+        }
+    });
+}
+
 /// Before groups preparation covers the branch, the country groups answer
 /// their prepared prefix instead of null, carried on by each later block's
 /// keyframe: those hours are approximate, the hours after the prefix are

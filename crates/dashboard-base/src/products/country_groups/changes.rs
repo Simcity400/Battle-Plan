@@ -246,20 +246,21 @@ impl Prepared {
         {
             if let Some(id) = change.faction {
                 groups.seal_name(id, hour);
-                let history = &groups.continuation.names[&id];
-                let mut left = 0;
-                let mut right = history.len();
-                while left < right {
-                    let mid = left + (right - left) / 2;
-                    if history[mid].last_hour < change.name_hour {
-                        left = mid + 1;
-                    } else {
-                        right = mid;
+                let name = groups.continuation.names.get(&id).and_then(|history| {
+                    let mut left = 0;
+                    let mut right = history.len();
+                    while left < right {
+                        let mid = left + (right - left) / 2;
+                        if history[mid].last_hour < change.name_hour {
+                            left = mid + 1;
+                        } else {
+                            right = mid;
+                        }
                     }
-                }
-                let name = (left < history.len())
-                    .then(|| &history[left])
-                    .filter(|name| name.first_hour <= change.name_hour);
+                    (left < history.len())
+                        .then(|| &history[left])
+                        .filter(|name| name.first_hour <= change.name_hour)
+                });
                 let mut warnings = Vec::new();
                 change.name = Some(match name {
                     Some(name) => country_groups::with_name_content(

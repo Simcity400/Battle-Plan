@@ -226,6 +226,16 @@ whole-recording loaders of prepared-only products) and the test instrumentation
 (read and work counters) for the tests of the crates above, so their test builds
 behave exactly as this crate's own. Only dev-dependencies enable it.
 
+## Country groups first view
+
+Country groups sample later keyframes with the preparation observer, carrying
+its rosters and dated name operands through each sampled span. Reply histories
+include dissolved factions. A faction without a name read keeps its roster and
+literal identity but has no display name or name runs; its reason names the
+missing read, counted once per faction. Saved prefixes and resumed scans keep
+that absence without inventing a name or supplying hour. Group-change names
+keep a counted missing-read refusal when their naming hour has no operands.
+
 ## Production lines first view
 
 `production-lines` answers from one scan of every hour of the branch, in order

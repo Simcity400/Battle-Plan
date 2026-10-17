@@ -2211,6 +2211,153 @@ fn faction_names_and_rosters_share_catalogue_reads_without_inventing_lifetimes()
 }
 
 #[test]
+fn sampled_group_names_and_rosters_match_hourly_reads_through_rename_and_dissolution() {
+    use super::{HourSpan, Scan};
+    use crate::products::LoadContext;
+
+    let blocks = [
+        vec![group_frame(100, &[], &[(77, "First", &[9001])], &[])],
+        vec![
+            group_frame(101, &[], &[(77, "Renamed", &[9001]), (78, "", &[44])], &[]),
+            group_frame(102, &[], &[(77, "Renamed", &[9001]), (78, "", &[44])], &[]),
+        ],
+        vec![group_frame(103, &[], &[], &[])],
+    ];
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, blocks[0].clone())]).unwrap();
+    for block in &blocks[1..] {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, block.clone())])
+            .unwrap();
+    }
+    let source = group_source(replay);
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let mut sampled = Scan::new(source.replay_ref(), 1);
+    assert_eq!(
+        sampled.sample_tail(&source, 1, 99, &flag).unwrap(),
+        [HourSpan {
+            first_hour: 100,
+            last_hour: 103
+        }]
+    );
+    let reply = sampled.reply(&source, "1", &context).unwrap();
+    let hourly = super::scan_branch(source.replay_ref(), 1, &flag).unwrap();
+    assert_eq!(
+        serde_json::to_value(&reply).unwrap(),
+        serde_json::to_value(hourly.reply(&source, "1", &context).unwrap()).unwrap()
+    );
+    assert_eq!(reply.factions[0].names.len(), 2);
+    assert_eq!(reply.factions[0].name.as_deref(), Some("Renamed"));
+    assert_eq!(reply.factions[0].members[0].last_hour, 102);
+    assert_eq!(reply.factions[1].name.as_deref(), Some(""));
+}
+
+#[test]
+fn group_names_without_reads_stay_unknown_in_replies_snapshots_and_resumed_samples() {
+    use super::{RunHistory, Scan};
+    use crate::products::LoadContext;
+
+    let initial = group_frame(
+        100,
+        &[],
+        &[(77, "Unread", &[9001]), (78, "Unread", &[44])],
+        &[],
+    );
+    let first =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![initial.clone()])]).unwrap();
+    let mut scan = Scan::new(&first, 1);
+    scan.observe(&initial).unwrap();
+    // A derived prefix may retain a roster without either a history entry or a read.
+    scan.continuation.names.remove(&77);
+    scan.continuation.names.insert(78, RunHistory::default());
+    let check = |scan: &Scan, source: &crate::Source| {
+        let reply = scan
+            .reply(source, "1", &LoadContext { content: None })
+            .unwrap();
+        assert_eq!(reply.factions.len(), 2);
+        for faction in &reply.factions {
+            assert_eq!(faction.name, None);
+            assert_eq!(
+                faction.name_reason.as_deref(),
+                Some("Faction has no recorded name read")
+            );
+            assert!(faction.names.is_empty(), "no invented supplying hour");
+            assert_eq!(faction.recorded_name, "Unread");
+            assert_eq!(faction.members.len(), 1);
+        }
+        assert!(reply.warnings.iter().any(|warning| warning ==
+            "2 faction names are not shown: Faction has no recorded name read; faction 77, faction 78"));
+    };
+    let first_source = group_source(first);
+    check(&scan, &first_source);
+    scan.finish(first_source.replay_ref(), 1);
+    let mut resumed = Scan::read(scan.saved_bytes().unwrap().as_slice()).unwrap();
+    check(&resumed, &first_source);
+    let mut unread = group_frame(101, &[], &[], &[]);
+    *unread.tables[TableId::Factions.index()] = TableView::Unavailable {
+        reason: "synthetic missing name table".into(),
+    };
+    let appended = first_source
+        .replay_ref()
+        .append(&[continuation_records(
+            first_source.replay_ref(),
+            1,
+            vec![unread],
+        )])
+        .unwrap();
+    let source = group_source(appended);
+    resumed
+        .sample_tail(&source, 1, 100, &AtomicBool::new(false))
+        .unwrap();
+    check(&resumed, &source);
+}
+
+#[test]
+fn group_change_names_refuse_a_dissolved_faction_without_a_name_history() {
+    use super::{Scan, changes::Prepared};
+    use crate::prepared::frame_changes::FrameChangeTracker;
+
+    let first = group_frame(100, &[], &[(77, "Unread", &[9001])], &[]);
+    let last = group_frame(101, &[], &[], &[]);
+    let source = group_source(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![first.clone(), last.clone()])],
+        )
+        .unwrap(),
+    );
+    let mut scan = Scan::new(source.replay_ref(), 1);
+    let mut changes = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    let context = crate::products::LoadContext { content: None };
+    changes
+        .observe_changed(
+            &mut scan,
+            &first,
+            &tracker.observe(&first, source.replay_ref().format),
+            &source,
+            &context,
+        )
+        .unwrap();
+    scan.continuation.names.remove(&77);
+    changes
+        .observe_changed(
+            &mut scan,
+            &last,
+            &tracker.observe(&last, source.replay_ref().format),
+            &source,
+            &context,
+        )
+        .unwrap();
+    let state = serde_json::to_value(changes).unwrap();
+    assert_eq!(
+        state["name_refusals"]["Faction 77 has no recorded name at 100"],
+        serde_json::json!([77])
+    );
+}
+
+#[test]
 fn prepared_scan_roundtrip_reuses_reply_builder_names_dictionaries_and_append_state() {
     use super::{CountryGroupParams, CountryGroups, Scan};
     use crate::products::LoadContext;
